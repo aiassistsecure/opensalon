@@ -1,0 +1,36 @@
+{% load static %}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}{{ salon.name|default:"OpenSalon" }}{% endblock %} · OpenSalon</title>
+<link rel="stylesheet" href="{% static 'webui/webui.css' %}">
+<style>:root{--salon-primary:{{ salon_theme.primary }};--salon-accent:{{ salon_theme.accent }};--salon-ground:{{ salon_theme.ground }};}</style>
+</head>
+<body>
+<header class="shell-header">
+  <div class="shell-header-inner">
+    <div class="salon-identity">
+      <div class="salon-mark" aria-hidden="true">✿</div>
+      <div>
+        <div class="salon-name">{{ salon.name|default:"Your Salon" }}</div>
+        <div class="salon-sub">Front desk</div>
+      </div>
+    </div>
+    <div class="product-mark">OpenSalon</div>
+  </div>
+  <nav class="shell-nav" aria-label="Main">
+    <a href="{% url 'webui:daybook' %}" class="{% if nav_key == 'daybook' %}active{% endif %}">Day Book</a>
+    <a href="{% url 'webui:clients' %}" class="{% if nav_key == 'clients' %}active{% endif %}">Clients</a>
+    <a href="{% url 'webui:pricebook' %}" class="{% if nav_key == 'pricebook' %}active{% endif %}">Price Book</a>
+    <a href="{% url 'webui:team' %}" class="{% if nav_key == 'team' %}active{% endif %}">Team</a>
+    <a href="{% url 'webui:products' %}" class="{% if nav_key == 'products' %}active{% endif %}">Products</a>
+    <a href="{% url 'webui:insights' %}" class="{% if nav_key == 'insights' %}active{% endif %}">Insights</a>
+  </nav>
+</header>
+<main class="shell-main">
+{% block content %}{% endblock %}
+</main>
+<footer class="shell-footer">Powered by OpenSalon — free, open-source salon software.</footer>
+</body>
+</html>

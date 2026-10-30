@@ -1,0 +1,52 @@
+{% extends "webui/base.html" %}
+{% block title %}Clients{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <h1 class="page-title">Clients</h1>
+    <p class="page-subtitle">{{ total }} client{{ total|pluralize }} on the book</p>
+  </div>
+  <form class="search" method="get" role="search">
+    <input type="search" name="q" value="{{ query }}" placeholder="Search name, email or phone…" aria-label="Search clients">
+    <button class="btn" type="submit">Search</button>
+  </form>
+</section>
+
+{% if page.object_list %}
+<table class="client-table">
+  <thead>
+    <tr><th>Client</th><th>Contact</th><th>Reminders &amp; marketing</th><th>Record</th></tr>
+  </thead>
+  <tbody>
+    {% for client in page.object_list %}
+    <tr>
+      <td class="client-name">{{ client.first_name }} {{ client.last_name }}</td>
+      <td class="client-contact">{{ client.phone }}{% if client.phone and client.email %}<br>{% endif %}{{ client.email }}</td>
+      <td>
+        {% if client.sms_opt_in %}<span class="badge badge-on">SMS ✓</span>{% else %}<span class="badge">SMS off</span>{% endif %}
+        {% if client.email_opt_in %}<span class="badge badge-on">Email ✓</span>{% else %}<span class="badge">Email off</span>{% endif %}
+      </td>
+      <td>{% if client.note_count %}<span class="note-pill">Notes · {{ client.note_count }}</span>{% else %}<span class="note-none">—</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% if page.has_other_pages %}
+<nav class="pager" aria-label="Clients pages">
+  {% if page.has_previous %}<a class="btn" href="?q={{ query }}&page={{ page.previous_page_number }}">← Newer</a>{% endif %}
+  <span class="pager-info">Page {{ page.number }} of {{ page.paginator.num_pages }}</span>
+  {% if page.has_next %}<a class="btn" href="?q={{ query }}&page={{ page.next_page_number }}">Older →</a>{% endif %}
+</nav>
+{% endif %}
+{% elif query %}
+<div class="empty-card">
+  <h2 class="empty-title">No clients match “{{ query }}”</h2>
+  <p>Try a different spelling, or clear the search to see the whole book.</p>
+</div>
+{% else %}
+<div class="empty-card">
+  <h2 class="empty-title">No clients yet</h2>
+  <p>Clients appear here as they book — with their reminder opt-ins always visible, always respected.</p>
+</div>
+{% endif %}
+{% endblock %}

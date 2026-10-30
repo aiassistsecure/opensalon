@@ -1,0 +1,54 @@
+{% extends "webui/base.html" %}
+{% block title %}Day Book — {{ day|date:"l, F j" }}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <h1 class="page-title">{{ day|date:"l" }}</h1>
+    <p class="page-subtitle">{{ day|date:"F j, Y" }}</p>
+  </div>
+  <nav class="day-nav" aria-label="Day">
+    <a class="btn" href="?date={{ prev_day|date:'Y-m-d' }}">← Prev</a>
+    <a class="btn {% if day == today %}btn-quiet{% endif %}" href="?date={{ today|date:'Y-m-d' }}">Today</a>
+    <a class="btn" href="?date={{ next_day|date:'Y-m-d' }}">Next →</a>
+  </nav>
+</section>
+
+{% if staff_columns %}
+<div class="daybook-wrap">
+<div class="daybook" style="--cols:{{ staff_columns|length }};">
+  <div class="db-corner"></div>
+  {% for col in staff_columns %}
+  <div class="db-staff-head {% if not col.on_duty %}is-off{% endif %}">
+    <div class="db-staff-name">{{ col.member.display_name }}</div>
+    <div class="db-staff-meta">
+      {% if col.member.staff_level %}{{ col.member.staff_level.name }} · {% endif %}
+      {% if col.on_duty %}{{ col.shift_label }}{% else %}Not rostered{% endif %}
+      {% if not col.member.online_bookable %} · <span class="tag">No online booking</span>{% endif %}
+    </div>
+  </div>
+  {% endfor %}
+
+  <div class="db-gutter">
+    {% for hour in hours %}<div class="db-hour">{{ hour|time:"g A" }}</div>{% endfor %}
+  </div>
+  {% for col in staff_columns %}
+  <div class="db-column {% if not col.on_duty %}is-off{% endif %}">
+    {% for band in col.bands %}
+    <div class="db-band" style="top:{{ band.top }}%;height:{{ band.height }}%;"></div>
+    {% endfor %}
+    {% for block in col.blocks %}{% include "webui/_block.html" %}{% endfor %}
+    {% if not col.blocks and col.on_duty %}<div class="db-open-note">Open for bookings</div>{% endif %}
+  </div>
+  {% endfor %}
+</div>
+</div>
+{% if not has_blocks %}
+<p class="empty-note">No appointments on the book for this day yet — the columns above are ready when bookings land.</p>
+{% endif %}
+{% else %}
+<div class="empty-card">
+  <h2 class="empty-title">The day book is ready when your team is</h2>
+  <p>Add staff members and their roster, and each day opens here — one column per stylist.</p>
+</div>
+{% endif %}
+{% endblock %}
