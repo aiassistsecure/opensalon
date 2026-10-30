@@ -140,3 +140,33 @@ class Payment(models.Model):
             f"Payment #{self.pk} — {self.get_method_display()} "
             f"{self.amount} ({self.status})"
         )
+
+
+class Receipt(models.Model):
+    """An immutable snapshot of a sale, taken when the receipt is issued.
+
+    Lines, total and tender are copied at issue time so later edits
+    to the sale, its items, its payments, or the price book never
+    rewrite a receipt a client was already given. One receipt per
+    sale (re-issuing replaces nothing; see receipts.build_receipt).
+    """
+
+    sale = models.OneToOneField(
+        Sale, on_delete=models.CASCADE, related_name="receipt"
+    )
+    salon_name = models.CharField(max_length=200, blank=True)
+    # Each line: {description, kind, quantity, unit_price, line_total}
+    # with money stored as strings to preserve exact decimal values.
+    lines = models.JSONField(default=list, blank=True)
+    total = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+    # Each tender: {method, amount, status} as strings.
+    tender = models.JSONField(default=list, blank=True)
+    recipient_email = models.EmailField(blank=True)
+    issued_at = models.DateTimeField(auto_now_add=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-issued_at", "-id"]
+
+    def __str__(self):
+        return f"Receipt for Sale #{self.sale_id} — {self.total}"
