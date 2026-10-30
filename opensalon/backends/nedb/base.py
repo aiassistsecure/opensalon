@@ -28,8 +28,14 @@ Skeleton scope (N-M3b), per the NEDB DYOR note (2026-10-30), section 9:
   transaction-level on NEDB, whose atomicity unit is the CAS batch /
   ``if_seq`` transaction, not SQL savepoints.
 
-Deliberately NOT here (later microtasks): TRUNCATE/flush replacement
-(implication 5) and identity/RETURNING handling (implication 6).
+* Implication 6: identity/RETURNING handling lives in
+  ``identity.py`` (client-generated integer PKs, DYOR 9.6) and
+  ``compiler.py`` (insert compiler assigns the PK and includes the
+  ``id`` column explicitly; no UNNEST bulk shape), with the read-path
+  integer converter in ``operations.py``.
+
+Deliberately NOT here (later microtask): TRUNCATE/flush replacement
+(implication 5).
 """
 
 from django.db.backends.postgresql.base import (

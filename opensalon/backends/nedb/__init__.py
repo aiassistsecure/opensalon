@@ -6,5 +6,7 @@ and the NEDB DYOR note (2026-10-30). This package neutralizes
 connection setup and test-database creation, no-ops DDL after catalog
 validation (``schema.py``), and no-ops savepoints (DYOR section 9.4:
 ``uses_savepoints = False`` plus inert ``_savepoint*`` hooks).
-Identity/RETURNING handling is a later microtask (implication 6).
+Identity/RETURNING (implication 6, N-M3g): ``identity.py`` +
+``compiler.py`` -- the adapter assigns client-generated integer PKs
+on insert and converts numeric-string PKs back to ints on read.
 """

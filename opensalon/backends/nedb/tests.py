@@ -496,3 +496,191 @@ class NedbTemporalRoundTripLiveTests(SimpleTestCase):
         self.assertLessEqual(
             row["created_at"], dj_timezone.now() + datetime.timedelta(minutes=1)
         )
+
+
+# -- N-M3g: identity / RETURNING (DYOR 9.6) ---------------------------
+
+from opensalon.backends.nedb import identity
+from opensalon.backends.nedb.compiler import (
+    SQLInsertCompiler as NedbSQLInsertCompiler,
+)
+
+
+class IdentityAllocatorTests(SimpleTestCase):
+    def test_allocator_is_monotonic_with_frozen_clock(self):
+        alloc = identity.ClientIdAllocator(clock_ms=lambda: 1_700_000_000_000)
+        ids = [alloc.next_id() for _ in range(5)]
+        self.assertEqual(ids, [1_700_000_000_000 + i for i in range(5)])
+
+    def test_allocator_unique_and_positive_with_real_clock(self):
+        alloc = identity.ClientIdAllocator()
+        ids = {alloc.next_id() for _ in range(200)}
+        self.assertEqual(len(ids), 200)
+        self.assertTrue(all(i > 0 for i in ids))
+
+    def test_assign_pk_if_missing_keeps_explicit_pk(self):
+        from saloncore.models import Salon
+
+        obj = Salon(id=42, name="x")
+        pk = Salon._meta.pk
+        self.assertEqual(identity.assign_pk_if_missing(obj, pk), 42)
+        obj2 = Salon(name="y")
+        assigned = identity.assign_pk_if_missing(obj2, pk)
+        self.assertIsInstance(assigned, int)
+        self.assertEqual(obj2.pk, assigned)
+
+
+class IdentityConvertTests(SimpleTestCase):
+    def test_numeric_string_becomes_int(self):
+        self.assertEqual(identity.convert_integer_value("101"), 101)
+        self.assertEqual(identity.convert_integer_value("-3"), -3)
+
+    def test_int_and_none_pass_through(self):
+        self.assertEqual(identity.convert_integer_value(7), 7)
+        self.assertIsNone(identity.convert_integer_value(None))
+
+    def test_legacy_engine_string_id_passes_through_unchanged(self):
+        # Documented limit (identity.py): no integer is recoverable
+        # from an engine-assigned string _id; never invent one.
+        legacy = "r179339565244311531-0"
+        self.assertEqual(identity.convert_integer_value(legacy), legacy)
+
+    def test_ops_converters_registered_for_integer_and_fk_fields(self):
+        from django.db import models
+
+        from team.models import StaffMember
+
+        wrapper = _wrapper()
+        for field in (
+            models.BigAutoField(primary_key=True),
+            models.AutoField(primary_key=True),
+            models.IntegerField(),
+            StaffMember._meta.get_field("salon"),
+        ):
+            expr = mock.Mock()
+            expr.output_field = field
+            with self.subTest(field=type(field).__name__):
+                self.assertIn(
+                    wrapper.ops.convert_integerfield_value,
+                    wrapper.ops.get_db_converters(expr),
+                )
+
+    def test_ops_converter_applies_identity_conversion(self):
+        wrapper = _wrapper()
+        self.assertEqual(
+            wrapper.ops.convert_integerfield_value("202", mock.Mock(), mock.Mock()),
+            202,
+        )
+
+
+def _insert_sql(objs, fields, returning=False):
+    """Compile an InsertQuery offline on a never-connected NEDB wrapper."""
+    from django.db.models.sql.subqueries import InsertQuery
+
+    wrapper = _wrapper()
+    query = InsertQuery(objs[0]._meta.model)
+    query.insert_values(fields, objs)
+    compiler = NedbSQLInsertCompiler(query, wrapper, "default")
+    if returning:
+        compiler.returning_fields = [objs[0]._meta.pk]
+    return compiler.as_sql()
+
+
+class InsertCompilerIdentityTests(SimpleTestCase):
+    def test_wrapper_loads_nedb_insert_compiler(self):
+        wrapper = _wrapper()
+        self.assertEqual(
+            wrapper.ops.compiler_module, "opensalon.backends.nedb.compiler"
+        )
+        self.assertIs(
+            wrapper.ops.compiler("SQLInsertCompiler"), NedbSQLInsertCompiler
+        )
+
+    def test_single_insert_assigns_int_pk_and_includes_id_column(self):
+        from saloncore.models import Salon
+
+        obj = Salon(name="Identity Salon", timezone="UTC")
+        fields = [f for f in Salon._meta.local_concrete_fields if f is not Salon._meta.pk]
+        sql_params = _insert_sql([obj], fields, returning=True)
+        self.assertIsInstance(obj.pk, int)
+        sql, params = sql_params[0]
+        self.assertIn('"id"', sql)
+        self.assertIn("RETURNING", sql)
+        self.assertIn(obj.pk, params)
+
+    def test_explicit_pk_is_not_reassigned(self):
+        from saloncore.models import Salon
+
+        obj = Salon(id=777, name="Fixed Salon", timezone="UTC")
+        fields = list(Salon._meta.local_concrete_fields)
+        _insert_sql([obj], fields, returning=True)
+        self.assertEqual(obj.pk, 777)
+
+    def test_bulk_insert_assigns_distinct_pks_without_unnest(self):
+        from saloncore.models import Salon
+
+        objs = [Salon(name=f"Bulk {i}", timezone="UTC") for i in range(3)]
+        fields = [f for f in Salon._meta.local_concrete_fields if f is not Salon._meta.pk]
+        sql, params = _insert_sql(objs, fields, returning=True)[0]
+        self.assertNotIn("UNNEST", sql)
+        self.assertEqual(sql.count("VALUES"), 1)
+        self.assertEqual(len({o.pk for o in objs}), 3)
+        self.assertTrue(all(isinstance(o.pk, int) for o in objs))
+        for o in objs:
+            self.assertIn(o.pk, params)
+
+
+@unittest.skipUnless(
+    os.environ.get("OPENSALON_NEDB_LIVE_TEST") == "1",
+    "live nedbd identity test: set OPENSALON_NEDB_LIVE_TEST=1 with the "
+    "default connection on the NEDB backend (nedbd running, test "
+    "database pre-created over HTTP)",
+)
+class NedbIdentityLiveTests(SimpleTestCase):
+    """N-M3g acceptance against a real nedbd (guarded, never in SQLite)."""
+
+    databases = {"default"}
+
+    def test_single_and_bulk_inserts_present_int_pks(self):
+        from django.db import connection
+
+        # connection is a proxy object; check the backend it wraps.
+        self.assertEqual(connection.display_name, "NEDB (PostgreSQL pgwire)")
+        from saloncore.models import Salon
+        from team.models import StaffMember
+
+        salon = Salon.objects.create(name="Identity Probe Salon", timezone="UTC")
+        self.assertIsInstance(salon.pk, int)
+        fetched = Salon.objects.get(pk=salon.pk)
+        self.assertIsInstance(fetched.pk, int)
+        self.assertEqual(fetched.pk, salon.pk)
+
+        staff = [
+            StaffMember(display_name=f"Identity Stylist {i}", salon_id=salon.pk)
+            for i in range(3)
+        ]
+        StaffMember.objects.bulk_create(staff)
+        self.assertTrue(all(isinstance(s.pk, int) for s in staff))
+        rows = list(
+            StaffMember.objects.filter(salon_id=salon.pk).values_list(
+                "id", flat=True
+            )
+        )
+        self.assertEqual(sorted(rows), sorted(s.pk for s in staff))
+        self.assertTrue(all(isinstance(r, int) for r in rows))
+
+    def test_create_permissions_for_an_app_does_not_raise_value_error(self):
+        # The N-M3c verbatim failure was in post-migrate
+        # create_permissions: filtering by a ContentType whose pk had
+        # been read back as the engine string _id. Re-running it for
+        # an already-populated app exercises exactly that filter.
+        from django.apps import apps as django_apps
+        from django.contrib.auth.management import create_permissions
+
+        create_permissions(django_apps.get_app_config("saloncore"), verbosity=0)
+        from django.contrib.auth.models import Permission
+
+        self.assertTrue(Permission.objects.exists())
+        self.assertTrue(
+            all(isinstance(p, int) for p in Permission.objects.values_list("id", flat=True))
+        )
