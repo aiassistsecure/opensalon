@@ -5,7 +5,11 @@ from django.test import TestCase
 
 from bookings.models import Appointment
 from clients.models import Client
-from onlinebooking.services import bookable_slots, create_online_booking
+from onlinebooking.services import (
+    bookable_slots,
+    create_online_booking,
+    reschedule_online_booking,
+)
 from saloncore.models import Salon, Service, ServiceCategory
 from team.models import RosterPattern, StaffMember
 
@@ -100,3 +104,40 @@ class CreateOnlineBookingTests(OnlineBookingBase):
         with self.assertRaises(ValidationError):
             self._book(staff=self.unrostered_staff)
         self.assertEqual(Appointment.objects.count(), 0)
+
+
+class RescheduleOnlineBookingTests(OnlineBookingBase):
+    def test_reschedule_to_available_slot_succeeds(self):
+        appt = self._book(hour=10)
+        moved = reschedule_online_booking(appt, at(MONDAY, 13))
+        self.assertEqual(moved.pk, appt.pk)
+        self.assertEqual(moved.start, at(MONDAY, 13))
+        # Original 45-minute duration is preserved.
+        self.assertEqual(moved.end, at(MONDAY, 13, 45))
+        self.assertEqual(moved.status, Appointment.Status.BOOKED)
+        appt.refresh_from_db()
+        self.assertEqual(appt.start, at(MONDAY, 13))
+
+    def test_reschedule_to_unavailable_slot_is_refused(self):
+        appt = self._book(hour=10)
+        self._book(hour=13)  # occupies 13:00-13:45 for the same staff
+        # Outside the 09:00-17:00 roster window.
+        with self.assertRaises(ValidationError):
+            reschedule_online_booking(appt, at(MONDAY, 18))
+        # Overlapping the other appointment.
+        with self.assertRaises(ValidationError):
+            reschedule_online_booking(appt, at(MONDAY, 13))
+        appt.refresh_from_db()
+        self.assertEqual(appt.start, at(MONDAY, 10))
+        self.assertEqual(appt.end, at(MONDAY, 10, 45))
+
+    def test_reschedule_with_toggle_off_is_refused(self):
+        appt = self._book(hour=10)
+        # Toggle turned off after the appointment was booked online.
+        self.online_staff.online_bookable = False
+        self.online_staff.save(update_fields=["online_bookable"])
+        with self.assertRaises(ValidationError):
+            reschedule_online_booking(appt, at(MONDAY, 13))
+        appt.refresh_from_db()
+        self.assertEqual(appt.start, at(MONDAY, 10))
+        self.assertEqual(appt.end, at(MONDAY, 10, 45))
