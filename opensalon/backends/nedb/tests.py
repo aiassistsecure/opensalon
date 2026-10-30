@@ -311,3 +311,188 @@ class NestedAtomicSavepointTests(SimpleTestCase):
         self.assertFalse(
             any("SAVEPOINT" in call for call in executed)
         )
+
+
+# -- N-M3f: temporal adaptation --------------------------------------
+
+import datetime
+import os
+import unittest
+
+from django.utils import timezone as dj_timezone
+
+from opensalon.backends.nedb import temporal
+
+AWARE_DT = datetime.datetime(
+    2026, 10, 30, 14, 15, 16, 123456, tzinfo=datetime.timezone.utc
+)
+NAIVE_DT = datetime.datetime(2026, 10, 30, 9, 30, 0)
+A_DATE = datetime.date(2026, 10, 30)
+A_TIME = datetime.time(9, 30, 15)
+
+
+class TemporalAdaptTests(SimpleTestCase):
+    def test_datetime_adapts_to_iso_string(self):
+        wrapper = _wrapper()
+        adapted = wrapper.ops.adapt_datetimefield_value(AWARE_DT)
+        self.assertIsInstance(adapted, str)
+        self.assertEqual(adapted, "2026-10-30T14:15:16.123456+00:00")
+        self.assertNotIn("::", adapted)
+
+    def test_naive_datetime_adapts_to_iso_string(self):
+        self.assertEqual(
+            temporal.adapt_datetime_value(NAIVE_DT), "2026-10-30T09:30:00"
+        )
+
+    def test_date_and_time_adapt_to_iso_strings(self):
+        wrapper = _wrapper()
+        self.assertEqual(wrapper.ops.adapt_datefield_value(A_DATE), "2026-10-30")
+        self.assertEqual(wrapper.ops.adapt_timefield_value(A_TIME), "09:30:15")
+
+    def test_none_passes_through_all_adapters(self):
+        wrapper = _wrapper()
+        self.assertIsNone(wrapper.ops.adapt_datetimefield_value(None))
+        self.assertIsNone(wrapper.ops.adapt_datefield_value(None))
+        self.assertIsNone(wrapper.ops.adapt_timefield_value(None))
+
+    def test_expression_passes_through_untouched(self):
+        expr = mock.Mock(name="expression")
+        expr.resolve_expression = lambda *a, **k: expr
+        wrapper = _wrapper()
+        self.assertIs(wrapper.ops.adapt_datetimefield_value(expr), expr)
+        self.assertIs(wrapper.ops.adapt_datefield_value(expr), expr)
+
+    def test_adapt_unknown_value_uses_temporal_strings(self):
+        # Raw-query / unknown-type adaptation routes through the same
+        # hooks (BaseDatabaseOperations.adapt_unknown_value).
+        wrapper = _wrapper()
+        self.assertEqual(
+            wrapper.ops.adapt_unknown_value(AWARE_DT),
+            "2026-10-30T14:15:16.123456+00:00",
+        )
+        self.assertEqual(wrapper.ops.adapt_unknown_value(A_DATE), "2026-10-30")
+        self.assertEqual(wrapper.ops.adapt_unknown_value(A_TIME), "09:30:15")
+
+    def test_iso_strings_sort_chronologically(self):
+        earlier = temporal.adapt_datetime_value(NAIVE_DT)
+        later = temporal.adapt_datetime_value(
+            NAIVE_DT + datetime.timedelta(hours=2)
+        )
+        self.assertLess(earlier, later)
+
+
+class TemporalConvertTests(SimpleTestCase):
+    def _converters(self, field):
+        wrapper = _wrapper()
+        expr = mock.Mock()
+        expr.output_field = field
+        return wrapper, wrapper.ops.get_db_converters(expr)
+
+    def test_converters_registered_per_temporal_type(self):
+        from django.db import models
+
+        cases = [
+            (models.DateTimeField(), "convert_datetimefield_value"),
+            (models.DateField(), "convert_datefield_value"),
+            (models.TimeField(), "convert_timefield_value"),
+        ]
+        for field, name in cases:
+            with self.subTest(name=name):
+                wrapper, converters = self._converters(field)
+                self.assertIn(getattr(wrapper.ops, name), converters)
+
+    def test_no_converter_for_non_temporal_field(self):
+        from django.db import models
+
+        wrapper, converters = self._converters(models.CharField())
+        self.assertEqual(converters, [])
+
+    def test_convert_parses_stored_strings_back(self):
+        wrapper = _wrapper()
+        conn = mock.Mock()
+        conn.timezone = datetime.timezone.utc
+        expr = mock.Mock()
+        self.assertEqual(
+            wrapper.ops.convert_datetimefield_value(
+                "2026-10-30T14:15:16.123456+00:00", expr, conn
+            ),
+            AWARE_DT,
+        )
+        self.assertEqual(
+            wrapper.ops.convert_datefield_value("2026-10-30", expr, conn),
+            A_DATE,
+        )
+        self.assertEqual(
+            wrapper.ops.convert_timefield_value("09:30:15", expr, conn),
+            A_TIME,
+        )
+
+    def test_convert_passes_objects_and_none_through(self):
+        wrapper = _wrapper()
+        conn = mock.Mock()
+        conn.timezone = datetime.timezone.utc
+        expr = mock.Mock()
+        self.assertIs(
+            wrapper.ops.convert_datetimefield_value(AWARE_DT, expr, conn),
+            AWARE_DT,
+        )
+        self.assertIsNone(
+            wrapper.ops.convert_datetimefield_value(None, expr, conn)
+        )
+        self.assertIsNone(wrapper.ops.convert_datefield_value(None, expr, conn))
+        self.assertIsNone(wrapper.ops.convert_timefield_value(None, expr, conn))
+
+    def test_adapt_convert_round_trip(self):
+        wrapper = _wrapper()
+        conn = mock.Mock()
+        conn.timezone = datetime.timezone.utc
+        expr = mock.Mock()
+        for value, adapt, convert in (
+            (AWARE_DT, "adapt_datetimefield_value", "convert_datetimefield_value"),
+            (A_DATE, "adapt_datefield_value", "convert_datefield_value"),
+            (A_TIME, "adapt_timefield_value", "convert_timefield_value"),
+        ):
+            with self.subTest(convert=convert):
+                stored = getattr(wrapper.ops, adapt)(value)
+                self.assertIsInstance(stored, str)
+                self.assertEqual(
+                    getattr(wrapper.ops, convert)(stored, expr, conn), value
+                )
+
+
+@unittest.skipUnless(
+    os.environ.get("OPENSALON_NEDB_LIVE_TEST") == "1",
+    "live nedbd round-trip: set OPENSALON_NEDB_LIVE_TEST=1 with the "
+    "default connection on the NEDB backend (nedbd running, test "
+    "database pre-created over HTTP)",
+)
+class NedbTemporalRoundTripLiveTests(SimpleTestCase):
+    """Salon ORM round-trip against a real nedbd (N-M3f acceptance).
+
+    Guarded: only runs in a dedicated live invocation, never in the
+    SQLite suite. Salon has auto_now_add/auto_now DateTimeFields, the
+    exact shape NEDB refused before this adaptation (EVIDENCE.md).
+    """
+
+    databases = {"default"}
+
+    def test_salon_datetime_round_trip(self):
+        from django.db import connection
+
+        self.assertEqual(
+            type(connection).__module__, "opensalon.backends.nedb.base"
+        )
+        from saloncore.models import Salon
+
+        before = dj_timezone.now()
+        Salon.objects.create(name="Temporal Probe Salon", timezone="UTC")
+        row = Salon.objects.filter(name="Temporal Probe Salon").values(
+            "name", "created_at", "updated_at"
+        ).first()
+        self.assertIsNotNone(row)
+        self.assertIsInstance(row["created_at"], datetime.datetime)
+        self.assertIsInstance(row["updated_at"], datetime.datetime)
+        self.assertGreaterEqual(row["created_at"], before)
+        self.assertLessEqual(
+            row["created_at"], dj_timezone.now() + datetime.timedelta(minutes=1)
+        )
