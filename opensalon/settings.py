@@ -23,6 +23,7 @@ INSTALLED_APPS = [
     "saloncore",
     "clients",
     "team",
+    "catalog",
 ]
 
 MIDDLEWARE = [
