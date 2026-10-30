@@ -1,3 +1,4 @@
+from django.core.exceptions import ValidationError
 from django.db import models
 
 
@@ -112,3 +113,56 @@ class ServicePrice(models.Model):
 
     def __str__(self):
         return f"{self.service} — {self.staff_level}: {self.amount}"
+
+
+class PriceChangeQuerySet(models.QuerySet):
+    """Append-only queryset: bulk update/delete are blocked."""
+
+    def update(self, **kwargs):
+        raise ValidationError("PriceChange records are append-only and cannot be modified.")
+
+    def delete(self):
+        raise ValidationError("PriceChange records are append-only and cannot be deleted.")
+
+
+class PriceChange(models.Model):
+    """Append-only audit row for a price change on a ServicePrice.
+
+    Append-only is enforced at the model layer: ``save()`` raises
+    ``ValidationError`` when updating an existing row, ``delete()``
+    raises ``ValidationError``, and the custom queryset blocks bulk
+    ``update()``/``delete()``. Creation is the only permitted write.
+    """
+
+    service_price = models.ForeignKey(
+        ServicePrice, on_delete=models.CASCADE, related_name="changes"
+    )
+    changed_by = models.CharField(max_length=120, blank=True)
+    old_amount = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True
+    )
+    new_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    changed_at = models.DateTimeField(auto_now_add=True)
+    note = models.CharField(max_length=255, blank=True)
+
+    objects = PriceChangeQuerySet.as_manager()
+
+    class Meta:
+        ordering = ["-changed_at", "-id"]
+
+    def __str__(self):
+        return f"{self.service_price}: {self.old_amount} -> {self.new_amount}"
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding and self.pk is not None:
+            # Also covers objects created in memory then re-saved.
+            if PriceChange.objects.filter(pk=self.pk).exists():
+                raise ValidationError(
+                    "PriceChange records are append-only and cannot be modified."
+                )
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError(
+            "PriceChange records are append-only and cannot be deleted."
+        )

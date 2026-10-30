@@ -1,9 +1,11 @@
 from decimal import Decimal
 
+from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.test import TestCase
 
 from saloncore.models import (
+    PriceChange,
     Salon,
     Service,
     ServiceCategory,
@@ -201,3 +203,81 @@ class ServicePriceModelTests(TestCase):
         prices = list(self.service.prices.all())
         self.assertEqual(prices, [price])
         self.assertIn(price, list(self.level.service_prices.all()))
+
+
+class PriceChangeModelTests(TestCase):
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Mint On The Avenue")
+        self.category = ServiceCategory.objects.create(name="Color", salon=self.salon)
+        self.service = Service.objects.create(
+            name="Single Process Color", category=self.category, service_minutes=45
+        )
+        self.level = StaffLevel.objects.create(name="Level 6", salon=self.salon)
+        self.price = ServicePrice.objects.create(
+            service=self.service, staff_level=self.level, amount=Decimal("85.00")
+        )
+
+    def test_creation_records_change_row(self):
+        change = PriceChange.objects.create(
+            service_price=self.price,
+            changed_by="Mark",
+            old_amount=Decimal("85.00"),
+            new_amount=Decimal("90.00"),
+            note="Annual increase",
+        )
+        change.refresh_from_db()
+        self.assertEqual(change.service_price, self.price)
+        self.assertEqual(change.changed_by, "Mark")
+        self.assertEqual(change.old_amount, Decimal("85.00"))
+        self.assertEqual(change.new_amount, Decimal("90.00"))
+        self.assertEqual(change.note, "Annual increase")
+        self.assertIsNotNone(change.changed_at)
+        self.assertIn(change, list(self.price.changes.all()))
+
+    def test_creation_allows_null_old_amount(self):
+        change = PriceChange.objects.create(
+            service_price=self.price, new_amount=Decimal("85.00")
+        )
+        self.assertIsNone(change.old_amount)
+        self.assertEqual(change.changed_by, "")
+        self.assertEqual(change.note, "")
+
+    def test_update_attempt_blocked(self):
+        change = PriceChange.objects.create(
+            service_price=self.price, new_amount=Decimal("90.00")
+        )
+        change.new_amount = Decimal("95.00")
+        with self.assertRaises(ValidationError):
+            change.save()
+        change.refresh_from_db()
+        self.assertEqual(change.new_amount, Decimal("90.00"))
+
+    def test_delete_attempt_blocked(self):
+        change = PriceChange.objects.create(
+            service_price=self.price, new_amount=Decimal("90.00")
+        )
+        with self.assertRaises(ValidationError):
+            change.delete()
+        self.assertTrue(PriceChange.objects.filter(pk=change.pk).exists())
+
+    def test_queryset_delete_and_update_blocked(self):
+        PriceChange.objects.create(
+            service_price=self.price, new_amount=Decimal("90.00")
+        )
+        with self.assertRaises(ValidationError):
+            PriceChange.objects.all().delete()
+        with self.assertRaises(ValidationError):
+            PriceChange.objects.all().update(new_amount=Decimal("1.00"))
+
+    def test_ordering_newest_first(self):
+        first = PriceChange.objects.create(
+            service_price=self.price, new_amount=Decimal("90.00")
+        )
+        second = PriceChange.objects.create(
+            service_price=self.price,
+            old_amount=Decimal("90.00"),
+            new_amount=Decimal("95.00"),
+        )
+        ordered = list(PriceChange.objects.all())
+        self.assertEqual(ordered, [second, first])
+        self.assertEqual(list(reversed(ordered)), [first, second])
