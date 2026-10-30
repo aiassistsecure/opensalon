@@ -15,11 +15,14 @@ Skeleton scope (N-M3b), per the NEDB DYOR note (2026-10-30), section 9:
   set_config statement, so no session-setup SQL is ever sent.
 * Implication 8: databases are pre-created over nedbd's HTTP API; see
   ``creation.py`` for the test-database half.
+* Implication 3: migration/DDL handling lives in ``schema.py`` -- a
+  catalog-validating no-op schema editor (all DDL validated against
+  the app registry, then nothing is sent; NEDB is schemaless and its
+  collections are created implicitly by the first write).
 
-Deliberately NOT here (later microtasks): migration/DDL handling
-(implication 3), savepoint/transaction mapping (implication 4),
-TRUNCATE/flush replacement (implication 5), and identity/RETURNING
-handling (implication 6).
+Deliberately NOT here (later microtasks): savepoint/transaction
+mapping (implication 4), TRUNCATE/flush replacement (implication 5),
+and identity/RETURNING handling (implication 6).
 """
 
 from django.db.backends.postgresql.base import (
@@ -28,10 +31,10 @@ from django.db.backends.postgresql.base import (
 from django.db.backends.postgresql.client import DatabaseClient
 from django.db.backends.postgresql.features import DatabaseFeatures
 from django.db.backends.postgresql.introspection import DatabaseIntrospection
-from django.db.backends.postgresql.schema import DatabaseSchemaEditor
 
 from .creation import DatabaseCreation
 from .operations import DatabaseOperations
+from .schema import DatabaseSchemaEditor
 
 
 class DatabaseWrapper(PostgresDatabaseWrapper):
