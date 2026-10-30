@@ -10,7 +10,7 @@ from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from django.db.models import F, Sum
+from django.db.models import F, Q, Sum
 from django.utils import timezone
 
 from bookings.models import Appointment
@@ -190,3 +190,134 @@ def future_appointments_value(salon, as_of=None):
         end_date=end_date,
         days=tuple(days),
     )
+
+
+WEEKDAY_NAMES = (
+    "Monday", "Tuesday", "Wednesday", "Thursday",
+    "Friday", "Saturday", "Sunday",
+)
+
+
+@dataclass(frozen=True)
+class BusiestDay:
+    """Appointment traffic and revenue for one weekday.
+
+    ``weekday`` is the Python convention (Monday=0 through Sunday=6)
+    and ``weekday_name`` its English name. ``count`` is the number of
+    non-cancelled appointments starting on that weekday in the range.
+    ``appointment_value`` is those appointments' value resolved live
+    from the price book (see :func:`busiest_days`). ``revenue`` is
+    completed-sale revenue taken on that weekday in the range.
+    """
+
+    weekday: int
+    weekday_name: str
+    count: int
+    revenue: Decimal
+    appointment_value: Decimal
+
+
+def _as_date(value, tz):
+    if isinstance(value, datetime):
+        if timezone.is_aware(value):
+            return value.astimezone(tz).date()
+        return value.date()
+    return value
+
+
+def busiest_days(salon, since, until):
+    """Return per-weekday busyness for ``salon`` over a date range.
+
+    ``since`` / ``until`` are inclusive bounds (``date`` objects, or
+    ``datetime`` objects judged by their date in the salon's
+    timezone). Returns a list of seven :class:`BusiestDay` entries —
+    one per weekday, Monday through Sunday — ordered by appointment
+    ``count`` descending, with weekday ascending as the tie-break:
+
+    * ``weekday`` / ``weekday_name``: the weekday (Monday=0).
+    * ``count``: appointments belonging to the salon (via staff
+      member) whose ``start`` falls on that weekday in the range,
+      excluding cancelled appointments — the same non-cancelled rule
+      the day book and availability apply. Every other status counts.
+    * ``appointment_value``: those appointments' value, resolved live
+      from the price book — the active ``ServicePrice`` for the
+      appointment's service at its staff member's staff level, like
+      :func:`future_appointments_value`. Nothing is stored on the
+      appointment; an appointment with no such price counts toward
+      ``count`` but contributes zero here.
+    * ``revenue``: completed-sale revenue (``Sale`` rows with status
+      completed, summed from their ``SaleItem`` line totals) for
+      sales belonging to that weekday in the range. A sale belongs
+      to the day of its ``completed_at`` when set, otherwise its
+      ``created_at``, as in :func:`last_7_days_revenue_split`. Open
+      and voided sales never count.
+
+    Weekdays are judged in the salon's timezone. A range with no
+    qualifying rows — or a reversed range (``until`` before
+    ``since``) — returns all seven weekdays with zeroes, never an
+    empty list or None.
+    """
+    tz = _salon_tz(salon)
+    start_date = _as_date(since, tz)
+    end_date = _as_date(until, tz)
+    counts = [0] * 7
+    appt_values = [ZERO] * 7
+    revenues = [ZERO] * 7
+
+    if end_date >= start_date:
+        start_dt = datetime.combine(start_date, time.min, tzinfo=tz)
+        end_dt = datetime.combine(
+            end_date + timedelta(days=1), time.min, tzinfo=tz
+        )
+        appointments = (
+            Appointment.objects.filter(
+                staff_member__salon=salon,
+                start__gte=start_dt, start__lt=end_dt,
+            )
+            .exclude(status=Appointment.Status.CANCELLED)
+            .select_related("staff_member")
+        )
+        prices = {
+            (price.service_id, price.staff_level_id): price.amount
+            for price in ServicePrice.objects.filter(
+                service__category__salon=salon, active=True,
+            )
+        }
+        for appt in appointments:
+            weekday = appt.start.astimezone(tz).weekday()
+            counts[weekday] += 1
+            appt_values[weekday] += prices.get(
+                (appt.service_id, appt.staff_member.staff_level_id),
+                ZERO,
+            )
+
+        items = SaleItem.objects.filter(
+            sale__salon=salon, sale__status=Sale.Status.COMPLETED,
+        ).filter(
+            Q(
+                sale__completed_at__gte=start_dt,
+                sale__completed_at__lt=end_dt,
+            )
+            | Q(
+                sale__completed_at__isnull=True,
+                sale__created_at__gte=start_dt,
+                sale__created_at__lt=end_dt,
+            )
+        ).select_related("sale")
+        for item in items:
+            stamp = item.sale.completed_at or item.sale.created_at
+            weekday = stamp.astimezone(tz).weekday()
+            revenues[weekday] += item.line_total
+
+    entries = [
+        BusiestDay(
+            weekday=weekday,
+            weekday_name=WEEKDAY_NAMES[weekday],
+            count=counts[weekday],
+            revenue=revenues[weekday],
+            appointment_value=appt_values[weekday],
+        )
+        for weekday in range(7)
+    ]
+    entries.sort(key=lambda entry: (-entry.count, entry.weekday))
+    return entries
