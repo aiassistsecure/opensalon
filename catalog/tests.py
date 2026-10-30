@@ -16,13 +16,11 @@ class ProductModelTests(TestCase):
             name="Shampoo",
             sku="SH-001",
             price=Decimal("24.00"),
-            stock_quantity=5,
         )
         self.assertEqual(product.salon, self.salon)
         self.assertIn(product, list(self.salon.products.all()))
         self.assertEqual(product.sku, "SH-001")
         self.assertEqual(product.price, Decimal("24.00"))
-        self.assertEqual(product.stock_quantity, 5)
 
     def test_barcode_stored_and_lookup(self):
         Product.objects.create(
@@ -40,7 +38,7 @@ class ProductModelTests(TestCase):
             salon=self.salon, name="Hair Mask", price=Decimal("30.00")
         )
         product.refresh_from_db()
-        self.assertEqual(product.stock_quantity, 0)
+        self.assertEqual(product.current_stock, 0)
         self.assertTrue(product.active)
         self.assertEqual(product.sku, "")
         self.assertEqual(product.barcode, "")
