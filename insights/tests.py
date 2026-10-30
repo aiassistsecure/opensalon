@@ -1,12 +1,27 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from django.test import TestCase
 from django.utils import timezone
 
+from bookings.models import Appointment
 from checkout.models import Sale, SaleItem
-from insights.services import RevenueSplit, last_7_days_revenue_split
-from saloncore.models import Salon
+from clients.models import Client
+from insights.services import (
+    FutureAppointmentsValue,
+    RevenueSplit,
+    future_appointments_value,
+    last_7_days_revenue_split,
+)
+from saloncore.models import (
+    Salon,
+    Service,
+    ServiceCategory,
+    ServicePrice,
+    StaffLevel,
+)
+from team.models import StaffMember
 
 
 class Last7DaysRevenueSplitTests(TestCase):
@@ -78,3 +93,158 @@ class Last7DaysRevenueSplitTests(TestCase):
         self._item(sale, SaleItem.Kind.SERVICE, "40.00")
         result = last_7_days_revenue_split(self.salon, today=self.today)
         self.assertEqual(result.service, Decimal("40.00"))
+
+
+class FutureAppointmentsValueTests(TestCase):
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon", timezone="UTC")
+        self.other = Salon.objects.create(name="Other Salon", timezone="UTC")
+        self.level = StaffLevel.objects.create(salon=self.salon, name="Level 1")
+        self.other_level = StaffLevel.objects.create(
+            salon=self.other, name="Level 1"
+        )
+        self.staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Stylist One",
+            staff_level=self.level,
+        )
+        self.other_staff = StaffMember.objects.create(
+            salon=self.other, display_name="Other Stylist",
+            staff_level=self.other_level,
+        )
+        self.client = Client.objects.create(
+            salon=self.salon, first_name="Test", last_name="Example"
+        )
+        self.other_client = Client.objects.create(
+            salon=self.other, first_name="Other", last_name="Client"
+        )
+        category = ServiceCategory.objects.create(salon=self.salon, name="Hair")
+        other_category = ServiceCategory.objects.create(
+            salon=self.other, name="Hair"
+        )
+        self.service = Service.objects.create(
+            category=category, name="Haircut", service_minutes=45
+        )
+        self.other_service = Service.objects.create(
+            category=other_category, name="Haircut", service_minutes=45
+        )
+        ServicePrice.objects.create(
+            service=self.service, staff_level=self.level,
+            amount=Decimal("85.00"),
+        )
+        ServicePrice.objects.create(
+            service=self.other_service, staff_level=self.other_level,
+            amount=Decimal("85.00"),
+        )
+        # Fixed as_of: noon UTC, so day buckets are unambiguous.
+        self.as_of = datetime(2026, 11, 2, 12, 0, tzinfo=ZoneInfo("UTC"))
+
+    def _appt(self, *, staff=None, client=None, service=None, when=None,
+              status=Appointment.Status.BOOKED):
+        start = when or (self.as_of + timedelta(days=1))
+        return Appointment.objects.create(
+            client=client or self.client,
+            staff_member=staff or self.staff,
+            service=service or self.service,
+            start=start, end=start + timedelta(minutes=45), status=status,
+        )
+
+    def test_total_and_count_sum_priced_future_appointments(self):
+        self._appt(when=self.as_of + timedelta(days=1))
+        self._appt(when=self.as_of + timedelta(days=3))
+        result = future_appointments_value(self.salon, self.as_of)
+        self.assertIsInstance(result, FutureAppointmentsValue)
+        self.assertEqual(result.total, Decimal("170.00"))
+        self.assertEqual(result.count, 2)
+        self.assertEqual(result.as_of, self.as_of)
+        self.assertEqual(result.start_date, self.as_of.date())
+        self.assertEqual(result.end_date, self.as_of.date() + timedelta(days=6))
+
+    def test_per_day_breakdown_covers_next_7_days_with_zeroes(self):
+        self._appt(when=self.as_of + timedelta(hours=2))
+        self._appt(when=self.as_of + timedelta(days=2))
+        self._appt(when=self.as_of + timedelta(days=2, hours=3))
+        result = future_appointments_value(self.salon, self.as_of)
+        self.assertEqual(len(result.days), 7)
+        self.assertEqual(result.days[0].day, self.as_of.date())
+        self.assertEqual(result.days[0].value, Decimal("85.00"))
+        self.assertEqual(result.days[0].count, 1)
+        self.assertEqual(result.days[1].value, Decimal("0.00"))
+        self.assertEqual(result.days[1].count, 0)
+        self.assertEqual(result.days[2].value, Decimal("170.00"))
+        self.assertEqual(result.days[2].count, 2)
+        self.assertEqual(result.days[6].day, result.end_date)
+
+    def test_beyond_7_days_counts_toward_total_but_no_day_entry(self):
+        self._appt(when=self.as_of + timedelta(days=30))
+        result = future_appointments_value(self.salon, self.as_of)
+        self.assertEqual(result.total, Decimal("85.00"))
+        self.assertEqual(result.count, 1)
+        self.assertTrue(all(entry.count == 0 for entry in result.days))
+
+    def test_no_appointments_returns_zeroes_not_none(self):
+        result = future_appointments_value(self.salon, self.as_of)
+        self.assertEqual(result.total, Decimal("0.00"))
+        self.assertEqual(result.count, 0)
+        self.assertEqual(len(result.days), 7)
+
+    def test_past_and_exact_boundary(self):
+        self._appt(when=self.as_of - timedelta(minutes=1))
+        self._appt(when=self.as_of)
+        result = future_appointments_value(self.salon, self.as_of)
+        self.assertEqual(result.total, Decimal("85.00"))
+        self.assertEqual(result.count, 1)
+
+    def test_cancelled_excluded_other_statuses_included(self):
+        self._appt(status=Appointment.Status.CANCELLED)
+        self._appt(status=Appointment.Status.CONFIRMED)
+        self._appt(status=Appointment.Status.NO_SHOW)
+        result = future_appointments_value(self.salon, self.as_of)
+        self.assertEqual(result.total, Decimal("170.00"))
+        self.assertEqual(result.count, 2)
+
+    def test_other_salon_appointments_excluded(self):
+        self._appt(staff=self.other_staff, client=self.other_client,
+                   service=self.other_service)
+        result = future_appointments_value(self.salon, self.as_of)
+        self.assertEqual(result.total, Decimal("0.00"))
+        self.assertEqual(result.count, 0)
+
+    def test_price_comes_from_staff_level_price_book(self):
+        senior = StaffLevel.objects.create(salon=self.salon, name="Senior")
+        ServicePrice.objects.create(
+            service=self.service, staff_level=senior, amount=Decimal("120.00"),
+        )
+        senior_staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Senior Stylist",
+            staff_level=senior,
+        )
+        self._appt(staff=senior_staff)
+        self._appt()
+        result = future_appointments_value(self.salon, self.as_of)
+        self.assertEqual(result.total, Decimal("205.00"))
+
+    def test_unpriced_appointment_counts_but_adds_zero(self):
+        levelless = StaffMember.objects.create(
+            salon=self.salon, display_name="No Level"
+        )
+        self._appt(staff=levelless)
+        self._appt()
+        result = future_appointments_value(self.salon, self.as_of)
+        self.assertEqual(result.total, Decimal("85.00"))
+        self.assertEqual(result.count, 2)
+
+    def test_inactive_price_is_not_used(self):
+        ServicePrice.objects.filter(
+            service=self.service, staff_level=self.level,
+        ).update(active=False)
+        self._appt()
+        result = future_appointments_value(self.salon, self.as_of)
+        self.assertEqual(result.total, Decimal("0.00"))
+        self.assertEqual(result.count, 1)
+
+    def test_default_as_of_uses_now(self):
+        self._appt(when=timezone.now() + timedelta(days=1))
+        self._appt(when=timezone.now() - timedelta(days=1))
+        result = future_appointments_value(self.salon)
+        self.assertEqual(result.total, Decimal("85.00"))
+        self.assertEqual(result.count, 1)
