@@ -17,11 +17,18 @@ services; it duplicates no availability or lifecycle logic:
   time. The toggle is also checked here first so a direct call
   fails with a clear online-booking message even before the
   lifecycle checks run.
+* :func:`reschedule_online_booking` delegates to
+  ``bookings.lifecycle.reschedule_appointment``, which enforces
+  reschedulable status and rostered availability (excluding the
+  appointment itself) at write time. The toggle is checked here
+  first — lifecycle reschedule has no online flag — so a staff
+  member whose toggle has been turned off since booking cannot
+  be moved through online booking.
 """
 from django.core.exceptions import ValidationError
 
 from bookings.availability import available_slots
-from bookings.lifecycle import create_appointment
+from bookings.lifecycle import create_appointment, reschedule_appointment
 
 
 def bookable_slots(salon, service, day):
@@ -63,3 +70,23 @@ def create_online_booking(*, client, staff_member, service, start,
         start=start, end=end, note=note, note_author=note_author,
         online=True,
     )
+
+
+def reschedule_online_booking(appointment, new_start, new_end=None):
+    """Move an existing online-booked appointment to a new start time.
+
+    Rejects the move with ``ValidationError`` (leaving the
+    appointment unchanged) when the appointment's staff member's
+    online-booking toggle is OFF; otherwise delegates to
+    ``bookings.lifecycle.reschedule_appointment``, so
+    reschedulable-status and rostered-availability rules (the new
+    slot must fit rostered, unoccupied time, excluding this
+    appointment itself) are enforced by that one service.
+    ``new_end`` defaults there to ``new_start`` plus the
+    appointment's original duration.
+    """
+    if not appointment.staff_member.online_bookable:
+        raise ValidationError(
+            "This staff member is not bookable online."
+        )
+    return reschedule_appointment(appointment, new_start, new_end)
