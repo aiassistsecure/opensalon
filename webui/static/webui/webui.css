@@ -5,6 +5,12 @@
    token or a component; pages compose components and never invent
    one-off styling.
 
+   The shell and day book implement the founder-approved design mock
+   (ui-preview/daybook-mock-v2): the interface lives in an APP — a
+   deep-forest sidebar, an app bar, content on warm creme inside a
+   raised app surface — and the day book runs at working density with
+   saturated blocks colour-coded by service category.
+
    Salon branding contract: a salon overrides ONLY the --salon-* tokens
    (fed by webui.context_processors.salon_context). Every component
    below consumes the semantic tokens, so a salon's colours flow
@@ -17,8 +23,8 @@
 /* ---------- 1. Tokens ---------- */
 :root {
   /* Salon brand (overridable) */
-  --salon-primary: #2e4b34;
-  --salon-accent: #b8862f;
+  --salon-primary: #26503c;
+  --salon-accent: #c9a227;
   --salon-ground: #f4efe3;
 
   /* Grounds — creme/eggshell in three depths */
@@ -32,9 +38,9 @@
   --surface-sunken: #f6f1e2;
   --surface-tint: #eef3e2;
 
-  /* Forest scale */
-  --forest-900: #16281b;
-  --forest-800: #1e3524;
+  /* Forest scale — the mock's sidebar runs 900 → 700 */
+  --forest-900: #132a1f;
+  --forest-800: #1e4232;
   --forest-700: var(--salon-primary);
   --forest-500: #4a6b50;
   --forest-300: #7d9a80;
@@ -45,11 +51,13 @@
   --sage-200: #c3d2bd;
   --sage-100: #e6ecda;
 
-  /* Gold — matte for rules/text accents, foil gradient for moments */
+  /* Gold — matte for rules/text accents, the mock's bright gradient
+     for the moments that earn it (active nav, Pay, New Appointment) */
   --gold-600: #9c6f1f;
   --gold-500: var(--salon-accent);
   --gold-300: #d9b264;
   --gold-100: #f6ead0;
+  --gold-bright: linear-gradient(180deg, #dcb93f, #c9a227);
   --gold-foil: linear-gradient(100deg, #a8781f 0%, #d9b264 38%, #f0d695 50%, #d9b264 62%, #a8781f 100%);
 
   /* Ink */
@@ -64,12 +72,11 @@
 
   /* Semantic */
   --accent: var(--gold-500);
-  --focus-ring: 0 0 0 3px rgba(184, 134, 47, .45);
+  --focus-ring: 0 0 0 3px rgba(201, 162, 39, .45);
 
-  /* Status palette — glanceable, mutually distinct at small sizes.
-     Booked is informational blue; confirmed is leaf green; arrived
-     is the gold moment; in-service is teal (hands are on); done
-     recedes to grey-sage; no-show is the only red in the room. */
+  /* Status palette — on the saturated blocks the status rides the
+     top line in white; these tones drive the edge/pill language on
+     light surfaces (breakdown, chips) and stay mutually distinct. */
   --status-booked: #52769e;
   --status-confirmed: #3f7a4a;
   --status-arrived: #a8781f;
@@ -78,10 +85,10 @@
   --status-noshow: #b3563f;
   --status-cancelled: #9a9284;
 
-  /* Break palette — never confusable with an appointment: warm stone,
-     hatched. Paid carries the gold flag (it costs money); unpaid grey. */
-  --break-bg: #efe9dd;
-  --break-line: #b7ab90;
+  /* Break palette — never confusable with an appointment: the mock's
+     hatched warm stone. Paid carries the gold flag (it costs money);
+     unpaid grey. */
+  --break-line: #8b7c55;
   --break-paid: #9c6f1f;
   --break-unpaid: #8b8378;
 
@@ -106,7 +113,7 @@
   /* Type */
   --serif: "Playfair Display", "Didot", Georgia, "Times New Roman", serif;
   --sans: "Segoe UI", "Helvetica Neue", "Avenir Next", Arial, sans-serif;
-  --text-display: 44px;
+  --text-display: 40px;
   --text-title: 27px;
   --text-lead: 17px;
   --text-body: 16.5px;
@@ -122,10 +129,8 @@ html { font-size: 17px; }
 body {
   margin: 0; color: var(--ink); font-family: var(--sans);
   font-size: var(--text-body); line-height: 1.45;
-  background:
-    radial-gradient(1100px 480px at 85% -120px, rgba(217, 178, 100, .13), transparent 60%),
-    radial-gradient(900px 500px at -10% 30%, rgba(157, 178, 154, .14), transparent 55%),
-    var(--ground);
+  background: radial-gradient(1200px 800px at 25% -10%, #33523f 0%, #152219 72%);
+  min-height: 100vh;
 }
 a { color: var(--forest-700); }
 :focus { outline: none; }
@@ -141,106 +146,141 @@ a { color: var(--forest-700); }
   text-transform: uppercase; color: var(--ink-soft); font-weight: 600;
 }
 
-/* ---------- 3. Shell ---------- */
-.shell-header {
-  position: relative; overflow: hidden;
-  background: linear-gradient(180deg, var(--surface-raised), var(--surface));
-  border-bottom: 1px solid var(--hairline-strong);
-  box-shadow: 0 1px 0 rgba(184, 134, 47, .55), var(--elev-1);
+/* ---------- 3. App shell — the mock's frame ----------
+   The interface lives in an app, not a web page: a deep-forest
+   sidebar (salon identity, icon nav with a gold active pill, the
+   user chip pinned low), an app bar with global search, and the
+   working surface on warm creme. On wide screens the app sits
+   raised on the dark backdrop exactly as the mock presents it. */
+.app {
+  display: flex; min-height: 100vh;
+  background: linear-gradient(180deg, #f7f2e4, #f2ead7);
 }
-.header-sprig {
-  position: absolute; right: 290px; top: 10px; width: 220px; height: 63px;
-  color: var(--sage-300); opacity: .45; pointer-events: none;
+@media (min-width: 1500px) {
+  body { padding: 22px; }
+  .app {
+    border-radius: 22px; overflow: hidden; min-height: calc(100vh - 44px);
+    box-shadow: 0 42px 90px rgba(0, 0, 0, .55), 0 4px 18px rgba(0, 0, 0, .4);
+  }
 }
-.shell-header-inner {
-  position: relative;
-  max-width: 1460px; margin: 0 auto; padding: 18px 28px 2px;
-  display: flex; justify-content: space-between; align-items: flex-start;
+.side {
+  width: 208px; flex: none; align-self: flex-start;
+  position: sticky; top: 0; height: 100vh;
+  display: flex; flex-direction: column;
+  padding: 20px 14px 16px;
+  background: linear-gradient(205deg, var(--forest-800) 0%, var(--forest-900) 82%);
+  color: #e9efdf; border-right: 2px solid var(--gold-500);
 }
-.salon-identity { display: flex; gap: 15px; align-items: center; }
+@media (min-width: 1500px) {
+  .side { top: 22px; height: calc(100vh - 44px); }
+}
 .salon-mark {
-  width: 54px; height: 62px; display: grid; place-items: center;
-  color: var(--gold-600);
-  background: linear-gradient(180deg, #fffaf0, var(--gold-100));
+  width: 46px; height: 54px; display: grid; place-items: center;
+  color: var(--gold-300); margin-bottom: 9px;
   border: 1.5px solid var(--gold-500); border-radius: var(--radius-arch);
-  box-shadow: var(--elev-1), var(--elev-inset);
+  background: rgba(201, 162, 39, .08);
 }
-.salon-mark svg { width: 27px; height: 27px; }
-.salon-name {
-  font-family: var(--serif); font-size: 30px; font-weight: 600;
-  color: var(--forest-900); line-height: 1.08; letter-spacing: .01em;
+.salon-mark svg { width: 23px; height: 23px; }
+.side-name {
+  font-family: var(--serif); font-size: 19.5px; font-weight: 600;
+  line-height: 1.16; color: #f6efdb;
 }
-.salon-sub {
-  font-size: var(--text-micro); letter-spacing: .22em; text-transform: uppercase;
-  color: var(--gold-600); font-weight: 600; margin-top: 3px;
+.side-sub {
+  font-size: 9.5px; letter-spacing: 3px; text-transform: uppercase;
+  color: #a9bfa0; margin: 4px 0 20px; font-weight: 600;
 }
-.product-mark {
-  font-size: 13px; letter-spacing: .24em; text-transform: uppercase;
-  color: var(--sage-500); padding-top: 10px; font-weight: 600;
+.snav { display: flex; flex-direction: column; gap: 4px; }
+.snav a {
+  display: flex; gap: 10px; align-items: center;
+  padding: 10px 12px; border-radius: 11px;
+  font-size: 14.5px; color: #cfe0c2; text-decoration: none;
+  transition: background var(--transition), color var(--transition);
 }
-.shell-nav {
-  position: relative;
-  max-width: 1460px; margin: 0 auto; padding: 12px 28px 16px;
-  display: flex; gap: 6px; flex-wrap: wrap;
+.snav a .ic { width: 19px; text-align: center; flex: none; }
+.snav a:hover { background: rgba(255, 255, 255, .07); color: #f6efdb; }
+.snav a:active { transform: translateY(1px); }
+.snav a.on {
+  background: var(--gold-bright); color: #231d08; font-weight: 700;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, .35);
 }
-.shell-nav a {
-  text-decoration: none; font-size: 16.5px; padding: 8px 17px;
-  border-radius: var(--radius-pill); color: var(--ink);
-  border: 1px solid transparent;
-  transition: background var(--transition), border-color var(--transition), color var(--transition);
+.side-grow { flex: 1; }
+.userchip {
+  border-top: 1px solid rgba(233, 239, 223, .18); padding-top: 12px;
+  display: flex; gap: 10px; align-items: center; min-width: 0;
 }
-.shell-nav a:hover { border-color: var(--hairline); background: var(--surface-raised); box-shadow: var(--elev-1); }
-.shell-nav a:active { transform: translateY(1px); }
-.shell-nav a.active {
-  background: linear-gradient(160deg, var(--forest-500), var(--forest-800));
-  color: #fdfbf3; box-shadow: var(--elev-1);
-  border-bottom: 2px solid var(--gold-500);
+.user-av {
+  width: 36px; height: 36px; border-radius: 50%; flex: none;
+  background: var(--gold-500); color: #231d08; font-weight: 800;
+  display: flex; align-items: center; justify-content: center; font-size: 14px;
 }
-.shell-main { max-width: 1460px; margin: 0 auto; padding: 30px 28px 44px; }
-.shell-footer {
-  max-width: 1460px; margin: 0 auto; padding: 4px 28px 30px;
-  color: var(--ink-soft); font-size: 14px;
+.user-name { font-size: 13.5px; font-weight: 600; color: #f6efdb; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.user-role { font-size: 11px; color: #a9bfa0; }
+.side-os {
+  margin-top: 12px; font-size: 9.5px; letter-spacing: 3px;
+  text-transform: uppercase; color: #7d9377; font-weight: 600;
+}
+.app-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.appbar {
   display: flex; align-items: center; gap: 12px;
+  padding: 15px 22px 2px;
+}
+.app-search { flex: 0 0 290px; margin: 0; }
+.app-search input {
+  width: 100%; border-radius: var(--radius-pill);
+  background: var(--surface); border: 1.5px solid #d8ccab;
+  padding: 9px 16px; font-size: 13.5px; color: var(--ink);
+}
+.app-search input::placeholder { color: #8b7c55; }
+.appbar-who {
+  margin-left: auto; font-size: 12px; color: #7a6a45;
+  letter-spacing: 1.5px; font-weight: 600; white-space: nowrap;
+}
+.shell-main { padding: 10px 22px 26px; flex: 1; }
+.shell-footer {
+  padding: 4px 22px 14px; color: #97865f; font-size: 11px;
+  letter-spacing: 1px; display: flex; align-items: center; gap: 12px;
 }
 .footer-sprig { width: 120px; height: 14px; color: var(--gold-500); flex: none; }
 
 /* ---------- 4. Page furniture ---------- */
 .page-head {
   display: flex; justify-content: space-between; align-items: flex-end;
-  gap: var(--space-5); flex-wrap: wrap; margin-bottom: var(--space-5);
+  gap: var(--space-5); flex-wrap: wrap; margin-bottom: var(--space-4);
 }
 .page-title {
   font-family: var(--serif); font-weight: 600; font-size: var(--text-display);
-  margin: 0; color: var(--forest-900); line-height: 1.05; letter-spacing: .005em;
+  margin: 0; color: #1d3a2b; line-height: 1.05; letter-spacing: .005em;
 }
 .page-title::after {
   content: ""; display: block; width: 74px; height: 3px; margin-top: 10px;
   border-radius: 2px; background: var(--gold-foil);
 }
-.page-subtitle { margin: 8px 0 0; color: var(--ink-soft); font-size: var(--text-lead); }
+.page-subtitle {
+  margin: 7px 0 0; color: #7a6a45; font-size: 13px;
+  letter-spacing: 2.5px; text-transform: uppercase; font-weight: 600;
+}
 
 /* ---------- 5. Buttons ---------- */
 .btn {
   display: inline-block; text-decoration: none; cursor: pointer;
   font-family: var(--sans); font-size: 15.5px; font-weight: 600;
   padding: 9px 19px; border-radius: var(--radius-pill);
-  border: 1px solid var(--forest-700); color: var(--forest-700);
-  background: var(--surface);
+  border: 1.5px solid #33523f; color: #24402f;
+  background: #fbf8f0;
   transition: background var(--transition), box-shadow var(--transition), transform var(--transition);
 }
 .btn:hover { background: var(--sage-100); box-shadow: var(--elev-1); }
 .btn:active { transform: translateY(1px); }
 .btn-primary {
-  background: linear-gradient(160deg, var(--forest-500), var(--forest-800));
-  color: #fdfbf3; border-color: var(--forest-800);
+  background: #24402f; color: #f3ecd9; border-color: #24402f;
   box-shadow: var(--elev-1);
 }
-.btn-primary:hover { background: linear-gradient(160deg, var(--forest-700), var(--forest-900)); }
+.btn-primary:hover { background: var(--forest-800); }
 .btn-gold {
-  background: var(--gold-foil); color: #3d2c05; border-color: var(--gold-600);
-  text-shadow: 0 1px 0 rgba(255, 246, 214, .6);
+  background: var(--gold-bright); color: #231d08; border-color: #a8861d;
+  box-shadow: 0 4px 12px rgba(168, 134, 29, .35);
 }
-.btn-gold:hover { filter: brightness(1.05); background: var(--gold-foil); }
+.btn-gold:hover { filter: brightness(1.05); background: var(--gold-bright); }
 .btn-quiet { border-color: var(--hairline-strong); color: var(--ink-soft); }
 .btn-quiet:hover { background: var(--surface-sunken); }
 .btn-danger { border-color: var(--status-noshow); color: var(--status-noshow); }
@@ -281,137 +321,169 @@ input[type="checkbox"]:focus-visible { box-shadow: var(--focus-ring); }
 .search { display: flex; gap: var(--space-2); }
 .search input { width: 340px; }
 
-/* ---------- 7. Chips & toolbars ---------- */
+/* ---------- 7. Chips, toolbars & the copy switch ---------- */
 .chip-row { display: flex; gap: var(--space-2); flex-wrap: wrap; margin-bottom: var(--space-5); }
 .chip {
   display: inline-flex; align-items: center; gap: 7px;
-  text-decoration: none; font-size: 15px; font-weight: 600; color: var(--ink);
-  padding: 7px 15px; border-radius: var(--radius-pill);
-  border: 1px solid var(--hairline-strong); background: var(--surface);
+  text-decoration: none; font-size: 13px; font-weight: 600; color: var(--ink);
+  padding: 7px 14px; border-radius: var(--radius-pill);
+  border: 1px solid #d8ccab; background: #fbf8f0;
   transition: all var(--transition);
 }
 .chip:hover { border-color: var(--gold-500); box-shadow: var(--elev-1); }
 .chip:active { transform: translateY(1px); }
 .chip.is-on {
-  background: linear-gradient(160deg, var(--forest-500), var(--forest-800));
-  color: #fdfbf3; border-color: var(--forest-800);
-  box-shadow: inset 0 0 0 1.5px var(--gold-500), var(--elev-1);
+  background: #24402f; color: #f3ecd9; border-color: #24402f;
+  box-shadow: var(--elev-1);
 }
 .chip.is-off { opacity: .48; background: var(--surface-sunken); border-style: dashed; }
 .chip-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; box-shadow: inset 0 0 0 1px rgba(0,0,0,.12); }
 .toolbar {
   display: flex; justify-content: space-between; align-items: center;
-  gap: var(--space-4); flex-wrap: wrap;
-  background: linear-gradient(180deg, var(--surface-raised), var(--surface));
-  border: 1px solid var(--hairline); border-radius: var(--radius-l);
-  box-shadow: var(--elev-1); padding: 12px 16px; margin-bottom: var(--space-4);
+  gap: var(--space-3); flex-wrap: wrap;
+  background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: var(--radius-l); box-shadow: var(--elev-1);
+  padding: 10px 16px; margin-bottom: var(--space-4);
 }
 .toolbar-group { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; margin: 0; }
 .toolbar-label {
-  font-size: var(--text-micro); letter-spacing: .14em; text-transform: uppercase;
-  color: var(--ink-soft); font-weight: 700; margin-right: 2px;
+  font-size: 11px; letter-spacing: 2.5px; text-transform: uppercase;
+  color: #7a6a45; font-weight: 700; margin-right: 2px;
 }
-.toolbar .chip { padding: 5px 12px; font-size: 14px; }
 .toolbar select { padding-top: 7px; padding-bottom: 7px; font-size: 15px; }
 .tag {
   font-size: 12px; font-weight: 700; letter-spacing: .04em; color: var(--gold-600);
   border: 1px solid var(--gold-500); border-radius: var(--radius-pill);
   padding: 1px 9px; white-space: nowrap; background: #fffaf0;
 }
+/* The copy-mode switch — the mock's toggle track. */
+.copy-switch {
+  display: inline-flex; align-items: center; gap: 9px; cursor: pointer;
+  font-family: var(--sans); font-size: 13px; font-weight: 600; color: #4c4636;
+  background: none; border: none; padding: 6px 2px;
+}
+.copy-switch .track {
+  width: 46px; height: 24px; border-radius: 999px; background: #ddd2b8;
+  position: relative; flex: none; transition: background var(--transition);
+}
+.copy-switch .track::after {
+  content: ""; position: absolute; width: 18px; height: 18px; border-radius: 50%;
+  background: #fffdf7; top: 3px; left: 4px; box-shadow: 0 1px 3px rgba(0,0,0,.3);
+  transition: left var(--transition);
+}
+.copy-switch.is-on .track { background: #24402f; }
+.copy-switch.is-on .track::after { left: 24px; background: var(--gold-300); }
 
 /* ---------- 8. Date control & week strip ---------- */
 .day-nav { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; }
 .date-jump { display: flex; align-items: center; gap: var(--space-2); margin: 0; }
 .date-jump-label {
-  font-size: var(--text-micro); letter-spacing: .14em; text-transform: uppercase;
-  color: var(--ink-soft); font-weight: 700;
+  font-size: 11px; letter-spacing: 2.5px; text-transform: uppercase;
+  color: #7a6a45; font-weight: 700;
 }
 .date-jump input[type="date"] { padding: 7px 14px; font-size: 15.5px; cursor: pointer; }
-.week-strip { display: flex; gap: var(--space-2); margin-bottom: var(--space-4); flex-wrap: wrap; }
+.week-strip { display: flex; gap: 7px; margin-bottom: var(--space-3); flex-wrap: wrap; }
 .week-chip {
   display: flex; flex-direction: column; align-items: center; gap: 0;
-  min-width: 64px; padding: 8px 10px 7px; text-decoration: none;
-  border-radius: var(--radius-m); color: var(--ink);
-  border: 1px solid var(--hairline); background: var(--surface);
+  width: 70px; padding: 8px 0 7px; text-decoration: none;
+  border-radius: 12px; color: var(--ink);
+  border: 1px solid #ddd2b8; background: #fbf8f0;
   transition: all var(--transition);
 }
 .week-chip:hover { border-color: var(--gold-500); box-shadow: var(--elev-1); transform: translateY(-1px); }
 .week-dow {
-  font-size: var(--text-micro); letter-spacing: .16em; text-transform: uppercase;
-  color: var(--ink-soft); font-weight: 700;
+  font-size: 10px; letter-spacing: 2px; text-transform: uppercase;
+  color: #8b7c55; font-weight: 700;
 }
-.week-dom { font-family: var(--serif); font-size: 23px; line-height: 1.15; color: var(--forest-800); }
+.week-dom { font-size: 21px; font-weight: 600; line-height: 1.2; color: #33523f; font-variant-numeric: tabular-nums; }
+.week-tag {
+  font-size: 8.5px; letter-spacing: 1.5px; text-transform: uppercase;
+  color: #a8861d; font-weight: 700;
+}
 .week-chip.is-today { border-color: var(--gold-500); box-shadow: inset 0 0 0 1px var(--gold-500); }
-.week-chip.is-today .week-dom { color: var(--gold-600); }
 .week-chip.is-selected {
-  background: linear-gradient(165deg, var(--forest-500), var(--forest-900));
-  border-color: var(--forest-900); box-shadow: var(--elev-2);
+  background: linear-gradient(180deg, #2a5a43, #1e4232);
+  border-color: #1e4232; box-shadow: var(--elev-2);
 }
-.week-chip.is-selected .week-dow { color: var(--sage-200); }
-.week-chip.is-selected .week-dom { color: #fdfbf3; }
+.week-chip.is-selected .week-dow { color: #cfe0c2; }
+.week-chip.is-selected .week-dom { color: #f6efdb; }
+.week-chip.is-selected .week-tag { color: #e7c65a; }
 
-/* ---------- 9. Day book ---------- */
+/* ---------- 9. Day book — the mock at working density ---------- */
 .daybook-wrap {
-  overflow-x: auto; border-radius: var(--radius-l);
+  overflow-x: auto; border-radius: 18px;
   scrollbar-width: thin; scrollbar-color: var(--sage-300) transparent;
 }
 .daybook-wrap::-webkit-scrollbar { height: 10px; }
 .daybook-wrap::-webkit-scrollbar-thumb { background: var(--sage-300); border-radius: 5px; border: 2px solid var(--ground); }
 .daybook-wrap::-webkit-scrollbar-track { background: transparent; }
 .daybook {
+  position: relative;
   display: grid; gap: 0;
-  grid-template-columns: 64px repeat(var(--cols), minmax(176px, 1fr));
-  min-width: calc(64px + var(--cols) * 176px);
+  grid-template-columns: 58px repeat(var(--cols), minmax(178px, 1fr));
+  min-width: calc(58px + var(--cols) * 178px);
   background: var(--surface);
-  border: 1px solid var(--hairline); border-radius: var(--radius-l);
-  overflow: hidden; box-shadow: var(--elev-2);
+  border: 1px solid #e3d9c2; border-radius: 18px;
+  overflow: hidden;
+  box-shadow: 0 14px 34px rgba(46, 64, 42, .18), 0 2px 6px rgba(46, 64, 42, .12);
 }
-.db-corner { border-bottom: 2px solid var(--gold-500); background: var(--surface-sunken); }
+.db-corner { border-bottom: 2px solid var(--gold-500); background: #f6f1e3; }
+/* Staff head — the signature-colour band. White text on the stylist's
+   own gradient; the arch monogram outlined in translucent white. */
 .db-staff-head {
-  padding: 13px 14px 11px; border-left: 1px solid var(--hairline-soft);
-  border-bottom: 2px solid var(--gold-500);
-  background: linear-gradient(180deg, var(--tint, var(--surface-tint)), var(--surface));
-  display: flex; gap: 11px; align-items: flex-start;
+  padding: 10px 10px 9px; border-bottom: 2px solid var(--gold-500);
+  background: var(--band, linear-gradient(150deg, #26503c, #173327));
+  color: #fdf9ec;
 }
-.db-staff-head.is-off { background: var(--surface-sunken); }
+.db-head-main { display: flex; gap: 8px; align-items: flex-start; }
 .db-monogram {
-  width: 40px; height: 46px; flex: none; display: grid; place-items: center;
-  font-family: var(--serif); font-size: 16.5px; font-weight: 700;
-  color: #fff; background: var(--accent, var(--forest-500));
-  border-radius: var(--radius-arch);
-  box-shadow: var(--elev-1), inset 0 0 0 1.5px rgba(255, 255, 255, .35);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, .25);
+  width: 30px; height: 34px; flex: none; display: grid; place-items: center;
+  font-size: 12.5px; font-weight: 700; color: #fdf9ec;
+  background: rgba(255, 255, 255, .18);
+  border: 1px solid rgba(255, 255, 255, .55);
+  border-radius: 15px 15px 5px 5px;
 }
-.db-staff-head.is-off .db-monogram { background: var(--ink-faint); }
 .db-staff-text { min-width: 0; flex: 1; }
-.db-staff-head { flex-wrap: wrap; }
-.db-staff-flags { flex-basis: 100%; margin-top: 5px; }
-.db-staff-meta .tag { display: inline-block; margin-top: 3px; }
-.db-staff-name { font-family: var(--serif); font-size: 20px; font-weight: 600; color: var(--forest-900); line-height: 1.15; }
-.db-staff-meta { font-size: 13px; color: var(--ink-soft); margin-top: 3px; line-height: 1.5; }
-.db-gutter { position: relative; height: 624px; background: var(--surface-sunken); }
+.db-staff-name { font-weight: 700; font-size: 15.5px; line-height: 1.2; }
+.db-staff-meta {
+  font-size: 10.5px; letter-spacing: 1.2px; text-transform: uppercase;
+  opacity: .88; margin-top: 3px; line-height: 1.5;
+}
+.db-staff-flags { margin-top: 7px; }
+.db-staff-head .tag {
+  color: #f6ead0; border-color: rgba(246, 234, 208, .65);
+  background: rgba(255, 255, 255, .1);
+}
+.db-staff-head.is-off { filter: saturate(.45); }
+.db-gutter { position: relative; height: 624px; background: #f6f1e3; }
 .db-hour {
-  height: 52px; padding: 3px 9px 0 0; text-align: right;
-  font-size: 12px; letter-spacing: .06em; font-weight: 600;
-  color: var(--ink-faint); transform: translateY(-8px);
+  height: 52px; padding: 3px 8px 0 0; text-align: right;
+  font-size: 11px; letter-spacing: .5px; font-weight: 600;
+  color: #8b7c55; transform: translateY(-8px);
   font-variant-numeric: tabular-nums;
 }
 .db-hour:first-child { transform: none; padding-top: 5px; }
-.db-hour:last-child { position: absolute; bottom: 3px; right: 9px; height: auto; padding: 0; transform: none; }
+.db-hour:last-child { position: absolute; bottom: 3px; right: 8px; height: auto; padding: 0; transform: none; }
+/* Columns wear the availability wash: rostered-free time reads as
+   soft sage; off-roster columns trade the wash for the muted hatch. */
 .db-column {
-  position: relative; height: 624px; border-left: 1px solid var(--hairline-soft);
-  background: repeating-linear-gradient(to bottom, transparent 0, transparent 51px, var(--hairline-soft) 51px, var(--hairline-soft) 52px);
+  position: relative; height: 624px; border-left: 1px solid #eee5cd;
+  background:
+    repeating-linear-gradient(180deg, transparent 0, transparent 51px, #f0e8d2 51px, #f0e8d2 52px),
+    repeating-linear-gradient(180deg, transparent 0, transparent 25px, rgba(240, 232, 210, .45) 25px, rgba(240, 232, 210, .45) 26px),
+    linear-gradient(180deg, #f2f6ec, #eef3e6);
 }
 .db-column.is-off {
-  background-color: #f3eee0;
-  background-image: repeating-linear-gradient(45deg, transparent 0, transparent 11px, rgba(139, 131, 120, .05) 11px, rgba(139, 131, 120, .05) 12px);
+  background:
+    repeating-linear-gradient(180deg, transparent 0, transparent 51px, #ece5d0 51px, #ece5d0 52px),
+    repeating-linear-gradient(45deg, rgba(160, 148, 116, .07) 0, rgba(160, 148, 116, .07) 10px, transparent 10px, transparent 20px),
+    #f4efe1;
 }
-/* Availability: free-but-rostered time. A soft sage wash with a gold
-   hairline — reads as "open" at arm's length, distinct from both the
-   off-duty hatch and any appointment colour. */
+/* Rostered span — a slightly deeper sage with gold hairlines, laid
+   over the wash so "on the roster" and "off" never blur. */
 .db-band {
   position: absolute; left: 0; right: 0;
-  background: linear-gradient(180deg, rgba(195, 210, 189, .42), rgba(230, 236, 218, .42));
+  background: linear-gradient(180deg, rgba(195, 210, 189, .38), rgba(230, 236, 218, .38));
   border-top: 1px dashed rgba(156, 111, 31, .35);
   border-bottom: 1px dashed rgba(156, 111, 31, .35);
 }
@@ -424,56 +496,81 @@ input[type="checkbox"]:focus-visible { box-shadow: var(--focus-ring); }
   position: absolute; top: 14px; left: 0; right: 0; text-align: center;
   color: var(--ink-faint); font-size: 13.5px; font-style: italic;
 }
+/* The now-line — drawn by webui.js on today's view only. */
+.db-nowline {
+  position: absolute; right: 0; z-index: 5; pointer-events: none;
+  border-top: 2px solid rgba(192, 57, 43, .75);
+}
+.db-nowline::before {
+  content: ""; position: absolute; left: -1px; top: -5px;
+  width: 8px; height: 8px; border-radius: 50%; background: #c0392b;
+}
 
-/* Appointment block — colour is information twice over: the wash is
-   the service CATEGORY (set inline as --wash/--ink), the edge bar and
-   status pill are the STATUS. */
+/* Appointment block — saturated and colour-coded BY SERVICE
+   CATEGORY: --block-bg is the category's gradient (set inline from
+   the token layer in views). White text; the top line carries time
+   and status (glyph + word); client bold; price bottom-right. */
 .appt-block {
   position: absolute; left: 5px; right: 5px; overflow: hidden;
-  border-radius: var(--radius-s); padding: 7px 10px 6px 14px;
-  font-size: 13.5px; line-height: 1.32;
-  background: linear-gradient(165deg, rgba(255, 255, 255, .55), rgba(255, 255, 255, 0) 55%), var(--wash, var(--sage-100));
-  color: var(--ink); border: 1px solid rgba(38, 51, 42, .14);
-  box-shadow: var(--elev-1);
+  border-radius: 10px; padding: 7px 9px 6px;
+  font-size: 13.5px; line-height: 1.32; color: #fdfbef;
+  background: var(--block-bg, linear-gradient(150deg, #39684a, #254a33));
+  border-left: 5px solid rgba(255, 255, 255, .65);
+  box-shadow: 0 3px 8px rgba(30, 40, 30, .28), inset 0 1px 0 rgba(255, 255, 255, .25);
 }
-.appt-block::before {
-  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 5px;
-  background: var(--status, var(--forest-500));
-}
+.appt-block > span { display: block; }
 .appt-top { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
-.appt-client { font-weight: 700; font-size: 14.5px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.appt-block > .appt-top { display: flex; }
+.appt-time { font-size: 10.5px; letter-spacing: 1px; font-weight: 700; opacity: .92; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .appt-status {
-  display: inline-flex; align-items: center; gap: 5px; flex: none;
-  font-size: 11px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase;
-  color: var(--status, var(--forest-700));
+  font-size: 10.5px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
+  opacity: .95; white-space: nowrap;
 }
-.status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--status, var(--forest-500)); box-shadow: 0 0 0 2px rgba(255, 255, 255, .55); }
-.appt-service { color: var(--ink); }
-.appt-time { color: var(--ink-soft); font-size: 12.5px; font-variant-numeric: tabular-nums; }
-.appt-note { color: var(--ink-soft); font-style: italic; font-size: 12.5px; margin-top: 2px; }
-.appt-block.status-booked { --status: var(--status-booked); }
-.appt-block.status-confirmed { --status: var(--status-confirmed); }
-.appt-block.status-arrived { --status: var(--status-arrived); box-shadow: var(--elev-1), 0 0 0 1.5px var(--gold-300); }
-.appt-block.status-in_service { --status: var(--status-inservice); }
-.appt-block.status-completed { --status: var(--status-done); opacity: .72; }
-.appt-block.status-no_show { --status: var(--status-noshow); }
-.appt-block.status-cancelled { --status: var(--status-cancelled); background: transparent; border-style: dashed; box-shadow: none; opacity: .62; }
+.appt-client { font-weight: 700; font-size: 14.5px; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.appt-service {
+  font-size: 11.5px; opacity: .94; line-height: 1.25;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+  /* Never grow into the time line above or the price strip below. */
+  max-height: calc(100% - 52px);
+}
+.appt-note { font-style: italic; font-size: 12px; opacity: .88; margin-top: 2px; }
+.appt-price { position: absolute; right: 8px; bottom: 5px; font-size: 11px; font-weight: 700; opacity: .95; font-variant-numeric: tabular-nums; }
+/* A priced block reserves its bottom line for the price tag, so a
+   wrapping service name never runs underneath it. */
+.appt-block.has-price { padding-bottom: 19px; }
+.appt-block.has-price.is-tiny { padding-bottom: 6px; }
+/* Short blocks (add-ons, 15-minute services) shed lines rather than
+   collide: a tiny block keeps its time, status and client only. */
+.appt-block.is-tiny { padding-top: 4px; }
+.appt-block.is-tiny .appt-service, .appt-block.is-tiny .appt-note,
+.appt-block.is-tiny .appt-price { display: none; }
+.appt-block.is-short .appt-note { display: none; }
+.appt-block.status-arrived { box-shadow: 0 3px 8px rgba(30, 40, 30, .28), 0 0 0 2px var(--gold-300); }
+.appt-block.status-completed { filter: saturate(.5) brightness(1.05); }
+.appt-block.status-no_show { filter: saturate(.55); border-left-color: #e07856; }
+.appt-block.status-cancelled {
+  background: transparent; color: var(--ink-soft);
+  border: 1.5px dashed var(--status-cancelled); box-shadow: none;
+}
 .appt-block.status-cancelled .appt-client { text-decoration: line-through; }
 a.appt-block { text-decoration: none; cursor: pointer; transition: box-shadow var(--transition), transform var(--transition); }
 a.appt-block:hover { box-shadow: var(--elev-2); transform: translateY(-1px); z-index: 3; }
+.appt-block.is-selected { box-shadow: 0 0 0 2.5px var(--gold-500), 0 10px 22px rgba(30, 40, 30, .3); z-index: 4; }
 
-/* Break block — hatched warm stone, dashed edge, the paid flag is
+/* Break block — the mock's hatched warm stone; PAID / UNPAID is
    payroll information and is always legible. */
 .break-block {
   position: absolute; left: 5px; right: 5px; overflow: hidden;
   border-radius: var(--radius-s); padding: 4px 9px;
   display: flex; align-items: center; gap: 6px;
-  font-size: 12.5px; color: #57503f;
-  background: repeating-linear-gradient(45deg, var(--break-bg) 0, var(--break-bg) 7px, #e6ddca 7px, #e6ddca 14px);
-  border: 1px dashed var(--break-line);
+  font-size: 12.5px; color: #5c5136;
+  background: repeating-linear-gradient(45deg, #cfc3a4 0, #cfc3a4 9px, #c2b48f 9px, #c2b48f 18px);
+  border: 1px solid rgba(92, 81, 54, .35);
+  box-shadow: inset 0 0 0 1px rgba(92, 81, 54, .12);
 }
 .break-icon { font-size: 13px; }
-.break-text { font-weight: 600; white-space: nowrap; }
+.break-text { font-weight: 700; letter-spacing: .8px; text-transform: uppercase; font-size: 11.5px; white-space: nowrap; }
 .break-flag {
   font-size: 10.5px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase;
   padding: 1px 7px; border-radius: var(--radius-pill); color: #fff;
@@ -481,6 +578,36 @@ a.appt-block:hover { box-shadow: var(--elev-2); transform: translateY(-1px); z-i
 .break-block.is-paid .break-flag { background: var(--break-paid); }
 .break-block.is-unpaid .break-flag { background: var(--break-unpaid); }
 .break-time { margin-left: auto; color: #7a7261; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* The action bar — the mock's bottom bar. The selected appointment
+   fills the forest chip (gold figures); the actions act on it. */
+.actionbar {
+  display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+  margin-top: 14px;
+}
+.selchip {
+  background: #24402f; color: #f3ecd9; border-radius: 12px;
+  padding: 11px 16px; font-size: 13.5px;
+  box-shadow: 0 4px 12px rgba(30, 50, 35, .3);
+}
+.selchip b { color: #e7c65a; }
+.action-form { margin: 0; }
+.abtn {
+  display: inline-block; padding: 11px 20px; border-radius: 12px;
+  font-family: var(--sans); font-size: 14px; font-weight: 600;
+  border: 1.5px solid #33523f; background: #fbf8f0; color: #24402f;
+  text-decoration: none; cursor: pointer;
+  transition: all var(--transition);
+}
+.abtn:hover { box-shadow: var(--elev-1); }
+.abtn:active { transform: translateY(1px); }
+.abtn.abtn-pay {
+  background: var(--gold-bright); border-color: #a8861d; color: #231d08;
+  box-shadow: 0 4px 12px rgba(168, 134, 29, .4);
+}
+.abtn[disabled], .abtn[aria-disabled="true"] {
+  opacity: .45; cursor: not-allowed; box-shadow: none; pointer-events: none;
+}
 
 /* Copy mode (PR B hooks these classes) */
 .daybook-wrap.copy-armed .db-column { cursor: copy; }
@@ -528,6 +655,11 @@ th.col-price { text-align: right; white-space: normal; line-height: 1.3; }
   color: var(--forest-800); margin: 0 0 10px; padding-bottom: 7px;
   border-bottom: 2px solid transparent;
   border-image: linear-gradient(90deg, var(--gold-500), var(--gold-300) 55%, transparent) 1;
+}
+.group-dot {
+  display: inline-block; width: 13px; height: 13px; border-radius: 50%;
+  margin-right: 10px; vertical-align: baseline;
+  box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, .5), var(--elev-1);
 }
 
 /* ---------- 11. Clients ---------- */
@@ -614,20 +746,13 @@ th.col-price { text-align: right; white-space: normal; line-height: 1.3; }
 .notes-kind .label-caps { margin-bottom: 5px; display: block; }
 
 /* ---------- 14. Interactions (PR B) ---------- */
-.appt-block > span { display: block; }
-.appt-block > .appt-top { display: flex; }
 .db-band { pointer-events: none; }
 .db-column { cursor: pointer; }
 .tag-action {
-  text-decoration: none; color: var(--forest-700); border-color: var(--sage-300);
-  background: var(--surface); transition: all var(--transition);
+  text-decoration: none; color: #f6ead0; border-color: rgba(246, 234, 208, .65);
+  background: rgba(255, 255, 255, .1); transition: all var(--transition);
 }
-.tag-action:hover { border-color: var(--gold-500); color: var(--gold-600); box-shadow: var(--elev-1); }
-#copy-toggle.is-on {
-  background: linear-gradient(160deg, var(--forest-500), var(--forest-800));
-  color: #fdfbf3; border-color: var(--forest-800);
-  box-shadow: inset 0 0 0 1.5px var(--gold-500), var(--elev-1);
-}
+.tag-action:hover { border-color: var(--gold-300); color: #fff; box-shadow: var(--elev-1); }
 .copy-status {
   margin: 0 0 var(--space-4); padding: 11px 16px;
   border: 1px dashed var(--gold-500); border-radius: var(--radius-m);
@@ -642,11 +767,12 @@ th.col-price { text-align: right; white-space: normal; line-height: 1.3; }
 .field-error { color: var(--status-noshow); font-size: 14.5px; margin: 6px 0 0; font-weight: 600; }
 .form-card .form-note { margin-bottom: var(--space-4); }
 button[disabled] { opacity: .45; cursor: not-allowed; box-shadow: none; }
-.appt-status.status-text-booked { --status: var(--status-booked); color: var(--status-booked); }
-.appt-status.status-text-confirmed { --status: var(--status-confirmed); color: var(--status-confirmed); }
-.appt-status.status-text-arrived { --status: var(--status-arrived); color: var(--status-arrived); }
-.appt-status.status-text-in_service { --status: var(--status-inservice); color: var(--status-inservice); }
-.appt-status.status-text-completed { --status: var(--status-done); color: var(--status-done); }
-.appt-status.status-text-no_show { --status: var(--status-noshow); color: var(--status-noshow); }
-.appt-status.status-text-cancelled { --status: var(--status-cancelled); color: var(--status-cancelled); }
-.appt-status { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; }
+/* Status as text on light surfaces (breakdown subtitle). */
+.appt-status.status-text-booked { color: var(--status-booked); }
+.appt-status.status-text-confirmed { color: var(--status-confirmed); }
+.appt-status.status-text-arrived { color: var(--status-arrived); }
+.appt-status.status-text-in_service { color: var(--status-inservice); }
+.appt-status.status-text-completed { color: var(--status-done); }
+.appt-status.status-text-no_show { color: var(--status-noshow); }
+.appt-status.status-text-cancelled { color: var(--status-cancelled); }
+.status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: currentColor; margin-right: 6px; vertical-align: 1px; }

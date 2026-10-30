@@ -10,6 +10,11 @@ urlpatterns = [
     path("appointment/copy/", interactions.appointment_copy, name="appointment_copy"),
     path("appointment/<int:appointment_id>/", interactions.breakdown, name="breakdown"),
     path(
+        "appointment/<int:appointment_id>/action/<slug:action>/",
+        interactions.appointment_action,
+        name="appointment_action",
+    ),
+    path(
         "appointment/<int:appointment_id>/add-service/",
         interactions.add_service,
         name="add_service",
@@ -47,8 +52,8 @@ urlpatterns = [
         views.placeholder,
         {
             "nav_key": "insights",
-            "title": "Insights",
-            "lane_note": "Revenue, future-appointment value and busiest days arrive with the insights lane.",
+            "title": "Reports",
+            "lane_note": "Revenue, future-appointment value and busiest days arrive with the reports lane.",
         },
         name="insights",
     ),

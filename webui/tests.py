@@ -46,7 +46,7 @@ class ShellTests(WebuiTestBase):
     def test_header_shows_salon_name_and_nav(self):
         response = self.client.get(reverse("webui:daybook"))
         self.assertContains(response, "Mint On The Avenue")
-        for label in ("Day Book", "Clients", "Price Book", "Team", "Products", "Insights"):
+        for label in ("Day Book", "Clients", "Price Book", "Team", "Products", "Reports"):
             self.assertContains(response, label)
 
 
@@ -164,8 +164,42 @@ class DayBookControlTests(WebuiTestBase):
         block = {**self._two_blocks()[0], "category": "Hair", "category_id": self.category.pk}
         with mock.patch.object(views, "blocks_for_day", return_value=[block]):
             response = self.client.get(reverse("webui:daybook"), {"date": "2026-11-02"})
-        self.assertContains(response, "--wash:#dce8d2")
+        # Hair maps to the mock's forest colourway, worn as the
+        # block's saturated gradient.
+        self.assertContains(response, "--block-bg:linear-gradient(150deg,#39684a,#254a33)")
         self.assertContains(response, "Confirmed")
+        self.assertContains(response, "✓")
+
+    def test_block_shows_price_label_when_priced(self):
+        block = {**self._two_blocks()[0], "price": Decimal("85.00")}
+        with mock.patch.object(views, "blocks_for_day", return_value=[block]):
+            response = self.client.get(reverse("webui:daybook"), {"date": "2026-11-02"})
+        self.assertContains(response, "appt-price")
+        self.assertContains(response, "$85")
+
+    def test_staff_head_shows_signature_band_and_booked_label(self):
+        response = self.client.get(reverse("webui:daybook"), {"date": "2026-11-02"})
+        self.assertContains(response, "--band:linear-gradient(150deg,#26503c,#173327)")
+        # Rostered 9–5 with nothing booked yet reads as openings —
+        # the booked figure is computed, never invented.
+        self.assertContains(response, "Openings")
+
+    def test_booked_label_counts_real_blocks_against_roster(self):
+        # Four booked hours against an eight-hour roster = 50%.
+        block = {
+            "staff_id": self.member.pk, "client_name": "Jaime Orta",
+            "service_name": "Women's Haircut", "start": datetime.time(9, 0),
+            "end": datetime.time(13, 0), "status": "confirmed", "note": "",
+        }
+        with mock.patch.object(views, "blocks_for_day", return_value=[block]):
+            response = self.client.get(reverse("webui:daybook"), {"date": "2026-11-02"})
+        self.assertContains(response, "Booked 50%")
+
+    def test_action_bar_renders_with_selection_prompt(self):
+        response = self.client.get(reverse("webui:daybook"), {"date": "2026-11-02"})
+        self.assertContains(response, 'id="actionbar"')
+        self.assertContains(response, "Select an appointment to act on it")
+        self.assertContains(response, "Pay — Close Out")
 
     def test_break_contract_renders_paid_flag(self):
         brk = {
@@ -282,6 +316,25 @@ class BreakdownTests(WebuiTestBase):
             self.assertNotContains(response, 'name="card')
             response = self.client.post(reverse("webui:close_out", args=[7]))
         self.assertContains(response, "no payment was taken")
+
+
+class ActionBarActionTests(WebuiTestBase):
+    def test_check_in_post_is_honest_when_not_wired(self):
+        # Without the bookings lane there is no status to write: the
+        # action lands on the breakdown's plain pending state and
+        # never claims the client was checked in.
+        response = self.client.post(
+            reverse("webui:appointment_action", args=[7, "check-in"])
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, reverse("webui:breakdown", args=[7]))
+
+    def test_unknown_action_falls_back_to_breakdown(self):
+        response = self.client.post(
+            reverse("webui:appointment_action", args=[7, "teleport"])
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, reverse("webui:breakdown", args=[7]))
 
 
 class BookingFormTests(WebuiTestBase):

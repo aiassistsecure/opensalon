@@ -10,12 +10,18 @@ branding fields, DEFAULT_THEME supplies the house palette.
 from saloncore.models import Salon
 
 DEFAULT_THEME = {
-    "primary": "#2e4b34",  # deep forest
-    "accent": "#b8862f",  # embossed gold
-    "ground": "#f7f2e7",  # creme
+    "primary": "#26503c",  # deep forest (the approved mock's band)
+    "accent": "#c9a227",  # mock gold
+    "ground": "#f4efe3",  # creme
 }
 
 
 def salon_context(request):
     salon = Salon.objects.order_by("id").first()
-    return {"salon": salon, "salon_theme": DEFAULT_THEME}
+    from django.utils import timezone
+
+    return {
+        "salon": salon,
+        "salon_theme": DEFAULT_THEME,
+        "today": timezone.localdate(),
+    }

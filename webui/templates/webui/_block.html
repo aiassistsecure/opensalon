@@ -1,9 +1,10 @@
-<a class="appt-block status-{{ block.status }}" {% if block.url %}href="{{ block.url }}"{% endif %} {% if block.appointment_id %}data-appt-id="{{ block.appointment_id }}"{% endif %} style="top:{{ block.top }}%;height:{{ block.height }}%;--wash:{{ block.wash }};--ink:{{ block.ink }};">
+<a class="appt-block status-{{ block.status }} {% if block.height < 5 %}is-tiny{% elif block.height < 8 %}is-short{% endif %}{% if block.price_label %} has-price{% endif %}" {% if block.url %}href="{{ block.url }}"{% endif %} {% if block.appointment_id %}data-appt-id="{{ block.appointment_id }}"{% endif %} data-client="{{ block.client_name }}" data-service="{{ block.service_name }}" data-time="{{ block.time_label }}" data-price="{{ block.price_label }}" style="top:{{ block.top }}%;height:{{ block.height }}%;--block-bg:{{ block.bg }};">
   <span class="appt-top">
-    <span class="appt-client">{{ block.client_name }}</span>
-    <span class="appt-status"><span class="status-dot"></span>{{ block.status_label }}</span>
+    <span class="appt-time">{{ block.time_label }}</span>
+    <span class="appt-status">{{ block.status_glyph }} {{ block.status_label }}</span>
   </span>
-  <span class="appt-service">{{ block.service_name }}{% if block.category %} · {{ block.category }}{% endif %}</span>
-  <span class="appt-time">{{ block.time_label }}</span>
+  <span class="appt-client">{{ block.client_name }}</span>
+  <span class="appt-service">{{ block.service_name }}</span>
   {% if block.note %}<span class="appt-note">{{ block.note }}</span>{% endif %}
+  {% if block.price_label %}<span class="appt-price">{{ block.price_label }}</span>{% endif %}
 </a>

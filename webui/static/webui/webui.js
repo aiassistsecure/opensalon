@@ -74,6 +74,85 @@
     if (event.key === "Escape" && armed) setArmed(false);
   });
 
+  /* ---- Selection + the action bar ----------------------------------
+     Normal mode, first click on a block: select it — the action
+     bar's chip fills with the appointment and its buttons arm
+     (Pay / Add Service / Notes / Copy link to the block's own pages;
+     Check In / Confirm point their POST forms at the action
+     endpoint). Clicking the selected block again follows its link
+     into the breakdown. */
+  var chip = document.getElementById("selchip");
+  var selected = null;
+
+  function staffNameFor(block) {
+    var column = block.closest(".db-column");
+    var columns = Array.prototype.slice.call(wrap.querySelectorAll(".db-column"));
+    var heads = wrap.querySelectorAll(".db-staff-name");
+    var idx = columns.indexOf(column);
+    return idx >= 0 && heads[idx] ? heads[idx].textContent.trim() : "";
+  }
+
+  function select(block) {
+    if (selected) selected.classList.remove("is-selected");
+    selected = block;
+    block.classList.add("is-selected");
+    var id = block.getAttribute("data-appt-id");
+    var price = block.getAttribute("data-price");
+    if (chip) {
+      chip.textContent = "";
+      chip.appendChild(document.createTextNode("Selected · "));
+      var bold = document.createElement("b");
+      bold.textContent = block.getAttribute("data-time") + " — " + block.getAttribute("data-client");
+      chip.appendChild(bold);
+      chip.appendChild(document.createTextNode(
+        " · " + block.getAttribute("data-service") + " · " + staffNameFor(block)));
+      if (price) {
+        chip.appendChild(document.createTextNode(" · "));
+        var priceEl = document.createElement("b");
+        priceEl.textContent = price;
+        chip.appendChild(priceEl);
+      }
+    }
+    if (!id) return;
+    var links = { pay: "/appointment/" + id + "/close-out/",
+                  add: "/appointment/" + id + "/add-service/",
+                  notes: "/appointment/" + id + "/",
+                  copy: "/appointment/copy/?source=" + id };
+    Object.keys(links).forEach(function (key) {
+      var el = wrap.ownerDocument.querySelector('.abtn[data-act="' + key + '"]');
+      if (el) { el.setAttribute("href", links[key]); el.removeAttribute("aria-disabled"); }
+    });
+    var forms = { "checkin-form": "check-in", "confirm-form": "confirm" };
+    Object.keys(forms).forEach(function (formId) {
+      var form = document.getElementById(formId);
+      if (form) {
+        form.setAttribute("action", "/appointment/" + id + "/action/" + forms[formId] + "/");
+        var btn = form.querySelector("button");
+        if (btn) btn.disabled = false;
+      }
+    });
+  }
+
+  /* ---- The now-line (today's view only) ---- */
+  (function nowLine() {
+    var columns = wrap.querySelectorAll(".db-column");
+    if (!columns.length) return;
+    var now = new Date();
+    var iso = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0")
+      + "-" + String(now.getDate()).padStart(2, "0");
+    if (columns[0].getAttribute("data-date") !== iso) return;
+    var minutes = now.getHours() * 60 + now.getMinutes();
+    if (minutes < DAY_START_MIN || minutes > DAY_END_MIN) return;
+    var grid = wrap.querySelector(".daybook");
+    var column = columns[0];
+    var line = document.createElement("div");
+    line.className = "db-nowline";
+    line.style.left = column.offsetLeft + "px";
+    line.style.top = (column.offsetTop
+      + (minutes - DAY_START_MIN) / (DAY_END_MIN - DAY_START_MIN) * column.offsetHeight) + "px";
+    grid.appendChild(line);
+  })();
+
   wrap.addEventListener("click", function (event) {
     var block = event.target.closest(".appt-block");
     var column = event.target.closest(".db-column");
@@ -103,9 +182,14 @@
       return;
     }
 
-    /* Normal mode: empty space sets an appointment. Blocks, breaks
-       and band labels are not empty space. */
-    if (block) return; /* the block's own link handles it */
+    /* Normal mode: a block's first click selects it for the action
+       bar; clicking the selected block follows its breakdown link.
+       Empty space sets an appointment. Blocks, breaks and band
+       labels are not empty space. */
+    if (block) {
+      if (block !== selected) { event.preventDefault(); select(block); }
+      return;
+    }
     if (event.target.closest(".break-block")) return;
     if (column) {
       var newUrl = "/appointment/new/?staff=" + encodeURIComponent(column.getAttribute("data-staff-id"))

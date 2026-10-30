@@ -24,6 +24,7 @@
   <a class="week-chip {% if chip.is_selected %}is-selected{% endif %} {% if chip.is_today %}is-today{% endif %}" href="{{ chip.url }}">
     <span class="week-dow">{{ chip.dow }}</span>
     <span class="week-dom">{{ chip.dom }}</span>
+    {% if chip.tag %}<span class="week-tag">{{ chip.tag }}</span>{% endif %}
   </a>
   {% endfor %}
 </nav>
@@ -56,8 +57,7 @@
     {% if filters_active %}<a class="btn btn-quiet" href="{{ clear_url }}">Clear filters</a>{% endif %}
   </form>
   <div class="toolbar-group">
-    <button type="button" class="btn" id="copy-toggle" aria-pressed="false" title="Copy mode: pick up an appointment, click where it goes">⧉ Copy</button>
-    <a class="btn" href="{% url 'webui:appointment_new' %}?date={{ day|date:'Y-m-d' }}">＋ New appointment</a>
+    <button type="button" class="copy-switch" id="copy-toggle" aria-pressed="false" title="Copy mode: pick up an appointment, click where it goes"><span class="track" aria-hidden="true"></span>Copy mode</button>
   </div>
 </div>
 <p class="copy-status" id="copy-status" hidden></p>
@@ -68,13 +68,15 @@
 <div class="daybook" style="--cols:{{ staff_columns|length }};">
   <div class="db-corner"></div>
   {% for col in staff_columns %}
-  <div class="db-staff-head {% if not col.on_duty %}is-off{% endif %}" style="--tint:{{ col.tint }};--accent:{{ col.accent }};">
-    <div class="db-monogram" aria-hidden="true">{{ col.initials }}</div>
-    <div class="db-staff-text">
-      <div class="db-staff-name">{{ col.member.display_name }}</div>
-      <div class="db-staff-meta">
-        {% if col.member.staff_level %}{{ col.member.staff_level.name }} · {% endif %}
-        {% if col.on_duty %}{{ col.shift_label }}{% else %}Not rostered{% endif %}
+  <div class="db-staff-head {% if not col.on_duty %}is-off{% endif %}" style="--band:{{ col.band }};">
+    <div class="db-head-main">
+      <div class="db-monogram" aria-hidden="true">{{ col.initials }}</div>
+      <div class="db-staff-text">
+        <div class="db-staff-name">{{ col.member.display_name }}</div>
+        <div class="db-staff-meta">
+          {% if col.member.staff_level %}{{ col.member.staff_level.name }}{% endif %}
+          {% if col.on_duty %} · {% if col.booked_label %}{{ col.booked_label }}{% else %}{{ col.shift_label }}{% endif %}{% else %} · Not rostered{% endif %}
+        </div>
       </div>
     </div>
     <div class="db-staff-flags">
@@ -100,6 +102,21 @@
   </div>
   {% endfor %}
 </div>
+</div>
+<div class="actionbar" id="actionbar">
+  <span class="selchip" id="selchip">Select an appointment to act on it</span>
+  <form class="action-form" id="checkin-form" method="post" action="">
+    {% csrf_token %}
+    <button type="submit" class="abtn" data-act="checkin" disabled>✓ Check In</button>
+  </form>
+  <a class="abtn abtn-pay" data-act="pay" aria-disabled="true">Pay — Close Out</a>
+  <a class="abtn" data-act="add" aria-disabled="true">+ Add Service</a>
+  <a class="abtn" data-act="notes" aria-disabled="true">Notes</a>
+  <a class="abtn" data-act="copy" aria-disabled="true">⧉ Copy</a>
+  <form class="action-form" id="confirm-form" method="post" action="">
+    {% csrf_token %}
+    <button type="submit" class="abtn" data-act="confirm" disabled>Confirm</button>
+  </form>
 </div>
 {% if not has_blocks %}
 <p class="empty-note">No appointments on the book for this day yet — the columns above are ready when bookings land.</p>

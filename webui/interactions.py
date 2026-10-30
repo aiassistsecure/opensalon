@@ -257,6 +257,31 @@ def create_break(salon, *, staff, day, start, minutes, paid, label):
     return True
 
 
+def set_appointment_status(salon, appointment_id, action):
+    """A desk status action from the day book's action bar — THE
+    CONTRACT. ``check_in`` marks the appointment arrived (only from
+    booked/confirmed); ``confirm`` marks it confirmed (only from
+    booked). Returns True when the status was written, False when
+    not wired or the transition does not apply — the caller never
+    claims a change that did not happen."""
+    Appointment = _appointment_model()
+    if Appointment is None:
+        return False
+    transitions = {
+        "check-in": (Appointment.Status.ARRIVED, {Appointment.Status.BOOKED, Appointment.Status.CONFIRMED}),
+        "confirm": (Appointment.Status.CONFIRMED, {Appointment.Status.BOOKED}),
+    }
+    if action not in transitions:
+        return False
+    target, allowed_from = transitions[action]
+    appt = Appointment.objects.filter(pk=appointment_id, client__salon=salon).first()
+    if appt is None or appt.status not in allowed_from:
+        return False
+    appt.status = target
+    appt.save(update_fields=["status", "updated_at"])
+    return True
+
+
 def close_out_visit(salon, appointment_id):
     """Hand a visit to checkout — THE CONTRACT.
 
@@ -287,6 +312,22 @@ def breakdown(request, appointment_id):
             day_url=f"{reverse('webui:daybook')}?date={data['date'].isoformat()}",
         )
     return render(request, "webui/breakdown.html", context)
+
+
+def appointment_action(request, appointment_id, action):
+    """POST target for the action bar's Check In / Confirm buttons.
+
+    On a wired write, returns to the appointment's day book day. When
+    not wired (bookings lane absent) it lands on the breakdown, which
+    states the pending state plainly — nothing is claimed here that
+    did not happen.
+    """
+    salon = _salon()
+    visit = breakdown_for_appointment(salon, appointment_id) if salon else None
+    if request.method == "POST" and set_appointment_status(salon, appointment_id, action):
+        day = visit["date"] if visit else timezone.localdate()
+        return redirect(f"{reverse('webui:daybook')}?date={day.isoformat()}")
+    return redirect("webui:breakdown", appointment_id=appointment_id)
 
 
 def add_service(request, appointment_id):
