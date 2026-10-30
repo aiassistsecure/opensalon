@@ -142,6 +142,40 @@ class Payment(models.Model):
         )
 
 
+class Cashup(models.Model):
+    """A close-out snapshot of a period's takings, grouped by tender.
+
+    A cashup is a snapshot, not a lock: closing more than once a
+    day is fine, a cashup never blocks or alters later sales, and
+    sales recorded after it are simply picked up by the next one.
+    ``tender_totals`` maps a payment method to its total for the
+    period, with money stored as strings to preserve exact decimal
+    values (same convention as ``Receipt.tender``).
+    """
+
+    salon = models.ForeignKey(
+        Salon, on_delete=models.CASCADE, related_name="cashups"
+    )
+    period_start = models.DateTimeField()
+    period_end = models.DateTimeField()
+    # Each entry: method slug -> total as a string, e.g. {"cash": "85.00"}.
+    tender_totals = models.JSONField(default=dict, blank=True)
+    total = models.DecimalField(
+        max_digits=12, decimal_places=2, default=Decimal("0.00")
+    )
+    note = models.CharField(max_length=500, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self):
+        return (
+            f"Cashup #{self.pk} — {self.salon} "
+            f"{self.period_start} to {self.period_end}: {self.total}"
+        )
+
+
 class Receipt(models.Model):
     """An immutable snapshot of a sale, taken when the receipt is issued.
 
