@@ -1,0 +1,6 @@
+<article class="appt-block status-{{ block.status }}" style="top:{{ block.top }}%;height:{{ block.height }}%;">
+  <div class="appt-client">{{ block.client_name }}</div>
+  <div class="appt-service">{{ block.service_name }}</div>
+  <div class="appt-time">{{ block.time_label }}</div>
+  {% if block.note %}<div class="appt-note">{{ block.note }}</div>{% endif %}
+</article>

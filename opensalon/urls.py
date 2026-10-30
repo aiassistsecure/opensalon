@@ -12,4 +12,5 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path("health/", health, name="health"),
     path("api/", include("saloncore.urls")),
+    path("", include("webui.urls")),
 ]
