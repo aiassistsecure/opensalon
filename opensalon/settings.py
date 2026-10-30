@@ -30,6 +30,7 @@ INSTALLED_APPS = [
     "catalog",
     "bookings",
     "checkout",
+    "insights",
     "webui",
 ]
 
