@@ -1,4 +1,5 @@
-"""NEDB operations: no session-setup SQL and no savepoint SQL, ever.
+"""NEDB operations: no session-setup SQL, no savepoint SQL, and
+temporal values adapted to ISO 8601 strings (N-M3f).
 
 DYOR implication 2 / spike blocker 1: NEDB's pgwire refuses
 ``set_config()`` by design ("refused rather than answered with NULL,
@@ -7,11 +8,22 @@ feature"). Django's PostgreSQL backend builds its timezone statement
 from ``set_time_zone_sql()``, so that method is neutralized here. The
 wrapper in ``base.py`` additionally never calls it: both layers are
 kept so no future caller can reintroduce the statement by accident.
+
+Temporal adaptation (N-M3f, DYOR implications 1 and 9): the stock
+PostgreSQL ``adapt_*field_value`` hooks return datetime/date/time
+objects untouched, and psycopg then renders them as
+``'...'::timestamptz`` cast expressions, which NEDB's write path
+refuses by design (see ``EVIDENCE.md``). Here the hooks return ISO
+8601 strings (``temporal.py``), which NEDB stores as string scalars
+that compare chronologically, and ``get_db_converters`` registers the
+mirror-image parsers so values read back as real temporal objects.
 """
 
 from django.db.backends.postgresql.operations import (
     DatabaseOperations as PostgresDatabaseOperations,
 )
+
+from . import temporal
 
 
 class DatabaseOperations(PostgresDatabaseOperations):
@@ -36,3 +48,36 @@ class DatabaseOperations(PostgresDatabaseOperations):
         # empty string (not a set_config statement) is the marker that
         # no session-setup SQL exists on this backend.
         return ""
+
+    # -- temporal write path: ISO 8601 strings, never casts ----------
+
+    def adapt_datefield_value(self, value):
+        return temporal.adapt_date_value(value)
+
+    def adapt_datetimefield_value(self, value):
+        return temporal.adapt_datetime_value(value)
+
+    def adapt_timefield_value(self, value):
+        return temporal.adapt_time_value(value)
+
+    # -- temporal read path: stored strings back to objects ----------
+
+    def get_db_converters(self, expression):
+        converters = super().get_db_converters(expression)
+        internal_type = expression.output_field.get_internal_type()
+        if internal_type == "DateTimeField":
+            converters.append(self.convert_datetimefield_value)
+        elif internal_type == "DateField":
+            converters.append(self.convert_datefield_value)
+        elif internal_type == "TimeField":
+            converters.append(self.convert_timefield_value)
+        return converters
+
+    def convert_datetimefield_value(self, value, expression, connection):
+        return temporal.convert_datetime_value(value, connection)
+
+    def convert_datefield_value(self, value, expression, connection):
+        return temporal.convert_date_value(value)
+
+    def convert_timefield_value(self, value, expression, connection):
+        return temporal.convert_time_value(value)
