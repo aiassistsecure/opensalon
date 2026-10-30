@@ -1,36 +1,75 @@
 {% load static %}<!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{% block title %}{{ salon.name|default:"OpenSalon" }}{% endblock %} · OpenSalon</title>
-<link rel="stylesheet" href="{% static 'webui/webui.css' %}">
-<style>:root{--salon-primary:{{ salon_theme.primary }};--salon-accent:{{ salon_theme.accent }};--salon-ground:{{ salon_theme.ground }};}</style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>{% block title %}{{ salon.name|default:"OpenSalon" }}{% endblock %} · OpenSalon</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{% static 'webui/webui.css' %}">
+  <script src="{% static 'webui/webui.js' %}" defer></script>
 </head>
 <body>
-<header class="shell-header">
-  <div class="shell-header-inner">
-    <div class="salon-identity">
-      <div class="salon-mark" aria-hidden="true">✿</div>
-      <div>
-        <div class="salon-name">{{ salon.name|default:"Your Salon" }}</div>
-        <div class="salon-sub">Front desk</div>
-      </div>
+<div class="app">
+  <aside class="side" id="side">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true"></div>
+      <div class="brand-name">OpenSalon</div>
     </div>
-    <div class="product-mark">OpenSalon</div>
+    <nav class="snav" aria-label="Primary">
+      <a class="snav-item {% if nav_key == 'home' %}active{% endif %}" href="{% url 'webui:home' %}"><span class="ic">⌂</span>Home</a>
+      <a class="snav-item {% if nav_key == 'daybook' %}active{% endif %}" href="{% url 'webui:daybook' %}"><span class="ic">▦</span>Daybook</a>
+      <a class="snav-item {% if nav_key == 'clients' %}active{% endif %}" href="{% url 'webui:clients' %}"><span class="ic">◎</span>Clients</a>
+      <a class="snav-item {% if nav_key == 'team' %}active{% endif %}" href="{% url 'webui:team' %}"><span class="ic">◉</span>Team</a>
+      <a class="snav-item {% if nav_key == 'pricebook' %}active{% endif %}" href="{% url 'webui:pricebook' %}"><span class="ic">✂</span>Services</a>
+      <a class="snav-item {% if nav_key == 'pos' %}active{% endif %}" href="{% url 'webui:pos' %}"><span class="ic">▤</span>POS</a>
+      <a class="snav-item {% if nav_key == 'automations' %}active{% endif %}" href="{% url 'webui:automations' %}"><span class="ic">⚡</span>Automations</a>
+      <a class="snav-item {% if nav_key == 'insights' %}active{% endif %}" href="{% url 'webui:insights' %}"><span class="ic">▥</span>Insights</a>
+      <a class="snav-item {% if nav_key == 'settings' %}active{% endif %}" href="{% url 'webui:settings' %}"><span class="ic">⚙</span>Settings</a>
+    </nav>
+    <div class="ai-card">
+      <div class="ai-card-top"><span class="ai-spark">✦</span><span class="ai-title">AI Assistant</span><span class="ai-chev">›</span></div>
+      <div class="ai-sub">Ask from the command bar</div>
+    </div>
+    <div class="switcher">
+      <div class="mark" aria-hidden="true">{{ salon.name|default:"O"|first|upper }}</div>
+      <div class="switcher-meta">
+        <div class="switcher-name">{{ salon.name|default:"Your salon" }}</div>
+        <div class="switcher-sub">Salon</div>
+      </div>
+      <span class="switcher-chev">⌄</span>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <form class="command" action="{% url 'webui:clients' %}" method="get" role="search">
+        <span class="orb" aria-hidden="true"></span>
+        <input type="search" name="q" value="{{ query|default:'' }}"
+               placeholder="Ask anything… Search clients, book appointments, check revenue, or run a report…"
+               aria-label="Search clients">
+        <kbd class="kbd">⌘K</kbd>
+      </form>
+      <div class="top-actions">
+        <button type="button" class="btn-grad" disabled title="Booking creation arrives with the booking lane">+ New Appointment <span class="btn-chev">⌄</span></button>
+        <button type="button" class="icon-btn" aria-label="Notifications" title="Notifications arrive with the messaging lane"><span class="bell">🔔</span><span class="dot"></span></button>
+        <div class="avatar" aria-hidden="true">{{ salon.name|default:"O"|first|upper }}</div>
+      </div>
+    </header>
+    <main class="wrap">
+      {% block content %}{% endblock %}
+    </main>
+    <footer class="foot">Powered by OpenSalon — free, open-source salon software</footer>
   </div>
-  <nav class="shell-nav" aria-label="Main">
-    <a href="{% url 'webui:daybook' %}" class="{% if nav_key == 'daybook' %}active{% endif %}">Day Book</a>
-    <a href="{% url 'webui:clients' %}" class="{% if nav_key == 'clients' %}active{% endif %}">Clients</a>
-    <a href="{% url 'webui:pricebook' %}" class="{% if nav_key == 'pricebook' %}active{% endif %}">Price Book</a>
-    <a href="{% url 'webui:team' %}" class="{% if nav_key == 'team' %}active{% endif %}">Team</a>
-    <a href="{% url 'webui:products' %}" class="{% if nav_key == 'products' %}active{% endif %}">Products</a>
-    <a href="{% url 'webui:insights' %}" class="{% if nav_key == 'insights' %}active{% endif %}">Insights</a>
-  </nav>
-</header>
-<main class="shell-main">
-{% block content %}{% endblock %}
-</main>
-<footer class="shell-footer">Powered by OpenSalon — free, open-source salon software.</footer>
+</div>
+
+<nav class="tabbar" aria-label="Primary">
+  <a class="tab {% if nav_key == 'daybook' %}active{% endif %}" href="{% url 'webui:daybook' %}"><span class="ic">▦</span>Daybook</a>
+  <a class="tab {% if nav_key == 'clients' %}active{% endif %}" href="{% url 'webui:clients' %}"><span class="ic">◎</span>Clients</a>
+  <a class="tab {% if nav_key == 'pricebook' %}active{% endif %}" href="{% url 'webui:pricebook' %}"><span class="ic">✂</span>Services</a>
+  <a class="tab {% if nav_key == 'team' %}active{% endif %}" href="{% url 'webui:team' %}"><span class="ic">◉</span>Team</a>
+  <a class="tab {% if nav_key == 'insights' %}active{% endif %}" href="{% url 'webui:insights' %}"><span class="ic">▥</span>Insights</a>
+</nav>
 </body>
 </html>

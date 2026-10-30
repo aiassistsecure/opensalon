@@ -10,12 +10,17 @@ branding fields, DEFAULT_THEME supplies the house palette.
 from saloncore.models import Salon
 
 DEFAULT_THEME = {
-    "primary": "#2e4b34",  # deep forest
-    "accent": "#b8862f",  # embossed gold
-    "ground": "#f7f2e7",  # creme
+    "primary": "#2f7bff",  # electric blue
+    "accent": "#8b5cf6",  # violet
+    "ground": "#050914",  # deep navy
 }
 
 
 def salon_context(request):
+    # UI theme (the deep-navy glass theme, approved 2026-10-30): the
+    # theme is dark-born; there is no light variant in this build.
     salon = Salon.objects.order_by("id").first()
-    return {"salon": salon, "salon_theme": DEFAULT_THEME}
+    return {
+        "salon": salon,
+        "salon_theme": DEFAULT_THEME,
+    }

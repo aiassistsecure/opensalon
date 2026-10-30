@@ -1,0 +1,85 @@
+<aside class="rail" id="detailRail" aria-label="Appointment detail" data-current="{{ rail.id|default:'' }}">
+  <div id="railBody">
+  {% if rail %}
+    <div class="rail-head">
+      <div>
+        <div class="rail-time">{{ rail.time_label }}</div>
+        <div class="rail-date">{{ rail.date_label }}</div>
+      </div>
+      <span class="pill pill-{{ rail.status }}">{{ rail.status_label }}</span>
+      <button type="button" class="rail-close" id="railClose" aria-label="Close detail">✕</button>
+    </div>
+
+    <div class="rail-client">
+      <div class="avatar-lg" aria-hidden="true">{{ rail.client_initials }}</div>
+      <div class="rail-client-meta">
+        <div class="rail-cname">{{ rail.client_name }}</div>
+        {% if rail.client_email or rail.client_phone %}
+        <div class="rail-contact">{{ rail.client_email }}{% if rail.client_email and rail.client_phone %} · {% endif %}{{ rail.client_phone }}</div>
+        {% endif %}
+        <div class="rail-meta">{{ rail.client_visits }} appointment{{ rail.client_visits|pluralize }} on file · SMS {% if rail.client_sms %}✓{% else %}—{% endif %} · Email {% if rail.client_email_opt %}✓{% else %}—{% endif %}</div>
+      </div>
+    </div>
+
+    <div class="rail-tabs" role="tablist">
+      <button type="button" class="rtab active" data-tab="appointment">Appointment</button>
+      <button type="button" class="rtab" data-tab="client">Client</button>
+      <button type="button" class="rtab" data-tab="history">History</button>
+      <button type="button" class="rtab" data-tab="notes">Notes</button>
+    </div>
+
+    <div class="rpanel" data-panel="appointment">
+      <div class="stack-head"><span>Service Stack</span><span class="stack-total">{{ rail.stack_total_label }}</span></div>
+      {% for item in rail.stack %}
+      <div class="stack-row{% if item.current %} current{% endif %}">
+        <span class="stack-dot" aria-hidden="true"></span>
+        <span class="stack-name">{{ item.service }}</span>
+        <span class="stack-dur">{{ item.duration_label }}</span>
+        <span class="stack-price">{{ item.price_label|default:"—" }}</span>
+      </div>
+      {% endfor %}
+      <div class="drow"><span class="drow-k">Stylist</span><span class="drow-v"><span class="avatar-sm" aria-hidden="true">{{ rail.stylist_initials }}</span>{{ rail.stylist_name }}{% if rail.stylist_level %} · {{ rail.stylist_level }}{% endif %}</span></div>
+      <div class="drow"><span class="drow-k">Date &amp; Time</span><span class="drow-v">{{ rail.date_label }}<br>{{ rail.time_label }}</span></div>
+      <div class="drow"><span class="drow-k">Price</span><span class="drow-v">{{ rail.price_label|default:"—" }}</span></div>
+      <div class="drow"><span class="drow-k">Status</span><span class="drow-v"><span class="pill pill-{{ rail.status }}">{{ rail.status_label }}</span></span></div>
+      <div class="drow"><span class="drow-k">Location</span><span class="drow-v">{{ rail.salon_name }}</span></div>
+    </div>
+
+    <div class="rpanel hidden" data-panel="client">
+      <div class="drow"><span class="drow-k">Email</span><span class="drow-v">{{ rail.client_email|default:"—" }}</span></div>
+      <div class="drow"><span class="drow-k">Phone</span><span class="drow-v">{{ rail.client_phone|default:"—" }}</span></div>
+      <div class="drow"><span class="drow-k">SMS reminders</span><span class="drow-v">{% if rail.client_sms %}Opted in{% else %}Not opted in{% endif %}</span></div>
+      <div class="drow"><span class="drow-k">Email reminders</span><span class="drow-v">{% if rail.client_email_opt %}Opted in{% else %}Not opted in{% endif %}</span></div>
+      <div class="drow"><span class="drow-k">On file</span><span class="drow-v">{{ rail.client_visits }} appointment{{ rail.client_visits|pluralize }}</span></div>
+    </div>
+
+    <div class="rpanel hidden" data-panel="history">
+      {% for h in rail.history %}
+      <div class="hrow">
+        <span class="hrow-date">{{ h.date_label }} · {{ h.time_label }}</span>
+        <span class="hrow-svc">{{ h.service }}</span>
+        <span class="hrow-meta">{{ h.stylist }} · {{ h.status_label }}</span>
+      </div>
+      {% empty %}
+      <p class="rail-empty">No other appointments on file.</p>
+      {% endfor %}
+    </div>
+
+    <div class="rpanel hidden" data-panel="notes">
+      <div class="notes-k">This appointment</div>
+      {% for note in rail.appt_notes %}<div class="note-box">{{ note }}</div>{% empty %}<p class="rail-empty">No appointment notes.</p>{% endfor %}
+      <div class="notes-k">Client record</div>
+      {% for note in rail.client_notes %}<div class="note-box">{{ note }}</div>{% empty %}<p class="rail-empty">No client record notes.</p>{% endfor %}
+    </div>
+
+    <div class="rail-actions">
+      <button type="button" class="btn-grad grow" disabled title="Check-in arrives with the attendance lane">✓ Check In</button>
+      <button type="button" class="btn-ghost" disabled title="Rescheduling arrives with the booking lane">Reschedule</button>
+      <button type="button" class="btn-ghost" disabled title="Editing arrives with the booking lane">✎ Edit</button>
+    </div>
+  {% else %}
+    <div class="rail-head"><div><div class="rail-time">No appointment selected</div>
+    <div class="rail-date">Select an appointment on the book to see its detail.</div></div></div>
+  {% endif %}
+  </div>
+</aside>
