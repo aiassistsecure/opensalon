@@ -1,6 +1,15 @@
+from decimal import Decimal
+
+from django.db import IntegrityError, transaction
 from django.test import TestCase
 
-from saloncore.models import Salon, Service, ServiceCategory
+from saloncore.models import (
+    Salon,
+    Service,
+    ServiceCategory,
+    ServicePrice,
+    StaffLevel,
+)
 
 
 class SalonModelTests(TestCase):
@@ -107,3 +116,88 @@ class ServiceModelTests(TestCase):
             name="Blowout", category=self.category, service_minutes=45
         )
         self.assertTrue(service.active)
+
+
+class StaffLevelModelTests(TestCase):
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Mint On The Avenue")
+
+    def test_staff_level_creation_and_salon_fk(self):
+        level = StaffLevel.objects.create(name="Level 6", salon=self.salon)
+        self.assertEqual(level.salon, self.salon)
+        self.assertIn(level, list(self.salon.staff_levels.all()))
+        self.assertEqual(str(level), "Level 6")
+        self.assertEqual(level.sort_order, 0)
+        self.assertTrue(level.active)
+
+    def test_staff_level_ordering_by_sort_order(self):
+        StaffLevel.objects.create(name="Senior", salon=self.salon, sort_order=2)
+        StaffLevel.objects.create(name="Junior", salon=self.salon, sort_order=1)
+        StaffLevel.objects.create(name="Associate", salon=self.salon, sort_order=1)
+        names = list(StaffLevel.objects.values_list("name", flat=True))
+        self.assertEqual(names, ["Associate", "Junior", "Senior"])
+
+
+class ServicePriceModelTests(TestCase):
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Mint On The Avenue")
+        self.category = ServiceCategory.objects.create(name="Color", salon=self.salon)
+        self.service = Service.objects.create(
+            name="Single Process Color",
+            category=self.category,
+            service_minutes=45,
+        )
+        self.level = StaffLevel.objects.create(name="Level 6", salon=self.salon)
+
+    def test_price_creation_decimal_stored_exactly(self):
+        price = ServicePrice.objects.create(
+            service=self.service,
+            staff_level=self.level,
+            amount=Decimal("85.00"),
+        )
+        price.refresh_from_db()
+        self.assertEqual(price.amount, Decimal("85.00"))
+        self.assertTrue(price.active)
+
+    def test_is_from_defaults_false(self):
+        price = ServicePrice.objects.create(
+            service=self.service,
+            staff_level=self.level,
+            amount=Decimal("85.00"),
+        )
+        price.refresh_from_db()
+        self.assertFalse(price.is_from)
+
+    def test_is_from_true_case(self):
+        price = ServicePrice.objects.create(
+            service=self.service,
+            staff_level=self.level,
+            amount=Decimal("150.00"),
+            is_from=True,
+        )
+        price.refresh_from_db()
+        self.assertTrue(price.is_from)
+
+    def test_unique_constraint_rejects_duplicate_pair(self):
+        ServicePrice.objects.create(
+            service=self.service,
+            staff_level=self.level,
+            amount=Decimal("85.00"),
+        )
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                ServicePrice.objects.create(
+                    service=self.service,
+                    staff_level=self.level,
+                    amount=Decimal("90.00"),
+                )
+
+    def test_price_lookup_via_service_prices_related_name(self):
+        price = ServicePrice.objects.create(
+            service=self.service,
+            staff_level=self.level,
+            amount=Decimal("85.00"),
+        )
+        prices = list(self.service.prices.all())
+        self.assertEqual(prices, [price])
+        self.assertIn(price, list(self.level.service_prices.all()))

@@ -65,3 +65,50 @@ class Service(models.Model):
     @property
     def total_minutes(self):
         return self.service_minutes + self.processing_minutes + self.finishing_minutes
+
+
+class StaffLevel(models.Model):
+    """A staff seniority / pricing tier within a salon (e.g. Level 6)."""
+
+    name = models.CharField(max_length=120)
+    salon = models.ForeignKey(
+        Salon, on_delete=models.CASCADE, related_name="staff_levels"
+    )
+    sort_order = models.PositiveIntegerField(default=0)
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["sort_order", "name"]
+
+    def __str__(self):
+        return self.name
+
+
+class ServicePrice(models.Model):
+    """The price of one service at one staff level.
+
+    Plain salon-entered data: an amount and an optional "from" flag
+    for starting-at pricing. No payment-provider concepts live here.
+    """
+
+    service = models.ForeignKey(
+        Service, on_delete=models.CASCADE, related_name="prices"
+    )
+    staff_level = models.ForeignKey(
+        StaffLevel, on_delete=models.CASCADE, related_name="service_prices"
+    )
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    is_from = models.BooleanField(default=False)
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["service", "staff_level"],
+                name="uniq_service_price_per_level",
+            )
+        ]
+        ordering = ["service", "staff_level"]
+
+    def __str__(self):
+        return f"{self.service} — {self.staff_level}: {self.amount}"
