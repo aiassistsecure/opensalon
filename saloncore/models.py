@@ -48,6 +48,11 @@ class Service(models.Model):
     """
 
     name = models.CharField(max_length=200)
+    # Stable id from the system the record was imported from (generic
+    # field, never provider-named): imports key on it so re-imports
+    # update in place. Blank for services created in OpenSalon.
+    # Source ids are globally unique, so uniqueness is on the id.
+    external_id = models.CharField(max_length=64, blank=True)
     category = models.ForeignKey(
         ServiceCategory, on_delete=models.CASCADE, related_name="services"
     )
@@ -59,6 +64,13 @@ class Service(models.Model):
 
     class Meta:
         ordering = ["category", "name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["external_id"],
+                condition=models.Q(external_id__gt=""),
+                name="uniq_service_external_id",
+            )
+        ]
 
     def __str__(self):
         return self.name
