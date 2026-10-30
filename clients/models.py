@@ -15,6 +15,11 @@ class Client(models.Model):
     salon = models.ForeignKey(
         Salon, on_delete=models.CASCADE, related_name="clients"
     )
+    # Stable id from the system the record was imported from, kept
+    # under a generic (not provider-named) field: imports key on
+    # (salon, external_id) so re-imports update in place. Blank for
+    # clients created directly in OpenSalon.
+    external_id = models.CharField(max_length=64, blank=True)
     first_name = models.CharField(max_length=80)
     last_name = models.CharField(max_length=80)
     email = models.EmailField(blank=True)
@@ -26,6 +31,13 @@ class Client(models.Model):
 
     class Meta:
         ordering = ["last_name", "first_name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["salon", "external_id"],
+                condition=models.Q(external_id__gt=""),
+                name="uniq_client_external_id_per_salon",
+            )
+        ]
 
     def __str__(self):
         return f"{self.first_name} {self.last_name}"
