@@ -3,10 +3,12 @@ import datetime
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 
+from bookings.lifecycle import create_appointment, transition_status
 from bookings.models import Appointment
 from clients.models import Client
 from onlinebooking.services import (
     bookable_slots,
+    cancel_online_booking,
     create_online_booking,
     reschedule_online_booking,
 )
@@ -141,3 +143,73 @@ class RescheduleOnlineBookingTests(OnlineBookingBase):
         appt.refresh_from_db()
         self.assertEqual(appt.start, at(MONDAY, 10))
         self.assertEqual(appt.end, at(MONDAY, 10, 45))
+
+
+class CancelOnlineBookingTests(OnlineBookingBase):
+    def test_cancel_booked_appointment_succeeds(self):
+        appt = self._book(hour=10)
+        cancelled = cancel_online_booking(appt)
+        self.assertEqual(cancelled.pk, appt.pk)
+        self.assertEqual(cancelled.status, Appointment.Status.CANCELLED)
+        appt.refresh_from_db()
+        self.assertEqual(appt.status, Appointment.Status.CANCELLED)
+        # The row is kept, not deleted.
+        self.assertEqual(Appointment.objects.count(), 1)
+
+    def test_cancel_confirmed_appointment_succeeds(self):
+        appt = self._book(hour=10)
+        transition_status(appt, Appointment.Status.CONFIRMED)
+        cancelled = cancel_online_booking(appt)
+        self.assertEqual(cancelled.status, Appointment.Status.CANCELLED)
+
+    def test_cancel_frees_the_slot_for_rebooking(self):
+        appt = self._book(hour=11)
+        cancel_online_booking(appt)
+        result = bookable_slots(self.salon, self.service, MONDAY)
+        self.assertEqual(
+            [(i.start, i.end) for i in result[0].intervals],
+            [(at(MONDAY, 9), at(MONDAY, 17))],
+        )
+        rebooked = self._book(hour=11)
+        self.assertEqual(rebooked.status, Appointment.Status.BOOKED)
+        self.assertNotEqual(rebooked.pk, appt.pk)
+
+    def test_cancel_is_idempotent(self):
+        appt = self._book(hour=10)
+        first = cancel_online_booking(appt)
+        second = cancel_online_booking(first)
+        self.assertEqual(second.pk, appt.pk)
+        self.assertEqual(second.status, Appointment.Status.CANCELLED)
+        appt.refresh_from_db()
+        self.assertEqual(appt.status, Appointment.Status.CANCELLED)
+        self.assertEqual(Appointment.objects.count(), 1)
+
+    def test_cancel_completed_from_another_channel_is_rejected(self):
+        # Booked through the in-salon (lifecycle) path, not online,
+        # then completed: online cancel must not touch it.
+        appt = create_appointment(
+            client=self.client, staff_member=self.online_staff,
+            service=self.service, start=at(MONDAY, 10),
+        )
+        appt.status = Appointment.Status.COMPLETED
+        appt.save(update_fields=["status"])
+        with self.assertRaises(ValidationError):
+            cancel_online_booking(appt)
+        appt.refresh_from_db()
+        self.assertEqual(appt.status, Appointment.Status.COMPLETED)
+
+    def test_cancel_other_non_cancellable_statuses_are_rejected(self):
+        for status in (
+            Appointment.Status.ARRIVED,
+            Appointment.Status.IN_SERVICE,
+            Appointment.Status.NO_SHOW,
+        ):
+            with self.subTest(status=status):
+                appt = self._book(hour=10)
+                appt.status = status
+                appt.save(update_fields=["status"])
+                with self.assertRaises(ValidationError):
+                    cancel_online_booking(appt)
+                appt.refresh_from_db()
+                self.assertEqual(appt.status, status)
+                appt.delete()
