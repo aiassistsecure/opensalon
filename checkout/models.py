@@ -97,3 +97,46 @@ class SaleItem(models.Model):
     @property
     def line_total(self):
         return self.unit_price * self.quantity
+
+
+class Payment(models.Model):
+    """One payment taken (or refunded) against a sale.
+
+    Records only what core needs to reconcile a sale: the tender
+    type, the amount, the outcome, and an opaque reference string
+    supplied by whatever provider handled the tender. Core stores
+    no provider-specific fields; adapters live outside core.
+    """
+
+    class Method(models.TextChoices):
+        CASH = "cash", "Cash"
+        EXTERNAL = "external", "External tender"
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        COMPLETED = "completed", "Completed"
+        FAILED = "failed", "Failed"
+        REFUNDED = "refunded", "Refunded"
+
+    sale = models.ForeignKey(
+        Sale, on_delete=models.CASCADE, related_name="payments"
+    )
+    method = models.CharField(
+        max_length=20, choices=Method.choices, default=Method.CASH
+    )
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.PENDING
+    )
+    provider_reference = models.CharField(max_length=200, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["id"]
+
+    def __str__(self):
+        return (
+            f"Payment #{self.pk} — {self.get_method_display()} "
+            f"{self.amount} ({self.status})"
+        )
