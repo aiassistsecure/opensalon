@@ -1,8 +1,12 @@
 """OpenSalon project settings.
 
-Foundation settings: deliberately minimal. Environment-driven secrets,
-Postgres when POSTGRES_HOST is set (the Docker Compose case), SQLite
-fallback for a first local look only.
+Foundation settings: deliberately minimal. Environment-driven secrets.
+The database is NEDB, reached over its Postgres-compatible pgwire using
+the custom NEDB backend (opensalon.backends.nedb, see ADR 0005), which
+neutralizes set_config/session setup that nedbd refuses (DYOR §9.1-2).
+Host, name, user, password and port are env-driven with NEDB-shaped
+defaults. SQLite is available only behind the explicit
+OPENSALON_USE_SQLITE=1 flag, as a dev fallback.
 """
 import os
 from pathlib import Path
@@ -57,21 +61,22 @@ TEMPLATES = [
     },
 ]
 
-if os.environ.get("POSTGRES_HOST"):
+if os.environ.get("OPENSALON_USE_SQLITE") == "1":
     DATABASES = {
         "default": {
-            "ENGINE": "django.db.backends.postgresql",
-            "HOST": os.environ["POSTGRES_HOST"],
-            "NAME": os.environ.get("POSTGRES_DB", "opensalon"),
-            "USER": os.environ.get("POSTGRES_USER", "opensalon"),
-            "PASSWORD": os.environ.get("POSTGRES_PASSWORD", ""),
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
         }
     }
 else:
     DATABASES = {
         "default": {
-            "ENGINE": "django.db.backends.sqlite3",
-            "NAME": BASE_DIR / "db.sqlite3",
+            "ENGINE": "opensalon.backends.nedb",
+            "HOST": os.environ.get("POSTGRES_HOST", "nedbd"),
+            "NAME": os.environ.get("POSTGRES_DB", "opensalon"),
+            "USER": os.environ.get("POSTGRES_USER", "opensalon"),
+            "PASSWORD": os.environ.get("POSTGRES_PASSWORD", ""),
+            "PORT": int(os.environ.get("POSTGRES_PORT", "5432")),
         }
     }
 
