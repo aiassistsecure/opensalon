@@ -22,6 +22,12 @@ class Appointment(models.Model):
         CANCELLED = "cancelled", "Cancelled"
         NO_SHOW = "no_show", "No show"
 
+    # Stable id from the system the record was imported from, kept
+    # under a generic (not provider-named) field: imports key on it
+    # so re-imports update in place. Blank for appointments created
+    # directly in OpenSalon. Source ids are globally unique, so the
+    # uniqueness scope is the id itself.
+    external_id = models.CharField(max_length=64, blank=True)
     client = models.ForeignKey(
         Client, on_delete=models.CASCADE, related_name="appointments"
     )
@@ -41,6 +47,13 @@ class Appointment(models.Model):
 
     class Meta:
         ordering = ["start"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["external_id"],
+                condition=models.Q(external_id__gt=""),
+                name="uniq_appointment_external_id",
+            )
+        ]
 
     def __str__(self):
         return f"{self.client} — {self.service} at {self.start}"

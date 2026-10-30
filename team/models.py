@@ -18,6 +18,10 @@ class StaffMember(models.Model):
     salon = models.ForeignKey(
         Salon, on_delete=models.CASCADE, related_name="staff_members"
     )
+    # Stable id from the system the record was imported from (generic
+    # field, never provider-named): imports key on (salon, external_id).
+    # Blank for staff created directly in OpenSalon.
+    external_id = models.CharField(max_length=64, blank=True)
     display_name = models.CharField(max_length=120)
     staff_level = models.ForeignKey(
         StaffLevel,
@@ -31,6 +35,13 @@ class StaffMember(models.Model):
 
     class Meta:
         ordering = ["display_name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["salon", "external_id"],
+                condition=models.Q(external_id__gt=""),
+                name="uniq_staff_external_id_per_salon",
+            )
+        ]
 
     def __str__(self):
         return self.display_name
