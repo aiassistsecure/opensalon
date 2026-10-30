@@ -18,7 +18,13 @@ Mapping (one source of truth — this command is the only writer here):
 - Service   <- one row per (category, name); ``duration`` becomes
   ``service_minutes``, ``gapTime`` becomes ``processing_minutes``,
   ``internetDescription`` becomes ``description``, ``archived``
-  becomes ``active=False``.
+  becomes ``active=False``. A source ``serviceId`` (fallback: ``id``)
+  is stored on the generic ``Service.external_id`` field: when a
+  record carries an id, the import keys on it (falling back to
+  (category, name) so a row first imported without an id gains it in
+  place); when it carries none, the existing (category, name) key is
+  used and ``external_id`` is left untouched — a blank source id never
+  clobbers a stored one.
 - StaffLevel <- each distinct ``staffCategories.prices`` id. With
   ``--staff`` (a staff export in the same system's shape), ids that are
   staff *category* ids resolve to their category names (e.g.
@@ -153,15 +159,37 @@ class Command(BaseCommand):
                 category, created = ServiceCategory.objects.get_or_create(
                     salon=salon, name=cat_name)
                 stats["categories"] += int(created)
-                service, created = Service.objects.update_or_create(
-                    category=category, name=row["name"],
-                    defaults={
-                        "description": row.get("internetDescription")
-                                       or row.get("description") or "",
-                        "service_minutes": int(row.get("duration") or 0),
-                        "processing_minutes": int(row.get("gapTime") or 0),
-                        "active": not row.get("archived", False),
-                    })
+                external_id = str(
+                    row.get("serviceId") or row.get("id") or "").strip()[:64]
+                defaults = {
+                    "description": row.get("internetDescription")
+                                   or row.get("description") or "",
+                    "service_minutes": int(row.get("duration") or 0),
+                    "processing_minutes": int(row.get("gapTime") or 0),
+                    "active": not row.get("archived", False),
+                }
+                if external_id:
+                    # Attach the id to a row first imported without one,
+                    # so the external_id lookup below finds and updates
+                    # it instead of duplicating the (category, name) row.
+                    legacy = Service.objects.filter(
+                        category=category, name=row["name"],
+                        external_id="").first()
+                    if legacy is not None and not Service.objects.filter(
+                            external_id=external_id).exists():
+                        legacy.external_id = external_id
+                        legacy.save(update_fields=["external_id"])
+                    service, created = Service.objects.update_or_create(
+                        external_id=external_id,
+                        defaults={"category": category, "name": row["name"],
+                                  "external_id": external_id, **defaults})
+                else:
+                    # No source id: keep the natural key and leave any
+                    # stored external_id untouched (never clobber with
+                    # blank).
+                    service, created = Service.objects.update_or_create(
+                        category=category, name=row["name"],
+                        defaults=defaults)
                 stats["services"] += int(created)
 
                 amount = _decimal(row.get("price"))

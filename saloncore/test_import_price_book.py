@@ -117,6 +117,65 @@ class ImportPriceBookTests(TestCase):
             service__name="Haircut", staff_level__name="Senior")
         self.assertEqual(senior.amount, Decimal("70.0"))
 
+    def test_external_id_populated_from_service_id(self):
+        self.run_import()
+        self.assertEqual(
+            Service.objects.get(name="Haircut").external_id, "svc-1")
+        self.assertEqual(
+            Service.objects.get(name="Old Perm").external_id, "svc-2")
+
+    def test_external_id_populated_from_generic_id_field(self):
+        payload = [{"id": "ext-9", "name": "Trim", "categoryName": "Hair",
+                    "duration": 30, "price": 25.0}]
+        self.run_import(payload=payload)
+        self.assertEqual(
+            Service.objects.get(name="Trim").external_id, "ext-9")
+
+    def test_rerun_with_external_id_is_idempotent(self):
+        self.run_import()
+        self.run_import()
+        self.assertEqual(Service.objects.count(), 2)
+        self.assertEqual(
+            Service.objects.get(name="Haircut").external_id, "svc-1")
+
+    def test_rerun_renamed_service_with_same_id_updates_in_place(self):
+        self.run_import()
+        changed = json.loads(json.dumps(FIXTURE))
+        changed[0]["name"] = "Haircut Deluxe"
+        self.run_import(payload=changed)
+        self.assertEqual(Service.objects.count(), 2)
+        self.assertEqual(
+            Service.objects.get(external_id="svc-1").name, "Haircut Deluxe")
+
+    def test_row_without_id_gains_external_id_on_reimport(self):
+        no_ids = json.loads(json.dumps(FIXTURE))
+        for row in no_ids:
+            row.pop("serviceId", None)
+        self.run_import(payload=no_ids)
+        self.assertEqual(Service.objects.get(name="Haircut").external_id, "")
+        self.run_import()
+        self.assertEqual(Service.objects.count(), 2)
+        self.assertEqual(
+            Service.objects.get(name="Haircut").external_id, "svc-1")
+
+    def test_rerun_without_id_does_not_clobber_external_id(self):
+        self.run_import()
+        no_ids = json.loads(json.dumps(FIXTURE))
+        for row in no_ids:
+            row.pop("serviceId", None)
+        self.run_import(payload=no_ids)
+        self.assertEqual(Service.objects.count(), 2)
+        self.assertEqual(
+            Service.objects.get(name="Haircut").external_id, "svc-1")
+
+    def test_record_without_id_still_imports(self):
+        payload = [{"name": "Trim", "categoryName": "Hair",
+                    "duration": 30, "price": 25.0}]
+        self.run_import(payload=payload)
+        trim = Service.objects.get(name="Trim")
+        self.assertEqual(trim.external_id, "")
+        self.assertEqual(ServicePrice.objects.count(), 1)
+
     def test_salon_option_scopes_the_import(self):
         self.run_import(salon="Other Salon")
         self.assertEqual(
