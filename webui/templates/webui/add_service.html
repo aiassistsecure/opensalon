@@ -1,0 +1,26 @@
+{% extends "webui/base.html" %}
+{% block title %}Add a service{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <h1 class="page-title">Add a service</h1>
+    <p class="page-subtitle">{% if visit %}To {{ visit.client_name }}'s visit with {{ visit.staff_name }} — it joins the visit right after the last service, priced from the price book.{% else %}To visit #{{ appointment_id }}.{% endif %}</p>
+  </div>
+  <nav class="day-nav"><a class="btn btn-quiet" href="{% url 'webui:breakdown' appointment_id %}">← Breakdown</a></nav>
+</section>
+
+{% if form_note %}<p class="form-note">{{ form_note }}</p>{% endif %}
+
+<form method="post" class="form-card">
+  {% csrf_token %}
+  <div class="field">
+    <label for="{{ form.service.id_for_label }}">Service</label>
+    {{ form.service }}
+    {% for error in form.service.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+  </div>
+  <div class="form-actions">
+    <button class="btn btn-primary" type="submit">Add to this visit</button>
+    <a class="btn btn-quiet" href="{% url 'webui:breakdown' appointment_id %}">Cancel</a>
+  </div>
+</form>
+{% endblock %}

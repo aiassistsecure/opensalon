@@ -1,0 +1,73 @@
+{% extends "webui/base.html" %}
+{% block title %}Appointment — {{ visit.client_name|default:"Visit" }}{% endblock %}
+{% block content %}
+{% if visit %}
+<section class="page-head">
+  <div>
+    <h1 class="page-title">{{ visit.client_name }}</h1>
+    <p class="page-subtitle">
+      {{ visit.date|date:"l, F j, Y" }} · {{ time_label }} · with {{ visit.staff_name }}
+      · <span class="appt-status status-text-{{ visit.status }}"><span class="status-dot"></span>{{ status_label }}</span>
+    </p>
+  </div>
+  <nav class="day-nav" aria-label="Visit actions">
+    <a class="btn" href="{% url 'webui:appointment_copy' %}?source={{ visit.id }}">⧉ Copy</a>
+    <a class="btn" href="{% url 'webui:add_service' visit.id %}">＋ Add service</a>
+    <a class="btn btn-gold" href="{% url 'webui:close_out' visit.id %}">Pay — close out</a>
+    <a class="btn btn-quiet" href="{{ day_url }}">← Day book</a>
+  </nav>
+</section>
+
+<div class="breakdown-grid">
+  <section class="panel">
+    <h2 class="panel-title">This visit</h2>
+    <table class="line-items">
+      <tbody>
+        {% for line in visit.lines %}
+        <tr>
+          <td>
+            {{ line.service_name }}
+            <div class="li-meta">{{ line.duration_label }}</div>
+          </td>
+          <td class="li-price">{% if line.price %}{% if line.price_is_from %}<span class="price-from">from</span> {% endif %}${{ line.price }}{% else %}<span class="price-none">Not priced</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+        <tr class="total-row">
+          <td>Total</td>
+          <td class="li-price">${{ visit.total }}</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="li-meta">Prices read live from the price book at {{ visit.staff_name }}'s level — one source of truth, nothing typed in at the desk.</p>
+  </section>
+
+  <section>
+    {% if visit.appointment_notes %}
+    <div class="notes-kind">
+      <span class="label-caps">Appointment notes — this visit only</span>
+      {% for note in visit.appointment_notes %}
+      <p>{{ note.body }}{% if note.author_name %} <span class="li-meta">— {{ note.author_name }}</span>{% endif %}</p>
+      {% endfor %}
+    </div>
+    {% endif %}
+    <div class="notes-kind record">
+      <span class="label-caps">Client record notes — every visit</span>
+      {% for note in visit.record_notes %}
+      <p>{{ note.body }}{% if note.author_name %} <span class="li-meta">— {{ note.author_name }}</span>{% endif %}</p>
+      {% empty %}
+      <p class="li-meta">No record notes for this client yet.</p>
+      {% endfor %}
+    </div>
+  </section>
+</div>
+{% else %}
+<div class="empty-card">
+  <div class="empty-arch" aria-hidden="true">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3c1.8 2.6 1.8 5.4 0 8-1.8-2.6-1.8-5.4 0-8Z"/><path d="M5.5 8.5c3.2.3 5.4 2 6.5 4.9-3.2-.3-5.4-2-6.5-4.9Z"/><path d="M18.5 8.5c-3.2.3-5.4 2-6.5 4.9 3.2-.3 5.4-2 6.5-4.9Z"/></svg>
+  </div>
+  <h2 class="empty-title">This visit opens with the bookings lane</h2>
+  <p>Appointment #{{ appointment_id }} will appear here — its services, its total, its notes — the moment appointments land in the day book. Nothing about a visit is ever invented on this screen.</p>
+  <p class="empty-action"><a class="btn btn-gold" href="{% url 'webui:daybook' %}">Back to the day book</a></p>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,56 @@
+{% extends "webui/base.html" %}
+{% block title %}Copy appointment{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <h1 class="page-title">Copy appointment</h1>
+    <p class="page-subtitle">
+      {% if source %}Copying {{ source.client_name }}'s visit ({{ source.date|date:"F j" }}, with {{ source.staff_name }}) — same services, new place on the book.
+      {% elif source_id %}Copying visit #{{ source_id }}.
+      {% else %}Pick an appointment from the day book first — Copy on any block brings you here with the visit in hand.{% endif %}
+    </p>
+  </div>
+  <nav class="day-nav"><a class="btn btn-quiet" href="{% url 'webui:daybook' %}">← Day book</a></nav>
+</section>
+
+{% if form_note %}<p class="form-note">{{ form_note }}</p>{% endif %}
+
+{% if source %}
+<section class="panel copy-source">
+  <h2 class="panel-title">The visit being copied</h2>
+  <table class="line-items"><tbody>
+    {% for line in source.lines %}
+    <tr><td>{{ line.service_name }}<div class="li-meta">{{ line.duration_label }}</div></td>
+    <td class="li-price">{% if line.price %}${{ line.price }}{% else %}<span class="price-none">Not priced</span>{% endif %}</td></tr>
+    {% endfor %}
+    <tr class="total-row"><td>Total</td><td class="li-price">${{ source.total }}</td></tr>
+  </tbody></table>
+</section>
+{% endif %}
+
+<form method="post" class="form-card">
+  {% csrf_token %}
+  <input type="hidden" name="source" value="{{ source_id|default:'' }}">
+  <div class="field">
+    <label for="{{ form.staff.id_for_label }}">Place with</label>
+    {{ form.staff }}
+    {% for error in form.staff.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+  </div>
+  <div class="field-row">
+    <div class="field">
+      <label for="{{ form.date.id_for_label }}">On</label>
+      {{ form.date }}
+      {% for error in form.date.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+    </div>
+    <div class="field">
+      <label for="{{ form.start.id_for_label }}">Starting at</label>
+      {{ form.start }}
+      {% for error in form.start.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+    </div>
+  </div>
+  <div class="form-actions">
+    <button class="btn btn-primary" type="submit" {% if not source_id %}disabled{% endif %}>Place the copy</button>
+    <a class="btn btn-quiet" href="{% url 'webui:daybook' %}">Cancel</a>
+  </div>
+</form>
+{% endblock %}

@@ -25,7 +25,7 @@ information, twice over:
   `views.CATEGORY_PALETTE` in the salon's own category order; day book
   blocks wear it as their wash (`--wash`/`--ink` inline).
 - **Status palette** — booked (harbour blue), confirmed (leaf green),
-  arrived/`checked_in` (gold), in service (teal), done (grey-sage),
+  arrived (gold), in service (teal), done (grey-sage),
   no-show (terracotta), cancelled (dashed stone). Breaks are a
   separate hatched warm-stone treatment: gold flag = paid, grey =
   unpaid.
@@ -46,7 +46,7 @@ ships with default browser styling.
 | `client_name`  | str           |                                        |
 | `service_name` | str           |                                        |
 | `start`/`end`  | datetime.time | salon-local, end after start           |
-| `status`       | str           | booked, confirmed, checked_in, in_service, completed, no_show, cancelled |
+| `status`       | str           | booked, confirmed, arrived, in_service, completed, no_show, cancelled |
 | `note`         | str           | optional appointment-only note         |
 | `category`     | str           | optional category name (shown on the block) |
 | `category_id`  | int           | optional `ServiceCategory.pk` (colourway + category filter) |
@@ -82,11 +82,71 @@ team chips toggle them), `status` (one status), `cat`
 (`ServiceCategory.pk`). Price book: `q` search + `cat` category.
 Clients: `q` search + `opt` (`sms` | `email` | `notes`).
 
+## The click model (day book interactions)
+
+Implemented in `webui/interactions.py` + `webui/forms.py`, styled
+entirely from the design system's components:
+
+- **Click an appointment block** → its **breakdown**
+  (`/appointment/<id>/`): the visit's services as priced line items
+  with a running total, appointment notes vs client record notes as
+  the two distinct kinds they are, and Copy / Add service / Pay
+  actions. A *visit* is the contiguous chain of same-client,
+  same-stylist appointments where each starts when the previous ends
+  (the bookings model carries one service per appointment). Prices
+  are read live from the price book at the stylist's level — never
+  stored on the appointment, never typed in at the desk.
+- **Add service** (`/appointment/<id>/add-service/`) books the chosen
+  service as the next appointment in the visit's chain.
+- **Close out / Pay** (`/appointment/<id>/close-out/`) shows the
+  visit total and hands the visit to checkout (Lane 4) via
+  `close_out_visit` — until Lane 4 lands it takes no payment and
+  says so. No fake success state exists anywhere in this app.
+- **Click empty column space** → the **booking form**
+  (`/appointment/new/`), prefilled with that stylist and the clicked
+  time (15-minute snap). Client pick is a name search backed by the
+  real client book; services carry duration + price from the price
+  book; the note field is an appointment-only note.
+- **Copy** — the day book toolbar's ⧉ Copy toggle arms copy mode:
+  click a block to pick the visit up, click any slot (any stylist,
+  any time on the visible day) to open the copy form targeted there;
+  Esc disarms. Blocks and the breakdown also carry explicit Copy
+  actions (`/appointment/copy/?source=<id>`) — copying a visit copies
+  its whole chain, keeping relative timing.
+- **Breaks** — every column head carries a ＋ Break action (and the
+  booking form's sibling `/break/new/`): stylist, date, start,
+  length, label, and the **paid** flag — payroll data, captured
+  explicitly, rendered on the break block always.
+
+### Interaction contracts (webui/interactions.py)
+
+All persistence goes through these functions; each imports the
+bookings models lazily, so while the bookings lane is not on main
+they resolve to "not wired" and the pages say plainly that nothing
+was saved/booked/copied/paid:
+
+| function | returns |
+|----------|---------|
+| `breakdown_for_appointment(salon, id)` | visit dict (shape in its docstring) or None |
+| `create_appointment(salon, *, client, staff, service, day, start, note)` | new appointment id or None |
+| `copy_appointment(salon, id, *, staff, day, start)` | first copy's id or None |
+| `add_service_to_visit(salon, id, service)` | bool |
+| `create_break(salon, *, staff, day, start, minutes, paid, label)` | bool — awaits the bookings lane's blocked-time/break model |
+| `close_out_visit(salon, id)` | checkout handoff dict or None (Lane 4) |
+
+`blocks_for_day` already reads real `Appointment` rows the moment
+the bookings app is installed (see `_block_from_appointment`), and
+statuses use the bookings model's own vocabulary (`arrived`, not
+`checked_in`).
+
 ## Pages
 
-- `/` Day Book — date control + week strip, filters, one column per
-  active staff member, hour grid 8:00–20:00, availability bands,
-  appointment blocks, break blocks.
+- `/` Day Book — date control + week strip, filters, copy mode, one
+  column per active staff member, hour grid 8:00–20:00, availability
+  bands, appointment blocks, break blocks.
+- `/appointment/<id>/` breakdown · `/appointment/<id>/add-service/` ·
+  `/appointment/<id>/close-out/` · `/appointment/new/` booking form ·
+  `/appointment/copy/` copy form · `/break/new/` break form.
 - `/clients/` — searchable client list, opt-in filters, SMS/email
   opt-in badges, record-note indicator.
 - `/price-book/` — search + category filter, services grouped by

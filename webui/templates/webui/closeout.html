@@ -1,0 +1,44 @@
+{% extends "webui/base.html" %}
+{% block title %}Close out — {{ visit.client_name|default:"Visit" }}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <h1 class="page-title">Close out</h1>
+    <p class="page-subtitle">{% if visit %}{{ visit.client_name }} · {{ visit.date|date:"l, F j" }} · with {{ visit.staff_name }}{% else %}Visit #{{ appointment_id }}{% endif %}</p>
+  </div>
+  {% if visit %}<nav class="day-nav"><a class="btn btn-quiet" href="{% url 'webui:breakdown' visit.id %}">← Breakdown</a></nav>{% endif %}
+</section>
+
+{% if form_note %}<p class="form-note">{{ form_note }}</p>{% endif %}
+
+{% if visit %}
+<section class="panel">
+  <h2 class="panel-title">To pay</h2>
+  <table class="line-items">
+    <tbody>
+      {% for line in visit.lines %}
+      <tr>
+        <td>{{ line.service_name }}<div class="li-meta">{{ line.duration_label }}</div></td>
+        <td class="li-price">{% if line.price %}{% if line.price_is_from %}<span class="price-from">from</span> {% endif %}${{ line.price }}{% else %}<span class="price-none">Not priced</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+      <tr class="total-row">
+        <td>Total due</td>
+        <td class="li-price">${{ visit.total }}</td>
+      </tr>
+    </tbody>
+  </table>
+  <form method="post" class="form-actions">
+    {% csrf_token %}
+    <button class="btn btn-gold" type="submit">Pay ${{ visit.total }} — close out</button>
+    <span class="li-meta">Checkout (Lane 4) takes the payment through your salon's own provider — OpenSalon core never touches a card and never takes a cut.</span>
+  </form>
+</section>
+{% else %}
+<div class="empty-card">
+  <h2 class="empty-title">Nothing to close out yet</h2>
+  <p>This visit resolves when the bookings lane lands; checkout follows in Lane 4. No payment is ever simulated on this screen.</p>
+  <p class="empty-action"><a class="btn" href="{% url 'webui:daybook' %}">Back to the day book</a></p>
+</div>
+{% endif %}
+{% endblock %}

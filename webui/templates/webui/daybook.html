@@ -55,11 +55,16 @@
     </select>
     {% if filters_active %}<a class="btn btn-quiet" href="{{ clear_url }}">Clear filters</a>{% endif %}
   </form>
+  <div class="toolbar-group">
+    <button type="button" class="btn" id="copy-toggle" aria-pressed="false" title="Copy mode: pick up an appointment, click where it goes">⧉ Copy</button>
+    <a class="btn" href="{% url 'webui:appointment_new' %}?date={{ day|date:'Y-m-d' }}">＋ New appointment</a>
+  </div>
 </div>
+<p class="copy-status" id="copy-status" hidden></p>
 {% endif %}
 
 {% if staff_columns %}
-<div class="daybook-wrap">
+<div class="daybook-wrap" id="daybook-wrap">
 <div class="daybook" style="--cols:{{ staff_columns|length }};">
   <div class="db-corner"></div>
   {% for col in staff_columns %}
@@ -72,7 +77,10 @@
         {% if col.on_duty %}{{ col.shift_label }}{% else %}Not rostered{% endif %}
       </div>
     </div>
-    {% if not col.member.online_bookable %}<div class="db-staff-flags"><span class="tag">No online booking</span></div>{% endif %}
+    <div class="db-staff-flags">
+      {% if not col.member.online_bookable %}<span class="tag">No online booking</span> {% endif %}
+      <a class="tag tag-action" href="{% url 'webui:break_new' %}?staff={{ col.member.pk }}&date={{ day|date:'Y-m-d' }}">＋ Break</a>
+    </div>
   </div>
   {% endfor %}
 
@@ -80,7 +88,7 @@
     {% for hour in hours %}<div class="db-hour">{{ hour|time:"g A" }}</div>{% endfor %}
   </div>
   {% for col in staff_columns %}
-  <div class="db-column {% if not col.on_duty %}is-off{% endif %}">
+  <div class="db-column {% if not col.on_duty %}is-off{% endif %}" data-staff-id="{{ col.member.pk }}" data-date="{{ day|date:'Y-m-d' }}">
     {% for band in col.bands %}
     <div class="db-band" style="top:{{ band.top }}%;height:{{ band.height }}%;">
       {% if band.tall %}<span class="db-band-label">Available · {{ band.label }}</span>{% endif %}

@@ -453,7 +453,7 @@ input[type="checkbox"]:focus-visible { box-shadow: var(--focus-ring); }
 .appt-note { color: var(--ink-soft); font-style: italic; font-size: 12.5px; margin-top: 2px; }
 .appt-block.status-booked { --status: var(--status-booked); }
 .appt-block.status-confirmed { --status: var(--status-confirmed); }
-.appt-block.status-checked_in { --status: var(--status-arrived); box-shadow: var(--elev-1), 0 0 0 1.5px var(--gold-300); }
+.appt-block.status-arrived { --status: var(--status-arrived); box-shadow: var(--elev-1), 0 0 0 1.5px var(--gold-300); }
 .appt-block.status-in_service { --status: var(--status-inservice); }
 .appt-block.status-completed { --status: var(--status-done); opacity: .72; }
 .appt-block.status-no_show { --status: var(--status-noshow); }
@@ -579,7 +579,7 @@ th.col-price { text-align: right; white-space: normal; line-height: 1.3; }
   text-transform: uppercase; font-weight: 700; color: var(--ink-soft);
   margin-bottom: 7px;
 }
-.field input, .field select, .field textarea { width: 100%; border-radius: var(--radius-m); }
+.field input:not([type="checkbox"]), .field select, .field textarea { width: 100%; border-radius: var(--radius-m); }
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4); }
 .field-check { display: flex; align-items: center; gap: 11px; }
 .field-check label { margin: 0; text-transform: none; letter-spacing: 0; font-size: var(--text-body); color: var(--ink); font-weight: 600; }
@@ -612,3 +612,41 @@ th.col-price { text-align: right; white-space: normal; line-height: 1.3; }
 }
 .notes-kind.record { border-left-color: var(--gold-500); background: #fffaf0; }
 .notes-kind .label-caps { margin-bottom: 5px; display: block; }
+
+/* ---------- 14. Interactions (PR B) ---------- */
+.appt-block > span { display: block; }
+.appt-block > .appt-top { display: flex; }
+.db-band { pointer-events: none; }
+.db-column { cursor: pointer; }
+.tag-action {
+  text-decoration: none; color: var(--forest-700); border-color: var(--sage-300);
+  background: var(--surface); transition: all var(--transition);
+}
+.tag-action:hover { border-color: var(--gold-500); color: var(--gold-600); box-shadow: var(--elev-1); }
+#copy-toggle.is-on {
+  background: linear-gradient(160deg, var(--forest-500), var(--forest-800));
+  color: #fdfbf3; border-color: var(--forest-800);
+  box-shadow: inset 0 0 0 1.5px var(--gold-500), var(--elev-1);
+}
+.copy-status {
+  margin: 0 0 var(--space-4); padding: 11px 16px;
+  border: 1px dashed var(--gold-500); border-radius: var(--radius-m);
+  background: #fffaf0; color: #6d5518; font-size: 15.5px; font-weight: 600;
+}
+.breakdown-grid {
+  display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+  gap: var(--space-5); align-items: start;
+}
+@media (max-width: 900px) { .breakdown-grid { grid-template-columns: 1fr; } }
+.copy-source { margin-bottom: var(--space-5); }
+.field-error { color: var(--status-noshow); font-size: 14.5px; margin: 6px 0 0; font-weight: 600; }
+.form-card .form-note { margin-bottom: var(--space-4); }
+button[disabled] { opacity: .45; cursor: not-allowed; box-shadow: none; }
+.appt-status.status-text-booked { --status: var(--status-booked); color: var(--status-booked); }
+.appt-status.status-text-confirmed { --status: var(--status-confirmed); color: var(--status-confirmed); }
+.appt-status.status-text-arrived { --status: var(--status-arrived); color: var(--status-arrived); }
+.appt-status.status-text-in_service { --status: var(--status-inservice); color: var(--status-inservice); }
+.appt-status.status-text-completed { --status: var(--status-done); color: var(--status-done); }
+.appt-status.status-text-no_show { --status: var(--status-noshow); color: var(--status-noshow); }
+.appt-status.status-text-cancelled { --status: var(--status-cancelled); color: var(--status-cancelled); }
+.appt-status { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; }

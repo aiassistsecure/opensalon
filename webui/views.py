@@ -11,24 +11,25 @@ import datetime
 
 from django.core.paginator import Paginator
 from django.db.models import Count, Q
-from django.shortcuts import render
+from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.utils import timezone
 
 from clients.models import Client
-from saloncore.models import Salon, ServiceCategory, StaffLevel
+from saloncore.models import Salon, Service, ServiceCategory, StaffLevel
 from team.models import StaffMember
 
 # The day book window: 8:00 to 20:00 salon-local.
 DAY_START_HOUR = 8
 DAY_END_HOUR = 20
 
-# Appointment statuses the day book understands, in display order.
-# "checked_in" is the front desk's *arrived*; "in_service" is the
-# chair-time state between arrival and done.
+# Appointment statuses the day book understands, in display order —
+# the bookings model's own vocabulary (booked → confirmed → arrived
+# → in_service → completed, with no_show / cancelled off the path).
 APPOINTMENT_STATUSES = [
     ("booked", "Booked"),
     ("confirmed", "Confirmed"),
-    ("checked_in", "Arrived"),
+    ("arrived", "Arrived"),
     ("in_service", "In service"),
     ("completed", "Done"),
     ("no_show", "No-show"),
@@ -67,7 +68,7 @@ def blocks_for_day(salon, day):
             "service_name": str,
             "start":       datetime.time,   # salon-local
             "end":         datetime.time,   # salon-local, after start
-            "status":      "booked" | "confirmed" | "checked_in"
+            "status":      "booked" | "confirmed" | "arrived"
                            | "in_service" | "completed" | "no_show"
                            | "cancelled",
             "note":        str,             # optional appointment-only note
@@ -75,14 +76,45 @@ def blocks_for_day(salon, day):
                                             # name (block colourway)
             "category_id": int,             # optional ServiceCategory.pk
                                             # (category filter)
+            "appointment_id": int,          # optional Appointment.pk —
+                                            # makes the block a link to
+                                            # its breakdown view
         }
 
-    The bookings lane (Lane 3) will feed this from real Appointment
-    rows; the template and its positioning math consume only this
-    shape, so no template change is needed when that lands. Until
-    then there are no Appointment rows to read, so this returns [].
+    The bookings lane (Lane 3) feeds this from real Appointment rows:
+    the read below activates automatically the moment the bookings
+    app is installed (lazy import — while it isn't, there are no
+    Appointment rows to read and this returns []). The template and
+    its positioning math consume only this shape either way.
     """
-    return []
+    try:
+        from bookings.models import Appointment
+    except ImportError:
+        return []
+    appointments = (
+        Appointment.objects.filter(client__salon=salon, start__date=day)
+        .select_related("client", "staff_member", "service__category")
+        .prefetch_related("notes")
+        .order_by("start")
+    )
+    return [_block_from_appointment(a) for a in appointments]
+
+
+def _block_from_appointment(appointment):
+    """Map one bookings Appointment row onto the block contract."""
+    notes = list(appointment.notes.all())
+    return {
+        "staff_id": appointment.staff_member_id,
+        "client_name": str(appointment.client),
+        "service_name": appointment.service.name,
+        "start": timezone.localtime(appointment.start).time(),
+        "end": timezone.localtime(appointment.end).time(),
+        "status": appointment.status,
+        "note": notes[0].body if notes else "",
+        "category": appointment.service.category.name,
+        "category_id": appointment.service.category_id,
+        "appointment_id": appointment.pk,
+    }
 
 
 def breaks_for_day(salon, day):
@@ -197,6 +229,11 @@ def day_book(request):
             ]
             block = {
                 **block,
+                "url": (
+                    reverse("webui:breakdown", args=[block["appointment_id"]])
+                    if block.get("appointment_id")
+                    else ""
+                ),
                 "top": _pct(start, day_start, day_end),
                 "height": max(_pct(end, day_start, day_end) - _pct(start, day_start, day_end), 4.0),
                 "time_label": f"{_fmt_time(block['start'])} – {_fmt_time(block['end'])}",

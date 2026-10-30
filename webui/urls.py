@@ -1,11 +1,25 @@
 from django.urls import path
 
-from . import views
+from . import interactions, views
 
 app_name = "webui"
 
 urlpatterns = [
     path("", views.day_book, name="daybook"),
+    path("appointment/new/", interactions.appointment_new, name="appointment_new"),
+    path("appointment/copy/", interactions.appointment_copy, name="appointment_copy"),
+    path("appointment/<int:appointment_id>/", interactions.breakdown, name="breakdown"),
+    path(
+        "appointment/<int:appointment_id>/add-service/",
+        interactions.add_service,
+        name="add_service",
+    ),
+    path(
+        "appointment/<int:appointment_id>/close-out/",
+        interactions.close_out,
+        name="close_out",
+    ),
+    path("break/new/", interactions.break_new, name="break_new"),
     path("price-book/", views.price_book, name="pricebook"),
     path("clients/", views.clients, name="clients"),
     path(

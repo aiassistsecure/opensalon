@@ -1,0 +1,58 @@
+{% extends "webui/base.html" %}
+{% block title %}Add a break{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <h1 class="page-title">Add a break</h1>
+    <p class="page-subtitle">A break takes that time off the stylist's availability. Paid or unpaid matters — it lands on payroll exactly as you set it here.</p>
+  </div>
+  <nav class="day-nav"><a class="btn btn-quiet" href="{% url 'webui:daybook' %}">← Day book</a></nav>
+</section>
+
+{% if form_note %}<p class="form-note">{{ form_note }}</p>{% endif %}
+
+<form method="post" class="form-card">
+  {% csrf_token %}
+  <div class="field">
+    <label for="{{ form.staff.id_for_label }}">Stylist</label>
+    {{ form.staff }}
+    {% for error in form.staff.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+  </div>
+  <div class="field-row">
+    <div class="field">
+      <label for="{{ form.date.id_for_label }}">Date</label>
+      {{ form.date }}
+      {% for error in form.date.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+    </div>
+    <div class="field">
+      <label for="{{ form.start.id_for_label }}">Start</label>
+      {{ form.start }}
+      {% for error in form.start.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+    </div>
+  </div>
+  <div class="field-row">
+    <div class="field">
+      <label for="{{ form.minutes.id_for_label }}">Length</label>
+      {{ form.minutes }}
+      {% for error in form.minutes.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+    </div>
+    <div class="field">
+      <label for="{{ form.label.id_for_label }}">Label</label>
+      {{ form.label }}
+      {% for error in form.label.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+    </div>
+  </div>
+  <div class="field">
+    <div class="field-check">
+      {{ form.paid }}
+      <label for="{{ form.paid.id_for_label }}">Paid break</label>
+    </div>
+    <p class="li-meta">Paid breaks count as paid time on payroll. Leave unticked for an unpaid break — the day book shows the flag on the break, always.</p>
+    {% for error in form.paid.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+  </div>
+  <div class="form-actions">
+    <button class="btn btn-primary" type="submit">Add break</button>
+    <a class="btn btn-quiet" href="{% url 'webui:daybook' %}">Cancel</a>
+  </div>
+</form>
+{% endblock %}

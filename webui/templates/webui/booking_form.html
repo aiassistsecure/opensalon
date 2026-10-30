@@ -1,0 +1,88 @@
+{% extends "webui/base.html" %}
+{% block title %}New appointment{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <h1 class="page-title">New appointment</h1>
+    <p class="page-subtitle">Booked from the price book — duration and price come with the service.</p>
+  </div>
+  <nav class="day-nav"><a class="btn btn-quiet" href="{% url 'webui:daybook' %}">← Day book</a></nav>
+</section>
+
+{% if form_note %}<p class="form-note">{{ form_note }}</p>{% endif %}
+{% if form.non_field_errors %}<p class="form-note">{{ form.non_field_errors }}</p>{% endif %}
+
+<form method="post" class="form-card" id="booking-form">
+  {% csrf_token %}
+  {{ form.client_id }}
+  <div class="field">
+    <label for="client-search">Client</label>
+    <input type="text" id="client-search" name="client_name" list="client-list"
+           value="{{ form.client_name.value|default:'' }}" placeholder="Start typing a name…" autocomplete="off">
+    <datalist id="client-list">
+      {% for client in clients %}<option value="{{ client.first_name }} {{ client.last_name }}" data-client-id="{{ client.pk }}"></option>{% endfor %}
+    </datalist>
+    {% for error in form.client_name.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+  </div>
+  <div class="field">
+    <label for="{{ form.service.id_for_label }}">Service</label>
+    <select name="service" id="{{ form.service.id_for_label }}">
+      <option value="">Choose a service…</option>
+      {% for service in service_options %}
+      <option value="{{ service.pk }}" {% if form.service.value|stringformat:'s' == service.pk|stringformat:'s' %}selected{% endif %}>
+        {{ service.name }} · {{ service.total_minutes }} min{% if service.prices.all %} · ${{ service.prices.all.0.amount }}{% endif %}
+      </option>
+      {% endfor %}
+    </select>
+    {% for error in form.service.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+  </div>
+  <div class="field-row">
+    <div class="field">
+      <label for="{{ form.staff.id_for_label }}">Stylist</label>
+      {{ form.staff }}
+      {% for error in form.staff.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+    </div>
+    <div class="field">
+      <label for="{{ form.date.id_for_label }}">Date</label>
+      {{ form.date }}
+      {% for error in form.date.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+    </div>
+  </div>
+  <div class="field-row">
+    <div class="field">
+      <label for="{{ form.start.id_for_label }}">Start</label>
+      {{ form.start }}
+      {% for error in form.start.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+    </div>
+    <div class="field">
+      <label for="{{ form.note.id_for_label }}">Appointment note</label>
+      {{ form.note }}
+      <p class="li-meta">This note belongs to this appointment only — it does not go on the client's record.</p>
+      {% for error in form.note.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+    </div>
+  </div>
+  <div class="form-actions">
+    <button class="btn btn-primary" type="submit">Book appointment</button>
+    <a class="btn btn-quiet" href="{% url 'webui:daybook' %}">Cancel</a>
+  </div>
+</form>
+{% endblock %}
+{% block scripts %}
+<script>
+(function () {
+  var input = document.getElementById("client-search");
+  var hidden = document.getElementById("{{ form.client_id.id_for_label }}");
+  var list = document.getElementById("client-list");
+  if (!input || !hidden || !list) return;
+  input.addEventListener("change", function () {
+    hidden.value = "";
+    for (var i = 0; i < list.options.length; i++) {
+      if (list.options[i].value === input.value) {
+        hidden.value = list.options[i].getAttribute("data-client-id") || "";
+        break;
+      }
+    }
+  });
+})();
+</script>
+{% endblock %}
