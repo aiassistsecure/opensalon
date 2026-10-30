@@ -19,20 +19,27 @@ Skeleton scope (N-M3b), per the NEDB DYOR note (2026-10-30), section 9:
   catalog-validating no-op schema editor (all DDL validated against
   the app registry, then nothing is sent; NEDB is schemaless and its
   collections are created implicitly by the first write).
+* Implication 4: savepoints are killed (N-M3e). SAVEPOINT / RELEASE
+  SAVEPOINT / ROLLBACK TO SAVEPOINT are refused by NEDB at execution
+  (spike section 6, pgwire.rs:1246-1255), so ``features.py`` declares
+  ``uses_savepoints = False`` and the ``_savepoint*`` hooks below are
+  no-ops: Django ``atomic()`` nesting never sends savepoint SQL to
+  nedbd. The accepted trade-off: nested-atomic rollback is
+  transaction-level on NEDB, whose atomicity unit is the CAS batch /
+  ``if_seq`` transaction, not SQL savepoints.
 
-Deliberately NOT here (later microtasks): savepoint/transaction
-mapping (implication 4), TRUNCATE/flush replacement (implication 5),
-and identity/RETURNING handling (implication 6).
+Deliberately NOT here (later microtasks): TRUNCATE/flush replacement
+(implication 5) and identity/RETURNING handling (implication 6).
 """
 
 from django.db.backends.postgresql.base import (
     DatabaseWrapper as PostgresDatabaseWrapper,
 )
 from django.db.backends.postgresql.client import DatabaseClient
-from django.db.backends.postgresql.features import DatabaseFeatures
 from django.db.backends.postgresql.introspection import DatabaseIntrospection
 
 from .creation import DatabaseCreation
+from .features import DatabaseFeatures
 from .operations import DatabaseOperations
 from .schema import DatabaseSchemaEditor
 
@@ -69,4 +76,23 @@ class DatabaseWrapper(PostgresDatabaseWrapper):
         # _configure_connection (the set_config path); the base-class
         # version additionally probes the server version on first use.
         # A NEDB connection needs neither: no session state is set here.
+        pass
+
+    # -- savepoints: never sent to NEDB (DYOR 9.4, N-M3e) -------------
+
+    def _savepoint(self, sid):
+        # No-op on purpose: NEDB refuses SAVEPOINT at execution. The
+        # primary guard is features.uses_savepoints = False (Django's
+        # _savepoint_allowed() then never calls this); this override
+        # keeps the hook inert even for a direct caller.
+        pass
+
+    def _savepoint_rollback(self, sid):
+        # No-op: ROLLBACK TO SAVEPOINT is refused the same way. An
+        # inner atomic() failure therefore rolls back the whole
+        # transaction -- Django's fallback when no savepoint exists.
+        pass
+
+    def _savepoint_commit(self, sid):
+        # No-op: RELEASE SAVEPOINT is refused the same way.
         pass

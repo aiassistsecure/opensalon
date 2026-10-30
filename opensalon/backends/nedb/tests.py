@@ -2,7 +2,8 @@
 
 Run with: python manage.py test opensalon.backends.nedb
 These tests pin: no session-setup SQL, no SQL test-database creation,
-and the schema editor's catalog-validating no-op DDL handling (N-M3d).
+the schema editor's catalog-validating no-op DDL handling (N-M3d), and
+savepoint no-ops so nested atomic() sends no savepoint SQL (N-M3e).
 """
 
 from unittest import mock
@@ -14,6 +15,7 @@ from django.test import SimpleTestCase
 
 from opensalon.backends.nedb.base import DatabaseWrapper
 from opensalon.backends.nedb.creation import DatabaseCreation
+from opensalon.backends.nedb.features import DatabaseFeatures
 from opensalon.backends.nedb.operations import DatabaseOperations
 from opensalon.backends.nedb.schema import (
     DatabaseSchemaEditor,
@@ -228,3 +230,84 @@ class SchemaEditorCatalogValidationTests(SimpleTestCase):
         editor, wrapper, cursor = _editor()
         editor.execute('UPDATE "saloncore_salon" SET "name" = %s', None)
         cursor.execute.assert_called_once()
+
+
+def _savepoint_wrapper():
+    """Wrapper in a transaction, backed by a mock cursor/connection."""
+    wrapper = _wrapper()
+    cursor = mock.Mock(name="cursor")
+    cursor_cm = mock.MagicMock(name="cursor_context")
+    cursor_cm.__enter__.return_value = cursor
+    wrapper.cursor = mock.Mock(return_value=cursor_cm)
+    wrapper.connection = mock.Mock(name="connection")
+    wrapper.autocommit = False
+    return wrapper, cursor
+
+
+class SavepointFeatureTests(SimpleTestCase):
+    def test_wrapper_uses_nedb_features_without_savepoints(self):
+        wrapper = _wrapper()
+        self.assertIs(wrapper.features_class, DatabaseFeatures)
+        self.assertFalse(wrapper.features.uses_savepoints)
+        self.assertFalse(wrapper.features.can_release_savepoints)
+
+    def test_savepoint_not_allowed_in_transaction(self):
+        wrapper, cursor = _savepoint_wrapper()
+        self.assertFalse(wrapper._savepoint_allowed())
+        wrapper.cursor.assert_not_called()
+
+
+class SavepointNoOpTests(SimpleTestCase):
+    def test_public_savepoint_methods_are_inert(self):
+        wrapper, cursor = _savepoint_wrapper()
+        self.assertIsNone(wrapper.savepoint())
+        # Even a fabricated sid must not produce SQL on rollback/commit.
+        wrapper.savepoint_rollback("s1_x1")
+        wrapper.savepoint_commit("s1_x1")
+        wrapper.cursor.assert_not_called()
+        cursor.execute.assert_not_called()
+
+    def test_private_hooks_are_inert(self):
+        wrapper, cursor = _savepoint_wrapper()
+        self.assertIsNone(wrapper._savepoint("s1_x1"))
+        self.assertIsNone(wrapper._savepoint_rollback("s1_x1"))
+        self.assertIsNone(wrapper._savepoint_commit("s1_x1"))
+        wrapper.cursor.assert_not_called()
+        cursor.execute.assert_not_called()
+
+    def test_operations_build_no_savepoint_sql(self):
+        wrapper = _wrapper()
+        self.assertIsNone(wrapper.ops.savepoint_create_sql("s1"))
+        self.assertIsNone(wrapper.ops.savepoint_commit_sql("s1"))
+        self.assertIsNone(wrapper.ops.savepoint_rollback_sql("s1"))
+
+
+class NestedAtomicSavepointTests(SimpleTestCase):
+    def test_nested_atomic_emits_zero_savepoint_sql(self):
+        from django.db.transaction import Atomic
+
+        wrapper, cursor = _savepoint_wrapper()
+        wrapper.autocommit = True
+        wrapper.connection = mock.Mock(name="connection")
+
+        def _set_autocommit(value, **kwargs):
+            wrapper.autocommit = value
+
+        wrapper.set_autocommit = _set_autocommit
+        get_conn = "django.db.transaction.get_connection"
+        with mock.patch(get_conn, return_value=wrapper):
+            with Atomic("default", savepoint=True, durable=False):
+                with Atomic("default", savepoint=True, durable=False):
+                    pass
+            with self.assertRaises(RuntimeError):
+                with Atomic("default", savepoint=True, durable=False):
+                    with Atomic("default", savepoint=True, durable=False):
+                        raise RuntimeError("inner failure")
+        wrapper.cursor.assert_not_called()
+        cursor.execute.assert_not_called()
+        executed = [
+            str(call) for call in cursor.execute.call_args_list
+        ]
+        self.assertFalse(
+            any("SAVEPOINT" in call for call in executed)
+        )
