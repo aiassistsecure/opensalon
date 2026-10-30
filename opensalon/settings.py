@@ -31,6 +31,7 @@ INSTALLED_APPS = [
     "bookings",
     "checkout",
     "insights",
+    "messaging",
     "onlinebooking",
     "webui",
 ]
@@ -107,6 +108,14 @@ EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
 EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "1") == "1"
 DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "salon@localhost")
+
+# SMS: provider-agnostic. Core speaks only messaging.adapters.SmsAdapter;
+# this setting is a dotted path to an adapter class. The default is the
+# console/no-op development adapter; a real provider adapter lives
+# outside core and is supplied by the salon/deployment.
+MESSAGING_SMS_ADAPTER = os.environ.get(
+    "MESSAGING_SMS_ADAPTER", "messaging.adapters.ConsoleSmsAdapter"
+)
 
 STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
