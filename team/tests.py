@@ -2,9 +2,10 @@ import datetime
 
 from django.db import IntegrityError, transaction
 from django.test import TestCase
+from django.utils import timezone
 
 from saloncore.models import Salon, StaffLevel
-from team.models import RosterPattern, StaffMember
+from team.models import AttendanceRecord, RosterPattern, StaffMember
 
 
 class StaffMemberModelTests(TestCase):
@@ -130,3 +131,74 @@ class RosterPatternModelTests(TestCase):
         self._create(weekday=0, start_time=datetime.time(9, 0), end_time=datetime.time(12, 0))
         rows = list(RosterPattern.objects.values_list("weekday", "start_time"))
         self.assertEqual(rows, [(0, datetime.time(9, 0)), (0, datetime.time(13, 0)), (2, datetime.time(10, 0))])
+
+
+class AttendanceRecordModelTests(TestCase):
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Mint On The Avenue")
+        self.member = StaffMember.objects.create(
+            display_name="Maribel Gonzalez", salon=self.salon
+        )
+        self.base = timezone.now() - datetime.timedelta(hours=4)
+
+    def _record(self, event_type, hours=0, **kwargs):
+        return AttendanceRecord.objects.create(
+            staff_member=self.member,
+            event_type=event_type,
+            recorded_at=self.base + datetime.timedelta(hours=hours),
+            **kwargs,
+        )
+
+    def test_event_records_against_staff_member(self):
+        rec = self._record(AttendanceRecord.EventType.CHECK_IN)
+        self.assertEqual(rec.staff_member, self.member)
+        self.assertEqual(list(self.member.attendance_records.all()), [rec])
+
+    def test_recorded_at_defaults_to_now(self):
+        before = timezone.now()
+        rec = AttendanceRecord.objects.create(
+            staff_member=self.member,
+            event_type=AttendanceRecord.EventType.CHECK_IN,
+        )
+        self.assertGreaterEqual(rec.recorded_at, before)
+        self.assertLessEqual(rec.recorded_at, timezone.now())
+
+    def test_note_optional(self):
+        self.assertEqual(self._record(AttendanceRecord.EventType.CHECK_IN).note, "")
+        noted = self._record(
+            AttendanceRecord.EventType.CHECK_OUT, hours=1, note="Left early"
+        )
+        self.assertEqual(noted.note, "Left early")
+
+    def test_ordering_latest_first(self):
+        self._record(AttendanceRecord.EventType.CHECK_IN, hours=0)
+        self._record(AttendanceRecord.EventType.CHECK_OUT, hours=2)
+        self._record(AttendanceRecord.EventType.CHECK_IN, hours=1)
+        times = list(
+            self.member.attendance_records.values_list("recorded_at", flat=True)
+        )
+        self.assertEqual(times, sorted(times, reverse=True))
+
+    def test_not_checked_in_with_no_events(self):
+        self.assertFalse(self.member.is_checked_in())
+
+    def test_checked_in_after_check_in(self):
+        self._record(AttendanceRecord.EventType.CHECK_IN)
+        self.assertTrue(self.member.is_checked_in())
+
+    def test_not_checked_in_after_check_out(self):
+        self._record(AttendanceRecord.EventType.CHECK_IN, hours=0)
+        self._record(AttendanceRecord.EventType.CHECK_OUT, hours=1)
+        self.assertFalse(self.member.is_checked_in())
+
+    def test_checked_in_again_after_second_check_in(self):
+        self._record(AttendanceRecord.EventType.CHECK_IN, hours=0)
+        self._record(AttendanceRecord.EventType.CHECK_OUT, hours=1)
+        self._record(AttendanceRecord.EventType.CHECK_IN, hours=2)
+        self.assertTrue(self.member.is_checked_in())
+
+    def test_is_checked_in_is_per_member(self):
+        other = StaffMember.objects.create(display_name="Sonia Taylor", salon=self.salon)
+        self._record(AttendanceRecord.EventType.CHECK_IN)
+        self.assertTrue(self.member.is_checked_in())
+        self.assertFalse(other.is_checked_in())

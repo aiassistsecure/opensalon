@@ -1,4 +1,5 @@
 from django.db import models
+from django.utils import timezone
 
 from saloncore.models import Salon, StaffLevel
 
@@ -33,6 +34,11 @@ class StaffMember(models.Model):
 
     def __str__(self):
         return self.display_name
+
+    def is_checked_in(self):
+        """True when this member's latest attendance event is a check-in."""
+        latest = self.attendance_records.first()
+        return latest is not None and latest.event_type == AttendanceRecord.EventType.CHECK_IN
 
 
 class RosterPattern(models.Model):
@@ -74,3 +80,30 @@ class RosterPattern(models.Model):
             f"{self.staff_member} {self.get_weekday_display()} "
             f"{self.start_time}-{self.end_time}"
         )
+
+
+class AttendanceRecord(models.Model):
+    """A single check-in / check-out event for a staff member.
+
+    Attendance is an event log: each row is one event, and a member's
+    current state is derived from their latest event (see
+    ``StaffMember.is_checked_in``). Records are never edited to change
+    state — a new event is recorded instead.
+    """
+
+    class EventType(models.TextChoices):
+        CHECK_IN = "check_in", "Check in"
+        CHECK_OUT = "check_out", "Check out"
+
+    staff_member = models.ForeignKey(
+        StaffMember, on_delete=models.CASCADE, related_name="attendance_records"
+    )
+    event_type = models.CharField(max_length=10, choices=EventType.choices)
+    recorded_at = models.DateTimeField(default=timezone.now)
+    note = models.CharField(max_length=255, blank=True, default="")
+
+    class Meta:
+        ordering = ["-recorded_at", "-id"]
+
+    def __str__(self):
+        return f"{self.staff_member} {self.get_event_type_display()} at {self.recorded_at}"
