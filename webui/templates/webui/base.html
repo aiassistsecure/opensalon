@@ -9,9 +9,18 @@
 </head>
 <body>
 <header class="shell-header">
+  <svg class="header-sprig" viewBox="0 0 220 64" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+    <path d="M4 58 C 60 50, 120 30, 214 6" />
+    <path d="M52 50 q -4 -14 8 -20 q 3 13 -8 20 Z" />
+    <path d="M96 40 q -2 -15 11 -21 q 2 14 -11 21 Z" />
+    <path d="M140 28 q 0 -15 13 -19 q 1 14 -13 19 Z" />
+    <path d="M182 16 q 3 -13 15 -15 q -1 13 -15 15 Z" />
+  </svg>
   <div class="shell-header-inner">
     <div class="salon-identity">
-      <div class="salon-mark" aria-hidden="true">✿</div>
+      <div class="salon-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3c1.8 2.6 1.8 5.4 0 8-1.8-2.6-1.8-5.4 0-8Z"/><path d="M5.5 8.5c3.2.3 5.4 2 6.5 4.9-3.2-.3-5.4-2-6.5-4.9Z"/><path d="M18.5 8.5c-3.2.3-5.4 2-6.5 4.9 3.2-.3 5.4-2 6.5-4.9Z"/><path d="M12 12.6c.9 0 1.6.7 1.6 1.6 0 2-1.6 4.3-1.6 4.3s-1.6-2.3-1.6-4.3c0-.9.7-1.6 1.6-1.6Z"/></svg>
+      </div>
       <div>
         <div class="salon-name">{{ salon.name|default:"Your Salon" }}</div>
         <div class="salon-sub">Front desk</div>
@@ -31,6 +40,14 @@
 <main class="shell-main">
 {% block content %}{% endblock %}
 </main>
-<footer class="shell-footer">Powered by OpenSalon — free, open-source salon software.</footer>
+<footer class="shell-footer">
+  <svg class="footer-sprig" viewBox="0 0 120 14" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true">
+    <path d="M2 11 C 40 5, 80 5, 118 8" />
+    <path d="M44 8 q -1 -6 5 -8 M78 7 q 0 -6 6 -7" />
+  </svg>
+  <span>Powered by OpenSalon — free, open-source salon software.</span>
+</footer>
+<script src="{% static 'webui/webui.js' %}"></script>
+{% block scripts %}{% endblock %}
 </body>
 </html>

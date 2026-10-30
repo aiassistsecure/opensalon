@@ -6,13 +6,28 @@
     <h1 class="page-title">Price Book</h1>
     <p class="page-subtitle">Every service, every level — one source of truth.</p>
   </div>
+  <form class="search" method="get" role="search">
+    {% if cat_filter %}<input type="hidden" name="cat" value="{{ cat_filter }}">{% endif %}
+    <input type="search" name="q" value="{{ query }}" placeholder="Search services…" aria-label="Search services">
+    <button class="btn" type="submit">Search</button>
+  </form>
 </section>
+
+{% if all_categories %}
+<nav class="chip-row" aria-label="Service categories">
+  <a class="chip {% if not cat_filter %}is-on{% endif %}" href="?{% if query %}q={{ query|urlencode }}{% endif %}">All categories</a>
+  {% for cat in all_categories %}
+  <a class="chip {% if cat_filter == cat.pk %}is-on{% endif %}" href="?cat={{ cat.pk }}{% if query %}&q={{ query|urlencode }}{% endif %}">{{ cat.name }}</a>
+  {% endfor %}
+</nav>
+{% endif %}
 
 {% if categories %}
 {% for group in categories %}
 <section class="price-group">
   <h2 class="group-title">{{ group.category.name }}</h2>
-  <table class="price-table">
+  <div class="table-wrap">
+<table class="price-table">
     <thead>
       <tr>
         <th class="col-service">Service</th>
@@ -26,16 +41,29 @@
         <td class="col-service">{{ row.service.name }}</td>
         <td class="col-duration">{{ row.duration }}</td>
         {% for cell in row.cells %}
-        <td class="col-price">{% if cell %}{% if cell.is_from %}from {% endif %}${{ cell.amount }}{% else %}<span class="price-none">—</span>{% endif %}</td>
+        <td class="col-price">{% if cell %}{% if cell.is_from %}<span class="price-from">from</span> {% endif %}${{ cell.amount }}{% else %}<span class="price-none">—</span>{% endif %}</td>
         {% endfor %}
       </tr>
       {% endfor %}
     </tbody>
   </table>
+</div>
 </section>
 {% endfor %}
+{% elif no_match %}
+<div class="empty-card">
+  <div class="empty-arch" aria-hidden="true">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3c1.8 2.6 1.8 5.4 0 8-1.8-2.6-1.8-5.4 0-8Z"/><path d="M5.5 8.5c3.2.3 5.4 2 6.5 4.9-3.2-.3-5.4-2-6.5-4.9Z"/><path d="M18.5 8.5c-3.2.3-5.4 2-6.5 4.9 3.2-.3 5.4-2 6.5-4.9Z"/></svg>
+  </div>
+  <h2 class="empty-title">Nothing on the book matches</h2>
+  <p>Try a different search, or clear the category filter to see the whole price book.</p>
+  <p class="empty-action"><a class="btn" href="{% url 'webui:pricebook' %}">Clear search &amp; filters</a></p>
+</div>
 {% else %}
 <div class="empty-card">
+  <div class="empty-arch" aria-hidden="true">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3c1.8 2.6 1.8 5.4 0 8-1.8-2.6-1.8-5.4 0-8Z"/><path d="M5.5 8.5c3.2.3 5.4 2 6.5 4.9-3.2-.3-5.4-2-6.5-4.9Z"/><path d="M18.5 8.5c-3.2.3-5.4 2-6.5 4.9 3.2-.3 5.4-2 6.5-4.9Z"/></svg>
+  </div>
   <h2 class="empty-title">No services on the book yet</h2>
   <p>When the price book is entered, it appears here grouped by category, priced per staff level.</p>
 </div>

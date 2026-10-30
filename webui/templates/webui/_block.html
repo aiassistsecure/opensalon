@@ -1,6 +1,9 @@
-<article class="appt-block status-{{ block.status }}" style="top:{{ block.top }}%;height:{{ block.height }}%;">
-  <div class="appt-client">{{ block.client_name }}</div>
-  <div class="appt-service">{{ block.service_name }}</div>
+<article class="appt-block status-{{ block.status }}" style="top:{{ block.top }}%;height:{{ block.height }}%;--wash:{{ block.wash }};--ink:{{ block.ink }};">
+  <div class="appt-top">
+    <span class="appt-client">{{ block.client_name }}</span>
+    <span class="appt-status"><span class="status-dot"></span>{{ block.status_label }}</span>
+  </div>
+  <div class="appt-service">{{ block.service_name }}{% if block.category %} · {{ block.category }}{% endif %}</div>
   <div class="appt-time">{{ block.time_label }}</div>
   {% if block.note %}<div class="appt-note">{{ block.note }}</div>{% endif %}
 </article>

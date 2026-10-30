@@ -7,24 +7,72 @@
     <p class="page-subtitle">{{ day|date:"F j, Y" }}</p>
   </div>
   <nav class="day-nav" aria-label="Day">
-    <a class="btn" href="?date={{ prev_day|date:'Y-m-d' }}">← Prev</a>
-    <a class="btn {% if day == today %}btn-quiet{% endif %}" href="?date={{ today|date:'Y-m-d' }}">Today</a>
-    <a class="btn" href="?date={{ next_day|date:'Y-m-d' }}">Next →</a>
+    <a class="btn" href="{{ prev_url }}">← Prev</a>
+    <a class="btn {% if day == today %}btn-quiet{% endif %}" href="{{ today_url }}">Today</a>
+    <a class="btn" href="{{ next_url }}">Next →</a>
+    <form class="date-jump" method="get" data-date-jump>
+      {% if status_filter %}<input type="hidden" name="status" value="{{ status_filter }}">{% endif %}
+      {% if category_filter %}<input type="hidden" name="cat" value="{{ category_filter }}">{% endif %}
+      <label class="date-jump-label" for="date-jump-input">Go to</label>
+      <input id="date-jump-input" type="date" name="date" value="{{ day|date:'Y-m-d' }}">
+    </form>
   </nav>
 </section>
+
+<nav class="week-strip" aria-label="Week">
+  {% for chip in week_days %}
+  <a class="week-chip {% if chip.is_selected %}is-selected{% endif %} {% if chip.is_today %}is-today{% endif %}" href="{{ chip.url }}">
+    <span class="week-dow">{{ chip.dow }}</span>
+    <span class="week-dom">{{ chip.dom }}</span>
+  </a>
+  {% endfor %}
+</nav>
+
+{% if staff_chips %}
+<div class="toolbar" aria-label="Day book filters">
+  <div class="toolbar-group">
+    <span class="toolbar-label">Team</span>
+    {% for col in staff_chips %}
+    <a class="chip {% if col.hidden %}is-off{% endif %}" href="{{ col.toggle_url }}" title="{% if col.hidden %}Show{% else %}Hide{% endif %} {{ col.member.display_name }}">
+      <span class="chip-dot" style="background:{{ col.accent }}"></span>{{ col.member.display_name }}
+    </a>
+    {% endfor %}
+  </div>
+  <form class="toolbar-group" method="get">
+    <input type="hidden" name="date" value="{{ day|date:'Y-m-d' }}">
+    <span class="toolbar-label">Show</span>
+    <select name="status" aria-label="Filter by status" onchange="this.form.submit()">
+      <option value="">All statuses</option>
+      {% for value, label in status_options %}
+      <option value="{{ value }}" {% if status_filter == value %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+    <select name="cat" aria-label="Filter by service category" onchange="this.form.submit()">
+      <option value="">All services</option>
+      {% for cat in category_options %}
+      <option value="{{ cat.pk }}" {% if category_filter == cat.pk %}selected{% endif %}>{{ cat.name }}</option>
+      {% endfor %}
+    </select>
+    {% if filters_active %}<a class="btn btn-quiet" href="{{ clear_url }}">Clear filters</a>{% endif %}
+  </form>
+</div>
+{% endif %}
 
 {% if staff_columns %}
 <div class="daybook-wrap">
 <div class="daybook" style="--cols:{{ staff_columns|length }};">
   <div class="db-corner"></div>
   {% for col in staff_columns %}
-  <div class="db-staff-head {% if not col.on_duty %}is-off{% endif %}">
-    <div class="db-staff-name">{{ col.member.display_name }}</div>
-    <div class="db-staff-meta">
-      {% if col.member.staff_level %}{{ col.member.staff_level.name }} · {% endif %}
-      {% if col.on_duty %}{{ col.shift_label }}{% else %}Not rostered{% endif %}
-      {% if not col.member.online_bookable %} · <span class="tag">No online booking</span>{% endif %}
+  <div class="db-staff-head {% if not col.on_duty %}is-off{% endif %}" style="--tint:{{ col.tint }};--accent:{{ col.accent }};">
+    <div class="db-monogram" aria-hidden="true">{{ col.initials }}</div>
+    <div class="db-staff-text">
+      <div class="db-staff-name">{{ col.member.display_name }}</div>
+      <div class="db-staff-meta">
+        {% if col.member.staff_level %}{{ col.member.staff_level.name }} · {% endif %}
+        {% if col.on_duty %}{{ col.shift_label }}{% else %}Not rostered{% endif %}
+      </div>
     </div>
+    {% if not col.member.online_bookable %}<div class="db-staff-flags"><span class="tag">No online booking</span></div>{% endif %}
   </div>
   {% endfor %}
 
@@ -34,8 +82,11 @@
   {% for col in staff_columns %}
   <div class="db-column {% if not col.on_duty %}is-off{% endif %}">
     {% for band in col.bands %}
-    <div class="db-band" style="top:{{ band.top }}%;height:{{ band.height }}%;"></div>
+    <div class="db-band" style="top:{{ band.top }}%;height:{{ band.height }}%;">
+      {% if band.tall %}<span class="db-band-label">Available · {{ band.label }}</span>{% endif %}
+    </div>
     {% endfor %}
+    {% for brk in col.breaks %}{% include "webui/_break.html" %}{% endfor %}
     {% for block in col.blocks %}{% include "webui/_block.html" %}{% endfor %}
     {% if not col.blocks and col.on_duty %}<div class="db-open-note">Open for bookings</div>{% endif %}
   </div>
@@ -47,6 +98,9 @@
 {% endif %}
 {% else %}
 <div class="empty-card">
+  <div class="empty-arch" aria-hidden="true">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3c1.8 2.6 1.8 5.4 0 8-1.8-2.6-1.8-5.4 0-8Z"/><path d="M5.5 8.5c3.2.3 5.4 2 6.5 4.9-3.2-.3-5.4-2-6.5-4.9Z"/><path d="M18.5 8.5c-3.2.3-5.4 2-6.5 4.9 3.2-.3 5.4-2 6.5-4.9Z"/></svg>
+  </div>
   <h2 class="empty-title">The day book is ready when your team is</h2>
   <p>Add staff members and their roster, and each day opens here — one column per stylist.</p>
 </div>

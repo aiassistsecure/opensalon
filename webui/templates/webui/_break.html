@@ -1,0 +1,6 @@
+<article class="break-block {% if brk.paid %}is-paid{% else %}is-unpaid{% endif %}" style="top:{{ brk.top }}%;height:{{ brk.height }}%;" title="Break {{ brk.time_label }} — {% if brk.paid %}Paid{% else %}Unpaid{% endif %}">
+  <span class="break-icon" aria-hidden="true">☕</span>
+  <span class="break-text">{% if brk.label %}{{ brk.label }} · {% endif %}Break</span>
+  <span class="break-flag">{% if brk.paid %}Paid{% else %}Unpaid{% endif %}</span>
+  <span class="break-time">{{ brk.time_label }}</span>
+</article>

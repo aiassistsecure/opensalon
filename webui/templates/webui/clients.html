@@ -7,12 +7,21 @@
     <p class="page-subtitle">{{ total }} client{{ total|pluralize }} on the book</p>
   </div>
   <form class="search" method="get" role="search">
+    {% if opt_filter %}<input type="hidden" name="opt" value="{{ opt_filter }}">{% endif %}
     <input type="search" name="q" value="{{ query }}" placeholder="Search name, email or phone…" aria-label="Search clients">
     <button class="btn" type="submit">Search</button>
   </form>
 </section>
 
+<nav class="chip-row" aria-label="Client filters">
+  <a class="chip {% if not opt_filter %}is-on{% endif %}" href="?{% if query %}q={{ query|urlencode }}{% endif %}">All clients</a>
+  {% for value, label in opt_options %}
+  <a class="chip {% if opt_filter == value %}is-on{% endif %}" href="?opt={{ value }}{% if query %}&q={{ query|urlencode }}{% endif %}">{{ label }}</a>
+  {% endfor %}
+</nav>
+
 {% if page.object_list %}
+<div class="table-wrap">
 <table class="client-table">
   <thead>
     <tr><th>Client</th><th>Contact</th><th>Reminders &amp; marketing</th><th>Record</th></tr>
@@ -31,20 +40,28 @@
     {% endfor %}
   </tbody>
 </table>
+</div>
 {% if page.has_other_pages %}
 <nav class="pager" aria-label="Clients pages">
-  {% if page.has_previous %}<a class="btn" href="?q={{ query }}&page={{ page.previous_page_number }}">← Newer</a>{% endif %}
+  {% if page.has_previous %}<a class="btn" href="?q={{ query }}&opt={{ opt_filter }}&page={{ page.previous_page_number }}">← Newer</a>{% endif %}
   <span class="pager-info">Page {{ page.number }} of {{ page.paginator.num_pages }}</span>
-  {% if page.has_next %}<a class="btn" href="?q={{ query }}&page={{ page.next_page_number }}">Older →</a>{% endif %}
+  {% if page.has_next %}<a class="btn" href="?q={{ query }}&opt={{ opt_filter }}&page={{ page.next_page_number }}">Older →</a>{% endif %}
 </nav>
 {% endif %}
-{% elif query %}
+{% elif query or opt_filter %}
 <div class="empty-card">
-  <h2 class="empty-title">No clients match “{{ query }}”</h2>
-  <p>Try a different spelling, or clear the search to see the whole book.</p>
+  <div class="empty-arch" aria-hidden="true">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3c1.8 2.6 1.8 5.4 0 8-1.8-2.6-1.8-5.4 0-8Z"/><path d="M5.5 8.5c3.2.3 5.4 2 6.5 4.9-3.2-.3-5.4-2-6.5-4.9Z"/><path d="M18.5 8.5c-3.2.3-5.4 2-6.5 4.9 3.2-.3 5.4-2 6.5-4.9Z"/></svg>
+  </div>
+  <h2 class="empty-title">No clients match</h2>
+  <p>Try a different spelling, or clear the search and filters to see the whole book.</p>
+  <p class="empty-action"><a class="btn" href="{% url 'webui:clients' %}">Clear search &amp; filters</a></p>
 </div>
 {% else %}
 <div class="empty-card">
+  <div class="empty-arch" aria-hidden="true">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3c1.8 2.6 1.8 5.4 0 8-1.8-2.6-1.8-5.4 0-8Z"/><path d="M5.5 8.5c3.2.3 5.4 2 6.5 4.9-3.2-.3-5.4-2-6.5-4.9Z"/><path d="M18.5 8.5c-3.2.3-5.4 2-6.5 4.9 3.2-.3 5.4-2 6.5-4.9Z"/></svg>
+  </div>
   <h2 class="empty-title">No clients yet</h2>
   <p>Clients appear here as they book — with their reminder opt-ins always visible, always respected.</p>
 </div>
