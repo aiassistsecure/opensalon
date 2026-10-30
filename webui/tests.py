@@ -442,3 +442,53 @@ class ClickModelMarkupTests(WebuiTestBase):
     def test_blocks_contract_empty_until_bookings_lands(self):
         self.assertEqual(views.blocks_for_day(self.salon, datetime.date(2026, 11, 2)), [])
         self.assertEqual(views.breaks_for_day(self.salon, datetime.date(2026, 11, 2)), [])
+
+
+class SidebarShellTests(TestCase):
+    """The collapsible glass sidebar: cookie-rendered width, the
+    toggle endpoint, and labels that survive the rail."""
+
+    def setUp(self):
+        Salon.objects.create(name="Mint On The Avenue")
+
+    def test_sidebar_expanded_without_cookie(self):
+        response = self.client.get(reverse("webui:daybook"))
+        self.assertContains(response, "<body>")
+        self.assertNotContains(response, 'class="is-rail"')
+        # The toggle offers the collapse, expanded state announced.
+        self.assertContains(response, 'aria-expanded="true"')
+        self.assertContains(response, 'aria-label="Collapse sidebar"')
+
+    def test_sidebar_rail_from_cookie(self):
+        self.client.cookies["os_sidebar"] = "rail"
+        response = self.client.get(reverse("webui:pricebook"))
+        self.assertContains(response, '<body class="is-rail">')
+        self.assertContains(response, 'aria-expanded="false"')
+        self.assertContains(response, 'aria-label="Expand sidebar"')
+        # Nav keeps its names for tooltips / assistive tech.
+        self.assertContains(response, 'aria-label="Day Book"')
+        self.assertContains(response, 'aria-label="Price Book"')
+
+    def test_toggle_sets_cookie_and_returns(self):
+        response = self.client.post(
+            reverse("webui:sidebar_toggle"),
+            {"state": "rail", "next": "/price-book/"},
+        )
+        self.assertRedirects(
+            response, "/price-book/", fetch_redirect_response=False
+        )
+        self.assertEqual(response.cookies["os_sidebar"].value, "rail")
+
+    def test_toggle_rejects_external_next(self):
+        response = self.client.post(
+            reverse("webui:sidebar_toggle"),
+            {"state": "full", "next": "https://example.com/"},
+        )
+        self.assertRedirects(
+            response, reverse("webui:daybook"), fetch_redirect_response=False
+        )
+        self.assertEqual(response.cookies["os_sidebar"].value, "full")
+
+    def test_toggle_is_post_only(self):
+        response = self.client.get(reverse("webui:sidebar_toggle"))
+        self.assertEqual(response.status_code, 405)

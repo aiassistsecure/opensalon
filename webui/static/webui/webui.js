@@ -14,6 +14,34 @@
     });
   });
 
+  /* ---- Sidebar collapse -------------------------------------------
+     The server renders the persisted state from the os_sidebar
+     cookie (see webui.context_processors), so the width is right on
+     first paint. The toggle's form posts + redirects without JS;
+     with JS we flip in place — set the same cookie, swap the class,
+     and re-arm the form so the next press goes the other way. */
+  var sideForm = document.querySelector("form[data-sidebar-toggle]");
+  if (sideForm) {
+    sideForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      var rail = !document.body.classList.contains("is-rail");
+      document.body.classList.toggle("is-rail", rail);
+      document.cookie = "os_sidebar=" + (rail ? "rail" : "full")
+        + "; Max-Age=31536000; Path=/; SameSite=Lax";
+      var stateInput = sideForm.querySelector('input[name="state"]');
+      if (stateInput) stateInput.value = rail ? "full" : "rail";
+      var sideBtn = sideForm.querySelector("button");
+      if (sideBtn) {
+        var sideLabel = rail ? "Expand sidebar" : "Collapse sidebar";
+        sideBtn.setAttribute("aria-expanded", String(!rail));
+        sideBtn.setAttribute("aria-label", sideLabel);
+        sideBtn.title = sideLabel;
+        var glyph = sideBtn.querySelector("span");
+        if (glyph) glyph.textContent = rail ? "»" : "«";
+      }
+    });
+  }
+
   /* ---- The day book click model -----------------------------------
      Normal mode: clicking a block opens its breakdown (a plain link);
      clicking empty column space opens the booking form prefilled with

@@ -11,6 +11,11 @@
    raised app surface — and the day book runs at working density with
    saturated blocks colour-coded by service category.
 
+   The shell chrome is frosted glass (the sidebar over a botanical
+   backdrop, the app bar and filter card in the light register) and
+   the sidebar collapses to an icon rail — body.is-rail, persisted
+   in the os_sidebar cookie. Data surfaces never sit on glass.
+
    Salon branding contract: a salon overrides ONLY the --salon-* tokens
    (fed by webui.context_processors.salon_context). Every component
    below consumes the semantic tokens, so a salon's colours flow
@@ -129,7 +134,17 @@ html { font-size: 17px; }
 body {
   margin: 0; color: var(--ink); font-family: var(--sans);
   font-size: var(--text-body); line-height: 1.45;
-  background: radial-gradient(1200px 800px at 25% -10%, #33523f 0%, #152219 72%);
+  /* The backdrop is a botanical dusk: deep forest with a warm gold
+     glow high and a sage glow low. It exists so the sidebar's glass
+     (below) has something real to refract — glass over a flat colour
+     is just a tint. */
+  background:
+    radial-gradient(900px 620px at 88% -10%, rgba(201, 162, 39, .20), transparent 60%),
+    radial-gradient(760px 900px at -4% 38%, rgba(125, 154, 125, .30), transparent 62%),
+    radial-gradient(620px 420px at 6% -6%, rgba(201, 162, 39, .14), transparent 55%),
+    radial-gradient(1000px 720px at -8% 108%, rgba(125, 154, 125, .24), transparent 62%),
+    radial-gradient(1200px 800px at 25% -10%, #33523f 0%, #152219 72%);
+  background-color: #152219;
   min-height: 100vh;
 }
 a { color: var(--forest-700); }
@@ -154,22 +169,36 @@ a { color: var(--forest-700); }
    raised on the dark backdrop exactly as the mock presents it. */
 .app {
   display: flex; min-height: 100vh;
-  background: linear-gradient(180deg, #f7f2e4, #f2ead7);
+  /* Transparent on purpose: the working surface lives on .app-main
+     (solid creme — data never sits on glass), while the sidebar is a
+     glass panel floating directly over the backdrop. */
+  background: transparent;
 }
 @media (min-width: 1500px) {
   body { padding: 22px; }
-  .app {
-    border-radius: 22px; overflow: hidden; min-height: calc(100vh - 44px);
-    box-shadow: 0 42px 90px rgba(0, 0, 0, .55), 0 4px 18px rgba(0, 0, 0, .4);
-  }
+  .app { min-height: calc(100vh - 44px); }
 }
+/* The sidebar is frosted glass: translucent deep forest, a real
+   backdrop blur over the botanical backdrop, a hairline of light on
+   its right edge and a gold seam inside it, a soft top highlight.
+   The alpha stays high (.78–.88) on purpose — nav labels and the
+   gold active pill must read instantly in a bright room, so the
+   glass tints and refracts without ever washing out. */
 .side {
   width: 208px; flex: none; align-self: flex-start;
   position: sticky; top: 0; height: 100vh;
   display: flex; flex-direction: column;
   padding: 20px 14px 16px;
-  background: linear-gradient(205deg, var(--forest-800) 0%, var(--forest-900) 82%);
-  color: #e9efdf; border-right: 2px solid var(--gold-500);
+  background: linear-gradient(205deg, rgba(38, 80, 60, .72) 0%, rgba(19, 42, 31, .87) 82%);
+  -webkit-backdrop-filter: blur(22px) saturate(1.4);
+  backdrop-filter: blur(22px) saturate(1.4);
+  color: #e9efdf;
+  border-right: 1px solid rgba(246, 239, 219, .28);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .16),
+    inset -1px 0 0 rgba(201, 162, 39, .45),
+    6px 0 28px rgba(10, 20, 14, .25);
+  transition: width 220ms ease, padding 220ms ease;
 }
 @media (min-width: 1500px) {
   .side { top: 22px; height: calc(100vh - 44px); }
@@ -219,11 +248,48 @@ a { color: var(--forest-700); }
   margin-top: 12px; font-size: 9.5px; letter-spacing: 3px;
   text-transform: uppercase; color: #7d9377; font-weight: 600;
 }
-.app-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.app-main {
+  flex: 1; min-width: 0; display: flex; flex-direction: column;
+  /* The raised working surface — solid creme, always. Glass is the
+     shell's chrome (sidebar, app bar, filter card); the grid, the
+     tables and every figure a price hangs on stay on this. */
+  background: linear-gradient(180deg, #f7f2e4, #f2ead7);
+}
+@media (min-width: 1500px) {
+  .app-main {
+    border-radius: 22px;
+    box-shadow: 0 42px 90px rgba(0, 0, 0, .55), 0 4px 18px rgba(0, 0, 0, .4);
+  }
+}
+/* The app bar is the same frosted material as the sidebar, in the
+   light register: translucent creme with a blur, a hairline of
+   light under it. It sticks, so on a long day book the book scrolls
+   beneath the glass — that is where the blur earns its keep. */
 .appbar {
   display: flex; align-items: center; gap: 12px;
-  padding: 15px 22px 2px;
+  padding: 13px 22px 11px;
+  position: sticky; top: 0; z-index: 20;
+  background: rgba(247, 242, 228, .8);
+  -webkit-backdrop-filter: blur(14px) saturate(1.25);
+  backdrop-filter: blur(14px) saturate(1.25);
+  border-bottom: 1px solid rgba(255, 255, 255, .55);
+  box-shadow: 0 1px 0 rgba(207, 194, 158, .35), 0 14px 26px -20px rgba(38, 51, 42, .4);
 }
+@media (min-width: 1500px) {
+  .appbar { top: 22px; border-radius: 22px 22px 0 0; }
+}
+/* The collapse toggle — a quiet round button that never leaves the
+   front desk's reach, in the app bar in both sidebar widths. */
+.sidebar-toggle-form { margin: 0; flex: none; }
+.sidebar-toggle {
+  width: 38px; height: 38px; border-radius: 50%;
+  display: grid; place-items: center; cursor: pointer;
+  border: 1.5px solid #33523f; background: #fbf8f0; color: #24402f;
+  font-family: var(--sans); font-size: 17px; line-height: 1;
+  transition: background var(--transition), box-shadow var(--transition), transform var(--transition);
+}
+.sidebar-toggle:hover { background: var(--sage-100); box-shadow: var(--elev-1); }
+.sidebar-toggle:active { transform: translateY(1px); }
 .app-search { flex: 0 0 290px; margin: 0; }
 .app-search input {
   width: 100%; border-radius: var(--radius-pill);
@@ -241,6 +307,42 @@ a { color: var(--forest-700); }
   letter-spacing: 1px; display: flex; align-items: center; gap: 12px;
 }
 .footer-sprig { width: 120px; height: 14px; color: var(--gold-500); flex: none; }
+
+/* ---------- 3b. The rail — sidebar collapsed ----------
+   body.is-rail is rendered server-side from the os_sidebar cookie
+   (no flash of the wrong width) and flipped in place by webui.js.
+   The rail keeps the medallion, the nav icons and the user's
+   initial; labels survive as aria-labels and as tooltips on hover
+   and keyboard focus, so nothing becomes icon-guessing. The freed
+   132px go to the day book's columns — that is the entire point. */
+body.is-rail .side { width: 76px; padding: 20px 10px 16px; }
+body.is-rail .salon-mark { margin-left: auto; margin-right: auto; }
+body.is-rail .side-name,
+body.is-rail .side-sub,
+body.is-rail .user-name,
+body.is-rail .user-role,
+body.is-rail .side-os { display: none; }
+body.is-rail .snav a {
+  justify-content: center; gap: 0; padding: 11px 0;
+  font-size: 0; position: relative;
+}
+body.is-rail .snav a .ic { width: auto; font-size: 17px; }
+body.is-rail .snav a::after {
+  content: attr(aria-label);
+  position: absolute; left: calc(100% + 14px); top: 50%;
+  transform: translateY(-50%) translateX(-4px);
+  background: rgba(19, 42, 31, .95); color: #f6efdb;
+  font-size: 12.5px; font-weight: 600; letter-spacing: .02em;
+  padding: 6px 11px; border-radius: 8px; white-space: nowrap;
+  opacity: 0; pointer-events: none; z-index: 40;
+  box-shadow: var(--elev-2);
+  transition: opacity var(--transition), transform var(--transition);
+}
+body.is-rail .snav a:hover::after,
+body.is-rail .snav a:focus-visible::after {
+  opacity: 1; transform: translateY(-50%) translateX(0);
+}
+body.is-rail .userchip { justify-content: center; }
 
 /* ---------- 4. Page furniture ---------- */
 .page-head {
@@ -341,8 +443,16 @@ input[type="checkbox"]:focus-visible { box-shadow: var(--focus-ring); }
 .toolbar {
   display: flex; justify-content: space-between; align-items: center;
   gap: var(--space-3); flex-wrap: wrap;
-  background: var(--surface); border: 1px solid var(--hairline);
-  border-radius: var(--radius-l); box-shadow: var(--elev-1);
+  /* The filter card wears the shell's glass in its light register:
+     frosted translucent white, a hairline of light for a border, a
+     soft inner highlight. It floats over the creme toolbar strip —
+     the tables it filters stay on solid .table-wrap below. */
+  background: rgba(255, 253, 247, .68);
+  -webkit-backdrop-filter: blur(12px) saturate(1.2);
+  backdrop-filter: blur(12px) saturate(1.2);
+  border: 1px solid rgba(255, 255, 255, .65);
+  border-radius: var(--radius-l);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .85), var(--elev-1);
   padding: 10px 16px; margin-bottom: var(--space-4);
 }
 .toolbar-group { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; margin: 0; }

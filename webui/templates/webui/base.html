@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="{% static 'webui/webui.css' %}">
 <style>:root{--salon-primary:{{ salon_theme.primary }};--salon-accent:{{ salon_theme.accent }};--salon-ground:{{ salon_theme.ground }};}</style>
 </head>
-<body>
+<body{% if sidebar_rail %} class="is-rail"{% endif %}>
 <div class="app">
   <aside class="side">
     <div class="salon-mark" aria-hidden="true">
@@ -16,12 +16,12 @@
     <div class="side-name">{{ salon.name|default:"Your Salon" }}</div>
     <div class="side-sub">Front desk</div>
     <nav class="snav" aria-label="Main">
-      <a href="{% url 'webui:daybook' %}" class="{% if nav_key == 'daybook' %}on{% endif %}"><span class="ic" aria-hidden="true">▦</span>Day Book</a>
-      <a href="{% url 'webui:clients' %}" class="{% if nav_key == 'clients' %}on{% endif %}"><span class="ic" aria-hidden="true">☺</span>Clients</a>
-      <a href="{% url 'webui:pricebook' %}" class="{% if nav_key == 'pricebook' %}on{% endif %}"><span class="ic" aria-hidden="true">✂</span>Price Book</a>
-      <a href="{% url 'webui:team' %}" class="{% if nav_key == 'team' %}on{% endif %}"><span class="ic" aria-hidden="true">✿</span>Team</a>
-      <a href="{% url 'webui:products' %}" class="{% if nav_key == 'products' %}on{% endif %}"><span class="ic" aria-hidden="true">▤</span>Products</a>
-      <a href="{% url 'webui:insights' %}" class="{% if nav_key == 'insights' %}on{% endif %}"><span class="ic" aria-hidden="true">▥</span>Reports</a>
+      <a href="{% url 'webui:daybook' %}" class="{% if nav_key == 'daybook' %}on{% endif %}" aria-label="Day Book" title="Day Book"><span class="ic" aria-hidden="true">▦</span>Day Book</a>
+      <a href="{% url 'webui:clients' %}" class="{% if nav_key == 'clients' %}on{% endif %}" aria-label="Clients" title="Clients"><span class="ic" aria-hidden="true">☺</span>Clients</a>
+      <a href="{% url 'webui:pricebook' %}" class="{% if nav_key == 'pricebook' %}on{% endif %}" aria-label="Price Book" title="Price Book"><span class="ic" aria-hidden="true">✂</span>Price Book</a>
+      <a href="{% url 'webui:team' %}" class="{% if nav_key == 'team' %}on{% endif %}" aria-label="Team" title="Team"><span class="ic" aria-hidden="true">✿</span>Team</a>
+      <a href="{% url 'webui:products' %}" class="{% if nav_key == 'products' %}on{% endif %}" aria-label="Products" title="Products"><span class="ic" aria-hidden="true">▤</span>Products</a>
+      <a href="{% url 'webui:insights' %}" class="{% if nav_key == 'insights' %}on{% endif %}" aria-label="Reports" title="Reports"><span class="ic" aria-hidden="true">▥</span>Reports</a>
     </nav>
     <div class="side-grow"></div>
     <div class="userchip">
@@ -43,6 +43,12 @@
   </aside>
   <div class="app-main">
     <div class="appbar">
+      <form class="sidebar-toggle-form" method="post" action="{% url 'webui:sidebar_toggle' %}" data-sidebar-toggle>
+        {% csrf_token %}
+        <input type="hidden" name="state" value="{% if sidebar_rail %}full{% else %}rail{% endif %}">
+        <input type="hidden" name="next" value="{{ request.get_full_path }}">
+        <button type="submit" class="sidebar-toggle" aria-expanded="{% if sidebar_rail %}false{% else %}true{% endif %}" aria-label="{% if sidebar_rail %}Expand sidebar{% else %}Collapse sidebar{% endif %}" title="{% if sidebar_rail %}Expand sidebar{% else %}Collapse sidebar{% endif %}"><span aria-hidden="true">{% if sidebar_rail %}»{% else %}«{% endif %}</span></button>
+      </form>
       <form class="app-search" method="get" action="{% url 'webui:clients' %}" role="search">
         <input type="search" name="q" placeholder="Search clients, services, appointments…" aria-label="Search clients">
       </form>

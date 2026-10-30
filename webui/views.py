@@ -14,6 +14,7 @@ from django.db.models import Count, Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
+from django.views.decorators.http import require_POST
 
 from clients.models import Client
 from saloncore.models import Salon, Service, ServiceCategory, StaffLevel
@@ -563,3 +564,36 @@ def placeholder(request, nav_key, title, lane_note):
         "webui/placeholder.html",
         {"nav_key": nav_key, "title": title, "lane_note": lane_note},
     )
+
+
+# The sidebar's persisted width. "rail" collapses the forest sidebar
+# to an icon rail so the day book's columns get the room; anything
+# else renders the full sidebar. Cookie, not session: it is a
+# per-screen preference on a shared front-desk machine.
+SIDEBAR_COOKIE = "os_sidebar"
+SIDEBAR_COOKIE_MAX_AGE = 365 * 24 * 60 * 60
+
+
+@require_POST
+def sidebar_toggle(request):
+    """Collapse or expand the app sidebar.
+
+    The state lives in a cookie the base template reads server-side
+    (``sidebar_rail``, see context_processors), so the next paint is
+    already the right width — no flash of the wrong state. webui.js
+    intercepts the submit and flips the class in place; without JS
+    this plain post + redirect does the same job one reload later.
+    """
+    state = "rail" if request.POST.get("state") == "rail" else "full"
+    next_url = request.POST.get("next", "")
+    if not next_url.startswith("/") or next_url.startswith("//"):
+        next_url = reverse("webui:daybook")
+    response = redirect(next_url)
+    response.set_cookie(
+        SIDEBAR_COOKIE,
+        state,
+        max_age=SIDEBAR_COOKIE_MAX_AGE,
+        path="/",
+        samesite="Lax",
+    )
+    return response

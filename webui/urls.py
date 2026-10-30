@@ -6,6 +6,7 @@ app_name = "webui"
 
 urlpatterns = [
     path("", views.day_book, name="daybook"),
+    path("sidebar/", views.sidebar_toggle, name="sidebar_toggle"),
     path("appointment/new/", interactions.appointment_new, name="appointment_new"),
     path("appointment/copy/", interactions.appointment_copy, name="appointment_copy"),
     path("appointment/<int:appointment_id>/", interactions.breakdown, name="breakdown"),

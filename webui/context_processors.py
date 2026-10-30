@@ -24,4 +24,8 @@ def salon_context(request):
         "salon": salon,
         "salon_theme": DEFAULT_THEME,
         "today": timezone.localdate(),
+        # Sidebar width, persisted in a cookie by the toggle (see
+        # views.sidebar_toggle). Read server-side so the first paint
+        # is already the right width — no flash of the wrong state.
+        "sidebar_rail": request.COOKIES.get("os_sidebar") == "rail",
     }

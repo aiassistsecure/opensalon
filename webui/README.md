@@ -25,6 +25,20 @@ book, clients, placeholders, breakdown, forms — sits inside the same
 frame. The nav's last item is **Reports** (the insights lane's future
 home).
 
+The sidebar is frosted glass (translucent forest + backdrop blur
+over the botanical backdrop; the app bar and the day book's filter
+card wear the same material in a light register) and it **collapses
+to an icon rail**: the app bar's toggle posts to
+`webui:sidebar_toggle`, which persists the width in the `os_sidebar`
+cookie (`rail` / `full`, one year). The context processor exposes it
+as `sidebar_rail`, so the server renders `body.is-rail` on first
+paint — no flash of the wrong width; webui.js flips it in place when
+available, and the plain form post works without JS (which otherwise
+keeps the sidebar expanded). In rail mode the nav keeps its
+`aria-label`s, surfaced as CSS tooltips on hover/focus, and the
+content reflows into the freed width. Glass is chrome-only: the day
+book grid and the tables always sit on solid surfaces.
+
 ## Design system
 
 `static/webui/webui.css` is a token-driven design system, documented
