@@ -23,10 +23,41 @@ from django.db.backends.postgresql.operations import (
     DatabaseOperations as PostgresDatabaseOperations,
 )
 
-from . import temporal
+from . import identity, temporal
+
+# Internal types whose stored values must come back as real ints
+# (DYOR 9.6 read path): pgwire may hand an integer PK back as a
+# numeric string, because NEDB stores ``_id`` as a string.
+INTEGER_INTERNAL_TYPES = frozenset(
+    {
+        "AutoField",
+        "BigAutoField",
+        "BigIntegerField",
+        "IntegerField",
+        "PositiveBigIntegerField",
+        "PositiveIntegerField",
+        "PositiveSmallIntegerField",
+        "SmallAutoField",
+        "SmallIntegerField",
+    }
+)
+
+
+def _is_integer_field(field):
+    if field is None:
+        return False
+    if field.get_internal_type() in INTEGER_INTERNAL_TYPES:
+        return True
+    target = getattr(field, "target_field", None)
+    return (
+        target is not None
+        and target.get_internal_type() in INTEGER_INTERNAL_TYPES
+    )
 
 
 class DatabaseOperations(PostgresDatabaseOperations):
+    # NEDB compilers: client-assigned PKs, no UNNEST (compiler.py).
+    compiler_module = "opensalon.backends.nedb.compiler"
     # -- savepoints: no SQL exists on this backend (DYOR 9.4) --------
     # NEDB refuses SAVEPOINT / RELEASE / ROLLBACK TO at execution, and
     # features.uses_savepoints is False, so Django never asks for this
@@ -64,6 +95,8 @@ class DatabaseOperations(PostgresDatabaseOperations):
 
     def get_db_converters(self, expression):
         converters = super().get_db_converters(expression)
+        if _is_integer_field(expression.output_field):
+            converters.append(self.convert_integerfield_value)
         internal_type = expression.output_field.get_internal_type()
         if internal_type == "DateTimeField":
             converters.append(self.convert_datetimefield_value)
@@ -72,6 +105,11 @@ class DatabaseOperations(PostgresDatabaseOperations):
         elif internal_type == "TimeField":
             converters.append(self.convert_timefield_value)
         return converters
+
+    # -- identity read path: numeric strings back to ints (9.6) ------
+
+    def convert_integerfield_value(self, value, expression, connection):
+        return identity.convert_integer_value(value)
 
     def convert_datetimefield_value(self, value, expression, connection):
         return temporal.convert_datetime_value(value, connection)
