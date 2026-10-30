@@ -1,0 +1,43 @@
+{% extends "webui/base.html" %}
+{% block title %}Price Book{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <h1 class="page-title">Price Book</h1>
+    <p class="page-subtitle">Every service, every level — one source of truth.</p>
+  </div>
+</section>
+
+{% if categories %}
+{% for group in categories %}
+<section class="price-group">
+  <h2 class="group-title">{{ group.category.name }}</h2>
+  <table class="price-table">
+    <thead>
+      <tr>
+        <th class="col-service">Service</th>
+        <th class="col-duration">Duration</th>
+        {% for level in levels %}<th class="col-price">{{ level.name }}</th>{% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in group.rows %}
+      <tr>
+        <td class="col-service">{{ row.service.name }}</td>
+        <td class="col-duration">{{ row.duration }}</td>
+        {% for cell in row.cells %}
+        <td class="col-price">{% if cell %}{% if cell.is_from %}from {% endif %}${{ cell.amount }}{% else %}<span class="price-none">—</span>{% endif %}</td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endfor %}
+{% else %}
+<div class="empty-card">
+  <h2 class="empty-title">No services on the book yet</h2>
+  <p>When the price book is entered, it appears here grouped by category, priced per staff level.</p>
+</div>
+{% endif %}
+{% endblock %}

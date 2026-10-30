@@ -1,0 +1,14 @@
+{% extends "webui/base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <h1 class="page-title">{{ title }}</h1>
+    <p class="page-subtitle">{{ lane_note }}</p>
+  </div>
+</section>
+<div class="empty-card">
+  <h2 class="empty-title">On its way</h2>
+  <p>This room of the salon is still being decorated. The day book, clients and price book are open today.</p>
+</div>
+{% endblock %}
