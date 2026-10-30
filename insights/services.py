@@ -29,6 +29,12 @@ class RevenueSplit:
     insights name for product sales), and ``total`` is their sum.
     ``start_date`` / ``end_date`` are the inclusive window bounds in
     the salon's timezone.
+
+    There is deliberately no ``series`` field: ``SaleItem.Kind``
+    defines only ``SERVICE`` and ``PRODUCT``, so a series category
+    is not representable in the current checkout models. Adding one
+    here would report a permanently-zero category as if it were
+    measured; it belongs with a future ``SaleItem.Kind`` addition.
     """
 
     service: Decimal
@@ -320,4 +326,24 @@ def busiest_days(salon, since, until):
         for weekday in range(7)
     ]
     entries.sort(key=lambda entry: (-entry.count, entry.weekday))
+    return entries
+
+
+def busiest_days_by_revenue(salon, since, until):
+    """Return :func:`busiest_days` entries ordered by revenue.
+
+    Companion to :func:`busiest_days` (L7-M3): the entries, their
+    fields, and every inclusion rule are exactly that function's —
+    this function only changes the ordering, to completed-sale
+    ``revenue`` descending, with weekday ascending (Monday first)
+    as the tie-break. It exists because the busiest weekday by
+    appointment count is not necessarily the busiest by takings.
+
+    Note on categories: revenue here is the all-kinds total, as in
+    :func:`busiest_days`. A series category cannot be split out —
+    ``SaleItem.Kind`` defines only ``SERVICE`` and ``PRODUCT``, so
+    no sale item can represent a series sale in current models.
+    """
+    entries = busiest_days(salon, since, until)
+    entries.sort(key=lambda entry: (-entry.revenue, entry.weekday))
     return entries

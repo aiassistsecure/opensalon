@@ -13,6 +13,7 @@ from insights.services import (
     FutureAppointmentsValue,
     RevenueSplit,
     busiest_days,
+    busiest_days_by_revenue,
     future_appointments_value,
     last_7_days_revenue_split,
 )
@@ -398,3 +399,87 @@ class BusiestDaysTests(TestCase):
         self.assertEqual(by_weekday[0].count, 1)
         self.assertEqual(by_weekday[6].count, 1)
         self.assertEqual(sum(e.count for e in by_weekday.values()), 2)
+
+
+class BusiestDaysByRevenueTests(TestCase):
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon", timezone="UTC")
+        self.other = Salon.objects.create(name="Other Salon", timezone="UTC")
+        # Fixed week: Monday 2026-11-02 through Sunday 2026-11-08.
+        self.since = date(2026, 11, 2)
+        self.until = date(2026, 11, 8)
+
+    def _sale_with_item(self, *, day_offset=0, salon=None,
+                        status=Sale.Status.COMPLETED, price="0.00",
+                        kind=SaleItem.Kind.SERVICE, quantity=1):
+        sale = Sale.objects.create(salon=salon or self.salon, status=status)
+        stamp = datetime(
+            2026, 11, 2 + day_offset, 12, 0, tzinfo=ZoneInfo("UTC")
+        )
+        Sale.objects.filter(pk=sale.pk).update(
+            created_at=stamp, completed_at=stamp
+        )
+        SaleItem.objects.create(
+            sale=sale, kind=kind, quantity=quantity,
+            unit_price=Decimal(price),
+        )
+        return sale
+
+    def test_orders_by_revenue_desc_not_appointment_count(self):
+        # Saturday takings (service + retail) beat Monday's, even
+        # though neither day has any appointments in this test.
+        self._sale_with_item(day_offset=5, price="85.00")
+        self._sale_with_item(
+            day_offset=5, price="24.00", quantity=2,
+            kind=SaleItem.Kind.PRODUCT,
+        )
+        self._sale_with_item(day_offset=0, price="50.00")
+        result = busiest_days_by_revenue(self.salon, self.since, self.until)
+        self.assertEqual(len(result), 7)
+        self.assertTrue(all(isinstance(e, BusiestDay) for e in result))
+        self.assertEqual(result[0].weekday, 5)
+        self.assertEqual(result[0].revenue, Decimal("133.00"))
+        self.assertEqual(result[1].weekday, 0)
+        self.assertEqual(result[1].revenue, Decimal("50.00"))
+        revenues = [e.revenue for e in result]
+        self.assertEqual(revenues, sorted(revenues, reverse=True))
+
+    def test_revenue_ties_break_by_weekday_ascending(self):
+        self._sale_with_item(day_offset=3, price="40.00")  # Thursday
+        self._sale_with_item(day_offset=1, price="40.00")  # Tuesday
+        result = busiest_days_by_revenue(self.salon, self.since, self.until)
+        self.assertEqual([e.weekday for e in result[:2]], [1, 3])
+
+    def test_only_completed_sales_of_this_salon_count(self):
+        self._sale_with_item(day_offset=2, price="60.00")
+        self._sale_with_item(
+            day_offset=2, price="999.00", status=Sale.Status.OPEN
+        )
+        self._sale_with_item(
+            day_offset=2, price="999.00", status=Sale.Status.VOIDED
+        )
+        self._sale_with_item(day_offset=4, price="999.00", salon=self.other)
+        result = busiest_days_by_revenue(self.salon, self.since, self.until)
+        self.assertEqual(result[0].weekday, 2)
+        self.assertEqual(result[0].revenue, Decimal("60.00"))
+        self.assertEqual(sum(e.revenue for e in result), Decimal("60.00"))
+
+    def test_empty_and_reversed_ranges_return_seven_zeroed_weekdays(self):
+        for since, until in ((self.since, self.until),
+                             (self.until, self.since)):
+            result = busiest_days_by_revenue(self.salon, since, until)
+            self.assertEqual([e.weekday for e in result], list(range(7)))
+            for entry in result:
+                self.assertEqual(entry.revenue, Decimal("0.00"))
+                self.assertEqual(entry.count, 0)
+
+    def test_entries_match_busiest_days_fields(self):
+        self._sale_with_item(day_offset=6, price="75.00")
+        by_revenue = busiest_days_by_revenue(
+            self.salon, self.since, self.until
+        )
+        plain = busiest_days(self.salon, self.since, self.until)
+        self.assertEqual(
+            {e.weekday: e for e in by_revenue},
+            {e.weekday: e for e in plain},
+        )
