@@ -1,4 +1,4 @@
-"""NEDB operations: no session-setup SQL, ever.
+"""NEDB operations: no session-setup SQL and no savepoint SQL, ever.
 
 DYOR implication 2 / spike blocker 1: NEDB's pgwire refuses
 ``set_config()`` by design ("refused rather than answered with NULL,
@@ -15,6 +15,21 @@ from django.db.backends.postgresql.operations import (
 
 
 class DatabaseOperations(PostgresDatabaseOperations):
+    # -- savepoints: no SQL exists on this backend (DYOR 9.4) --------
+    # NEDB refuses SAVEPOINT / RELEASE / ROLLBACK TO at execution, and
+    # features.uses_savepoints is False, so Django never asks for this
+    # SQL. Returning None (not a statement) keeps the builders inert
+    # for any direct caller, mirroring set_time_zone_sql below.
+
+    def savepoint_create_sql(self, sid):
+        return None
+
+    def savepoint_commit_sql(self, sid):
+        return None
+
+    def savepoint_rollback_sql(self, sid):
+        return None
+
     def set_time_zone_sql(self):
         # Neutralized: NEDB refuses set_config() on pgwire, and the
         # wrapper never executes a timezone statement. Returning an
