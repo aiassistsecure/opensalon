@@ -1,14 +1,30 @@
 services:
-  db:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-opensalon}
-      POSTGRES_USER: ${POSTGRES_USER:-opensalon}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-opensalon-dev-only}
+  nedbd:
+    # NEDB is OpenSalon's only database (ADR 0005): nedbd serves a
+    # Postgres-compatible pgwire endpoint on 5432 and its HTTP API on
+    # 17070. There is no Postgres service and no Postgres fallback.
+    # The daemon binary (nedbd-v2) ships inside the pinned nedb-engine
+    # wheel — the same 12.15.16 build the NEDB spike/backend evidence
+    # was measured against — so the service installs that wheel and
+    # execs the bundled binary. Databases are pre-created over the
+    # HTTP API (POST /v1/databases, DYOR section 9.8), never via SQL.
+    image: python:3.12-slim
+    command:
+      - sh
+      - -c
+      - >-
+        pip install --no-cache-dir nedb-engine==12.15.16 &&
+        BIN=$(python3 -c "import nedb, pathlib;
+        print(pathlib.Path(nedb.__file__).parent / 'nedbd-v2')") &&
+        exec "$BIN" --data /data --port 17070 --pg-port 5432 -H 0.0.0.0
     volumes:
-      - opensalon-db:/var/lib/postgresql/data
+      - opensalon-nedb:/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-opensalon}"]
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import socket; socket.create_connection(('127.0.0.1', 5432), 2).close()"
       interval: 5s
       timeout: 3s
       retries: 10
@@ -18,15 +34,15 @@ services:
     command: sh -c "python manage.py migrate && python manage.py runserver 0.0.0.0:8000"
     environment:
       OPENSALON_SECRET_KEY: ${OPENSALON_SECRET_KEY:-dev-only-change-me}
-      POSTGRES_HOST: db
+      POSTGRES_HOST: ${POSTGRES_HOST:-nedbd}
       POSTGRES_DB: ${POSTGRES_DB:-opensalon}
       POSTGRES_USER: ${POSTGRES_USER:-opensalon}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-opensalon-dev-only}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-opensalon-dev-password}
     ports:
       - "8000:8000"
     depends_on:
-      db:
+      nedbd:
         condition: service_healthy
 
 volumes:
-  opensalon-db:
+  opensalon-nedb:
