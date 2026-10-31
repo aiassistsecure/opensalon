@@ -883,14 +883,17 @@
     prefetchAround(currentDate);
   }
 
-  /* ---- the live model + optimistic repaint ----
-     The pack's data, held as the client's own model of the week.
-     A gesture (drag, arrow keys) mutates the model first and
-     repaints from it in the same frame — lanes resize the instant
-     a block crosses columns, no server round-trip in the hand's
-     way. The write itself shadow-follows: one POST per gesture
-     (debounced through a key burst), then the day reconciles
-     from the server fragment as always. If the model cannot
+  /* ---- the live model + store-first repaint ----
+     The week as the client's own model, hydrated ONCE by the
+     pack (HTTP is the recovery asset: page load, other desks'
+     writes arriving on the poll, ribbon hygiene). From then on
+     the embedded NEDB is the state machine: a gesture records
+     its play in the store first, the store's doc syncs this
+     model (os:record), and the repaint reads that truth in the
+     same frame — lanes resize the instant a block crosses
+     columns. Persistence drains behind on its own schedule and
+     never gates the hand. The legacy single-POST path survives
+     only for a tab whose store never woke. If the model cannot
      answer (filtered view, day not packed), the gesture falls
      back to the plain server path. */
   var model = { days: {}, staff: [], anchor: null, anchorDate: "" };
@@ -1341,17 +1344,29 @@
     });
   });
 
-  /* A rejected op means the server's book disagrees with a
-     play the desk already saw — converge on the truth. */
+  /* Store law: a clean drain changes nothing on screen — the
+     store's docs ARE the book, and the server just acked the
+     very plays the store journaled. What HTTP still owes the
+     page is ribbon hygiene (the counts and totals the pack's
+     anchor carries), so a clean drain schedules ONE background
+     refresh on a debounce instead of re-reading the book in
+     the gesture's own path. A rejected op is different: the
+     server's book disagrees with a play the desk already saw —
+     converge on the truth at once. */
+  var storeRefreshTimer = null;
+  function scheduleStoreRefresh() {
+    if (storeRefreshTimer) clearTimeout(storeRefreshTimer);
+    storeRefreshTimer = setTimeout(function () {
+      storeRefreshTimer = null;
+      pollPack();
+    }, 2000);
+  }
   document.addEventListener("os:drain", function (event) {
     var failed = (event.detail && event.detail.failed) || [];
     if (failed.length) {
       refreshDay(selected ? selected.dataset.appt : null);
     } else {
-      /* Acked: re-stamp against the server so the mirror and
-         the book agree — the sync it triggers is invisible,
-         because the geometry already matches. */
-      pollPack();
+      scheduleStoreRefresh();
     }
   });
 
@@ -1364,14 +1379,34 @@
   });
 
   /* A booking made from the modal while the day book is open
-     lands in place: the pack sync creates the block (with the
-     fresh pulse), the rail loads its payload — no page load. */
+     lands in place — through the store: the server's reply
+     carried the new appointment's pack entry, the embedded
+     store adopts it as a doc, and the model takes the block
+     from there. No pack fetch: the POST was the persistence,
+     and the book learns nothing about itself from HTTP that
+     it did not just write. The ribbon still refreshes in the
+     background on the drain's debounce. Only a tab whose
+     store never woke falls back to the pack sync. */
   document.addEventListener("os:booked", function (event) {
     var d = event.detail || {};
     if (!layoutEl || d.date !== currentDate) return;
     d.handled = true;
-    pollPack();
-    setTimeout(function () { refreshRailData(d.id); }, 350);
+    var storeLive = window.OpenSalonShadow && window.OpenSalonShadow.ready;
+    if (storeLive && d.entry) {
+      var doc = Object.assign({ day: d.date }, d.entry);
+      document.dispatchEvent(new CustomEvent("os:put", { detail: doc }));
+      var entries = modelDay();
+      if (entries && !entries.some(function (e) { return e.id === doc.id; })) {
+        entries.push(doc);
+        entries.sort(function (a, b) { return a.start_min - b.start_min; });
+      }
+      repaintDay();
+      refreshRailData(d.id);
+      scheduleStoreRefresh();
+    } else {
+      pollPack();
+      setTimeout(function () { refreshRailData(d.id); }, 350);
+    }
   });
 
   var shadowPending = {};
@@ -2026,7 +2061,10 @@
            old world's manners. The daybook claims the event;
            anywhere else, navigate as before. */
         var ev = new CustomEvent("os:booked", {
-          detail: { id: res.data.appointment_id, date: res.data.date, handled: false },
+          detail: {
+            id: res.data.appointment_id, date: res.data.date,
+            entry: res.data.entry || null, handled: false,
+          },
         });
         document.dispatchEvent(ev);
         if (ev.detail.handled) {

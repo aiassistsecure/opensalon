@@ -1565,7 +1565,92 @@ def day_book_book(request):
         end=start + datetime.timedelta(minutes=minutes),
         status=Appointment.Status.BOOKED,
     )
-    return JsonResponse({"ok": True, "appointment_id": appt.pk, "date": day.isoformat()})
+    return JsonResponse(
+        {
+            "ok": True,
+            "appointment_id": appt.pk,
+            "date": day.isoformat(),
+            # The created appointment's pack entry rides home with
+            # the reply, so the client's embedded store adopts it
+            # as a doc at once — the book never re-fetches a pack
+            # to learn what it just created.
+            "entry": _pack_entry_for(salon, appt, tz),
+        }
+    )
+
+
+def _visit_keys(tiles, client_ids):
+    """Visit keys with the day book's own chaining rule: same
+    client + stylist, chained while the gap stays within
+    VISIT_GAP; the key is the visit's first appointment."""
+    visit_of = {}
+    grouped = {}
+    for tile in tiles:
+        grouped.setdefault(
+            (client_ids.get(tile["appointment_id"]), tile["_staff_id"]), []
+        ).append(tile)
+    for group in grouped.values():
+        visit, visit_end = [], None
+        for tile in group:
+            if visit and tile["_start"] > visit_end + VISIT_GAP:
+                for member_tile in visit:
+                    visit_of[member_tile["appointment_id"]] = visit[0][
+                        "appointment_id"
+                    ]
+                visit, visit_end = [], None
+            visit.append(tile)
+            visit_end = max(visit_end or tile["_end"], tile["_end"])
+        for member_tile in visit:
+            visit_of[member_tile["appointment_id"]] = visit[0]["appointment_id"]
+    return visit_of
+
+
+def _tile_entry(tile, tz, visit_of):
+    """One pack entry from a day-book tile — the shape the client
+    model, the embedded store, and the pack all share."""
+    start = tile["_start"].astimezone(tz)
+    end = tile["_end"].astimezone(tz)
+    return {
+        "id": tile["appointment_id"],
+        "staff_id": tile["_staff_id"],
+        "client": tile["client_name"],
+        "service": tile["service_name"],
+        "cat": tile["cat_key"],
+        "is_new": tile["is_new"],
+        "start_min": start.hour * 60 + start.minute,
+        "end_min": end.hour * 60 + end.minute,
+        "status": tile["status"],
+        "amount": str(tile["_amount"]) if tile["_amount"] is not None else None,
+        "price_label": tile["price_label"],
+        "time_label": tile["time_label"],
+        "visit": visit_of.get(tile["appointment_id"]),
+    }
+
+
+def _pack_entry_for(salon, appt, tz):
+    """The pack entry for ONE appointment, lifted from the day
+    book's own context builder so it can never disagree with the
+    pack about a block, a price, or a visit."""
+    day = appt.start.astimezone(tz).date()
+    ctx = _day_book_context(
+        SimpleNamespace(GET={"date": day.isoformat()}), light=True
+    )
+    tiles = []
+    for col in ctx["staff_columns"]:
+        for tile in col["blocks"]:
+            tile["_staff_id"] = col["member"].pk
+            tiles.append(tile)
+    tiles.sort(key=lambda t: (t["_start"], t["appointment_id"]))
+    client_ids = dict(
+        Appointment.objects.filter(
+            pk__in=[t["appointment_id"] for t in tiles]
+        ).values_list("pk", "client_id")
+    )
+    visit_of = _visit_keys(tiles, client_ids)
+    for tile in tiles:
+        if tile["appointment_id"] == appt.pk:
+            return _tile_entry(tile, tz, visit_of)
+    return None
 
 
 def day_book_pack(request):
@@ -1677,51 +1762,8 @@ def day_book_pack(request):
                 tile["_staff_id"] = col["member"].pk
                 tiles.append(tile)
         tiles.sort(key=lambda t: (t["_start"], t["appointment_id"]))
-        # Visit keys with the day book's own chaining rule: same
-        # client + stylist, chained while the gap stays within
-        # VISIT_GAP; the key is the visit's first appointment.
-        visit_of = {}
-        grouped = {}
-        for tile in tiles:
-            grouped.setdefault(
-                (client_ids.get(tile["appointment_id"]), tile["_staff_id"]), []
-            ).append(tile)
-        for group in grouped.values():
-            visit, visit_end = [], None
-            for tile in group:
-                if visit and tile["_start"] > visit_end + VISIT_GAP:
-                    for member_tile in visit:
-                        visit_of[member_tile["appointment_id"]] = visit[0][
-                            "appointment_id"
-                        ]
-                    visit, visit_end = [], None
-                visit.append(tile)
-                visit_end = max(visit_end or tile["_end"], tile["_end"])
-            for member_tile in visit:
-                visit_of[member_tile["appointment_id"]] = visit[0]["appointment_id"]
-        entries = []
-        for tile in tiles:
-            start = tile["_start"].astimezone(tz)
-            end = tile["_end"].astimezone(tz)
-            entries.append(
-                {
-                    "id": tile["appointment_id"],
-                    "staff_id": tile["_staff_id"],
-                    "client": tile["client_name"],
-                    "service": tile["service_name"],
-                    "cat": tile["cat_key"],
-                    "is_new": tile["is_new"],
-                    "start_min": start.hour * 60 + start.minute,
-                    "end_min": end.hour * 60 + end.minute,
-                    "status": tile["status"],
-                    "amount": str(tile["_amount"])
-                    if tile["_amount"] is not None
-                    else None,
-                    "price_label": tile["price_label"],
-                    "time_label": tile["time_label"],
-                    "visit": visit_of.get(tile["appointment_id"]),
-                }
-            )
+        visit_of = _visit_keys(tiles, client_ids)
+        entries = [_tile_entry(tile, tz, visit_of) for tile in tiles]
         days[day.isoformat()] = entries
         if day == anchor:
             overview, intel, kpi = ctx["overview"], ctx["intel"], ctx["kpi"]

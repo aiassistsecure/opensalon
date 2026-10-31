@@ -356,6 +356,17 @@ document.addEventListener("os:pack", function (event) { seed(event.detail); });
 document.addEventListener("os:op", function (event) { applyLocal(event.detail); });
 document.addEventListener("os:undo", function () { undo(); });
 
+/* A doc born elsewhere enters the store: a booking the desk
+   just made arrives with its pack entry in the server's reply
+   (the POST was its persistence — no op is queued for it), and
+   the store adopts the doc so every later play on it applies
+   here first, like any other. */
+document.addEventListener("os:put", function (event) {
+  const entry = event.detail;
+  if (!ready || !entry || !entry.id || !entry.day) return;
+  db.put("appointments", String(entry.id), JSON.stringify(entry));
+});
+
 window.OpenSalonShadow = {
   get ready() { return ready; },
   verify: function () { return ready ? db.verify() : false; },
