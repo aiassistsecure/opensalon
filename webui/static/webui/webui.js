@@ -1319,6 +1319,8 @@
     if (clientEl) clientEl.textContent = entry.client;
     var svcEl = el.querySelector(".b-service");
     if (svcEl) svcEl.textContent = entry.service;
+    var svcInline = el.querySelector(".b-svc-inline");
+    if (svcInline) svcInline.textContent = entry.service;
     var priceEl = el.querySelector(".b-price");
     if (entry.price_label) {
       if (!priceEl) {
@@ -1356,7 +1358,8 @@
       '<div class="b-top"><span class="b-time"></span>' +
       '<span class="b-new" style="display:none">New</span>' +
       '<span class="b-ico" aria-hidden="true"></span></div>' +
-      '<div class="b-main"><div class="b-client"></div></div>' +
+      '<div class="b-main"><div class="b-client"></div>' +
+      '<span class="b-svc-inline"></span></div>' +
       '<div class="b-services"><div class="b-service"></div></div>';
     bindBlock(el);
     bindDrag(el);
