@@ -24,9 +24,14 @@
 </div>
 <p class="rb-law"><strong>This book repeats every week.</strong> With <em>Every week</em> on, a change joins the standing schedule. Off, it changes only the day you're viewing. The day book and online booking follow this book. <strong>Drag on empty space to place hours; drag a block to move it.</strong></p>
 <div class="rb-book" data-date="{{ day|date:'Y-m-d' }}">
-  <div class="rb-heads">
+  <div class="rb-guttercol">
     <div class="rb-gutter-head"></div>
-    {% for col in columns %}
+    <div class="rb-gutter">
+      {% for h in hours %}<div class="rb-hour" style="top:{{ h.top }}%">{{ h.label }}</div>{% endfor %}
+    </div>
+  </div>
+  {% for col in columns %}
+  <div class="rb-col">
     <div class="rb-colhead-cell" data-member="{{ col.member.pk }}">
       <div class="rb-colhead">
         <div class="avatar-md" style="{{ col.av_style }}">{{ col.initials }}</div>
@@ -52,13 +57,6 @@
         </div>
       </form>
     </div>
-    {% endfor %}
-  </div>
-  <div class="rb-grid">
-    <div class="rb-gutter">
-      {% for h in hours %}<div class="rb-hour" style="top:{{ h.top }}%">{{ h.label }}</div>{% endfor %}
-    </div>
-    {% for col in columns %}
     <div class="rb-body" data-member="{{ col.member.pk }}">
       {% if col.is_off %}
       <div class="rb-off">Off — this day only
@@ -75,10 +73,10 @@
            data-start="{{ b.start }}" data-end="{{ b.end }}" data-source="{{ b.source }}"{% if b.pattern_id %} data-pattern="{{ b.pattern_id }}"{% endif %}>
         <div class="rb-shift-top">
           <span class="rb-shift-t">{{ b.label }}</span>
-          <span class="rb-chip">{% if b.source == 'weekly' %}Every week{% else %}This day{% endif %}</span>
         </div>
         {% if b.source == 'weekly' %}
         <form method="post" class="rb-ctl">{% csrf_token %}
+          <span class="rb-chip">Every week</span>
           <input type="hidden" name="action" value="off">
           <input type="hidden" name="member" value="{{ col.member.pk }}">
           <input type="hidden" name="date" value="{{ day|date:'Y-m-d' }}">
@@ -90,6 +88,7 @@
         </form>
         {% else %}
         <div class="rb-ctl">
+          <span class="rb-chip">This day</span>
           <form method="post" class="rb-inline">{% csrf_token %}
             <input type="hidden" name="action" value="clear">
             <input type="hidden" name="member" value="{{ col.member.pk }}">
@@ -110,9 +109,9 @@
       <div class="rb-empty">No hours<br><span>drag to add</span></div>
       {% endif %}
     </div>
-    {% empty %}
-    <p class="rb-law">No salon yet — import or create the salon first.</p>
-    {% endfor %}
   </div>
+  {% empty %}
+  <p class="rb-law">No salon yet — import or create the salon first.</p>
+  {% endfor %}
 </div>
 {% endblock %}

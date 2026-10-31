@@ -584,6 +584,67 @@
     });
   }
 
+  /* Empty space is operable space (the roster book's gesture,
+     brought to the day book): press on a column's empty span and
+     the booking sheet opens for that stylist at that time; drag
+     to mark the span first — the sheet still starts where the
+     drag began, and the service sets the length. Blocks keep
+     their own click/drag; this handler ignores them. */
+  function bindColumn(col) {
+    if (col.dataset.osBound) return;
+    col.dataset.osBound = "1";
+    col.addEventListener("pointerdown", function (ev) {
+      if (ev.button !== 0 && ev.pointerType === "mouse") return;
+      if (ev.target.closest(".appt-block, button, a, input, select")) return;
+      var wrap = col.closest(".gridwrap");
+      if (!wrap) return;
+      var startHour = parseInt(wrap.dataset.startHour || "8", 10);
+      var endHour = parseInt(wrap.dataset.endHour || "20", 10);
+      var span = (endHour - startHour) * 60;
+      function minutes(clientY) {
+        var r = col.getBoundingClientRect();
+        var raw = startHour * 60 + ((clientY - r.top) / r.height) * span;
+        return Math.max(
+          startHour * 60,
+          Math.min(startHour * 60 + span, Math.round(raw / 15) * 15)
+        );
+      }
+      function hhmm(mins) {
+        return String(Math.floor(mins / 60)).padStart(2, "0") + ":" +
+          String(mins % 60).padStart(2, "0");
+      }
+      ev.preventDefault();
+      var startMin = minutes(ev.clientY);
+      var cur = startMin;
+      var ghost = document.createElement("div");
+      ghost.className = "db-ghost";
+      col.appendChild(ghost);
+      function draw() {
+        var a = Math.min(startMin, cur), b = Math.max(startMin, cur);
+        ghost.style.top = ((a - startHour * 60) / span * 100) + "%";
+        ghost.style.height = Math.max((b - a) / span * 100, 2) + "%";
+        return a;
+      }
+      draw();
+      function move(e2) { cur = minutes(e2.clientY); draw(); }
+      function up() {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        var at = draw();
+        ghost.remove();
+        if (typeof window.osOpenBooking === "function") {
+          window.osOpenBooking({
+            member: col.dataset.member,
+            date: currentDate,
+            time: hhmm(at),
+          });
+        }
+      }
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+    });
+  }
+
   function bindBook() {
     sweepStrays();
     var shadowEl = document.getElementById("shadowState");
@@ -601,6 +662,7 @@
     selected = null;
 
     document.querySelectorAll(".appt-block, .acard").forEach(bindBlock);
+    document.querySelectorAll(".db-column").forEach(bindColumn);
 
     bindDrag();
 
@@ -1745,6 +1807,32 @@
   var optionsLoaded = false;
   var searchTimer = null;
 
+  /* A prefill from the graph: the day book's empty-space gesture
+     names the stylist, the day and the start time before the
+     sheet opens. The member applies once the options land. */
+  var pendingPrefill = null;
+  function applyPrefill() {
+    if (!pendingPrefill) return;
+    var p = pendingPrefill;
+    if (p.date) $("bkDate").value = p.date;
+    if (p.time) $("bkTime").value = p.time;
+    if (p.member && optionsLoaded) {
+      var sel = $("bkMember");
+      for (var i = 0; i < sel.options.length; i++) {
+        if (sel.options[i].value === String(p.member)) {
+          sel.selectedIndex = i;
+          break;
+        }
+      }
+    }
+    if (!p.member || optionsLoaded) pendingPrefill = null;
+  }
+  window.osOpenBooking = function (prefill) {
+    show();
+    pendingPrefill = prefill || null;
+    applyPrefill();
+  };
+
   function show() {
     modal.classList.remove("hidden");
     if (!optionsLoaded) loadOptions();
@@ -1765,6 +1853,7 @@
             (s.minutes ? " · " + s.minutes + "m" : "") + "</option>";
         }).join("");
         if (data.today && !$("bkDate").value) $("bkDate").value = data.today;
+        applyPrefill();
       })
       .catch(function () {});
   }
@@ -1883,7 +1972,10 @@
     }).catch(function () { fail("That booking did not save — try again."); });
   });
 
-  openBtn.addEventListener("click", show);
+  openBtn.addEventListener("click", function () {
+    pendingPrefill = null;
+    show();
+  });
   $("bookClose").addEventListener("click", hide);
   $("bookCancel").addEventListener("click", hide);
   modal.addEventListener("click", function (event) {

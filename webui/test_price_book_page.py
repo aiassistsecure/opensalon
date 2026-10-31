@@ -34,13 +34,16 @@ class PriceBookPageTests(TestCase):
     def test_page_is_light_and_columns_read_like_the_salon_talks(self):
         html = self.client.get(self.url).content.decode()
         self.assertIn("page-light", html)
+        # A level still named by a source id never prints the id:
+        # ids are private keys, not public titles. It reads as an
+        # Unassigned set carrying only its last four characters.
+        self.assertNotIn("H4zBPQ63XrW87rOtEvXClA", html)
         order = [
             html.index(name)
             for name in (
                 "Base",
                 "Artist Level 6",
                 "Unassigned ····XClA",
-                "H4zBPQ63XrW87rOtEvXClA",
             )
         ]
         self.assertEqual(order, sorted(order))

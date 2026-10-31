@@ -851,6 +851,8 @@ def _day_book_context(request, *, light=False, kit=None):
         "next_day": day + datetime.timedelta(days=1),
         "today": today,
         "grid_tracks": grid_tracks,
+        "day_start_hour": DAY_START_HOUR,
+        "day_end_hour": DAY_END_HOUR,
         "hours": hours,
         "week_days": week_days,
         "staff_columns": staff,
@@ -1768,10 +1770,34 @@ def _level_rank(level):
     return (1, name.lower())
 
 
+def _level_label(level, seen):
+    """The header a level earns on the page: its human name, or —
+    for a level still named by a source id (a private key, not a
+    public title) — an honest Unassigned label carrying only its
+    last four characters. The repair command gives it a real name
+    in the data; until then the page never prints the raw id."""
+    name = level.name or ""
+    if " " not in name and len(name) >= 16:
+        label = f"Unassigned ····{name[-4:]}"
+    else:
+        label = name
+    if label in seen:
+        seen[label] += 1
+        label = f"{label} ({seen[label]})"
+    else:
+        seen[label] = 1
+    return label
+
+
 def price_book(request):
     salon = Salon.objects.order_by("id").first()
     levels = list(StaffLevel.objects.filter(salon=salon, active=True)) if salon else []
     levels.sort(key=_level_rank)
+    seen_labels = {}
+    levels = [
+        {"pk": level.pk, "label": _level_label(level, seen_labels)}
+        for level in levels
+    ]
     categories = []
     if salon is not None:
         cats = (
@@ -1789,7 +1815,7 @@ def price_book(request):
                     {
                         "service": service,
                         "duration": _duration_label(service.total_minutes),
-                        "cells": [prices.get(level.pk) for level in levels],
+                        "cells": [prices.get(level["pk"]) for level in levels],
                     }
                 )
             if rows:

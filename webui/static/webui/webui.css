@@ -268,6 +268,15 @@ button { font-family: inherit; }
   scroll-margin-left: var(--gutter);
   background: repeating-linear-gradient(to bottom, transparent 0, transparent calc(var(--hour) - 1px), var(--ln2) calc(var(--hour) - 1px), var(--ln2) var(--hour));
 }
+/* Empty space is operable: press or drag on a column's open span
+   and the booking sheet opens there. The ghost is the drag's
+   preview, in the roster book's dashed-gold language. */
+.db-column { cursor: crosshair; }
+.db-ghost {
+  position: absolute; left: 5px; right: 5px; z-index: 4; pointer-events: none;
+  border: 1.5px dashed #a87c24; border-radius: 10px;
+  background: rgba(196, 154, 58, .14);
+}
 .db-column.offduty {
   background:
     repeating-linear-gradient(45deg, rgba(96, 140, 255, .028) 0 10px, transparent 10px 20px),
@@ -1106,12 +1115,18 @@ button:focus-visible, a:focus-visible, select:focus-visible {
   border:1px solid #e6ddc6;border-radius:12px;padding:10px 14px;line-height:1.55}
 .rb-law strong{color:#1d2530}
 .rb-law em{font-style:normal;font-weight:700;color:#8a6d2f}
-.rb-book{background:#fffdf7;border:1px solid #e6ddc6;border-radius:16px;
+.rb-book{display:flex;background:#fffdf7;border:1px solid #e6ddc6;border-radius:16px;
   box-shadow:0 14px 38px rgba(96,76,24,.09);overflow-x:auto;padding-bottom:10px}
-.rb-heads{display:flex;background:#fbf7ec;border-bottom:1px solid #ece2c8}
-.rb-gutter-head{flex:0 0 52px}
-.rb-colhead-cell{flex:1 0 190px;border-left:1px solid #f0e7cf;padding:10px 10px 9px}
+/* One column = one width: head, place form and grid body live in
+   the same flex column, so a name can never drift from its graph. */
+.rb-col{flex:1 0 192px;border-left:1px solid #f0e7cf;display:flex;flex-direction:column}
+.rb-guttercol{flex:0 0 52px;display:flex;flex-direction:column}
+.rb-gutter-head{height:158px;background:#fbf7ec;border-bottom:1px solid #ece2c8;flex:none}
+.rb-colhead-cell{height:158px;background:#fbf7ec;border-bottom:1px solid #ece2c8;
+  padding:9px 10px;overflow:hidden;flex:none}
 .rb-colhead{display:flex;align-items:center;gap:9px}
+.rb-colhead .chead-meta{min-width:0}
+.rb-colhead .cname{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .rb-place{margin-top:9px;border:1px solid #e6ddc6;border-radius:11px;padding:8px;background:#fff;
   box-shadow:0 2px 8px rgba(96,76,24,.05)}
 .rb-place.rb-flash{border-color:#c49a3a;box-shadow:0 0 0 3px rgba(196,154,58,.25)}
@@ -1122,10 +1137,9 @@ button:focus-visible, a:focus-visible, select:focus-visible {
 .rb-place-btn{padding:7px 13px;border:0;border-radius:9px;cursor:pointer;flex:none;
   background:linear-gradient(180deg,#c49a3a,#a87c24);color:#fff;font-weight:700;font-size:.83rem;
   box-shadow:0 4px 12px rgba(168,124,36,.3)}
-.rb-grid{display:flex}
-.rb-gutter{position:relative;flex:0 0 52px;height:560px}
+.rb-gutter{position:relative;height:560px;flex:none}
 .rb-hour{position:absolute;right:7px;transform:translateY(-50%);font-size:.66rem;color:#b0a684;white-space:nowrap}
-.rb-body{position:relative;height:560px;flex:1 0 190px;border-left:1px solid #f0e7cf;cursor:crosshair;
+.rb-body{position:relative;height:560px;flex:none;cursor:crosshair;
   background-image:linear-gradient(to bottom,#f0e7cf 1px,transparent 1px);background-size:100% calc(100%/12)}
 .rb-shift{position:absolute;left:6px;right:6px;border-radius:10px;padding:6px 8px;overflow:hidden;cursor:grab;
   background-image:linear-gradient(180deg,rgba(255,255,255,.65),rgba(255,255,255,0) 55%),linear-gradient(180deg,#e7f0dd,#d7e8c8);

@@ -115,6 +115,9 @@ class RosterBookTests(TestCase):
 
     def test_the_page_speaks_plainly(self):
         html = self.get(SAT).content.decode()
+        # Head and graph share one column element, so a name can
+        # never drift from the column it labels.
+        self.assertIn('class="rb-col"', html)
         self.assertIn("This book repeats every week", html)
         self.assertIn("Remove", html)
         self.assertIn("DD", html)  # the avatar carries her initials
