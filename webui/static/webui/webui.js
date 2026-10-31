@@ -187,12 +187,25 @@
           tile.removeEventListener("lostpointercapture", onCancel);
           if (!engaged) return;
           if (ghost) ghost.remove();
-          /* The dragged element lives on <body> while it flies —
-             it must die here, whatever happens next. A swap only
-             replaces the layout; a body-level tile left behind is
-             the stuck duplicate that haunted the first build. */
-          tile.remove();
           var changed = target.member !== originMember || target.startMin !== startMin0;
+          if (commit && changed && !filtersActive) {
+            /* Optimistic: the model moves first and the grid
+               repaints from it in this same frame; the write
+               shadow-follows. The tile stays alive — repaint
+               seats it in its new column. */
+            var movedId = parseInt(tile.dataset.appt, 10);
+            tile.classList.remove("dragging");
+            if (applyMove(movedId, parseInt(target.member, 10), dayStartMin + target.startMin)) {
+              queueShadow(movedId);
+              return;
+            }
+          }
+          /* The dragged element lives on <body> while it flies —
+             on every non-optimistic path it must die here. A swap
+             only replaces the layout; a body-level tile left
+             behind is the stuck duplicate that haunted the first
+             build. */
+          tile.remove();
           if (commit && changed) {
             var tokenEl = layout.querySelector('input[name="csrfmiddlewaretoken"]');
             fetch(layout.dataset.move, {
@@ -455,6 +468,205 @@
     prefetchAround(currentDate);
   }
 
+  /* ---- the live model + optimistic repaint ----
+     The pack's data, held as the client's own model of the week.
+     A gesture (drag, arrow keys) mutates the model first and
+     repaints from it in the same frame — lanes resize the instant
+     a block crosses columns, no server round-trip in the hand's
+     way. The write itself shadow-follows: one POST per gesture
+     (debounced through a key burst), then the day reconciles
+     from the server fragment as always. If the model cannot
+     answer (filtered view, day not packed), the gesture falls
+     back to the plain server path. */
+  var model = { days: {}, staff: [] };
+  var filtersActive = /[?&](cat|status)=[^&]/.test(window.location.search);
+
+  function buildModel(pack) {
+    if (pack && pack.days) model = { days: pack.days, staff: pack.staff || [] };
+  }
+  function modelDay() {
+    return (model.days && model.days[currentDate]) || null;
+  }
+  function fmtClock(mins) {
+    var h = Math.floor(mins / 60), m = mins % 60;
+    var ap = h < 12 ? "AM" : "PM", h12 = h % 12 || 12;
+    return m ? h12 + ":" + (m < 10 ? "0" : "") + m + " " + ap : h12 + " " + ap;
+  }
+
+  function lanesFor(entries) {
+    var sorted = entries.slice().sort(function (a, b) {
+      return a.start_min - b.start_min || a.id - b.id;
+    });
+    var result = {}, clusters = [], current = [], currentEnd = null;
+    sorted.forEach(function (e) {
+      if (current.length && e.start_min >= currentEnd) {
+        clusters.push(current); current = []; currentEnd = null;
+      }
+      current.push(e);
+      currentEnd = Math.max(currentEnd === null ? e.end_min : currentEnd, e.end_min);
+    });
+    if (current.length) clusters.push(current);
+    clusters.forEach(function (cluster) {
+      var laneEnds = [];
+      cluster.forEach(function (e) {
+        var lane = -1;
+        for (var i = 0; i < laneEnds.length; i++) {
+          if (e.start_min >= laneEnds[i]) { laneEnds[i] = e.end_min; lane = i; break; }
+        }
+        if (lane === -1) { laneEnds.push(e.end_min); lane = laneEnds.length - 1; }
+        e._lane = lane;
+      });
+      var lanes = laneEnds.length, width = 100 / lanes;
+      cluster.forEach(function (e) {
+        var probes = [e.start_min];
+        cluster.forEach(function (b) {
+          if (e.start_min < b.start_min && b.start_min < e.end_min) probes.push(b.start_min);
+        });
+        var overlap = 0;
+        probes.forEach(function (t) {
+          var n = 0;
+          cluster.forEach(function (b) { if (b.start_min <= t && t < b.end_min) n++; });
+          overlap = Math.max(overlap, n);
+        });
+        result[e.id] = {
+          left: Math.round(e._lane * width * 100) / 100,
+          width: Math.round(width * 100) / 100,
+          overlap: overlap,
+        };
+      });
+    });
+    return result;
+  }
+
+  function repaintDay() {
+    var entries = modelDay();
+    if (!entries || !layoutEl) return false;
+    var byStaff = {};
+    entries.forEach(function (e) {
+      (byStaff[e.staff_id] = byStaff[e.staff_id] || []).push(e);
+    });
+    var factors = [];
+    layoutEl.querySelectorAll(".db-column").forEach(function (col) {
+      var list = byStaff[col.dataset.member] || [];
+      var lanes = lanesFor(list);
+      var maxOverlap = 1;
+      list.forEach(function (e) {
+        var info = lanes[e.id];
+        if (info) maxOverlap = Math.max(maxOverlap, info.overlap);
+        var el = document.querySelector('.appt-block[data-appt="' + e.id + '"]');
+        if (!el) return;
+        if (el.parentElement !== col) col.appendChild(el);
+        el.style.top = ((e.start_min - 480) / 720 * 100) + "%";
+        el.style.height = Math.max((e.end_min - e.start_min) / 720 * 100, 4.0) + "%";
+        if (info) {
+          el.style.left = "calc(" + info.left + "% + 5px)";
+          el.style.width = "calc(" + info.width + "% - 10px)";
+        }
+        el.dataset.startMin = String(e.start_min - 480);
+        var dur = e.end_min - e.start_min;
+        el.classList.toggle("mini", dur < 45 || (info && info.overlap >= 3 && dur < 90));
+        el.classList.toggle("micro", dur < 30);
+        var timeEl = el.querySelector(".b-time");
+        if (timeEl) timeEl.textContent = fmtClock(e.start_min) + " – " + fmtClock(e.end_min);
+      });
+      factors.push(Math.min(3, maxOverlap));
+    });
+    var tracks = "var(--gutter) " + factors.map(function (f) {
+      return "minmax(calc(var(--colunit) * " + f + "), " + f + "fr)";
+    }).join(" ");
+    layoutEl.querySelectorAll(".colheads, .gridwrap").forEach(function (el) {
+      el.style.setProperty("--tracks", tracks);
+    });
+    return true;
+  }
+
+  function applyMove(id, staffId, startMin) {
+    var entries = modelDay();
+    if (!entries) return false;
+    var found = null;
+    entries.forEach(function (e) { if (e.id === id) found = e; });
+    if (!found) return false;
+    var dur = found.end_min - found.start_min;
+    found.staff_id = staffId;
+    found.start_min = startMin;
+    found.end_min = startMin + dur;
+    return repaintDay();
+  }
+
+  var shadowPending = {};
+  var shadowTimer = null;
+  function queueShadow(id) {
+    var entries = modelDay();
+    if (!entries) return;
+    entries.forEach(function (e) {
+      if (e.id === id) {
+        shadowPending[id] = { staff_member_id: e.staff_id, start_minutes: e.start_min };
+      }
+    });
+    if (shadowTimer) clearTimeout(shadowTimer);
+    shadowTimer = setTimeout(flushShadow, 320);
+  }
+  function flushShadow() {
+    if (!layoutEl || !layoutEl.dataset.move) return;
+    var tokenEl = layoutEl.querySelector('input[name="csrfmiddlewaretoken"]');
+    var ids = Object.keys(shadowPending);
+    var jobs = ids.map(function (id) {
+      var body = shadowPending[id];
+      return fetch(layoutEl.dataset.move, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": tokenEl ? tokenEl.value : "",
+        },
+        body: JSON.stringify({
+          appointment_id: parseInt(id, 10),
+          staff_member_id: body.staff_member_id,
+          start_minutes: body.start_minutes,
+        }),
+      }).catch(function () {});
+    });
+    shadowPending = {};
+    Promise.all(jobs).then(function () {
+      /* If another drag is already in hand, let it finish and
+         reconcile then — never swap the floor mid-gesture. */
+      if (ids.length && !document.querySelector(".appt-block.dragging")) {
+        refreshDay(parseInt(ids[ids.length - 1], 10));
+      }
+    });
+  }
+
+  /* Arrow keys drive the selected block: up/down in 5-minute
+     steps, left/right across stylists — reacting on keydown,
+     auto-repeat included, one shadow-write per burst. */
+  document.addEventListener("keydown", function (event) {
+    if (!layoutEl || filtersActive) return;
+    if (document.querySelector(".book-modal:not(.hidden)")) return;
+    if (event.target.closest("input, textarea, select, .book-modal")) return;
+    if (!selected || !selected.classList.contains("appt-block")) return;
+    var id = parseInt(selected.dataset.appt, 10);
+    var entries = modelDay();
+    if (!entries) return;
+    var entry = null;
+    entries.forEach(function (e) { if (e.id === id) entry = e; });
+    if (!entry) return;
+    var dur = entry.end_min - entry.start_min;
+    var staffId = entry.staff_id, startMin = entry.start_min;
+    if (event.key === "ArrowDown") startMin = Math.min(startMin + 5, 1200 - dur);
+    else if (event.key === "ArrowUp") startMin = Math.max(startMin - 5, 480);
+    else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      var cols = Array.prototype.map.call(
+        layoutEl.querySelectorAll(".db-column"),
+        function (c) { return parseInt(c.dataset.member, 10); }
+      );
+      var idx = cols.indexOf(staffId);
+      var next = event.key === "ArrowLeft" ? idx - 1 : idx + 1;
+      if (next < 0 || next >= cols.length) return;
+      staffId = cols[next];
+    } else return;
+    event.preventDefault();
+    if (applyMove(id, staffId, startMin)) queueShadow(id);
+  });
+
   /* ---- freshness poll ----
      The book is shared: another desk's booking, a check-in from
      the rail down the hall, an online reservation — an open
@@ -475,6 +687,7 @@
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (!data.version) return;
+        if (data.days) buildModel(data);
         if (packVersion === null) {
           packVersion = data.version;
         } else if (data.changed) {
