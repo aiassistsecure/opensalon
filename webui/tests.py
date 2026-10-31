@@ -123,7 +123,7 @@ class DayBookTests(WebuiTestBase):
         # it): the grid unit is the service. A guest's stacked
         # services are separate blocks in the column; the VISIT
         # still exists for the agenda, the KPIs and the rail.
-        self._appointment(start_hour=10, end_hour=11)
+        self._appointment()
         self._appointment(start_hour=11, end_hour=12)
         response = self.client.get(reverse("webui:daybook"), {"date": "2026-11-02"})
         column = response.context["staff_columns"][0]
@@ -161,7 +161,7 @@ class DayBookTests(WebuiTestBase):
     def test_move_moves_the_grabbed_block_only(self):
         import json as jsonlib
 
-        first = self._appointment(start_hour=10, end_hour=11)
+        first = self._appointment()
         second = self._appointment(start_hour=11, end_hour=12)
         other_member = StaffMember.objects.create(
             display_name="Sonia Taylor", salon=self.salon, staff_level=self.level
@@ -192,7 +192,7 @@ class DayBookTests(WebuiTestBase):
     def test_move_snaps_to_five_minutes_and_validates(self):
         import json as jsonlib
 
-        appt = self._appointment(start_hour=10, end_hour=11)
+        appt = self._appointment()
         response = self.client.post(
             reverse("webui:daybook_move"),
             data=jsonlib.dumps(
@@ -341,6 +341,137 @@ class PrecisionTests(WebuiTestBase):
         self.assertEqual(column["width_factor"], 2)
         self.assertIn("var(--colunit) * 2", response.context["grid_tracks"])
         self.assertContains(response, "micro")
+
+
+class WritePathTests(WebuiTestBase):
+    def _make_appt(self, start_hour=10, end_hour=11):
+        return Appointment.objects.create(
+            client=self.person,
+            staff_member=self.member,
+            service=self.service,
+            start=timezone.make_aware(
+                datetime.datetime(2026, 11, 2, start_hour, 0)
+            ),
+            end=timezone.make_aware(
+                datetime.datetime(2026, 11, 2, end_hour, 0)
+            ),
+            status="confirmed",
+        )
+
+    def _post(self, url_name, payload):
+        import json as jsonlib
+
+        return self.client.post(
+            reverse(url_name),
+            data=jsonlib.dumps(payload),
+            content_type="application/json",
+        )
+
+    def test_status_flow_check_in_to_complete(self):
+        appt = self._make_appt()
+        self.assertEqual(appt.status, "confirmed")
+        response = self._post(
+            "webui:daybook_status", {"appointment_id": appt.pk, "status": "arrived"}
+        )
+        self.assertEqual(response.status_code, 200)
+        appt.refresh_from_db()
+        self.assertEqual(appt.status, "arrived")
+        # Skipping a step is rejected: arrived cannot jump to completed.
+        response = self._post(
+            "webui:daybook_status", {"appointment_id": appt.pk, "status": "completed"}
+        )
+        self.assertEqual(response.status_code, 400)
+        self._post(
+            "webui:daybook_status", {"appointment_id": appt.pk, "status": "in_service"}
+        )
+        self._post(
+            "webui:daybook_status", {"appointment_id": appt.pk, "status": "completed"}
+        )
+        appt.refresh_from_db()
+        self.assertEqual(appt.status, "completed")
+        # Terminal: nothing leaves completed.
+        response = self._post(
+            "webui:daybook_status", {"appointment_id": appt.pk, "status": "arrived"}
+        )
+        self.assertEqual(response.status_code, 400)
+        response = self._post(
+            "webui:daybook_status", {"appointment_id": 999999, "status": "arrived"}
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_rail_payload_offers_check_in(self):
+        self._make_appt()
+        response = self.client.get(reverse("webui:daybook"), {"date": "2026-11-02"})
+        labels = [
+            a["label"]
+            for payload in response.context["rail_data"].values()
+            for a in payload["actions"]
+        ]
+        self.assertIn("Check In", labels)
+
+    def test_book_for_existing_client_uses_service_minutes(self):
+        response = self._post(
+            "webui:daybook_book",
+            {
+                "client_id": self.person.pk,
+                "staff_member_id": self.member.pk,
+                "service_id": self.service.pk,
+                "date": "2026-11-02",
+                "time": "13:30",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        appt = Appointment.objects.get(pk=response.json()["appointment_id"])
+        self.assertEqual(appt.status, "booked")
+        self.assertEqual(appt.service_name, "Women's Haircut")
+        self.assertEqual((appt.end - appt.start).total_seconds(), 60 * 60)
+        self.assertEqual(appt.start.hour, 13)
+
+    def test_book_creates_a_new_client_when_asked(self):
+        response = self._post(
+            "webui:daybook_book",
+            {
+                "new_client": {
+                    "first_name": "Robin",
+                    "last_name": "Voss",
+                    "phone": "407-555-0199",
+                },
+                "staff_member_id": self.member.pk,
+                "service_id": self.service.pk,
+                "date": "2026-11-02",
+                "time": "09:00",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        appt = Appointment.objects.get(pk=response.json()["appointment_id"])
+        self.assertEqual(appt.client.first_name, "Robin")
+        self.assertEqual(appt.client.phone, "407-555-0199")
+
+    def test_book_without_a_client_is_rejected(self):
+        response = self._post(
+            "webui:daybook_book",
+            {
+                "staff_member_id": self.member.pk,
+                "service_id": self.service.pk,
+                "date": "2026-11-02",
+                "time": "09:00",
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_client_search_and_options(self):
+        response = self.client.get(reverse("webui:daybook_client_search"), {"q": "Orta"})
+        self.assertEqual(
+            [c["name"] for c in response.json()["clients"]], ["Jaime Orta"]
+        )
+        response = self.client.get(
+            reverse("webui:daybook_client_search"), {"q": "5550100"}
+        )
+        self.assertEqual(len(response.json()["clients"]), 1)
+        response = self.client.get(reverse("webui:daybook_book_options"))
+        data = response.json()
+        self.assertEqual([m["name"] for m in data["members"]], ["Maribel Gonzalez"])
+        self.assertEqual(data["services"][0]["minutes"], 60)
 
 
 class RosterPageTests(WebuiTestBase):

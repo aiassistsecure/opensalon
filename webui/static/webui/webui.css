@@ -819,3 +819,60 @@ body.side-collapsed .switcher { justify-content: center; padding: 8px; }
 }
 .btn-dark:hover { background: #2b3646; }
 .roster-note { color: #8a826f; font-size: 12px; margin: 12px 0 0; }
+
+/* ---------- rail hint + booking modal ---------- */
+.rail-hint { color: var(--tx3); font-size: 11.5px; margin: 9px 2px 0; }
+.page-light .rail-hint { color: #a2987d; }
+.book-modal {
+  position: fixed; inset: 0; z-index: 200; display: flex;
+  align-items: flex-start; justify-content: center; padding: 7vh 16px 16px;
+  background: rgba(10, 12, 24, .55); backdrop-filter: blur(6px);
+}
+.book-card {
+  width: min(560px, 100%); background: #fffdf7; color: #1d2530;
+  border: 1px solid #e9e0c8; border-radius: 18px; padding: 20px 22px;
+  box-shadow: 0 30px 70px rgba(8, 8, 26, .45);
+}
+.book-card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.book-card-head h2 { font-family: var(--font-d); font-size: 19px; font-weight: 800; margin: 0; }
+.book-card .rail-close { color: #7d7663; }
+.book-field { margin-bottom: 12px; position: relative; }
+.book-field label {
+  display: block; font-size: 11px; font-weight: 700; letter-spacing: .07em;
+  text-transform: uppercase; color: #a2987d; margin-bottom: 5px;
+}
+.book-field input, .book-field select {
+  width: 100%; min-height: 38px; padding: 8px 11px; border-radius: 10px;
+  border: 1px solid #e0d5b8; background: #fff; color: #1d2530; font: inherit; font-size: 14px;
+}
+.book-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+.book-results {
+  position: absolute; left: 0; right: 0; top: 100%; z-index: 5; margin-top: 4px;
+  background: #fff; border: 1px solid #e9e0c8; border-radius: 12px;
+  box-shadow: 0 16px 40px rgba(96, 76, 24, .18); overflow: hidden;
+}
+.book-result {
+  display: flex; justify-content: space-between; gap: 10px; width: 100%;
+  padding: 10px 13px; background: none; border: 0; border-bottom: 1px solid #f4ecd9;
+  font: inherit; font-size: 13.5px; font-weight: 600; color: #1d2530; cursor: pointer; text-align: left;
+}
+.book-result span { color: #8a826f; font-weight: 500; }
+.book-result:hover { background: #faf3df; }
+.book-noresults { margin: 0; padding: 10px 13px; font-size: 12.5px; color: #8a826f; }
+.book-picked {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-top: 8px; padding: 8px 12px; border-radius: 10px;
+  background: #eef7e8; border: 1px solid #cfe3bd; font-size: 13px; font-weight: 650;
+}
+.book-picked button { background: none; border: 0; cursor: pointer; color: #7d7663; }
+.book-newclient {
+  background: none; border: 0; padding: 6px 0 0; cursor: pointer;
+  color: #7c5c10; font: inherit; font-size: 12.5px; font-weight: 700;
+}
+.book-new { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-top: 8px; }
+.book-err {
+  background: #fdf1ec; border: 1px solid #ecc0b2; color: #93321f;
+  border-radius: 10px; padding: 9px 13px; font-size: 13px; font-weight: 600; margin: 4px 0 12px;
+}
+.book-actions { display: flex; gap: 10px; align-items: center; }
+.book-actions .btn-ghost { color: #4c4636; border-color: #e0d5b8; background: #fff; }
