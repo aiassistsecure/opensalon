@@ -1320,6 +1320,20 @@ button:focus-visible, a:focus-visible, select:focus-visible {
 /* Insights — the numbers, honestly. */
 .ins-note{color:#9a927e;font-size:.82rem;margin:10px 0 2px}
 .ins-big{font-size:2rem;font-weight:800;color:#3f5a36;line-height:1.1}
+
+/* Insights reports: the range bar, date-wise tables, downloads */
+.rep-range{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:14px 0 18px}
+.rep-preset{padding:7px 13px;border:1px solid #ddd3b8;border-radius:999px;background:#fffdf7;color:#4a4232;font-size:13px;font-weight:600;text-decoration:none}
+.rep-preset:hover{background:#f6efdb}
+.rep-preset.active{background:#3f5a36;border-color:#3f5a36;color:#fff}
+.rep-custom{display:flex;align-items:center;gap:6px;margin-left:6px}
+.rep-custom input[type="date"]{padding:6px 8px;border:1px solid #ddd3b8;border-radius:9px;background:#fff;color:#1d2530;font-size:13px}
+.rep-to{color:#9a927e;font-size:13px}
+.rep-active{margin-left:auto;color:#6b6250;font-size:13.5px;font-weight:650}
+.rep-table th.n,.rep-table td.n{text-align:right;font-variant-numeric:tabular-nums}
+.rep-table tfoot td{font-weight:750;border-top:2px solid #e6ddc6}
+.rep-dl{float:right;font-size:12.5px;font-weight:650;color:#3f5a36;text-decoration:none}
+.rep-dl:hover{text-decoration:underline}
 .ins-trend{display:flex;align-items:flex-end;gap:6px;height:120px;padding-top:8px}
 .ins-bar-wrap{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;gap:5px}
 .ins-bar{width:100%;min-height:2px;border-radius:5px 5px 2px 2px;

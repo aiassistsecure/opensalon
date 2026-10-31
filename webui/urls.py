@@ -44,6 +44,11 @@ urlpatterns = [
     path("roster/apply/", views.roster_apply, name="roster_apply"),
     path("products/", views.products_page, name="products"),
     path("insights/", views.insights_page, name="insights"),
+    path(
+        "insights/export/<str:kind>/",
+        views.insights_export,
+        name="insights_export",
+    ),
     path("pos/", views.pos, name="pos"),
     path(
         "automations/",
