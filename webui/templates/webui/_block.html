@@ -4,6 +4,6 @@
   aria-label="{{ block.client_name }}, {{ block.service_name }}, {{ block.time_label }}">
   <div class="b-top"><span class="b-time">{{ block.time_label }}</span><span class="b-ico" aria-hidden="true"></span></div>
   <div class="b-client">{{ block.client_name }}</div>
-  <div class="b-services">{% for s in block.services %}<div class="b-service">{{ s }}</div>{% endfor %}{% if block.more %}<div class="b-more">+{{ block.more }} more</div>{% endif %}</div>
+  <div class="b-services"><div class="b-service">{{ block.service_name }}</div></div>
   {% if block.price_label %}<div class="b-price">{{ block.price_label }}</div>{% endif %}
 </article>

@@ -738,3 +738,29 @@ body.page-daybook .foot { color: #a2987d; }
   background: #1d2530; color: #fff; font-size: 11px; font-weight: 700;
   padding: 3px 9px; border-radius: 999px; box-shadow: 0 4px 12px rgba(8, 8, 26, .35);
 }
+
+/* ---------- collapsible sidebar ---------- */
+.app { transition: grid-template-columns .18s ease; }
+.side { overflow: hidden; }
+.side-toggle {
+  margin-left: auto; width: 26px; height: 26px; flex: none; display: grid; place-items: center;
+  border-radius: 8px; border: 1px solid var(--ln); background: rgba(255, 255, 255, .04);
+  color: var(--tx2); cursor: pointer; font-size: 13px; line-height: 1;
+}
+.side-toggle:hover { color: #fff; border-color: rgba(96, 165, 250, .5); }
+body.side-collapsed { --sidew: 70px; }
+body.side-collapsed .side { padding: 18px 10px 14px; }
+body.side-collapsed .brand { flex-direction: column; gap: 9px; padding: 2px 0 16px; }
+body.side-collapsed .brand-name,
+body.side-collapsed .snav-item .lbl,
+body.side-collapsed .ai-title,
+body.side-collapsed .ai-sub,
+body.side-collapsed .ai-chev,
+body.side-collapsed .switcher-meta,
+body.side-collapsed .switcher-chev { display: none; }
+body.side-collapsed .side-toggle { margin-left: 0; }
+body.side-collapsed .snav { width: 100%; align-items: center; }
+body.side-collapsed .snav-item { justify-content: center; width: 42px; height: 42px; padding: 0; border-radius: 12px; }
+body.side-collapsed .snav-item .ic { width: auto; font-size: 16px; }
+body.side-collapsed .ai-card { padding: 11px 0; display: flex; justify-content: center; }
+body.side-collapsed .switcher { justify-content: center; padding: 8px; }

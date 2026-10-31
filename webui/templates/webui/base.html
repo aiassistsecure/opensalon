@@ -16,17 +16,18 @@
     <div class="brand">
       <div class="brand-mark" aria-hidden="true"></div>
       <div class="brand-name">OpenSalon</div>
+      <button type="button" class="side-toggle" id="sideToggle" title="Collapse sidebar" aria-label="Toggle sidebar" aria-expanded="true">«</button>
     </div>
     <nav class="snav" aria-label="Primary">
-      <a class="snav-item {% if nav_key == 'home' %}active{% endif %}" href="{% url 'webui:home' %}"><span class="ic">⌂</span>Home</a>
-      <a class="snav-item {% if nav_key == 'daybook' %}active{% endif %}" href="{% url 'webui:daybook' %}"><span class="ic">▦</span>Daybook</a>
-      <a class="snav-item {% if nav_key == 'clients' %}active{% endif %}" href="{% url 'webui:clients' %}"><span class="ic">◎</span>Clients</a>
-      <a class="snav-item {% if nav_key == 'team' %}active{% endif %}" href="{% url 'webui:team' %}"><span class="ic">◉</span>Team</a>
-      <a class="snav-item {% if nav_key == 'pricebook' %}active{% endif %}" href="{% url 'webui:pricebook' %}"><span class="ic">✂</span>Services</a>
-      <a class="snav-item {% if nav_key == 'pos' %}active{% endif %}" href="{% url 'webui:pos' %}"><span class="ic">▤</span>POS</a>
-      <a class="snav-item {% if nav_key == 'automations' %}active{% endif %}" href="{% url 'webui:automations' %}"><span class="ic">⚡</span>Automations</a>
-      <a class="snav-item {% if nav_key == 'insights' %}active{% endif %}" href="{% url 'webui:insights' %}"><span class="ic">▥</span>Insights</a>
-      <a class="snav-item {% if nav_key == 'settings' %}active{% endif %}" href="{% url 'webui:settings' %}"><span class="ic">⚙</span>Settings</a>
+      <a class="snav-item {% if nav_key == 'home' %}active{% endif %}" href="{% url 'webui:home' %}" title="Home"><span class="ic">⌂</span><span class="lbl">Home</span></a>
+      <a class="snav-item {% if nav_key == 'daybook' %}active{% endif %}" href="{% url 'webui:daybook' %}" title="Daybook"><span class="ic">▦</span><span class="lbl">Daybook</span></a>
+      <a class="snav-item {% if nav_key == 'clients' %}active{% endif %}" href="{% url 'webui:clients' %}" title="Clients"><span class="ic">◎</span><span class="lbl">Clients</span></a>
+      <a class="snav-item {% if nav_key == 'team' %}active{% endif %}" href="{% url 'webui:team' %}" title="Team"><span class="ic">◉</span><span class="lbl">Team</span></a>
+      <a class="snav-item {% if nav_key == 'pricebook' %}active{% endif %}" href="{% url 'webui:pricebook' %}" title="Services"><span class="ic">✂</span><span class="lbl">Services</span></a>
+      <a class="snav-item {% if nav_key == 'pos' %}active{% endif %}" href="{% url 'webui:pos' %}" title="POS"><span class="ic">▤</span><span class="lbl">POS</span></a>
+      <a class="snav-item {% if nav_key == 'automations' %}active{% endif %}" href="{% url 'webui:automations' %}" title="Automations"><span class="ic">⚡</span><span class="lbl">Automations</span></a>
+      <a class="snav-item {% if nav_key == 'insights' %}active{% endif %}" href="{% url 'webui:insights' %}" title="Insights"><span class="ic">▥</span><span class="lbl">Insights</span></a>
+      <a class="snav-item {% if nav_key == 'settings' %}active{% endif %}" href="{% url 'webui:settings' %}" title="Settings"><span class="ic">⚙</span><span class="lbl">Settings</span></a>
     </nav>
     <div class="ai-card">
       <div class="ai-card-top"><span class="ai-spark">✦</span><span class="ai-title">AI Assistant</span><span class="ai-chev">›</span></div>

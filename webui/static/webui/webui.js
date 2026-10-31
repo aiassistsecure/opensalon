@@ -179,8 +179,14 @@
           tile.removeEventListener("pointermove", onMove);
           tile.removeEventListener("pointerup", onUp);
           tile.removeEventListener("pointercancel", onCancel);
+          tile.removeEventListener("lostpointercapture", onCancel);
           if (!engaged) return;
           if (ghost) ghost.remove();
+          /* The dragged element lives on <body> while it flies —
+             it must die here, whatever happens next. A swap only
+             replaces the layout; a body-level tile left behind is
+             the stuck duplicate that haunted the first build. */
+          tile.remove();
           var changed = target.member !== originMember || target.startMin !== startMin0;
           if (commit && changed) {
             var tokenEl = layout.querySelector('input[name="csrfmiddlewaretoken"]');
@@ -205,6 +211,7 @@
         tile.addEventListener("pointermove", onMove);
         tile.addEventListener("pointerup", onUp);
         tile.addEventListener("pointercancel", onCancel);
+        tile.addEventListener("lostpointercapture", onCancel);
       });
     });
   }
@@ -221,6 +228,7 @@
      on first load and again after every hot-range swap, because a
      swap replaces the layout node wholesale. */
   function bindBook() {
+    sweepStrays();
     railEl = document.getElementById("detailRail");
     railBody = document.getElementById("railBody");
     payloads = {};
@@ -343,9 +351,19 @@
     });
   }
 
+  function sweepStrays() {
+    /* A dragged tile rides on <body> while it flies; if anything
+       interrupted a drag, its tile can outlive the layout it came
+       from. Any body-level appointment block is an orphan. */
+    document.querySelectorAll("body > .appt-block").forEach(function (el) {
+      el.remove();
+    });
+  }
+
   function swapTo(iso, push) {
     var html = hotCache[iso];
     if (!html || !layoutEl) { window.location.href = "?date=" + iso; return; }
+    sweepStrays();
     var wrap = document.createElement("div");
     wrap.innerHTML = html;
     var fresh = wrap.querySelector(".book-layout");
@@ -396,4 +414,28 @@
   }
 
   bindBook();
+})();
+
+/* ---------- collapsible sidebar (every page) ---------- */
+(function () {
+  var KEY = "os-side-collapsed";
+  try {
+    if (localStorage.getItem(KEY) === "1") {
+      document.body.classList.add("side-collapsed");
+    }
+  } catch (e) {}
+  var btn = document.getElementById("sideToggle");
+  if (!btn) return;
+  function sync() {
+    var collapsed = document.body.classList.contains("side-collapsed");
+    btn.textContent = collapsed ? "»" : "«";
+    btn.title = collapsed ? "Expand sidebar" : "Collapse sidebar";
+    btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  }
+  btn.addEventListener("click", function () {
+    var collapsed = document.body.classList.toggle("side-collapsed");
+    try { localStorage.setItem(KEY, collapsed ? "1" : "0"); } catch (e) {}
+    sync();
+  });
+  sync();
 })();
