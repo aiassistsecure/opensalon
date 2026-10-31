@@ -1,3 +1,4 @@
+from django.db import IntegrityError, transaction
 from django.test import TestCase
 
 from clients.models import Client, ClientNote
@@ -113,3 +114,59 @@ class ClientNoteModelTests(TestCase):
             client=self.client, body="Explicit blank", author_name=""
         )
         self.assertEqual(note2.author_name, "")
+
+
+class StrictConstraintsTests(TestCase):
+    """N-M17: StrictConstraints enforces clients Meta.constraints on save().
+
+    NEDB DYOR §9.3/§9.4: schemaless NEDB creates no DB constraints, so
+    the declared catalog is enforced in the app layer; violations
+    surface as IntegrityError, as on an enforcing backend.
+    """
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon")
+        self.other_salon = Salon.objects.create(name="Other Salon")
+        self.client = Client.objects.create(
+            salon=self.salon, first_name="Test", last_name="Example",
+            external_id="client-1",
+        )
+
+    def test_duplicate_client_external_id_per_salon_rejected(self):
+        duplicate = Client(
+            salon=self.salon, first_name="Copy", last_name="Client",
+            external_id="client-1",
+        )
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                duplicate.save()
+        self.assertEqual(Client.objects.filter(external_id="client-1").count(), 1)
+
+    def test_same_external_id_in_other_salon_allowed(self):
+        Client.objects.create(
+            salon=self.other_salon, first_name="Other", last_name="Client",
+            external_id="client-1",
+        )
+
+    def test_duplicate_blank_client_external_id_allowed(self):
+        Client.objects.create(salon=self.salon, first_name="A", last_name="One")
+        Client.objects.create(salon=self.salon, first_name="B", last_name="Two")
+
+    def test_update_into_duplicate_client_external_id_rejected(self):
+        other = Client.objects.create(
+            salon=self.salon, first_name="Other", last_name="Client",
+            external_id="client-2",
+        )
+        other.external_id = "client-1"
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                other.save()
+
+    def test_legitimate_saves_and_updates_pass(self):
+        self.client.first_name = "Renamed"
+        self.client.save()
+        self.client.save(update_fields=["first_name"])
+        self.client.external_id = "client-1b"
+        self.client.save(update_fields=["external_id"])
+        self.client.refresh_from_db()
+        self.assertEqual(self.client.external_id, "client-1b")
