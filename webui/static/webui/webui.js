@@ -2128,3 +2128,168 @@
     });
   }
 })();
+
+/* ---- Time clock: the sidebar clock + PIN popover ----
+   One PIN entry unlocks one person's standing: clocked in (since
+   when) or clocked out, with the single opposite action offered.
+   Status lives on the server's AttendanceRecord event log; this
+   only asks and shows. */
+(function () {
+  var card = document.getElementById("clockCard");
+  var modal = document.getElementById("clockModal");
+  if (!card || !modal) return;
+  var timeEl = document.getElementById("clockTime");
+  var tz = card.getAttribute("data-tz") || undefined;
+  function tick() {
+    try {
+      timeEl.textContent = new Intl.DateTimeFormat("en-US", {
+        timeZone: tz, hour: "numeric", minute: "2-digit", second: "2-digit",
+      }).format(new Date());
+    } catch (e) {
+      timeEl.textContent = new Date().toLocaleTimeString();
+    }
+  }
+  tick();
+  setInterval(tick, 1000);
+
+  var pinInput = document.getElementById("clockPin");
+  var pinStage = document.getElementById("clockPinStage");
+  var statusStage = document.getElementById("clockStatusStage");
+  var errEl = document.getElementById("clockErr");
+  var err2El = document.getElementById("clockErr2");
+  var nameEl = document.getElementById("clockName");
+  var avatarEl = document.getElementById("clockAvatar");
+  var lineEl = document.getElementById("clockStatusLine");
+  var actionBtn = document.getElementById("clockAction");
+  var currentPin = "";
+  var current = null;
+  var justDone = false;
+
+  function showErr(el, msg) {
+    el.textContent = msg || "";
+    el.classList.toggle("hidden", !msg);
+  }
+  function csrf() {
+    var t = modal.querySelector('input[name="csrfmiddlewaretoken"]');
+    return t ? t.value : "";
+  }
+  function post(url, pin) {
+    return fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-CSRFToken": csrf() },
+      body: JSON.stringify({ pin: pin }),
+    }).then(function (r) {
+      return r.json().then(function (data) { return { status: r.status, data: data }; });
+    });
+  }
+  function showStatus(data, note) {
+    current = data;
+    pinStage.classList.add("hidden");
+    statusStage.classList.remove("hidden");
+    avatarEl.textContent = data.initials || "--";
+    nameEl.textContent = data.member || "";
+    if (note) {
+      lineEl.textContent = note;
+    } else if (data.clocked_in) {
+      lineEl.textContent = "Clocked in since " + (data.since || "");
+    } else {
+      lineEl.textContent = "Clocked out";
+    }
+    actionBtn.textContent = data.action || "Clock in";
+    showErr(err2El, "");
+  }
+  function reset() {
+    currentPin = "";
+    current = null;
+    justDone = false;
+    pinInput.value = "";
+    showErr(errEl, "");
+    showErr(err2El, "");
+    statusStage.classList.add("hidden");
+    pinStage.classList.remove("hidden");
+  }
+  function open() {
+    reset();
+    modal.classList.remove("hidden");
+    setTimeout(function () { pinInput.focus(); }, 30);
+  }
+  function close() {
+    modal.classList.add("hidden");
+    reset();
+  }
+  function submitPin() {
+    var pin = pinInput.value.trim();
+    if (!pin) { showErr(errEl, "Type your PIN first."); return; }
+    showErr(errEl, "");
+    post(modal.getAttribute("data-status-url"), pin).then(function (res) {
+      if (!res.data || !res.data.ok) {
+        showErr(errEl, (res.data && res.data.error) || "That PIN didn't work.");
+        pinInput.select();
+        return;
+      }
+      currentPin = pin;
+      showStatus(res.data);
+    }).catch(function () { showErr(errEl, "The clock didn't answer — try again."); });
+  }
+  function doToggle() {
+    if (!currentPin) return;
+    actionBtn.disabled = true;
+    post(modal.getAttribute("data-toggle-url"), currentPin).then(function (res) {
+      actionBtn.disabled = false;
+      if (!res.data || !res.data.ok) {
+        showErr(err2El, (res.data && res.data.error) || "That didn't go through.");
+        return;
+      }
+      var when = "";
+      try {
+        when = new Intl.DateTimeFormat("en-US", {
+          timeZone: tz, hour: "numeric", minute: "2-digit",
+        }).format(new Date());
+      } catch (e) { when = new Date().toLocaleTimeString(); }
+      var note = res.data.just === "in"
+        ? "Clocked in at " + when + " — have a good shift."
+        : "Clocked out at " + when + " — see you next time.";
+      showStatus(res.data, note);
+      actionBtn.textContent = "Done";
+      currentPin = "";
+      justDone = true;
+    }).catch(function () {
+      actionBtn.disabled = false;
+      showErr(err2El, "The clock didn't answer — try again.");
+    });
+  }
+
+  card.addEventListener("click", open);
+  document.getElementById("clockClose").addEventListener("click", close);
+  document.getElementById("clockCancel").addEventListener("click", close);
+  document.getElementById("clockEnter").addEventListener("click", submitPin);
+  document.getElementById("clockBack").addEventListener("click", reset);
+  actionBtn.addEventListener("click", function () {
+    if (justDone) { close(); return; }
+    if (currentPin) doToggle();
+  });
+  pinInput.addEventListener("keydown", function (ev) {
+    if (ev.key === "Enter") { ev.preventDefault(); submitPin(); }
+  });
+  pinInput.addEventListener("input", function () {
+    pinInput.value = pinInput.value.replace(/[^0-9]/g, "").slice(0, 8);
+  });
+  document.getElementById("clockPad").addEventListener("click", function (ev) {
+    var btn = ev.target.closest("button");
+    if (!btn) return;
+    if (btn.getAttribute("data-digit")) {
+      if (pinInput.value.length < 8) pinInput.value += btn.getAttribute("data-digit");
+    } else if (btn.getAttribute("data-act") === "clear") {
+      pinInput.value = "";
+    } else if (btn.getAttribute("data-act") === "back") {
+      pinInput.value = pinInput.value.slice(0, -1);
+    }
+    pinInput.focus();
+  });
+  modal.addEventListener("click", function (ev) {
+    if (ev.target === modal) close();
+  });
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Escape" && !modal.classList.contains("hidden")) close();
+  });
+})();

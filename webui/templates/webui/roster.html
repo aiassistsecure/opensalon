@@ -77,4 +77,26 @@
   </form>
   <p class="roster-note">Bands derived from booking history are a starting point, not the truth — a light Tuesday reads as a short band. Correct any band here and the day book follows the roster.</p>
 </section>
+
+<section class="roster-card">
+  <h2 class="roster-h">Time clock PINs</h2>
+  <p class="roster-note">The clock at the bottom left of every page asks for a PIN. Each person needs their own — the clock tells the team apart by PIN alone, so no two people can share one. Birthdays work well: day and year, 4 to 8 digits. A PIN itself is never shown here once set; type a new one to change it.</p>
+  {% for member in members %}
+  <div class="roster-pattern">
+    <span class="roster-p-who">{{ member.display_name }}</span>
+    <span class="roster-p-band">{% if member.pin %}PIN set{% else %}No PIN — can't clock in{% endif %}</span>
+    <form method="post" class="pin-form">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="set_pin">
+      <input type="hidden" name="member" value="{{ member.pk }}">
+      <input type="text" name="pin" class="fsel pin-input" inputmode="numeric" autocomplete="off"
+             maxlength="8" placeholder="New PIN" aria-label="New PIN for {{ member.display_name }}">
+      <button type="submit" class="btn-dark">Set</button>
+      {% if member.pin %}<button type="submit" class="btn-ghost" name="pin" value="">Clear</button>{% endif %}
+    </form>
+  </div>
+  {% empty %}
+  <p class="roster-empty">No team members yet.</p>
+  {% endfor %}
+</section>
 {% endblock %}

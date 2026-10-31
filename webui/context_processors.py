@@ -61,4 +61,7 @@ def salon_context(request):
         "salon": salon,
         "salon_theme": DEFAULT_THEME,
         "asset_v": _asset_version(),
+        # The salon's own clock: the sidebar time clock renders and
+        # reports in the salon's timezone, never the server's.
+        "salon_tz": salon.timezone if salon and salon.timezone else "UTC",
     }

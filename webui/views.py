@@ -39,7 +39,7 @@ from bookings.daybook import blocks_for_day as feed_blocks_for_day
 from bookings.models import Appointment, AppointmentNote
 from clients.models import Client, ClientNote
 from saloncore.models import Salon, Service, ServiceCategory, ServicePrice, StaffLevel
-from team.models import RosterPattern, StaffMember, ShiftOverride
+from team.models import AttendanceRecord, RosterPattern, StaffMember, ShiftOverride
 from team.roster_week import roster_week as build_roster_week
 
 # The day book window: 8:00 to 20:00 salon-local.
@@ -1890,6 +1890,37 @@ def team(request):
                 pk=request.POST.get("pattern"), staff_member__salon=salon
             ).delete()
             message = "Pattern removed."
+        elif action == "set_pin":
+            member = StaffMember.objects.filter(
+                pk=request.POST.get("member"), salon=salon, active=True
+            ).first()
+            pin = (request.POST.get("pin") or "").strip()
+            if member is None:
+                message = "Pick a team member first."
+            elif pin == "":
+                member.pin = ""
+                member.save(update_fields=["pin"])
+                message = (
+                    f"{member.display_name}'s PIN is cleared — they can't use "
+                    "the time clock until a new one is set."
+                )
+            elif not pin.isdigit() or not 4 <= len(pin) <= 8:
+                message = "A PIN is 4 to 8 digits — birthdays work well (day and year)."
+            else:
+                holder = (
+                    StaffMember.objects.filter(salon=salon, pin=pin)
+                    .exclude(pk=member.pk)
+                    .first()
+                )
+                if holder is not None:
+                    message = (
+                        f"That PIN is already {holder.display_name}'s — every "
+                        "PIN has to be unique, or the clock can't tell you apart."
+                    )
+                else:
+                    member.pin = pin
+                    member.save(update_fields=["pin"])
+                    message = f"PIN set for {member.display_name}."
     rows, patterns, members = [], [], []
     week_label = ""
     if salon is not None:
@@ -1944,6 +1975,89 @@ def team(request):
             "message": message,
         },
     )
+
+
+def _clock_member(salon, pin):
+    """The one member a time-clock PIN names, or None.
+
+    PINs are unique per salon among non-blank values, so a match is
+    unambiguous. A blank PIN never matches: a member with no PIN set
+    cannot use the clock.
+    """
+    pin = (pin or "").strip()
+    if not pin or salon is None:
+        return None
+    return StaffMember.objects.filter(salon=salon, pin=pin, active=True).first()
+
+
+def _clock_payload(member, tz):
+    latest = member.attendance_records.first()
+    clocked_in = (
+        latest is not None
+        and latest.event_type == AttendanceRecord.EventType.CHECK_IN
+    )
+    return {
+        "ok": True,
+        "member": member.display_name,
+        "initials": _initials(member.display_name),
+        "clocked_in": clocked_in,
+        "since": (
+            _fmt_time(latest.recorded_at.astimezone(tz).time())
+            if clocked_in
+            else None
+        ),
+        "action": "Clock out" if clocked_in else "Clock in",
+    }
+
+
+@require_POST
+def clock_status(request):
+    """Time clock, step one: a PIN names its owner and reports their
+    standing — clocked in (and since when) or clocked out. A wrong
+    PIN gets one generic answer; the clock never says who exists."""
+    try:
+        payload = json.loads(request.body.decode("utf-8"))
+        pin = str(payload["pin"])
+    except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+        return JsonResponse({"ok": False, "error": "bad payload"}, status=400)
+    salon = Salon.objects.order_by("id").first()
+    member = _clock_member(salon, pin)
+    if member is None:
+        return JsonResponse(
+            {"ok": False, "error": "That PIN doesn't match anyone on the team."},
+            status=400,
+        )
+    return JsonResponse(_clock_payload(member, _tz(salon)))
+
+
+@require_POST
+def clock_toggle(request):
+    """Time clock, step two: record the one event opposite to the
+    member's current standing, on the AttendanceRecord event log —
+    the same log the rest of the app derives status from."""
+    try:
+        payload = json.loads(request.body.decode("utf-8"))
+        pin = str(payload["pin"])
+    except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+        return JsonResponse({"ok": False, "error": "bad payload"}, status=400)
+    salon = Salon.objects.order_by("id").first()
+    member = _clock_member(salon, pin)
+    if member is None:
+        return JsonResponse(
+            {"ok": False, "error": "That PIN doesn't match anyone on the team."},
+            status=400,
+        )
+    event = (
+        AttendanceRecord.EventType.CHECK_OUT
+        if member.is_checked_in()
+        else AttendanceRecord.EventType.CHECK_IN
+    )
+    AttendanceRecord.objects.create(staff_member=member, event_type=event)
+    result = _clock_payload(member, _tz(salon))
+    result["just"] = (
+        "in" if event == AttendanceRecord.EventType.CHECK_IN else "out"
+    )
+    return JsonResponse(result)
 
 
 def placeholder(request, nav_key, title, lane_note):
