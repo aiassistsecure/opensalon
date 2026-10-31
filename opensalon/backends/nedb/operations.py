@@ -38,6 +38,15 @@ the field's scale for plain columns). The write path stays numeric
 on purpose: decimal strings would compare and sort lexicographically
 on NEDB -- see ``decimalfield.py`` for the measured evidence.
 
+JSON write path (N-M8a, DYOR implications 7 and 9): the stock
+PostgreSQL ``adapt_json_value`` returns psycopg's ``Jsonb`` wrapper,
+whose text dumper renders a ``'...'::jsonb`` cast literal under
+Django's client-side binding -- and cast VALUES are refused by NEDB
+by design (live-suite signature #1, ~40 errors). Here the hook
+returns the JSON text itself (``jsonfield.py``), a plain string
+literal that NEDB stores verbatim; ``JSONField.from_db_value``
+parses it back on read, so no read converter is registered.
+
 Auto-field ranges (N-M6f, DYOR implications 1 and 6): the insert
 compiler assigns client-generated PKs at millisecond scale
 (~1.79e12, ``identity.py``) to *every* table, but Django's built-in
@@ -61,7 +70,7 @@ from django.db.backends.postgresql.operations import (
     DatabaseOperations as PostgresDatabaseOperations,
 )
 
-from . import decimalfield, identity, temporal
+from . import decimalfield, identity, jsonfield, temporal
 
 # Internal types whose stored values must come back as real ints
 # (DYOR 9.6 read path): pgwire may hand an integer PK back as a
@@ -165,6 +174,18 @@ class DatabaseOperations(PostgresDatabaseOperations):
         # empty string (not a set_config statement) is the marker that
         # no session-setup SQL exists on this backend.
         return ""
+
+    # -- JSON write path: JSON text as a plain string, never a cast --
+    # Stock PostgreSQL adapt_json_value returns psycopg's Jsonb, whose
+    # text dumper (Django binds client-side) renders a '...'::jsonb
+    # cast literal that NEDB refuses by design (DYOR 9.7). Returning
+    # the JSON text itself (jsonfield.py) makes the value a plain
+    # string literal NEDB stores verbatim (DYOR 9.9); the read path
+    # is JSONField.from_db_value's own json.loads, so no converter
+    # is registered for JSONField in get_db_converters below.
+
+    def adapt_json_value(self, value, encoder):
+        return jsonfield.adapt_json_value(value, encoder)
 
     # -- temporal write path: ISO 8601 strings, never casts ----------
 
