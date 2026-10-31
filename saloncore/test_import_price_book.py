@@ -13,6 +13,7 @@ from django.test import TestCase
 
 from saloncore.models import (
     PriceChange,
+    Salon,
     Service,
     ServiceCategory,
     ServicePrice,
@@ -192,3 +193,93 @@ class ImportPriceBookTests(TestCase):
         fh.close()
         with self.assertRaises(CommandError):
             call_command("import_price_book", fh.name)
+
+
+class ImportPriceBookPreValidationTests(TestCase):
+    """N-M20a validate-before-write: a bad row anywhere in the file
+    raises CommandError in phase 1 and writes zero rows on any
+    backend (on NEDB atomic() rolls back nothing — DYOR §9.4)."""
+
+    MODELS = (Salon, ServiceCategory, Service, StaffLevel,
+              ServicePrice, PriceChange)
+
+    def assert_zero_rows(self):
+        for model in self.MODELS:
+            self.assertEqual(model.objects.count(), 0, model.__name__)
+
+    def assert_bad_file_writes_nothing(self, payload):
+        with self.assertRaises(CommandError):
+            call_command("import_price_book", _write(payload),
+                         stdout=io.StringIO())
+        self.assert_zero_rows()
+
+    def good_row(self, **overrides):
+        row = {
+            "serviceId": "svc-good", "name": "Good Cut",
+            "categoryName": "Hair", "duration": 45, "gapTime": 0,
+            "price": 40.0, "archived": False,
+            "staffCategories": {"prices": [
+                {"id": "lvl-senior", "price": 55.0}]},
+            "userPrices": [],
+        }
+        row.update(overrides)
+        return row
+
+    def test_bad_duration_mid_file_writes_nothing(self):
+        payload = [
+            self.good_row(),
+            self.good_row(serviceId="svc-bad", name="Bad Cut",
+                          duration="not-a-number"),
+            self.good_row(serviceId="svc-later", name="Later Cut"),
+        ]
+        self.assert_bad_file_writes_nothing(payload)
+
+    def test_bad_gap_time_mid_file_writes_nothing(self):
+        payload = [
+            self.good_row(),
+            self.good_row(serviceId="svc-bad", name="Bad Cut",
+                          gapTime="soon"),
+        ]
+        self.assert_bad_file_writes_nothing(payload)
+
+    def test_non_dict_staff_categories_writes_nothing(self):
+        payload = [
+            self.good_row(),
+            self.good_row(serviceId="svc-bad", name="Bad Cut",
+                          staffCategories=["not", "an", "object"]),
+        ]
+        self.assert_bad_file_writes_nothing(payload)
+
+    def test_non_dict_prices_entry_writes_nothing(self):
+        payload = [
+            self.good_row(),
+            self.good_row(
+                serviceId="svc-bad", name="Bad Cut",
+                staffCategories={"prices": ["not-an-object"]}),
+        ]
+        self.assert_bad_file_writes_nothing(payload)
+
+    def test_unparseable_level_price_writes_nothing(self):
+        payload = [
+            self.good_row(),
+            self.good_row(
+                serviceId="svc-bad", name="Bad Cut",
+                staffCategories={"prices": [
+                    {"id": "lvl-senior", "price": "free-ish"}]}),
+        ]
+        self.assert_bad_file_writes_nothing(payload)
+
+    def test_valid_file_regression_imports_unchanged(self):
+        out = io.StringIO()
+        call_command("import_price_book", _write(FIXTURE), stdout=out)
+        self.assertIn("IMPORT_SUMMARY", out.getvalue())
+        self.assertEqual(ServiceCategory.objects.count(), 1)
+        self.assertEqual(Service.objects.count(), 2)
+        self.assertEqual(StaffLevel.objects.count(), 3)
+        self.assertEqual(ServicePrice.objects.count(), 4)
+        cut = Service.objects.get(name="Haircut")
+        self.assertEqual(cut.service_minutes, 60)
+        self.assertEqual(
+            ServicePrice.objects.get(
+                service=cut, staff_level__name="Base").amount,
+            Decimal("50.0"))
