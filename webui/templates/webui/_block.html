@@ -1,4 +1,4 @@
-<article class="appt-block cat-{{ block.cat_key }} status-{{ block.status }}{% if block.mini %} mini{% endif %}"
+<article class="appt-block cat-{{ block.cat_key }} status-{{ block.status }}{% if block.mini %} mini{% endif %}{% if block.micro %} micro{% endif %}"
   style="top:{{ block.top }}%;height:{{ block.height }}%;left:calc({{ block.left }}% + 5px);width:calc({{ block.width }}% - 10px);--i:{{ block.index }}"
   tabindex="0" role="button" data-appt="{{ block.appointment_id }}"
   aria-label="{{ block.client_name }}, {{ block.service_name }}, {{ block.time_label }}">

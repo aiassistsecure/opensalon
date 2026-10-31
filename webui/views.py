@@ -81,15 +81,33 @@ def _assign_lanes(blocks):
             block["lanes"] = len(lane_ends)
             block["left"] = round(block["lane"] * width, 2)
             block["width"] = round(width, 2)
-            block["mini"] = (
-                block["lanes"] >= 3
-                or (block["_end"] - block["_start"]) < datetime.timedelta(minutes=45)
-                or (
-                    block["lanes"] >= 2
-                    and (block["_end"] - block["_start"])
-                    <= datetime.timedelta(minutes=45)
-                )
+            # How many blocks are live at the busiest instant of this
+            # block's own span — its personal crowding, which (with its
+            # duration) drives both the degradation flags below and
+            # the column's width ask: a crowded column widens instead
+            # of squeezing its blocks unreadable.
+            probes = {block["_start"]}
+            probes.update(
+                b["_start"]
+                for b in cluster
+                if block["_start"] < b["_start"] < block["_end"]
             )
+            block["overlap"] = max(
+                sum(1 for b in cluster if b["_start"] <= t < b["_end"])
+                for t in probes
+            )
+            duration = block["_end"] - block["_start"]
+            # Degradation order as a block narrows: the service line
+            # yields first (mini); the price goes only when the block
+            # is too short to hold its rows at all (micro). A block
+            # keeps its service unless it is brief, or crowded AND
+            # brief — a long appointment keeps its name even inside a
+            # three-lane cluster.
+            block["mini"] = duration < datetime.timedelta(minutes=45) or (
+                block["overlap"] >= 3
+                and duration < datetime.timedelta(minutes=90)
+            )
+            block["micro"] = duration < datetime.timedelta(minutes=30)
 
 
 def _union_minutes(intervals):
@@ -159,12 +177,17 @@ def _duration_label(minutes):
 
 def day_book(request):
     salon = Salon.objects.order_by("id").first()
+    tz = _tz(salon) if salon is not None else timezone.get_current_timezone()
+    # "Today" is the salon's today. The server clock (UTC) rolls into
+    # tomorrow while the salon is still in its evening; a book that
+    # opens on the wrong day — and never draws its now-line — is
+    # worse than useless at the front desk.
+    today = timezone.now().astimezone(tz).date()
     try:
         day = datetime.date.fromisoformat(request.GET.get("date", ""))
     except ValueError:
-        day = timezone.localdate()
+        day = today
     weekday = day.weekday()  # Monday = 0; RosterPattern.Weekday matches.
-    tz = _tz(salon) if salon is not None else timezone.get_current_timezone()
     day_start = datetime.datetime.combine(day, datetime.time(DAY_START_HOUR), tzinfo=tz)
     day_end = datetime.datetime.combine(day, datetime.time(DAY_END_HOUR), tzinfo=tz)
     hours = [
@@ -421,6 +444,10 @@ def day_book(request):
                 _assign_lanes(display_blocks)
             else:
                 _assign_lanes(display_blocks)
+            width_factor = min(
+                3,
+                max((b.get("overlap", 1) for b in display_blocks), default=1),
+            )
             staff.append(
                 {
                     "member": member,
@@ -430,6 +457,7 @@ def day_book(request):
                     "blocks": display_blocks,
                     "booked_pct": booked_pct,
                     "initials": _initials(member.display_name),
+                    "width_factor": width_factor,
                 }
             )
         overview["revenue"] = revenue
@@ -445,18 +473,26 @@ def day_book(request):
 
     now_top = None
     now_label = ""
-    if day == timezone.localdate():
+    if day == today:
         now = timezone.now().astimezone(tz)
         if day_start <= now <= day_end:
             now_top = _pct(now, day_start, day_end)
             now_label = _fmt_time(now.time())
+
+    grid_tracks = ""
+    if staff:
+        grid_tracks = "var(--gutter) " + " ".join(
+            "minmax(calc(var(--colunit) * {0}), {0}fr)".format(c["width_factor"])
+            for c in staff
+        )
 
     context = {
         "nav_key": "daybook",
         "day": day,
         "prev_day": day - datetime.timedelta(days=1),
         "next_day": day + datetime.timedelta(days=1),
-        "today": timezone.localdate(),
+        "today": today,
+        "grid_tracks": grid_tracks,
         "hours": hours,
         "week_days": week_days,
         "staff_columns": staff,

@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="{% static 'webui/webui.css' %}">
   <script src="{% static 'webui/webui.js' %}" defer></script>
 </head>
-<body>
+<body class="{% block body_class %}{% endblock %}">
 <div class="app">
   <aside class="side" id="side">
     <div class="brand">

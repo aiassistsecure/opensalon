@@ -1,5 +1,6 @@
 {% extends "webui/base.html" %}
 {% block title %}Daybook — {{ day|date:"l, F j" }}{% endblock %}
+{% block body_class %}page-daybook{% endblock %}
 {% block content %}
 <div class="book-layout">
   <div class="book-main">
@@ -57,7 +58,7 @@
 
     <section class="book">
       <div class="bookscroll" id="bookscroll">
-        <div class="colheads" style="--cols:{{ staff_columns|length }}">
+        <div class="colheads" style="--cols:{{ staff_columns|length }}{% if grid_tracks %};--tracks:{{ grid_tracks }}{% endif %}">
           <div class="colhead colcorner"><span class="tz">{{ tz_label }}</span></div>
           {% for col in staff_columns %}
           <div class="colhead">
@@ -69,7 +70,7 @@
           </div>
           {% endfor %}
         </div>
-        <div class="gridwrap" style="--cols:{{ staff_columns|length }}">
+        <div class="gridwrap" style="--cols:{{ staff_columns|length }}{% if grid_tracks %};--tracks:{{ grid_tracks }}{% endif %}">
           <div class="db-gutter">
             {% for hour in hours %}<span class="hourlbl" style="top:{{ hour.top }}%">{{ hour.label }}</span>{% endfor %}
           </div>
