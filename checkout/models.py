@@ -35,6 +35,8 @@ class Sale(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True, blank=True)
+    voided_at = models.DateTimeField(null=True, blank=True)
+    void_reason = models.CharField(max_length=500, blank=True, default="")
 
     class Meta:
         ordering = ["-created_at", "-id"]
