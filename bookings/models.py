@@ -35,8 +35,14 @@ class Appointment(models.Model):
         StaffMember, on_delete=models.CASCADE, related_name="appointments"
     )
     service = models.ForeignKey(
-        Service, on_delete=models.CASCADE, related_name="appointments"
+        Service, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="appointments"
     )
+    # Verbatim service name snapshot, captured at import/creation
+    # time. Lets an appointment whose service is absent from the
+    # price book still render in the day book, and keeps the name
+    # if the service is later removed.
+    service_name = models.CharField(max_length=200, blank=True)
     start = models.DateTimeField()
     end = models.DateTimeField()
     status = models.CharField(
@@ -56,7 +62,8 @@ class Appointment(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.client} — {self.service} at {self.start}"
+        name = self.service.name if self.service else self.service_name
+        return f"{self.client} — {name or 'Unknown service'} at {self.start}"
 
 
 class AppointmentNote(models.Model):

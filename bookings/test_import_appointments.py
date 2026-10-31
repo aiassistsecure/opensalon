@@ -132,6 +132,38 @@ class ImportAppointmentsTests(TestCase):
         self.assertEqual(Appointment.objects.get(
             external_id="appt-1").status, Appointment.Status.BOOKED)
 
+    def test_unresolved_service_with_name_imports_as_snapshot(self):
+        payload = [{"appointmentId": "appt-snap", "clientId": "cli-1",
+                    "staffId": "stf-1", "serviceId": "svc-missing",
+                    "serviceName": "Legacy Treatment",
+                    "appointmentDate": "2026-10-03",
+                    "startTime": "13:00:00", "endTime": "13:45:00",
+                    "state": "BOOKED", "deleted": False}]
+        out = self.run_import(payload=payload)
+        self.assertIn('"created": 1', out)
+        self.assertIn('"unresolved_service": 1', out)
+        self.assertIn('"imported_with_service_snapshot": 1', out)
+        appt = Appointment.objects.get(external_id="appt-snap")
+        self.assertIsNone(appt.service)
+        self.assertEqual(appt.service_name, "Legacy Treatment")
+
+    def test_unresolved_service_without_name_still_skips(self):
+        payload = [{"appointmentId": "appt-noname", "clientId": "cli-1",
+                    "staffId": "stf-1", "serviceId": "svc-missing",
+                    "appointmentDate": "2026-10-03",
+                    "startTime": "13:00:00", "endTime": "13:45:00",
+                    "state": "BOOKED", "deleted": False}]
+        out = self.run_import(payload=payload)
+        self.assertIn('"created": 0', out)
+        self.assertIn('"unresolved_service": 1', out)
+        self.assertEqual(Appointment.objects.count(), 0)
+
+    def test_resolved_service_snapshots_its_name(self):
+        self.run_import(payload=FIXTURE[:1])
+        appt = Appointment.objects.get(external_id="appt-1")
+        self.assertEqual(appt.service, self.service)
+        self.assertEqual(appt.service_name, "Haircut")
+
     def test_missing_file_raises_command_error(self):
         with self.assertRaises(CommandError):
             call_command("import_appointments", "/nonexistent/x.json")

@@ -99,6 +99,17 @@ class BlocksForDayTests(DaybookTestCase):
         self.assertEqual([c.staff_member for c in columns], [self.staff])
         self.assertEqual(len(columns[0].blocks), 1)
 
+    def test_block_renders_snapshot_when_service_is_none(self):
+        Appointment.objects.create(
+            client=self.client, staff_member=self.staff, service=None,
+            service_name="Legacy Treatment",
+            start=at(MONDAY, 11), end=at(MONDAY, 12),
+        )
+        (column,) = blocks_for_day(self.salon, MONDAY)
+        (block,) = column.blocks
+        self.assertEqual(block.service_name, "Legacy Treatment")
+        self.assertEqual(block.service_category_name, "")
+
     def test_datetime_day_reduced_to_date(self):
         self._appt(9, 10)
         columns = blocks_for_day(self.salon, at(MONDAY, 23))

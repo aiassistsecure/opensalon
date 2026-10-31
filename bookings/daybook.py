@@ -23,8 +23,9 @@ name (``StaffMember``'s default ordering)::
                 appointment_id,        # Appointment pk
                 staff_member_id,
                 client_display_name,   # str(client): "First Last"
-                service_name,          # Service.name
-                service_category_name, # ServiceCategory.name
+                service_name,          # Service.name, else the
+                                       # appointment's service_name snapshot
+                service_category_name, # ServiceCategory.name, "" if no service
                 start, end,            # aware datetimes, as stored
                 status,                # Appointment.status value
             ),
@@ -143,8 +144,12 @@ def blocks_for_day(salon, day):
             appointment_id=appt.pk,
             staff_member_id=appt.staff_member_id,
             client_display_name=str(appt.client),
-            service_name=appt.service.name,
-            service_category_name=appt.service.category.name,
+            service_name=(
+                appt.service.name if appt.service else appt.service_name
+            ),
+            service_category_name=(
+                appt.service.category.name if appt.service else ""
+            ),
             start=appt.start,
             end=appt.end,
             status=appt.status,
