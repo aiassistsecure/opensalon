@@ -2,6 +2,7 @@
 
 Usage:
     python manage.py import_appointments PATH [--salon NAME]
+        [--timezone IANA_NAME]
 
 PATH is one JSON file or a directory of monthly JSON files (the
 verbatim extract layout: one ``YYYY-MM.json`` per month); directory
@@ -27,10 +28,18 @@ Mapping (one source of truth — this command is the only writer here):
   ``imported_with_service_snapshot``), so it renders in the day
   book. If it carries no ``serviceName`` either, it is skipped.
   Resolved records snapshot their service name the same way.
-- ``appointmentDate`` + ``startTime`` / ``endTime`` combine into the
-  appointment's real start/end datetimes, interpreted in the salon's
-  timezone and stored aware. If end is not after start it is taken
-  to fall on the following day (an overnight appointment).
+- ``appointmentDate`` + ``startTime`` / ``endTime`` are naive wall
+  times in the extract. They combine into the appointment's real
+  start/end datetimes, interpreted in the importing salon's timezone
+  (``Salon.timezone``) and stored as the correct aware UTC instant:
+  e.g. 09:00 on 2026-10-03 in America/New_York is 13:00 UTC (EDT),
+  while 09:00 on a January date there is 14:00 UTC (EST). When the
+  salon timezone is UTC, behaviour is unchanged. ``--timezone``
+  sets ``Salon.timezone`` (creating the salon with it if needed)
+  before importing, so a salon still on the UTC default can be
+  corrected in the same run that imports its book. If end is not
+  after start it is taken to fall on the following day (an
+  overnight appointment).
 - State: ``BOOKED`` -> booked, ``CHECKED_IN`` -> arrived,
   ``PAID`` -> completed; any other state maps to booked. (These are
   the only states present in a verbatim extract.)
@@ -121,8 +130,22 @@ class Command(BaseCommand):
         parser.add_argument("--salon", default="My Salon",
                             help="Salon name to import into "
                                  "(created if missing).")
+        parser.add_argument("--timezone", default=None,
+                            help="IANA timezone (e.g. America/New_York) "
+                                 "to set on the salon before importing; "
+                                 "extract wall times are then interpreted "
+                                 "in this timezone. Omit to keep the "
+                                 "salon's existing timezone.")
 
     def handle(self, *args, **options):
+        tz_name = (options.get("timezone") or "").strip() or None
+        tz_override = None
+        if tz_name is not None:
+            try:
+                tz_override = ZoneInfo(tz_name)
+            except Exception as exc:
+                raise CommandError(
+                    f"Unknown timezone {tz_name!r}: {exc}") from exc
         records = _load_records(options["path"])
         stats = dict.fromkeys(
             ["created", "updated", "skipped", "unresolved_client",
@@ -130,11 +153,19 @@ class Command(BaseCommand):
              "imported_with_service_snapshot"], 0)
         dates = []
         with transaction.atomic():
-            salon, _ = Salon.objects.get_or_create(name=options["salon"])
-            try:
-                tz = ZoneInfo(salon.timezone)
-            except Exception:
-                tz = ZoneInfo("UTC")
+            defaults = {"timezone": tz_name} if tz_name else {}
+            salon, _ = Salon.objects.get_or_create(
+                name=options["salon"], defaults=defaults)
+            if tz_name and salon.timezone != tz_name:
+                salon.timezone = tz_name
+                salon.save(update_fields=["timezone", "updated_at"])
+            if tz_override is not None:
+                tz = tz_override
+            else:
+                try:
+                    tz = ZoneInfo(salon.timezone)
+                except Exception:
+                    tz = ZoneInfo("UTC")
             clients = {c.external_id: c for c in
                        Client.objects.filter(salon=salon)
                        .exclude(external_id="")}
