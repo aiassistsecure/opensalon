@@ -1316,6 +1316,7 @@ def day_book_checkout(request):
             "total": str(sale.total),
             "total_label": _price_label(sale.total),
             "receipt_text": render_receipt_text(receipt) if receipt else "",
+            "client_email": sale.client.email if sale.client_id else "",
         }
     )
 
@@ -2106,7 +2107,7 @@ def pos(request):
                 completed_at__gte=day_start,
             )
             .select_related("client")
-            .prefetch_related("items", "payments")
+            .prefetch_related("items", "payments", "receipt")
             .order_by("-completed_at")
         )
         for sale in sales:
@@ -2119,11 +2120,14 @@ def pos(request):
                     }
                 )
             )
+            receipt = getattr(sale, "receipt", None)
             sales_rows.append(
                 {
                     "sale": sale,
                     "when": sale.completed_at.astimezone(tz) if sale.completed_at else None,
                     "client_name": str(sale.client) if sale.client_id else "",
+                    "client_email": sale.client.email if sale.client_id else "",
+                    "receipt_sent": bool(receipt and receipt.sent_at),
                     "tender": tender,
                     "total": sale.total,
                 }
@@ -2316,3 +2320,60 @@ def insights_page(request):
             }
         )
     return render(request, "webui/insights.html", ctx)
+
+
+def day_book_receipt_email(request):
+    """Email a settled sale's receipt to the client.
+
+    The send itself is the checkout lane's law (send_receipt): the
+    salon's own mail settings carry it, the recipient defaults to
+    the client's email on record, and the receipt records who it
+    went to and when. Two callers: the checkout modal (JSON, with an
+    optional typed override address) and the POS page's per-sale
+    form (plain POST, redirect back).
+    """
+    from checkout.models import Sale
+    from checkout.receipts import build_receipt, send_receipt
+
+    salon = Salon.objects.order_by("id").first()
+    web = request.POST.get("web") == "pos"
+    if web:
+        sale_id = request.POST.get("sale_id")
+        email = ""
+    else:
+        try:
+            payload = json.loads(request.body.decode("utf-8") or "{}")
+        except (ValueError, UnicodeDecodeError):
+            return JsonResponse(
+                {"ok": False, "error": "bad payload"}, status=400
+            )
+        sale_id = payload.get("sale_id")
+        email = (payload.get("email") or "").strip()
+    sale = (
+        Sale.objects.select_related("client")
+        .filter(pk=sale_id, salon=salon, status=Sale.Status.COMPLETED)
+        .first()
+    )
+    if sale is None:
+        if web:
+            return redirect("webui:pos")
+        return JsonResponse(
+            {"ok": False, "error": "no such sale"}, status=404
+        )
+    receipt = getattr(sale, "receipt", None) or build_receipt(sale)
+    try:
+        send_receipt(receipt, email or None)
+    except ValueError as exc:
+        if web:
+            return redirect("webui:pos")
+        return JsonResponse({"ok": False, "error": str(exc)}, status=400)
+    except Exception:
+        if web:
+            return redirect("webui:pos")
+        return JsonResponse(
+            {"ok": False, "error": "The mail server could not send it."},
+            status=502,
+        )
+    if web:
+        return redirect("webui:pos")
+    return JsonResponse({"ok": True, "sent_to": receipt.recipient_email})

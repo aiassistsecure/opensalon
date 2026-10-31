@@ -47,6 +47,12 @@
     <span class="pos-sale-client">{{ row.client_name|default:"Walk-in" }}</span>
     <span class="pos-sale-tender">{{ row.tender }}</span>
     <b class="pos-sale-total">${{ row.total }}</b>
+    {% if row.receipt_sent %}<span class="pos-sale-tender">Receipt sent</span>{% elif row.client_email %}
+    <form method="post" action="{% url 'webui:daybook_receipt_email' %}">{% csrf_token %}
+      <input type="hidden" name="web" value="pos">
+      <input type="hidden" name="sale_id" value="{{ row.sale.pk }}">
+      <button class="rb-mini" type="submit">Email receipt</button>
+    </form>{% endif %}
   </div>
   {% empty %}
   <p class="pos-empty">No completed sales yet today. Settle a visit from its day-book card and it lands here.</p>
