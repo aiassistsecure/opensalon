@@ -1341,6 +1341,13 @@ button:focus-visible, a:focus-visible, select:focus-visible {
 .auto-chip.no{background:#f3ecdc;color:#8a6d3b}
 .auto-send{display:flex;align-items:center;gap:12px;margin-top:14px}
 .auto-notice{background:#eef5e8;border:1px solid #cfdfbf;color:#3f5a36;border-radius:12px;padding:11px 15px;font-size:14px;margin:14px 0}
+
+/* Settings: the profile form and its refusal notice */
+.set-form{display:flex;flex-direction:column;gap:12px;margin-top:6px}
+.set-form label{display:flex;flex-direction:column;gap:5px;font-size:13px;font-weight:650;color:#4a4232}
+.set-form input{padding:9px 11px;border:1px solid #ddd3b8;border-radius:9px;background:#fff;color:#1d2530;font-size:14.5px}
+.set-form .btn-primary{align-self:flex-start;margin-top:2px}
+.set-error{background:#fbeeee;border:1px solid #eec9c9;color:#8a3b3b;border-radius:12px;padding:11px 15px;font-size:14px;margin:14px 0}
 .ins-trend{display:flex;align-items:flex-end;gap:6px;height:120px;padding-top:8px}
 .ins-bar-wrap{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;gap:5px}
 .ins-bar{width:100%;min-height:2px;border-radius:5px 5px 2px 2px;

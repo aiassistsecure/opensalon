@@ -2563,6 +2563,100 @@ def automations_page(request):
     return render(request, "webui/automations.html", ctx)
 
 
+def settings_page(request):
+    """Settings — the salon's own profile, plus the state of
+    the box it runs on.
+
+    The profile is the Salon record itself (name, timezone,
+    currency) — the same fields the book, the till and the
+    reports read, so editing them here edits everywhere. The
+    system card is presence, never secrets: which database
+    engine answers, whether a mail host is set, which SMS
+    adapter is configured, and how much of the salon's book
+    lives here. Deployment choices (hosts, adapters, keys)
+    stay in the deployment's environment — this page reports
+    them, it does not pretend to set them.
+    """
+    from django.conf import settings as dj_settings
+
+    from bookings.models import Appointment
+    from clients.models import Client
+    from messaging.adapters import get_sms_adapter
+    from saloncore.models import Service
+    from team.models import StaffMember
+
+    salon = Salon.objects.order_by("id").first()
+    ctx = {"salon": salon, "nav_key": "settings"}
+    if salon is not None:
+        engine = dj_settings.DATABASES["default"]["ENGINE"]
+        if "nedb" in engine:
+            db_label, db_note = "NEDB", "the salon's own node, over pgwire"
+        elif "sqlite3" in engine:
+            db_label, db_note = "SQLite", "development fallback"
+        else:
+            db_label, db_note = engine.rsplit(".", 1)[-1], ""
+        adapter = get_sms_adapter()
+        ctx.update(
+            {
+                "db_label": db_label,
+                "db_note": db_note,
+                "email_backend": dj_settings.EMAIL_BACKEND.rsplit(".", 1)[-1],
+                "email_from": dj_settings.DEFAULT_FROM_EMAIL,
+                "email_host_set": bool(getattr(dj_settings, "EMAIL_HOST", "")),
+                "sms_adapter": type(adapter).__name__,
+                "staff_count": StaffMember.objects.filter(salon=salon).count(),
+                "client_count": Client.objects.filter(salon=salon).count(),
+                "service_count": Service.objects.filter(
+                    category__salon=salon
+                ).count(),
+                "appointment_count": Appointment.objects.filter(
+                    staff_member__salon=salon
+                ).count(),
+                "saved": request.GET.get("saved") == "1",
+                "error": request.GET.get("error", ""),
+            }
+        )
+    return render(request, "webui/settings.html", ctx)
+
+
+@require_POST
+def settings_save(request):
+    """Save the salon profile — validated whole, or not at all.
+
+    Name must be non-empty; the timezone must be a real IANA
+    zone (the book's every clock reads it); the currency is a
+    three-letter code. Any failure leaves the record untouched
+    and returns the page with the reason — a settings page
+    that half-saves is worse than one that refuses.
+    """
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    salon = Salon.objects.order_by("id").first()
+    if salon is None:
+        return redirect("webui:settings")
+    name = request.POST.get("name", "").strip()
+    tz_name = request.POST.get("timezone", "").strip()
+    currency = request.POST.get("currency", "").strip().upper()
+    error = ""
+    if not name or len(name) > 200:
+        error = "name"
+    else:
+        try:
+            ZoneInfo(tz_name)
+        except (ZoneInfoNotFoundError, ValueError):
+            error = "timezone"
+        else:
+            if len(currency) != 3 or not currency.isalpha():
+                error = "currency"
+    if error:
+        return redirect(f"{reverse('webui:settings')}?error={error}")
+    salon.name = name
+    salon.timezone = tz_name
+    salon.currency = currency
+    salon.save(update_fields=["name", "timezone", "currency"])
+    return redirect(f"{reverse('webui:settings')}?saved=1")
+
+
 @require_POST
 def automations_send(request):
     """Send the due reminders now — the button is the backend.

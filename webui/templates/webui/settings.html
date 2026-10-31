@@ -1,0 +1,59 @@
+{% extends "webui/base.html" %}
+{% block title %}Settings{% endblock %}
+{% block body_class %}page-settings page-light{% endblock %}
+{% block content %}
+<div class="day-head">
+  <div class="day-title-wrap">
+    <div class="day-title">Settings</div>
+    <div class="day-sub">The salon's profile — and the honest state of the box it runs on</div>
+  </div>
+</div>
+{% if salon %}
+{% if saved %}<p class="auto-notice">Profile saved — the book, the till and the reports all read these fields.</p>{% endif %}
+{% if error == "name" %}<p class="set-error">The salon name can't be empty — nothing was saved.</p>{% endif %}
+{% if error == "timezone" %}<p class="set-error">That timezone isn't a real IANA zone — nothing was saved. Example: America/New_York.</p>{% endif %}
+{% if error == "currency" %}<p class="set-error">Currency is a three-letter code like USD — nothing was saved.</p>{% endif %}
+<div class="pos-grid">
+  <section class="pos-card">
+    <h2 class="pos-h">Salon profile</h2>
+    <form method="post" action="{% url 'webui:settings_save' %}" class="set-form">
+      {% csrf_token %}
+      <label>Salon name
+        <input type="text" name="name" value="{{ salon.name }}" maxlength="200" required>
+      </label>
+      <label>Timezone
+        <input type="text" name="timezone" value="{{ salon.timezone }}" maxlength="64" required>
+      </label>
+      <label>Currency
+        <input type="text" name="currency" value="{{ salon.currency }}" maxlength="3" required>
+      </label>
+      <button type="submit" class="btn-primary">Save profile</button>
+    </form>
+    <p class="ins-note">The timezone drives the day book's clock, reminder windows and every report's idea of a "day" — change it deliberately.</p>
+  </section>
+
+  <section class="pos-card">
+    <h2 class="pos-h">This box</h2>
+    <div class="pos-tender"><span>Database</span><b>{{ db_label }}{% if db_note %} — {{ db_note }}{% endif %}</b></div>
+    <div class="pos-tender"><span>Email backend</span><b>{{ email_backend }}</b></div>
+    <div class="pos-tender"><span>Email from</span><b>{{ email_from }}</b></div>
+    <div class="pos-tender"><span>Mail host</span><b>{% if email_host_set %}Configured{% else %}Not set{% endif %}</b></div>
+    <div class="pos-tender"><span>SMS adapter</span><b>{{ sms_adapter }}</b></div>
+    <p class="ins-note">Hosts, adapters and keys live in the deployment's environment, not in the salon's data — this card reports their presence, never their values.</p>
+  </section>
+</div>
+
+<section class="pos-card pos-sales">
+  <h2 class="pos-h">The book on this box</h2>
+  <div class="pos-grid">
+    <div class="pos-tender"><span>Team members</span><b>{{ staff_count }}</b></div>
+    <div class="pos-tender"><span>Clients</span><b>{{ client_count }}</b></div>
+    <div class="pos-tender"><span>Services</span><b>{{ service_count }}</b></div>
+    <div class="pos-tender"><span>Appointments</span><b>{{ appointment_count }}</b></div>
+  </div>
+  <p class="ins-note">Counts read live from the salon's own records — if a number surprises you, the import history is where to look, not a setting.</p>
+</section>
+{% else %}
+<p class="rb-law">No salon yet — import or create the salon first.</p>
+{% endif %}
+{% endblock %}
