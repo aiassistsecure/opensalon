@@ -73,6 +73,37 @@ break on NEDB's pgwire, both by design (DYOR section 5):
   ordinary multi-row ``VALUES (...), (...)`` placeholders, which
   NEDB accepts, including with RETURNING.
 
+DISTINCT (N-M14, DYOR 5 / 9.1 / 9.9; probe
+``nedb-distinct-probe-2026-10-31.md``, census signature 6): DYOR
+section 5 records DISTINCT as refused by design -- "GROUP BY
+<col> gives the distinct values with counts" -- and that is the
+verbatim error the clients admin changelist raises live. The
+probe refines it: nedbd-v2 12.15.16's SQL evaluator answers plain
+DISTINCT, but a statement routed off the evaluator (an
+``AT TIME ZONE`` clause does that) hits the refusal, and
+expression projections cannot be grouped by their expression
+(the evaluator checks constituent columns, the N-M11 signature).
+:class:`SQLCompiler` therefore re-expresses exactly the
+provably-equivalent shape at the expression-tree layer (no
+statement text is rewritten, per DYOR 9.1): a DISTINCT query
+whose compiled projection -- selected columns plus the extra
+ordering columns Django adds to a DISTINCT select -- is entirely
+plain columns, with no pre-existing grouping, HAVING, aggregate,
+combinator, slice, subquery, extra or locking, compiles with
+``distinct`` cleared and ``group_by = True``, i.e. GROUP BY over
+exactly the columns DISTINCT would dedupe (extra ordering
+columns included; Django trims them from results in both
+shapes, and NULLs group together under both semantics).
+Ordering must likewise be by selected columns or plain columns;
+simple Meta ordering is re-applied as explicit ordering for the
+compile, because a grouped compile would otherwise drop it (a
+Meta ordering that cannot be made explicit, with a column
+outside the projection, keeps stock). Every other DISTINCT
+shape keeps the stock compilation unchanged. The changelist's
+other stacked refusal -- ``DATE_TRUNC(... AT TIME ZONE ...)``
+from its date hierarchy -- is re-expressed separately in
+``operations.py`` / ``temporal.trunc_sql`` (N-M8e family).
+
 All other compilers are PostgreSQL's, unchanged.
 """
 
@@ -420,10 +451,120 @@ class SQLCompiler(PostgresSQLCompiler):
         replaced.lhs = self._replace_expr(node.lhs, refs)
         return replaced
 
+    # -- DISTINCT: re-express plain-column shapes as GROUP BY -------
+    def _distinct_group_by_plan(self, with_col_aliases=False):
+        """None if stock, else Meta-ordering terms to make explicit.
+
+        A grouped compile drops Meta ordering (stock aggregate
+        behaviour), which would silently lose the DISTINCT query's
+        ordering; simple Meta ordering (plain field names) is
+        therefore re-applied as explicit ordering for the compile
+        -- the same terms, so the same ordering, and the ordering
+        columns join the GROUP BY exactly as stock DISTINCT joins
+        them to its select as extra columns. An empty return means
+        no conversion is needed.
+        """
+        query = self.query
+        if (
+            not query.distinct
+            or query.distinct_fields
+            or query.group_by is not None
+            or query.combinator
+            or query.is_sliced
+            or query.extra
+            or query.subquery
+            or query.explain_info
+            or getattr(query, "select_for_update", False)
+        ):
+            return None
+        try:
+            _where, having, qualify = query.where.split_having_qualify()
+        except Exception:
+            return None
+        if having is not None or qualify is not None:
+            return None
+        for expr in query.annotations.values():
+            if expr.contains_aggregate or getattr(
+                expr, "contains_over_clause", False
+            ):
+                return None
+        # Inspect the compiled projection exactly as pre_sql_setup
+        # will build it: selected expressions plus the extra
+        # ordering columns a DISTINCT select carries.
+        try:
+            self.setup_query(with_col_aliases=with_col_aliases)
+            order_by = self.get_order_by()
+            extra_select = self.get_extra_select(order_by, self.select)
+        except Exception:
+            return None
+        if not self.select:
+            return None
+        def _is_plain_col(expr):
+            # Extra-select entries carry the ordering expression,
+            # which may still be wrapped in OrderBy.
+            return isinstance(getattr(expr, "expression", expr), Col)
+
+        if any(
+            not _is_plain_col(expr)
+            for expr, _sql_params, _alias in (*self.select, *extra_select)
+        ):
+            return None
+        conversion = ()
+        if self._meta_ordering:
+            terms = list(query.get_meta().ordering or ())
+            if all(
+                isinstance(term, str)
+                and "__" not in term.lstrip("-")
+                and term.lstrip("-") != "?"
+                for term in terms
+            ):
+                conversion = tuple(terms)
+            elif extra_select:
+                # A Meta-ordering column outside the projection
+                # that cannot be made explicit: stock DISTINCT
+                # selects it (extra) and dedupes over it; a GROUP
+                # BY compiler would not group it. Keep stock.
+                return None
+        for expr, (_sql, _params, is_ref) in order_by:
+            if is_ref:
+                continue
+            inner = getattr(expr, "expression", expr)
+            if not isinstance(inner, Col):
+                return None
+        return conversion
+
     # -- compilation --------------------------------------------------
     def as_sql(self, with_limits=True, with_col_aliases=False):
         plan = self._having_wrap_plan()
         if plan is None:
+            conversion = self._distinct_group_by_plan(
+                with_col_aliases=with_col_aliases
+            )
+            if conversion is not None:
+                query = self.query
+                original_group_by = query.group_by
+                original_order_by = query.order_by
+                original_default_ordering = query.default_ordering
+                query.distinct = False
+                query.group_by = True
+                if conversion:
+                    query.order_by = conversion
+                    query.default_ordering = False
+                # The plan's inspection calls set _meta_ordering for
+                # the unconverted query; the real compile must
+                # recompute it for the converted state (a stale flag
+                # would make the grouped compile drop the ordering).
+                self._meta_ordering = None
+                try:
+                    return super().as_sql(
+                        with_limits=with_limits,
+                        with_col_aliases=with_col_aliases,
+                    )
+                finally:
+                    query.distinct = True
+                    query.group_by = original_group_by
+                    query.order_by = original_order_by
+                    query.default_ordering = original_default_ordering
             return super().as_sql(
                 with_limits=with_limits, with_col_aliases=with_col_aliases
             )
