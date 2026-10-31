@@ -96,6 +96,9 @@
               (t.on ? "true" : "false") + '"' + (t.enabled ? "" : " disabled") +
               ' data-status-action="' + esc(t.target) + '" data-appt="' +
               esc(d.id) + '" aria-label="Toggle ' + esc(t.label.toLowerCase()) +
+              '" title="' + (t.on
+                ? esc(t.label) + ' is on — flip to undo'
+                : 'Flip to mark ' + esc(t.label.toLowerCase())) +
               '"></button></div>';
           }).join("") + "</div>"
         : "") +
@@ -106,7 +109,7 @@
               '" data-status-action="' + esc(a.status) + '" data-appt="' +
               esc(d.id) + '">' + esc(a.label) + "</button>";
           }).join("") + "</div>" +
-          '<p class="rail-hint">Drag a block on the book to move it — drop it on another stylist to reassign.</p>'
+          '<p class="rail-hint">Drag to move · Arrow keys nudge 5 min, ←/→ switch stylist · Ctrl+Z undoes a move.</p>'
         : "");
     if (railEl) railEl.setAttribute("data-current", d.id);
   }
@@ -192,7 +195,8 @@
           target.startMin = snapped;
           ghost.style.top = (snapped / winMin * 100) + "%";
           ghost.querySelector(".ghost-time").textContent =
-            fmt(dayStartMin + snapped) + (target.member !== originMember ? " · new stylist" : "");
+            fmt(dayStartMin + snapped) + " – " + fmt(dayStartMin + snapped + durMin) +
+            (target.member !== originMember ? " · new stylist" : "");
           /* Live stacking: the lanes make room DURING the drag,
              not after it — the column re-lanes around the tile's
              hover position on the next animation frame. */
@@ -664,6 +668,7 @@
       priceEl.remove();
     }
     el.setAttribute("aria-label", entry.client + ", " + entry.service + ", " + timeLabel);
+    el.title = entry.client + " · " + entry.service + " · " + timeLabel;
   }
 
   /* A block built on the client, indistinguishable from the
