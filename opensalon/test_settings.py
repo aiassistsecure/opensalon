@@ -25,6 +25,16 @@ def reload_settings(env):
         return settings_module.DATABASES["default"]
 
 
+def reload_time_zone(env):
+    clean = {
+        k: v for k, v in os.environ.items() if k != "OPENSALON_TIME_ZONE"
+    }
+    clean.update(env)
+    with mock.patch.dict(os.environ, clean, clear=True):
+        importlib.reload(settings_module)
+        return settings_module.TIME_ZONE, settings_module.USE_TZ
+
+
 class DatabasesConfigTests(SimpleTestCase):
     def tearDown(self):
         # Restore the module to the environment the test runner used.
@@ -63,3 +73,21 @@ class DatabasesConfigTests(SimpleTestCase):
         # Without the flag, SQLite is not selected even with no POSTGRES_* set.
         db = reload_settings({})
         self.assertNotEqual(db["ENGINE"], "django.db.backends.sqlite3")
+
+
+class TimeZoneConfigTests(SimpleTestCase):
+    def tearDown(self):
+        # Restore the module to the environment the test runner used.
+        importlib.reload(settings_module)
+
+    def test_time_zone_defaults_to_utc(self):
+        time_zone, use_tz = reload_time_zone({})
+        self.assertEqual(time_zone, "UTC")
+        self.assertTrue(use_tz)
+
+    def test_time_zone_env_var_is_honored(self):
+        time_zone, use_tz = reload_time_zone(
+            {"OPENSALON_TIME_ZONE": "America/New_York"}
+        )
+        self.assertEqual(time_zone, "America/New_York")
+        self.assertTrue(use_tz)
