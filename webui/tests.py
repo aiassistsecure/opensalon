@@ -118,16 +118,20 @@ class DayBookTests(WebuiTestBase):
         # The rail still describes the day; the grid itself is empty.
         self.assertNotContains(response, "appt-block")
 
-    def test_visit_stack_merges_into_one_tile(self):
+    def test_service_blocks_render_individually_phorest_style(self):
+        # Founder direction (2026-10-31, with Phorest open beside
+        # it): the grid unit is the service. A guest's stacked
+        # services are separate blocks in the column; the VISIT
+        # still exists for the agenda, the KPIs and the rail.
         self._appointment(start_hour=10, end_hour=11)
         self._appointment(start_hour=11, end_hour=12)
         response = self.client.get(reverse("webui:daybook"), {"date": "2026-11-02"})
         column = response.context["staff_columns"][0]
-        self.assertEqual(len(column["blocks"]), 1)
-        tile = column["blocks"][0]
-        self.assertEqual(len(tile["services"]), 2)
-        self.assertEqual(tile["price_label"], "$170")
-        self.assertEqual(tile["time_label"], "10 AM – 12 PM")
+        self.assertEqual(len(column["blocks"]), 2)
+        first, second = column["blocks"]
+        self.assertEqual(first["price_label"], "$85")
+        self.assertEqual(first["time_label"], "10 AM – 11 AM")
+        self.assertEqual(second["time_label"], "11 AM – 12 PM")
         self.assertEqual(len(response.context["agenda"]), 1)
         self.assertEqual(response.context["overview"]["visits"], 1)
         self.assertEqual(response.context["overview"]["appointments"], 2)
@@ -154,7 +158,7 @@ class DayBookTests(WebuiTestBase):
         self.assertEqual(response.context["overview"]["revenue"], Decimal("45.00"))
         self.assertEqual(response.context["overview"]["unpriced"], 0)
 
-    def test_move_shifts_the_whole_visit_and_reassigns(self):
+    def test_move_moves_the_grabbed_block_only(self):
         import json as jsonlib
 
         first = self._appointment(start_hour=10, end_hour=11)
@@ -174,16 +178,16 @@ class DayBookTests(WebuiTestBase):
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["moved"], 2)
-        for appt in (first, second):
-            appt.refresh_from_db()
-            self.assertEqual(appt.staff_member_id, other_member.pk)
+        self.assertEqual(response.json()["moved"], 1)
         first.refresh_from_db()
-        second.refresh_from_db()
+        self.assertEqual(first.staff_member_id, other_member.pk)
         self.assertEqual(first.start.hour, 13)
         self.assertEqual(first.start.minute, 25)
-        self.assertEqual(second.start.hour, 14)
-        self.assertEqual(second.start.minute, 25)
+        # The block that was not grabbed does not travel with it:
+        # blocks are individual services, Phorest-style.
+        second.refresh_from_db()
+        self.assertEqual(second.staff_member_id, self.member.pk)
+        self.assertEqual(second.start.hour, 11)
 
     def test_move_snaps_to_five_minutes_and_validates(self):
         import json as jsonlib

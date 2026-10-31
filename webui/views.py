@@ -484,41 +484,17 @@ def _day_book_context(request):
                     if (not cat_filter or b["cat_key"] == cat_filter)
                     and (not status_filter or b["status"] == status_filter)
                 ]
-            # ---- merge a visit's chained blocks into one tile ----
-            # The grid unit is the visit, not the appointment: a
-            # stack booked back to back is one guest in one chair,
-            # and rendering it as colliding blocks misreads as
-            # overlap. The rail already treats the visit as the
-            # unit; the grid does too now.
+            # ---- one block per service, Phorest-style ----
+            # The grid unit is the appointment: each service is
+            # its own block, and blocks that share a row split the
+            # column into lanes — services and clients stack side
+            # by side, the way the desk is used to seeing the day.
+            # The visit still exists where it belongs: in the
+            # rail, where a guest's whole stack reads as one.
             tiles = []
             for b in display_blocks:
-                visit = visits.get(b["appointment_id"])
-                if tiles and visit is not None and tiles[-1]["_visit"] is visit:
-                    tile = tiles[-1]
-                    tile["_end"] = max(tile["_end"], b["_end"])
-                    tile["services"].append(b["service_name"])
-                    if b["_amount"] is not None:
-                        tile["_total"] = (tile["_total"] or Decimal("0")) + b["_amount"]
-                    continue
-                tiles.append(
-                    {
-                        "appointment_id": b["appointment_id"],
-                        "client_name": b["client_name"],
-                        "client_initials": b["client_initials"],
-                        "services": [b["service_name"]],
-                        "service_name": b["service_name"],
-                        "category_name": b["category_name"],
-                        "cat_key": b["cat_key"],
-                        "status": b["status"],
-                        "status_label": b["status_label"],
-                        "index": b["index"],
-                        "_start": b["_start"],
-                        "_end": b["_end"],
-                        "_visit": visit,
-                        "_total": b["_amount"],
-                    }
-                )
-            for tile in tiles:
+                tile = dict(b)
+                tile["_total"] = b["_amount"]
                 tile["top"] = _pct(tile["_start"], day_start, day_end)
                 tile["height"] = max(
                     _pct(tile["_end"], day_start, day_end) - tile["top"], 4.0
@@ -530,10 +506,10 @@ def _day_book_context(request):
                 tile["price_label"] = (
                     _price_label(tile["_total"]) if tile["_total"] is not None else ""
                 )
-                tile["more"] = len(tile["services"]) - 1
                 tile["start_minutes"] = int(
                     (tile["_start"] - day_start).total_seconds() // 60
                 )
+                tiles.append(tile)
             _assign_lanes(tiles)
             width_factor = min(
                 3,
@@ -543,6 +519,42 @@ def _day_book_context(request):
                 (t["_total"] for t in tiles if t["_total"] is not None),
                 Decimal("0"),
             )
+            # The agenda still speaks in visits: one entry per
+            # chained stack, however many blocks it renders as.
+            seen_visits = set()
+            for tile in tiles:
+                v = visits.get(tile["appointment_id"])
+                if v is None or id(v) in seen_visits:
+                    continue
+                seen_visits.add(id(v))
+                v_start = min(a.start for a in v)
+                v_end = max(a.end for a in v)
+                amounts = [amount_for(a) for a in v]
+                priced = [x for x in amounts if x is not None]
+                agenda_pool.append(
+                    (
+                        {
+                            "appointment_id": min(v, key=lambda a: a.start).pk,
+                            "_start": v_start,
+                            "_end": v_end,
+                            "time_label": (
+                                f"{_fmt_time(v_start.astimezone(tz).time())} – "
+                                f"{_fmt_time(v_end.astimezone(tz).time())}"
+                            ),
+                            "client_name": tile["client_name"],
+                            "services": [
+                                (a.service.name if a.service else a.service_name)
+                                for a in v
+                            ],
+                            "price_label": (
+                                _price_label(sum(priced, Decimal("0")))
+                                if priced
+                                else ""
+                            ),
+                        },
+                        member,
+                    )
+                )
             staff.append(
                 {
                     "member": member,
@@ -558,12 +570,10 @@ def _day_book_context(request):
                     else "",
                     "day_total_label": _money_label(col_total),
                     "day_total": col_total,
-                    "visits_count": len(tiles),
+                    "visits_count": len(seen_visits),
                     "booked_minutes": booked_minutes,
                 }
             )
-            for tile in tiles:
-                agenda_pool.append((tile, member))
         overview["revenue"] = revenue
         overview["revenue_label"] = _money_label(revenue)
         overview["unpriced"] = unpriced
@@ -734,13 +744,12 @@ def day_book_fragment(request):
 def day_book_move(request):
     """Persist a drag on the day book.
 
-    The drag moves a whole visit: every appointment chained to the
-    anchor (same guest, same stylist, VISIT_GAP rule — the same
-    grouping the grid renders) shifts by one delta and changes
-    stylist together. The start snaps to 5 minutes. Overlaps are
-    allowed — the book renders double-bookings in lanes rather
-    than pretending they cannot happen — so a drop always saves;
-    the client re-reads the day fragment and shows the truth.
+    The dragged unit is the block the hand grabbed: one
+    appointment (one service), exactly as the grid renders it.
+    The start snaps to 5 minutes. Overlaps are allowed — the
+    book renders stacked blocks in lanes rather than pretending
+    they cannot happen — so a drop always saves; the client
+    re-reads the day fragment and shows the truth.
     """
     try:
         payload = json.loads(request.body.decode("utf-8"))
@@ -762,49 +771,18 @@ def day_book_move(request):
         return JsonResponse({"ok": False, "error": "no such stylist"}, status=404)
     tz = _tz(salon)
     local_day = anchor.start.astimezone(tz).date()
-    day_start = datetime.datetime.combine(
-        local_day, datetime.time(DAY_START_HOUR), tzinfo=tz
-    )
-    day_end = datetime.datetime.combine(local_day, datetime.time(DAY_END_HOUR), tzinfo=tz)
-    siblings = list(
-        Appointment.objects.filter(
-            client_id=anchor.client_id,
-            staff_member_id=anchor.staff_member_id,
-            start__lt=day_end,
-            end__gt=day_start,
-        )
-        .exclude(status=Appointment.Status.CANCELLED)
-        .order_by("start")
-    )
-    visit, visit_end = [], None
-    the_visit = [anchor]
-    for appt in siblings:
-        if visit and appt.start > visit_end + VISIT_GAP:
-            if any(a.pk == anchor.pk for a in visit):
-                the_visit = visit
-            visit, visit_end = [], None
-        visit.append(appt)
-        visit_end = max(visit_end or appt.end, appt.end)
-    if any(a.pk == anchor.pk for a in visit):
-        the_visit = visit
-    visit_start = min(a.start for a in the_visit)
-    visit_minutes = (
-        max(a.end for a in the_visit) - visit_start
-    ).total_seconds() / 60
+    duration_minutes = (anchor.end - anchor.start).total_seconds() / 60
     snapped = int(round(start_minutes / 5.0)) * 5
-    snapped = max(0, min(snapped, int(24 * 60 - visit_minutes)))
+    snapped = max(0, min(snapped, int(24 * 60 - duration_minutes)))
     new_start = datetime.datetime.combine(local_day, datetime.time(0), tzinfo=tz) + (
         datetime.timedelta(minutes=snapped)
     )
-    delta = new_start - visit_start
-    for appt in the_visit:
-        appt.start += delta
-        appt.end += delta
-        appt.staff_member = member
-        appt.save(update_fields=["start", "end", "staff_member"])
-    return JsonResponse(
-        {"ok": True, "moved": len(the_visit), "start_minutes": snapped}
-    )
+    delta = new_start - anchor.start
+    anchor.start += delta
+    anchor.end += delta
+    anchor.staff_member = member
+    anchor.save(update_fields=["start", "end", "staff_member"])
+    return JsonResponse({"ok": True, "moved": 1, "start_minutes": snapped})
 
 
 def price_book(request):
