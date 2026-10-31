@@ -36,7 +36,11 @@ Mapping (one source of truth — this command is the only writer here):
 
 Idempotent: rows are written with ``update_or_create`` keyed by
 (salon, external_id), so re-running updates in place and never
-duplicates. Bad rows are skipped and counted, not fatal. A file
+duplicates. Re-runs are also resumable: existing rows are preloaded
+once and any row whose mapped fields already match is skipped
+without a database write (counted as ``unchanged``), so an
+interrupted import re-run pays memory-speed skips for the part
+already imported instead of a full replay of writes. Bad rows are skipped and counted, not fatal. A file
 that is not valid JSON, or not a JSON list, raises before any
 write. The import runs in one transaction, but that is
 defence-in-depth only: on NEDB ``transaction.atomic()`` rolls
@@ -85,11 +89,22 @@ class Command(BaseCommand):
         if not isinstance(data, list):
             raise CommandError("Clients file must be a JSON list of clients.")
 
-        stats = dict.fromkeys(["created", "updated", "skipped"], 0)
+        stats = dict.fromkeys(
+            ["created", "updated", "skipped", "unchanged"], 0)
         total = len(data)
         seen = 0
         with transaction.atomic():
             salon, _ = Salon.objects.get_or_create(name=options["salon"])
+            # Resumable re-runs: preload what the salon already has once,
+            # so rows whose mapped fields already match are skipped at
+            # memory speed instead of paying a select+update per row.
+            existing = {
+                row["external_id"]: row
+                for row in Client.objects.filter(salon=salon)
+                .exclude(external_id="")
+                .values("external_id", "first_name", "last_name", "email",
+                        "phone", "email_opt_in", "sms_opt_in", "active")
+            }
             for row in data:
                 seen += 1
                 if total >= 1000 and seen % 500 == 0:
@@ -105,24 +120,34 @@ class Command(BaseCommand):
                 if not external_id:
                     stats["skipped"] += 1
                     continue
+                defaults = {
+                    "first_name": _text(row, "firstName", 80),
+                    "last_name": _text(row, "lastName", 80),
+                    "email": _text(row, "email", 254),
+                    "phone": _text(row, "mobile", 32),
+                    "email_opt_in": bool(row.get("emailMarketingConsent"))
+                    and bool(row.get("emailReminderConsent")),
+                    "sms_opt_in": bool(row.get("smsMarketingConsent"))
+                    and bool(row.get("smsReminderConsent")),
+                    "active": True,
+                }
+                current = existing.get(external_id)
+                if current is not None and all(
+                        current[key] == value
+                        for key, value in defaults.items()):
+                    stats["unchanged"] += 1
+                    continue
                 _, created = Client.objects.update_or_create(
                     salon=salon, external_id=external_id,
-                    defaults={
-                        "first_name": _text(row, "firstName", 80),
-                        "last_name": _text(row, "lastName", 80),
-                        "email": _text(row, "email", 254),
-                        "phone": _text(row, "mobile", 32),
-                        "email_opt_in": bool(row.get("emailMarketingConsent"))
-                        and bool(row.get("emailReminderConsent")),
-                        "sms_opt_in": bool(row.get("smsMarketingConsent"))
-                        and bool(row.get("smsReminderConsent")),
-                        "active": True,
-                    })
+                    defaults=defaults)
                 stats["created" if created else "updated"] += 1
+                existing[external_id] = {"external_id": external_id,
+                                         **defaults}
 
         self.stdout.write(
             "Imported clients for {salon}: {created} created, "
-            "{updated} updated, {skipped} skipped.".format(
+            "{updated} updated, {unchanged} unchanged, "
+            "{skipped} skipped.".format(
                 salon=options["salon"], **stats))
         # Machine-readable line for validation runs.
         self.stdout.write("IMPORT_SUMMARY " + json.dumps(

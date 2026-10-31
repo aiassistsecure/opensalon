@@ -122,16 +122,25 @@ class ImportAppointmentsTests(TestCase):
         self.assertIn('"created": 3', out)
         self.assertEqual(Appointment.objects.count(), 3)
 
-    def test_rerun_is_idempotent_and_updates_in_place(self):
+    def test_rerun_skips_unchanged_and_updates_changed_in_place(self):
         self.run_import()
         changed = json.loads(json.dumps(FIXTURE))
         changed[0]["state"] = "BOOKED"
         out = self.run_import(payload=changed)
         self.assertIn('"created": 0', out)
-        self.assertIn('"updated": 3', out)
+        self.assertIn('"updated": 1', out)
+        self.assertIn('"unchanged": 2', out)
         self.assertEqual(Appointment.objects.count(), 3)
         self.assertEqual(Appointment.objects.get(
             external_id="appt-1").status, Appointment.Status.BOOKED)
+
+    def test_rerun_without_changes_is_all_unchanged(self):
+        self.run_import()
+        out = self.run_import()
+        self.assertIn('"created": 0', out)
+        self.assertIn('"updated": 0', out)
+        self.assertIn('"unchanged": 3', out)
+        self.assertEqual(Appointment.objects.count(), 3)
 
     def test_unresolved_service_with_name_imports_as_snapshot(self):
         payload = [{"appointmentId": "appt-snap", "clientId": "cli-1",

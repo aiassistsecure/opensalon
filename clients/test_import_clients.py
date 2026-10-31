@@ -80,16 +80,25 @@ class ImportClientsTests(TestCase):
         for gone in ("cli-3", "cli-4", "cli-5"):
             self.assertFalse(Client.objects.filter(external_id=gone).exists())
 
-    def test_rerun_is_idempotent_and_updates_in_place(self):
+    def test_rerun_skips_unchanged_and_updates_changed_in_place(self):
         self.run_import()
         changed = json.loads(json.dumps(FIXTURE))
         changed[0]["mobile"] = "555-9999"
         out = self.run_import(payload=changed)
         self.assertIn('"created": 0', out)
-        self.assertIn('"updated": 2', out)
+        self.assertIn('"updated": 1', out)
+        self.assertIn('"unchanged": 1', out)
         self.assertEqual(Client.objects.count(), 2)
         self.assertEqual(
             Client.objects.get(external_id="cli-1").phone, "555-9999")
+
+    def test_rerun_without_changes_is_all_unchanged(self):
+        self.run_import()
+        out = self.run_import()
+        self.assertIn('"created": 0', out)
+        self.assertIn('"updated": 0', out)
+        self.assertIn('"unchanged": 2', out)
+        self.assertEqual(Client.objects.count(), 2)
 
     def test_same_external_id_in_another_salon_is_separate(self):
         self.run_import()
