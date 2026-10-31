@@ -1839,9 +1839,11 @@
       if (at >= 0) list.splice(at, 1);
     }
     if (d.date === currentDate) repaintDay();
-    showDbNotice(
-      d.message || "That booking did not save — it has been taken off the book."
-    );
+    if (!d.quiet) {
+      showDbNotice(
+        d.message || "That booking did not save — it has been taken off the book."
+      );
+    }
   });
 
   var dbNoticeTimer = null;
@@ -2540,16 +2542,46 @@
     };
     if (window.OpenSalonShadow && window.OpenSalonShadow.ready &&
         document.querySelector(".book-layout")) {
+      /* PAINT BEFORE EVERYTHING. The block goes on the board
+         from the desk's own facts in this frame — a pure model
+         push, no engine call and no network ahead of it — and
+         only then is the store asked to birth the doc under
+         the very ref the paint already wears. The store's
+         record finds the block standing and adopts it in
+         place; the node's rename later swaps it for the true
+         entry, one block throughout. Whatever the engine or
+         the machine costs, the click's paint no longer pays
+         it. */
+      var paintRef = "tmp_" + Date.now() + "_" +
+        Math.random().toString(36).slice(2, 8);
+      document.dispatchEvent(new CustomEvent("os:provisional", {
+        detail: {
+          ref: paintRef,
+          date: payload.date,
+          entry: Object.assign({}, docFacts, {
+            id: paintRef, staff_id: payload.staff_member_id,
+            status: "booked", visit: paintRef, provisional: true,
+          }),
+        },
+      }));
       var createEv = new CustomEvent("os:create", {
-        detail: { payload: payload, handled: false, doc: docFacts },
+        detail: {
+          payload: payload, handled: false, doc: docFacts,
+          ref: paintRef,
+        },
       });
       document.dispatchEvent(createEv);
-      /* The dispatch is synchronous and the store's birth
-         repaints inside it — by this line the block already
-         stands on the board. Only now does the modal close:
-         paint first, close second, never a moment where the
+      /* The store's birth adopted the painted block inside
+         the dispatch. Only now does the modal close: paint
+         first, close second, never a moment where the
          booking exists nowhere. */
       if (createEv.detail.handled) { hide(); return; }
+      /* The store was live for the click but would not take
+         the birth: the pre-paint comes off quietly and the
+         POST path below paints its own provisional. */
+      document.dispatchEvent(new CustomEvent("os:unbook", {
+        detail: { ref: paintRef, date: payload.date, quiet: true },
+      }));
     }
     /* No live store in this tab — the paint STILL does not
        wait. The founder's fallback law: mimic the data on
