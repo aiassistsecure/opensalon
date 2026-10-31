@@ -73,17 +73,21 @@ def create_online_booking(*, client, staff_member, service, start,
     so rostered-availability, cross-salon, active, and overlap
     rules are enforced by that one service. ``end`` defaults there
     to ``start`` plus the service's total minutes, and a non-empty
-    ``note`` becomes an appointment-only note.
+    ``note`` becomes an appointment-only note. The created
+    appointment is marked ``origin="online"``.
     """
     if not staff_member.online_bookable:
         raise ValidationError(
             "This staff member is not bookable online."
         )
-    return create_appointment(
+    appointment = create_appointment(
         client=client, staff_member=staff_member, service=service,
         start=start, end=end, note=note, note_author=note_author,
         online=True,
     )
+    appointment.origin = Appointment.Origin.ONLINE
+    appointment.save(update_fields=["origin", "updated_at"])
+    return appointment
 
 
 def reschedule_online_booking(appointment, new_start, new_end=None):

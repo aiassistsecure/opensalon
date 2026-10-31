@@ -52,6 +52,22 @@ class AppointmentModelTests(TestCase):
         self.assertEqual(appt.status, Appointment.Status.BOOKED)
         self.assertEqual(appt.status, "booked")
 
+    def test_origin_default_is_unknown(self):
+        appt = self._create()
+        appt.refresh_from_db()
+        self.assertEqual(appt.origin, Appointment.Origin.UNKNOWN)
+        self.assertEqual(appt.origin, "unknown")
+
+    def test_origin_choices(self):
+        self.assertEqual(
+            [c[0] for c in Appointment.Origin.choices],
+            ["online", "phone", "walk_in", "unknown"],
+        )
+        for value in ("online", "phone", "walk_in"):
+            appt = self._create(origin=value)
+            appt.refresh_from_db()
+            self.assertEqual(appt.origin, value)
+
     def test_status_choices(self):
         self.assertEqual(
             [c[0] for c in Appointment.Status.choices],

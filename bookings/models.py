@@ -22,6 +22,12 @@ class Appointment(models.Model):
         CANCELLED = "cancelled", "Cancelled"
         NO_SHOW = "no_show", "No show"
 
+    class Origin(models.TextChoices):
+        ONLINE = "online", "Online"
+        PHONE = "phone", "Phone"
+        WALK_IN = "walk_in", "Walk-in"
+        UNKNOWN = "unknown", "Unknown"
+
     # Stable id from the system the record was imported from, kept
     # under a generic (not provider-named) field: imports key on it
     # so re-imports update in place. Blank for appointments created
@@ -47,6 +53,13 @@ class Appointment(models.Model):
     end = models.DateTimeField()
     status = models.CharField(
         max_length=20, choices=Status.choices, default=Status.BOOKED
+    )
+    # How the appointment originated. Defaults to "unknown" so
+    # existing and imported rows stay honestly unknown; only a
+    # creation path that knows its channel sets a specific value
+    # (e.g. online booking sets "online").
+    origin = models.CharField(
+        max_length=20, choices=Origin.choices, default=Origin.UNKNOWN
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
