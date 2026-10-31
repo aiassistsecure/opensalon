@@ -282,6 +282,7 @@ function seed(pack) {
   Object.keys(pack.days).forEach(function (iso) {
     pack.days[iso].forEach(function (entry) {
       putDoc(entry.id, Object.assign({ day: iso }, entry));
+      delete contestedAt[entry.id];
       indexDoc(iso, entry.id);
     });
   });
@@ -314,6 +315,10 @@ function adopt(days) {
     (days[iso] || []).forEach(function (entry) {
       const doc = Object.assign({ day: iso }, entry);
       putDoc(entry.id, doc);
+      /* The node's fresh word IS the rebase: the contested
+         hold on this doc lifts, and its tail replays onto
+         the base that just landed. */
+      delete contestedAt[entry.id];
       indexDoc(iso, entry.id);
       keep[entry.id] = true;
       emit("os:record", doc);
@@ -343,6 +348,39 @@ function enqueue(op) {
   idbPut(key, rec);
   queuedIds.push(key);
   scheduleDrain(250);
+  return key;
+}
+
+/* The journal's edges, made explicit — the DAG in data:
+   a play on a store-born doc names the birth it depends on
+   (`after` = the create's queue key, persisted with the op,
+   so the edge survives the tab too). The drain honors edges
+   per doc: an op rides only once its dependency has drained
+   or stands named; ops on OTHER docs are independent and
+   flow past a held one — a chain per doc, a DAG across the
+   book, never one global lockstep. */
+const birthKeys = {};
+
+function enqueuePlay(wire) {
+  if (typeof wire.id === "string" && birthKeys[wire.id]) {
+    wire.after = birthKeys[wire.id];
+  }
+  return enqueue(wire);
+}
+
+/* Contested docs: the node rejected a play on a doc, so the
+   doc's local base is in doubt. Its queued tail is HELD —
+   not struck — while the node's fresh word is fetched; the
+   adopt that lands replaces the base and the tail replays
+   onto it (a rebase, not a reload). The hold carries a
+   TTL: a doc the node never speaks for again within ten
+   seconds stands as it is, and its plays drain to the
+   server's own arbitration rather than waiting forever. */
+const contestedAt = {};
+
+function contested(id) {
+  const at = contestedAt[id];
+  return at != null && Date.now() - at < 10000;
 }
 
 function applyLocal(op) {
@@ -359,7 +397,7 @@ function applyLocal(op) {
       emit("os:record", doc);
     }
     if (!op.via) undoStack.push(op);
-    enqueue({
+    enqueuePlay({
       kind: "move",
       id: op.id,
       staff_member_id: op.after.staff_id,
@@ -372,7 +410,7 @@ function applyLocal(op) {
       putDoc(op.id, doc);
       emit("os:record", doc);
     }
-    enqueue({ kind: "status", id: op.id, status: op.status });
+    enqueuePlay({ kind: "status", id: op.id, status: op.status });
   } else if (op.kind === "price") {
     if (raw) {
       const doc = JSON.parse(raw);
@@ -394,12 +432,12 @@ function applyLocal(op) {
       putDoc(op.id, doc);
       emit("os:record", doc);
     }
-    enqueue({ kind: "price", id: op.id, price: op.price == null ? "" : String(op.price) });
+    enqueuePlay({ kind: "price", id: op.id, price: op.price == null ? "" : String(op.price) });
   } else if (op.kind === "note") {
     /* Notes live on the card, not in the appointment doc: the
        play is journaled and queued like every other, and the
        card re-reads its payloads when the drain acks. */
-    enqueue({
+    enqueuePlay({
       kind: "note",
       id: op.id,
       scope: op.scope,
@@ -445,7 +483,7 @@ function createLocal(detail) {
   };
   if (p.client_id != null) op.client_id = p.client_id;
   if (p.new_client) op.new_client = p.new_client;
-  enqueue(op);
+  birthKeys[ref] = enqueue(op);
   journal(op);
   detail.handled = true;
 }
@@ -475,10 +513,12 @@ async function drain(keepalive) {
   const tokenEl = layout.querySelector('input[name="csrfmiddlewaretoken"]');
   const batch = [];
   const ops = [];
+  let held = 0;
   for (let qi = 0; qi < queuedIds.length && batch.length < 100; qi++) {
     const key = queuedIds[qi];
     const rec = JSON.parse(db.get("outbox", key));
     const op = { kind: rec.kind, id: rec.id };
+    let skip = false;
     if (rec.kind === "create") {
       /* The birth itself rides: ref, booking, client. */
       delete op.id;
@@ -492,12 +532,26 @@ async function drain(keepalive) {
     } else if (typeof rec.id === "string" && rec.id.indexOf("tmp_") === 0) {
       /* A play on a booking the node has not named yet: with
          the name known it rides under the real id; without
-         it, the batch stops here — the birth ahead of it in
-         this same queue will name it, and the next round
-         carries this play with the name filled in. */
-      if (renames[rec.id] == null) break;
-      op.id = renames[rec.id];
+         it, the play is HELD — its edge (the birth ahead of
+         it in this same queue) has not drained. Held is
+         per-doc: the book's other docs flow past it. */
+      if (renames[rec.id] == null) skip = true;
+      else op.id = renames[rec.id];
     }
+    /* The edge itself: a play whose birth is still anywhere
+       in the queue — ahead of it, or in this very batch —
+       waits for a later round. (A wire op serialized beside
+       its birth would carry a name the node has not given
+       yet.) Once the birth has drained, the rename above
+       supplies the real id. The edge is persisted with the
+       op, so this holds across a tab's death too. */
+    if (!skip && rec.after && queuedIds.indexOf(rec.after) >= 0) {
+      skip = true;
+    }
+    /* A contested doc's tail holds for the node's fresh
+       word; the rebase lands when the adopt does. */
+    if (!skip && rec.id != null && contested(rec.id)) skip = true;
+    if (skip) { held += 1; continue; }
     if (rec.kind === "move") {
       op.staff_member_id = rec.staff_member_id;
       op.start_minutes = rec.start_minutes;
@@ -512,7 +566,15 @@ async function drain(keepalive) {
     batch.push(key);
     ops.push(op);
   }
-  if (!batch.length) { scheduleDrain(600); return; }
+  if (!batch.length) {
+    /* Everything queued is held (an unacked birth, a
+       contested tail): say so — the day book hears a drain
+       with failures as its cue to fetch the node's word,
+       which is exactly what a hold is waiting for. */
+    if (held) emit("os:drain", { acked: 0, failed: [{ held: held }] });
+    scheduleDrain(900);
+    return;
+  }
   draining = true;
   try {
     const resp = await fetch(layout.dataset.apply, {
@@ -533,6 +595,12 @@ async function drain(keepalive) {
       if (!r.ok) {
         rec.error = r.error || "rejected";
         failed.push({ id: rec.id, error: rec.error });
+        /* The node refused this play, so its doc's local
+           base is in doubt: the doc is contested, and its
+           still-queued tail holds for the node's fresh word
+           instead of applying onto a rejected state. */
+        if (rec.kind === "create") contestedAt[rec.ref] = Date.now();
+        else if (rec.id != null) contestedAt[rec.id] = Date.now();
       }
       if (rec.kind === "create") {
         if (r.ok && r.id) {
