@@ -17,6 +17,7 @@ urlpatterns = [
     ),
     path("", views.day_book, name="daybook"),
     path("daybook/fragment/", views.day_book_fragment, name="daybook_fragment"),
+    path("daybook/move/", views.day_book_move, name="daybook_move"),
     path("price-book/", views.price_book, name="pricebook"),
     path("clients/", views.clients, name="clients"),
     path(

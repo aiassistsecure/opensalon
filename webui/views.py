@@ -21,13 +21,16 @@ for complete when it is not.
 """
 
 import datetime
+import json
 from decimal import Decimal
 
 from django.core.paginator import Paginator
 from django.db.models import Count, Min, Q
+from django.http import JsonResponse
 from django.shortcuts import render
 from django.utils import timezone
 from django.utils.text import slugify
+from django.views.decorators.http import require_POST
 
 from bookings.availability import _tz
 from bookings.daybook import blocks_for_day as feed_blocks_for_day
@@ -528,6 +531,9 @@ def _day_book_context(request):
                     _price_label(tile["_total"]) if tile["_total"] is not None else ""
                 )
                 tile["more"] = len(tile["services"]) - 1
+                tile["start_minutes"] = int(
+                    (tile["_start"] - day_start).total_seconds() // 60
+                )
             _assign_lanes(tiles)
             width_factor = min(
                 3,
@@ -722,6 +728,83 @@ def day_book_fragment(request):
     round-trip stands between a tap and the paint.
     """
     return render(request, "webui/_daybook_main.html", _day_book_context(request))
+
+
+@require_POST
+def day_book_move(request):
+    """Persist a drag on the day book.
+
+    The drag moves a whole visit: every appointment chained to the
+    anchor (same guest, same stylist, VISIT_GAP rule — the same
+    grouping the grid renders) shifts by one delta and changes
+    stylist together. The start snaps to 5 minutes. Overlaps are
+    allowed — the book renders double-bookings in lanes rather
+    than pretending they cannot happen — so a drop always saves;
+    the client re-reads the day fragment and shows the truth.
+    """
+    try:
+        payload = json.loads(request.body.decode("utf-8"))
+        anchor_id = int(payload["appointment_id"])
+        member_id = int(payload["staff_member_id"])
+        start_minutes = int(payload["start_minutes"])
+    except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+        return JsonResponse({"ok": False, "error": "bad payload"}, status=400)
+    anchor = (
+        Appointment.objects.select_related("staff_member", "client")
+        .filter(pk=anchor_id)
+        .first()
+    )
+    if anchor is None:
+        return JsonResponse({"ok": False, "error": "no such appointment"}, status=404)
+    salon = anchor.staff_member.salon
+    member = StaffMember.objects.filter(pk=member_id, salon=salon, active=True).first()
+    if member is None:
+        return JsonResponse({"ok": False, "error": "no such stylist"}, status=404)
+    tz = _tz(salon)
+    local_day = anchor.start.astimezone(tz).date()
+    day_start = datetime.datetime.combine(
+        local_day, datetime.time(DAY_START_HOUR), tzinfo=tz
+    )
+    day_end = datetime.datetime.combine(local_day, datetime.time(DAY_END_HOUR), tzinfo=tz)
+    siblings = list(
+        Appointment.objects.filter(
+            client_id=anchor.client_id,
+            staff_member_id=anchor.staff_member_id,
+            start__lt=day_end,
+            end__gt=day_start,
+        )
+        .exclude(status=Appointment.Status.CANCELLED)
+        .order_by("start")
+    )
+    visit, visit_end = [], None
+    the_visit = [anchor]
+    for appt in siblings:
+        if visit and appt.start > visit_end + VISIT_GAP:
+            if any(a.pk == anchor.pk for a in visit):
+                the_visit = visit
+            visit, visit_end = [], None
+        visit.append(appt)
+        visit_end = max(visit_end or appt.end, appt.end)
+    if any(a.pk == anchor.pk for a in visit):
+        the_visit = visit
+    visit_start = min(a.start for a in the_visit)
+    visit_minutes = (
+        max(a.end for a in the_visit) - visit_start
+    ).total_seconds() / 60
+    snapped = int(round(start_minutes / 5.0)) * 5
+    snapped = max(0, min(snapped, int(24 * 60 - visit_minutes)))
+    new_start = datetime.datetime.combine(local_day, datetime.time(0), tzinfo=tz) + (
+        datetime.timedelta(minutes=snapped)
+    )
+    delta = new_start - visit_start
+    for appt in the_visit:
+        appt.start += delta
+        appt.end += delta
+        appt.staff_member = member
+        appt.save(update_fields=["start", "end", "staff_member"])
+    return JsonResponse(
+        {"ok": True, "moved": len(the_visit), "start_minutes": snapped}
+    )
 
 
 def price_book(request):

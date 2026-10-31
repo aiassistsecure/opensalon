@@ -154,6 +154,69 @@ class DayBookTests(WebuiTestBase):
         self.assertEqual(response.context["overview"]["revenue"], Decimal("45.00"))
         self.assertEqual(response.context["overview"]["unpriced"], 0)
 
+    def test_move_shifts_the_whole_visit_and_reassigns(self):
+        import json as jsonlib
+
+        first = self._appointment(start_hour=10, end_hour=11)
+        second = self._appointment(start_hour=11, end_hour=12)
+        other_member = StaffMember.objects.create(
+            display_name="Sonia Taylor", salon=self.salon, staff_level=self.level
+        )
+        response = self.client.post(
+            reverse("webui:daybook_move"),
+            data=jsonlib.dumps(
+                {
+                    "appointment_id": first.pk,
+                    "staff_member_id": other_member.pk,
+                    "start_minutes": 13 * 60 + 25,
+                }
+            ),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["moved"], 2)
+        for appt in (first, second):
+            appt.refresh_from_db()
+            self.assertEqual(appt.staff_member_id, other_member.pk)
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual(first.start.hour, 13)
+        self.assertEqual(first.start.minute, 25)
+        self.assertEqual(second.start.hour, 14)
+        self.assertEqual(second.start.minute, 25)
+
+    def test_move_snaps_to_five_minutes_and_validates(self):
+        import json as jsonlib
+
+        appt = self._appointment(start_hour=10, end_hour=11)
+        response = self.client.post(
+            reverse("webui:daybook_move"),
+            data=jsonlib.dumps(
+                {
+                    "appointment_id": appt.pk,
+                    "staff_member_id": self.member.pk,
+                    "start_minutes": 12 * 60 + 32,
+                }
+            ),
+            content_type="application/json",
+        )
+        self.assertEqual(response.json()["start_minutes"], 12 * 60 + 30)
+        appt.refresh_from_db()
+        self.assertEqual(appt.start.minute, 30)
+        bad = self.client.post(
+            reverse("webui:daybook_move"),
+            data=jsonlib.dumps(
+                {
+                    "appointment_id": appt.pk,
+                    "staff_member_id": 999999,
+                    "start_minutes": 600,
+                }
+            ),
+            content_type="application/json",
+        )
+        self.assertEqual(bad.status_code, 404)
+        self.assertEqual(self.client.get(reverse("webui:daybook_move")).status_code, 405)
+
     def test_fragment_endpoint_renders_the_day_without_chrome(self):
         appt = self._appointment()
         response = self.client.get(

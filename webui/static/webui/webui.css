@@ -720,3 +720,21 @@ body.page-daybook .foot { color: #a2987d; }
   .adot.av-5 { background: #2dd4bf; }
   body.page-daybook .rail { background: linear-gradient(180deg, #fffdf7, #fbf7ec); }
 }
+
+/* ---------- dragging a visit (day book) ---------- */
+.appt-block { touch-action: none; cursor: grab; }
+.appt-block.dragging {
+  position: fixed; z-index: 90; pointer-events: none; cursor: grabbing;
+  animation: none; opacity: .97; margin: 0;
+  box-shadow: 0 20px 44px rgba(8, 8, 26, .5), 0 0 18px color-mix(in srgb, var(--hue) 40%, transparent);
+}
+.drop-ghost {
+  position: absolute; left: 5px; right: 5px; z-index: 2; pointer-events: none;
+  border: 2px dashed rgba(185, 138, 47, .85); border-radius: 11px;
+  background: rgba(201, 162, 39, .13);
+}
+.drop-ghost .ghost-time {
+  position: absolute; top: -25px; left: -2px; white-space: nowrap;
+  background: #1d2530; color: #fff; font-size: 11px; font-weight: 700;
+  padding: 3px 9px; border-radius: 999px; box-shadow: 0 4px 12px rgba(8, 8, 26, .35);
+}
