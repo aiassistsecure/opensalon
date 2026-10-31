@@ -41,6 +41,7 @@ urlpatterns = [
     path("clients/", views.clients, name="clients"),
     path("team/", views.team, name="team"),
     path("roster/", views.roster_book, name="roster"),
+    path("roster/apply/", views.roster_apply, name="roster_apply"),
     path("products/", views.products_page, name="products"),
     path("insights/", views.insights_page, name="insights"),
     path("pos/", views.pos, name="pos"),

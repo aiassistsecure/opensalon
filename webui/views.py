@@ -2334,6 +2334,67 @@ def placeholder(request, nav_key, title, lane_note):
     )
 
 
+def _rb_place(member, day, weekly, start, end):
+    """One place play under the switch law: ON writes the
+    perpetual pattern, OFF rules just this date."""
+    if weekly:
+        RosterPattern.objects.get_or_create(
+            staff_member=member, weekday=day.weekday(),
+            start_time=start, end_time=end,
+        )
+    else:
+        ShiftOverride.objects.update_or_create(
+            staff_member=member, date=day,
+            defaults={
+                "is_off": False, "start_time": start, "end_time": end,
+            },
+        )
+    return True
+
+
+def _rb_move(member, day, weekly, pattern_pk, start, end):
+    """One move play: a pattern retimed (weekly) or the date's
+    override rewritten (instance)."""
+    if weekly:
+        pat = RosterPattern.objects.filter(
+            pk=pattern_pk, staff_member=member
+        ).first()
+        if pat is None:
+            return False
+        pat.start_time, pat.end_time = start, end
+        pat.save(update_fields=["start_time", "end_time"])
+        return True
+    ShiftOverride.objects.update_or_create(
+        staff_member=member, date=day,
+        defaults={"is_off": False, "start_time": start, "end_time": end},
+    )
+    return True
+
+
+def _rb_off(member, day, weekly, pattern_pk):
+    """One off play: the pattern deleted (weekly) or the date
+    ruled off by an override (instance)."""
+    if weekly:
+        RosterPattern.objects.filter(
+            pk=pattern_pk, staff_member=member
+        ).delete()
+    else:
+        ShiftOverride.objects.update_or_create(
+            staff_member=member, date=day,
+            defaults={
+                "is_off": True, "start_time": None, "end_time": None,
+            },
+        )
+    return True
+
+
+def _rb_clear(member, day):
+    """One clear play: the date's override goes; the pattern
+    speaks for the date again."""
+    ShiftOverride.objects.filter(staff_member=member, date=day).delete()
+    return True
+
+
 def roster_book(request):
     """The Roster Book — the day book's perpetual controller.
 
@@ -2360,7 +2421,7 @@ def roster_book(request):
         ).first()
         weekly = request.POST.get("weekly") == "on"
         action = request.POST.get("action")
-        if member is not None and action == "place":
+        if member is not None and action in ("place", "move"):
             try:
                 start = datetime.datetime.strptime(
                     request.POST.get("start", ""), "%H:%M"
@@ -2371,63 +2432,17 @@ def roster_book(request):
             except ValueError:
                 start = end = None
             if start is not None and end > start:
-                if weekly:
-                    RosterPattern.objects.get_or_create(
-                        staff_member=member, weekday=day.weekday(),
-                        start_time=start, end_time=end,
-                    )
+                if action == "place":
+                    _rb_place(member, day, weekly, start, end)
                 else:
-                    ShiftOverride.objects.update_or_create(
-                        staff_member=member, date=day,
-                        defaults={
-                            "is_off": False,
-                            "start_time": start,
-                            "end_time": end,
-                        },
-                    )
-        elif member is not None and action == "move":
-            try:
-                start = datetime.datetime.strptime(
-                    request.POST.get("start", ""), "%H:%M"
-                ).time()
-                end = datetime.datetime.strptime(
-                    request.POST.get("end", ""), "%H:%M"
-                ).time()
-            except ValueError:
-                start = end = None
-            if start is not None and end > start:
-                if weekly:
-                    pat = RosterPattern.objects.filter(
-                        pk=request.POST.get("pattern"), staff_member=member
-                    ).first()
-                    if pat is not None:
-                        pat.start_time, pat.end_time = start, end
-                        pat.save(update_fields=["start_time", "end_time"])
-                else:
-                    ShiftOverride.objects.update_or_create(
-                        staff_member=member, date=day,
-                        defaults={
-                            "is_off": False,
-                            "start_time": start,
-                            "end_time": end,
-                        },
+                    _rb_move(
+                        member, day, weekly,
+                        request.POST.get("pattern"), start, end,
                     )
         elif member is not None and action == "off":
-            if weekly:
-                RosterPattern.objects.filter(
-                    pk=request.POST.get("pattern"), staff_member=member
-                ).delete()
-            else:
-                ShiftOverride.objects.update_or_create(
-                    staff_member=member, date=day,
-                    defaults={
-                        "is_off": True, "start_time": None, "end_time": None
-                    },
-                )
+            _rb_off(member, day, weekly, request.POST.get("pattern"))
         elif member is not None and action == "clear":
-            ShiftOverride.objects.filter(
-                staff_member=member, date=day
-            ).delete()
+            _rb_clear(member, day)
         return redirect(f"{reverse('webui:roster')}?date={day.isoformat()}")
 
     try:
@@ -2537,6 +2552,77 @@ def roster_book(request):
             "hours": hours,
             "columns": columns,
         },
+    )
+
+
+def _rb_apply_one(salon, op):
+    """One roster play from the bulk endpoint: validated,
+    applied through the same cores the form posts use, and
+    answered on its own — a bad play never poisons its batch."""
+    if not isinstance(op, dict):
+        return {"ok": False, "error": "bad op"}
+    member = StaffMember.objects.filter(
+        pk=op.get("member"), salon=salon, active=True
+    ).first()
+    if member is None:
+        return {"ok": False, "error": "unknown staff member"}
+    try:
+        day = datetime.date.fromisoformat(str(op.get("date", "")))
+    except ValueError:
+        return {"ok": False, "error": "bad date"}
+    weekly = bool(op.get("weekly"))
+    kind = op.get("kind")
+    if kind in ("place", "move"):
+        try:
+            start = datetime.datetime.strptime(
+                str(op.get("start", "")), "%H:%M"
+            ).time()
+            end = datetime.datetime.strptime(
+                str(op.get("end", "")), "%H:%M"
+            ).time()
+        except ValueError:
+            return {"ok": False, "error": "bad times"}
+        if end <= start:
+            return {"ok": False, "error": "end must follow start"}
+        applied = (
+            _rb_place(member, day, weekly, start, end)
+            if kind == "place"
+            else _rb_move(member, day, weekly, op.get("pattern"), start, end)
+        )
+    elif kind == "off":
+        applied = _rb_off(member, day, weekly, op.get("pattern"))
+    elif kind == "clear":
+        applied = _rb_clear(member, day)
+    else:
+        return {"ok": False, "error": "unknown kind"}
+    return {"ok": True} if applied else {"ok": False, "error": "not applied"}
+
+
+@require_POST
+def roster_apply(request):
+    """Roster plays in bulk — the roster book's drain target,
+    sibling to the day book's apply.
+
+    The roster book's gestures will record their plays in the
+    embedded store first and drain here on their own schedule,
+    exactly as day-book plays drain to /daybook/apply/: this
+    endpoint is the node's half of that chain, speaking the
+    same per-op results so a rejected play converges the desk
+    without taking its batch down with it. The switch law
+    rides in every op (`weekly`): ON writes the perpetual
+    pattern, OFF rules just the date."""
+    salon = _first_salon()
+    if salon is None:
+        return JsonResponse({"results": []})
+    try:
+        data = json.loads(request.body.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return JsonResponse({"ok": False, "error": "bad payload"}, status=400)
+    ops = data.get("ops")
+    if not isinstance(ops, list):
+        return JsonResponse({"ok": False, "error": "bad payload"}, status=400)
+    return JsonResponse(
+        {"results": [_rb_apply_one(salon, op) for op in ops]}
     )
 
 
