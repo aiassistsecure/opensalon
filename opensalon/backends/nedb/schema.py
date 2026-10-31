@@ -32,6 +32,15 @@ fragments (PostgreSQL editor templates prepend them to some DDL) are
 treated as part of the DDL they accompany and never sent alone.
 Savepoints (9.4), temporal adaptation, and identity/RETURNING (9.6)
 are separate microtasks and are NOT handled here.
+
+AlterField (N-M6c): the PostgreSQL editor's ``_alter_field`` discovers
+constraints to drop/recreate via ``_constraint_names`` ->
+``introspection.get_constraints``, whose catalogue query uses a
+``WITH ...`` form NEDB refuses at execution. So ``alter_field`` /
+``_alter_field`` are intercepted here the same way as other DDL:
+validate the model's (and any FK/M2M target's) table against the
+declared catalog, then no-op the physical change -- there is no
+schema to alter and no constraint catalogue to consult.
 """
 
 import logging
@@ -176,3 +185,61 @@ class DatabaseSchemaEditor(PostgresDatabaseSchemaEditor):
             )
             return None
         return super().execute(sql, params)
+
+    # -- AlterField: catalog-validating no-op (N-M6c, DYOR 9.1/9.3) ---
+
+    def _validate_catalogued_table(self, table):
+        if table and table.lower() not in {
+            name.lower() for name in self.catalog
+        }:
+            raise UncataloguedTableError(
+                "NEDB schema editor: AlterField references table %r "
+                "absent from the declared catalog (app registry "
+                "db_tables + django_migrations)" % (table,)
+            )
+
+    def _validate_alter_field(self, model, *fields):
+        self._validate_catalogued_table(model._meta.db_table)
+        for field in fields:
+            remote = getattr(field, "remote_field", None)
+            if remote is None:
+                continue
+            for related in (getattr(remote, "model", None),
+                            getattr(remote, "through", None)):
+                meta = getattr(related, "_meta", None)
+                if meta is not None:
+                    self._validate_catalogued_table(meta.db_table)
+
+    def alter_field(self, model, old_field, new_field, strict=False):
+        """Validate against the catalog, then no-op (never introspect).
+
+        Deliberately does NOT call super(): both the PostgreSQL and
+        base editors' alter paths call ``_constraint_names``, which
+        runs the catalogue query NEDB refuses. ``strict`` is accepted
+        for signature compatibility; with no physical constraints,
+        there is no constraint count for it to check.
+        """
+        if not self._field_should_be_altered(old_field, new_field):
+            return None
+        self._validate_alter_field(model, old_field, new_field)
+        logger.debug(
+            "NEDB schema editor: skipping AlterField on %s after "
+            "catalog validation (schemaless: no physical change)",
+            model._meta.db_table,
+        )
+        return None
+
+    def _alter_field(self, model, old_field, new_field, old_type,
+                     new_type, old_db_params, new_db_params,
+                     strict=False):
+        # Direct-call safety net for the physical step: same
+        # catalog-validating no-op, never the inherited introspection.
+        self._validate_alter_field(model, old_field, new_field)
+        return None
+
+    def _constraint_names(self, model, column_names=None, unique=None,
+                          primary_key=None, index=None, foreign_key=None,
+                          check=None, type_=None, exclude=None):
+        # NEDB holds no physical constraints and its catalogue query
+        # is refused, so there is never anything to discover or drop.
+        return []

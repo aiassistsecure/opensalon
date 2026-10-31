@@ -926,3 +926,94 @@ class ForUpdateSqlTests(SimpleTestCase):
                 self.assertNotIn("FOR NO KEY UPDATE", sql)
                 self.assertNotIn("NOWAIT", sql)
                 self.assertNotIn("SKIP LOCKED", sql)
+
+
+# -- N-M6c: AlterField never introspects constraints ------------------
+
+import copy
+
+from django.db import models as dj_models
+
+
+def _alter_fields():
+    from saloncore.models import Salon
+
+    old_field = dj_models.CharField(max_length=100)
+    old_field.set_attributes_from_name("name")
+    new_field = dj_models.CharField(max_length=200)
+    new_field.set_attributes_from_name("name")
+    return Salon, old_field, new_field
+
+
+class SchemaEditorAlterFieldTests(SimpleTestCase):
+    def test_alter_field_sends_nothing_and_never_introspects(self):
+        model, old_field, new_field = _alter_fields()
+        editor, wrapper, cursor = _editor()
+        with mock.patch.object(
+            wrapper.introspection, "get_constraints"
+        ) as get_constraints:
+            result = editor.alter_field(model, old_field, new_field)
+        self.assertIsNone(result)
+        get_constraints.assert_not_called()
+        wrapper.cursor.assert_not_called()
+        cursor.execute.assert_not_called()
+
+    def test_alter_field_on_fk_sends_nothing_and_never_introspects(self):
+        # Mirrors bookings 0003: AlterField on Appointment.service.
+        from bookings.models import Appointment
+
+        editor, wrapper, cursor = _editor()
+        new_field = copy.deepcopy(Appointment._meta.get_field("service"))
+        old_field = copy.deepcopy(new_field)
+        old_field.null = False
+        old_field.blank = False
+        with mock.patch.object(
+            wrapper.introspection, "get_constraints"
+        ) as get_constraints:
+            result = editor.alter_field(
+                Appointment, old_field, new_field
+            )
+        self.assertIsNone(result)
+        get_constraints.assert_not_called()
+        wrapper.cursor.assert_not_called()
+        cursor.execute.assert_not_called()
+
+    def test_private_alter_field_is_also_a_noop_without_introspection(self):
+        model, old_field, new_field = _alter_fields()
+        editor, wrapper, cursor = _editor()
+        with mock.patch.object(
+            wrapper.introspection, "get_constraints"
+        ) as get_constraints:
+            result = editor._alter_field(
+                model, old_field, new_field,
+                "varchar(100)", "varchar(200)", {}, {},
+            )
+        self.assertIsNone(result)
+        get_constraints.assert_not_called()
+        wrapper.cursor.assert_not_called()
+        cursor.execute.assert_not_called()
+
+    def test_constraint_names_returns_empty_without_introspection(self):
+        model, old_field, _ = _alter_fields()
+        editor, wrapper, cursor = _editor()
+        with mock.patch.object(
+            wrapper.introspection, "get_constraints"
+        ) as get_constraints:
+            names = editor._constraint_names(
+                model, [old_field.column], foreign_key=True
+            )
+        self.assertEqual(names, [])
+        get_constraints.assert_not_called()
+        wrapper.cursor.assert_not_called()
+
+    def test_alter_field_on_uncatalogued_table_raises_and_sends_nothing(self):
+        model, old_field, new_field = _alter_fields()
+        editor, wrapper, cursor = _editor(catalog={"only_table"})
+        with mock.patch.object(
+            wrapper.introspection, "get_constraints"
+        ) as get_constraints:
+            with self.assertRaises(UncataloguedTableError):
+                editor.alter_field(model, old_field, new_field)
+        get_constraints.assert_not_called()
+        wrapper.cursor.assert_not_called()
+        cursor.execute.assert_not_called()
