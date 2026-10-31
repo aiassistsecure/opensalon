@@ -143,7 +143,22 @@ def _pct(moment, day_start, day_end):
 
 
 def _fmt_time(t):
-    return t.strftime("%-I:%M %p").replace(":00 ", " ")
+    # Portable 12-hour label ("9 AM", "9:30 AM", "12 PM"). Built
+    # with an f-string because the "%-I" strftime flag is glibc-only
+    # and raises ValueError on Windows — the pilot install's first
+    # page load found it (2026-10-31). Never use "%-" flags here.
+    hour = t.hour % 12 or 12
+    suffix = "AM" if t.hour < 12 else "PM"
+    if t.minute:
+        return f"{hour}:{t.minute:02d} {suffix}"
+    return f"{hour} {suffix}"
+
+
+def _fmt_date_label(d, with_year=False):
+    # "Sat, Oct 3" (+ ", 2026" with_year). "%-d" is glibc-only too;
+    # same Windows lesson as _fmt_time.
+    label = f"{d.strftime('%a, %b')} {d.day}"
+    return f"{label}, {d.year}" if with_year else label
 
 
 def _initials(name):
@@ -317,7 +332,7 @@ def day_book(request):
                     f"{_fmt_time(appt.start.astimezone(tz).time())} – "
                     f"{_fmt_time(appt.end.astimezone(tz).time())}"
                 ),
-                "date_label": day.strftime("%a, %b %-d, %Y"),
+                "date_label": _fmt_date_label(day, with_year=True),
                 "status": appt.status,
                 "status_label": _STATUS_LABELS.get(appt.status, appt.status),
                 "client_name": client.display_name
@@ -345,7 +360,7 @@ def day_book(request):
                 "client_notes": client_notes.get(client.pk, []),
                 "history": [
                     {
-                        "date_label": h.start.astimezone(tz).strftime("%a, %b %-d"),
+                        "date_label": _fmt_date_label(h.start.astimezone(tz)),
                         "time_label": _fmt_time(h.start.astimezone(tz).time()),
                         "service": h.service.name if h.service else h.service_name,
                         "stylist": h.staff_member.display_name,
