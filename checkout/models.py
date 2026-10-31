@@ -144,6 +144,35 @@ class Payment(models.Model):
         )
 
 
+class Refund(models.Model):
+    """An append-only record of money returned against a completed sale.
+
+    A refund is its own record, never an edit: recording one does
+    not mutate the original ``Sale`` or its ``Payment`` rows, so the
+    original settlement stays exactly as taken. ``tender`` is a core
+    ``Payment.Method`` slug and must match a tender actually used on
+    the sale (enforced by ``checkout.refunds.record_refund``).
+    """
+
+    sale = models.ForeignKey(
+        Sale, on_delete=models.CASCADE, related_name="refunds"
+    )
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    reason = models.CharField(max_length=500, blank=True, default="")
+    tender = models.CharField(
+        max_length=20,
+        choices=Payment.Method.choices,
+        default=Payment.Method.CASH,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["id"]
+
+    def __str__(self):
+        return f"Refund #{self.pk} — Sale #{self.sale_id}: {self.amount} ({self.tender})"
+
+
 class Cashup(models.Model):
     """A close-out snapshot of a period's takings, grouped by tender.
 
