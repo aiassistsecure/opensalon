@@ -17,17 +17,26 @@
  *   in the chain; a rejected op is marked failed with the
  *   server's reason, and the client re-reads the truth.
  *
- * The store is in-memory (durable browser storage is upstream
- * NEDB Phase 2): a closed tab loses an undrained tail — the
- * drain debounce is 250 ms, so the exposure is a fraction of a
- * second of desk work, stated plainly rather than hidden. If
- * the wasm cannot load at all, this module never becomes ready
- * and the day book runs its server path exactly as before: the
- * book never depends on the shadow.
+ * The wasm store is the session's chain; the QUEUE is what
+ * outlives the tab. Every queued op is mirrored to IndexedDB
+ * the moment it is journaled and struck off only when the
+ * server has spoken (acked or failed). At boot the mirror is
+ * restored into the outbox and drains on the normal schedule
+ * — page load is the recovery for the queue exactly as for
+ * the pack, and a pagehide tries one last keepalive drain on
+ * the way out. State ops replay exactly; an add-note whose
+ * ack died with the tab is recognised server-side by its
+ * identical body on the same target and not written twice.
+ * If IndexedDB is unavailable the mirror quietly no-ops and
+ * the queue is session-bound. If the wasm cannot load at
+ * all, this module never becomes ready and the day book runs
+ * its server path exactly as before: the book never depends
+ * on the shadow.
  *
  * Seam: CustomEvents on document (os:pack in, os:op in,
- * os:record / os:drain / os:undo-move / os:shadow-ready out),
- * plus window.OpenSalonShadow for state queries.
+ * os:record / os:drain / os:undo-move / os:shadow-ready /
+ * os:recovered out), plus window.OpenSalonShadow for state
+ * queries.
  */
 const engineUrl = new URL("nedb/nedb_wasm.js", import.meta.url);
 
@@ -55,8 +64,110 @@ async function boot() {
     ready = true;
     document.body.dataset.shadow = "live";
     emit("os:shadow-ready", { verify: db.verify() });
+    recoverQueue();
   } catch (err) {
     document.body.dataset.shadow = "unavailable";
+  }
+}
+
+/* ---- the durable memory queue (IndexedDB mirror) ---- */
+
+let idbPromise = null;
+
+function idbOpen() {
+  if (idbPromise) return idbPromise;
+  idbPromise = new Promise(function (resolve) {
+    try {
+      const req = indexedDB.open("opensalon-shadow", 1);
+      req.onupgradeneeded = function () {
+        req.result.createObjectStore("outbox", { keyPath: "key" });
+      };
+      req.onsuccess = function () { resolve(req.result); };
+      req.onerror = function () { resolve(null); };
+    } catch (err) {
+      resolve(null);
+    }
+  });
+  return idbPromise;
+}
+
+async function idbPut(key, rec) {
+  const handle = await idbOpen();
+  if (!handle) return;
+  try {
+    handle
+      .transaction("outbox", "readwrite")
+      .objectStore("outbox")
+      .put(Object.assign({ key: key }, rec));
+  } catch (err) {
+    /* Durability is layered under the session queue, never
+       load-bearing: a failed mirror write loses nothing the
+       in-memory queue still holds. */
+  }
+}
+
+async function idbDelete(key) {
+  const handle = await idbOpen();
+  if (!handle) return;
+  try {
+    handle
+      .transaction("outbox", "readwrite")
+      .objectStore("outbox")
+      .delete(key);
+  } catch (err) {
+    /* A record that survives its ack is pruned on a later
+       boot's recovery pass if it is no longer queued there;
+       a still-queued one is exactly what recovery wants. */
+  }
+}
+
+async function idbQueued() {
+  const handle = await idbOpen();
+  if (!handle) return [];
+  return new Promise(function (resolve) {
+    try {
+      const out = [];
+      const req = handle
+        .transaction("outbox", "readonly")
+        .objectStore("outbox")
+        .openCursor();
+      req.onsuccess = function () {
+        const cursor = req.result;
+        if (cursor) {
+          out.push(cursor.value);
+          cursor.continue();
+        } else {
+          resolve(out);
+        }
+      };
+      req.onerror = function () { resolve([]); };
+    } catch (err) {
+      resolve([]);
+    }
+  });
+}
+
+async function recoverQueue() {
+  const saved = await idbQueued();
+  const queued = saved
+    .filter(function (rec) { return rec.state === "queued"; })
+    .sort(function (a, b) { return (a.at || 0) - (b.at || 0); });
+  /* Anything mirrored but no longer queued was spoken for in
+     a life this tab never saw finish; the server already has
+     its word, so the mirror lets it go. */
+  saved.forEach(function (rec) {
+    if (rec.state !== "queued") idbDelete(rec.key);
+  });
+  queued.forEach(function (rec) {
+    const clean = Object.assign({}, rec);
+    const key = clean.key;
+    delete clean.key;
+    db.put("outbox", key, JSON.stringify(clean));
+    if (queuedIds.indexOf(key) < 0) queuedIds.push(key);
+  });
+  if (queued.length) {
+    emit("os:recovered", { count: queued.length });
+    scheduleDrain(800);
   }
 }
 
@@ -78,11 +189,9 @@ function seed(pack) {
 
 function enqueue(op) {
   const key = opKey();
-  db.put(
-    "outbox",
-    key,
-    JSON.stringify(Object.assign({ state: "queued", at: Date.now() }, op))
-  );
+  const rec = Object.assign({ state: "queued", at: Date.now() }, op);
+  db.put("outbox", key, JSON.stringify(rec));
+  idbPut(key, rec);
   queuedIds.push(key);
   scheduleDrain(250);
 }
@@ -172,7 +281,7 @@ function scheduleDrain(ms) {
   drainTimer = setTimeout(drain, ms);
 }
 
-async function drain() {
+async function drain(keepalive) {
   if (draining || !ready || !queuedIds.length) return;
   const layout = document.querySelector(".book-layout");
   if (!layout || !layout.dataset.apply) return;
@@ -203,6 +312,7 @@ async function drain() {
         "X-CSRFToken": tokenEl ? tokenEl.value : "",
       },
       body: JSON.stringify({ ops: ops }),
+      keepalive: !!keepalive,
     });
     const data = await resp.json();
     const failed = [];
@@ -215,6 +325,9 @@ async function drain() {
         failed.push({ id: rec.id, error: rec.error });
       }
       db.put("outbox", key, JSON.stringify(rec));
+      /* The server has spoken — acked or failed, this op's
+         durable-queue life is over. */
+      idbDelete(key);
       const at = queuedIds.indexOf(key);
       if (at >= 0) queuedIds.splice(at, 1);
     });
@@ -231,6 +344,13 @@ async function drain() {
 setInterval(function () {
   if (queuedIds.length) scheduleDrain(600);
 }, 5000);
+
+/* On the way out, one last drain attempt with keepalive —
+   best effort only; whatever it cannot land, the IndexedDB
+   mirror still holds for the next boot's recovery. */
+window.addEventListener("pagehide", function () {
+  if (ready && queuedIds.length && !draining) drain(true);
+});
 
 document.addEventListener("os:pack", function (event) { seed(event.detail); });
 document.addEventListener("os:op", function (event) { applyLocal(event.detail); });

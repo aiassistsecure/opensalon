@@ -997,7 +997,15 @@ def _do_note(appt, op):
     else:
         model, owner = ClientNote, {"client": appt.client}
     if note_id in (None, ""):
-        model.objects.create(body=body, **owner)
+        # Replay guard: the tab's durable queue can re-send an
+        # add whose ack died with the tab. An identical note on
+        # the same target written moments ago IS that add — not
+        # a second note the desk meant to write twice.
+        recent = timezone.now() - datetime.timedelta(minutes=15)
+        if not model.objects.filter(
+            body=body, created_at__gte=recent, **owner
+        ).exists():
+            model.objects.create(body=body, **owner)
         return None
     note = model.objects.filter(pk=int(note_id), **owner).first()
     if note is None:
