@@ -138,6 +138,9 @@
     tiles.forEach(function (tile) {
       tile.addEventListener("pointerdown", function (event) {
         if (event.button !== undefined && event.button !== 0) return;
+        /* From the first pixel: no native drag, no text
+           selection, no page highlight following the gesture. */
+        event.preventDefault();
         var grid = tile.closest(".gridwrap");
         var col = tile.closest(".db-column");
         var layout = tile.closest(".book-layout");
@@ -162,6 +165,9 @@
         }
         function engage() {
           engaged = true;
+          /* The whole page locks selection for the gesture's
+             life: nothing highlights, nothing reads as copied. */
+          document.body.classList.add("os-dragging");
           tile.classList.add("dragging");
           tile.style.width = tileRect.width + "px";
           tile.style.height = tileRect.height + "px";
@@ -181,10 +187,22 @@
             if (Math.abs(e.clientX - startX) + Math.abs(e.clientY - startY) < 7) return;
             engage();
           }
+          e.preventDefault();
           tile.style.left = (e.clientX - grabDX) + "px";
           tile.style.top = (e.clientY - grabDY) + "px";
-          var el = document.elementFromPoint(e.clientX, e.clientY);
-          var tcol = el ? el.closest(".db-column") : null;
+          /* Column hit-testing is pure geometry — never
+             elementFromPoint. Whatever layer sits at the pointer
+             (an hour tick, the now-line, a sticky head, the ghost)
+             cannot get in the way of finding the column under x. */
+          var tcol = null;
+          var allCols = grid.querySelectorAll(".db-column");
+          for (var ci = 0; ci < allCols.length; ci++) {
+            var cr = allCols[ci].getBoundingClientRect();
+            if (e.clientX >= cr.left && e.clientX <= cr.right) {
+              tcol = allCols[ci];
+              break;
+            }
+          }
           if (tcol) {
             target.member = tcol.dataset.member;
             if (ghost.parentElement !== tcol) tcol.appendChild(ghost);
@@ -224,6 +242,7 @@
           tile.removeEventListener("pointerup", onUp);
           tile.removeEventListener("pointercancel", onCancel);
           tile.removeEventListener("lostpointercapture", onCancel);
+          document.body.classList.remove("os-dragging");
           if (!engaged) return;
           if (ghost) ghost.remove();
           dragPreview = null;
@@ -731,9 +750,16 @@
     var tracks = "var(--gutter) " + factors.map(function (f) {
       return "minmax(calc(var(--colunit) * " + f + "), " + f + "fr)";
     }).join(" ");
-    layoutEl.querySelectorAll(".colheads, .gridwrap").forEach(function (el) {
-      el.style.setProperty("--tracks", tracks);
-    });
+    /* Column widths freeze while a drag is in flight: lanes
+       re-flow inside the columns, but the columns themselves
+       hold still — nothing slides or hides mid-gesture, and the
+       pointer math the drag started with stays true. Widths
+       settle on drop, when the lock lifts. */
+    if (!document.body.classList.contains("os-dragging")) {
+      layoutEl.querySelectorAll(".colheads, .gridwrap").forEach(function (el) {
+        el.style.setProperty("--tracks", tracks);
+      });
+    }
     return true;
   }
 

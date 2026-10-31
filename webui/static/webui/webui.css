@@ -728,6 +728,13 @@ body.page-light .foot { color: #a2987d; }
   animation: none; opacity: .97; margin: 0;
   box-shadow: 0 20px 44px rgba(8, 8, 26, .5), 0 0 18px color-mix(in srgb, var(--hue) 40%, transparent);
 }
+/* While a drag is in flight the page is inert to selection:
+   no highlight follows the pointer, nothing reads as copied,
+   and the cursor tells the truth everywhere, not just on the tile. */
+body.os-dragging, body.os-dragging * {
+  user-select: none !important; -webkit-user-select: none !important;
+  cursor: grabbing !important;
+}
 .drop-ghost {
   position: absolute; left: 5px; right: 5px; z-index: 2; pointer-events: none;
   border: 2px dashed rgba(185, 138, 47, .85); border-radius: 11px;
