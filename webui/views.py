@@ -2242,3 +2242,77 @@ def products_page(request):
             "shown": len(rows),
         },
     )
+
+
+def insights_page(request):
+    """Insights — the salon's numbers, read from the insights lane.
+
+    Every figure comes from the insights app's own services, the
+    same law the exports print: last_7_days_revenue_split (Service /
+    Retail — there is deliberately no Series figure: the till's item
+    kinds are service and product, and the page will not invent a
+    third), future_appointments_value priced live from the price
+    book, busiest_days over the trailing 28 days, the 14-day revenue
+    trend, and revenue_by_staff for the same 7-day window.
+    """
+    from insights.services import (
+        busiest_days,
+        future_appointments_value,
+        last_7_days_revenue_split,
+    )
+    from insights.staff_revenue import revenue_by_staff
+    from insights.trend import daily_revenue_trend
+
+    salon = Salon.objects.order_by("id").first()
+    ctx = {"salon": salon, "nav_key": "insights"}
+    if salon is not None:
+        tz = _tz(salon)
+        today = timezone.now().astimezone(tz).date()
+        split = last_7_days_revenue_split(salon, today=today)
+        future = future_appointments_value(salon)
+        busiest = sorted(
+            busiest_days(salon, today - datetime.timedelta(days=27), today),
+            key=lambda b: (-b.count, b.weekday),
+        )
+        trend = daily_revenue_trend(salon, days=14, end_date=today)
+        peak = max((d.total for d in trend), default=Decimal("0"))
+        staff_rows = revenue_by_staff(salon, split.start_date, split.end_date)
+        ctx.update(
+            {
+                "today": today,
+                "split": split,
+                "split_service": _money_label(split.service),
+                "split_retail": _money_label(split.retail),
+                "split_total": _money_label(split.total),
+                "future": future,
+                "future_total_label": _money_label(future.total),
+                "future_days": [
+                    {"day": d.day, "count": d.count,
+                     "label": _money_label(d.value)}
+                    for d in future.days
+                ],
+                "busiest": [
+                    {
+                        "weekday_name": b.weekday_name,
+                        "count": b.count,
+                        "revenue_label": _money_label(b.revenue),
+                    }
+                    for b in busiest
+                ],
+                "trend": [
+                    {
+                        "day": d,
+                        "pct": (
+                            float(d.total / peak * 100) if peak > 0 else 0.0
+                        ),
+                    }
+                    for d in trend
+                ],
+                "staff_rows": [
+                    {"display_name": r.display_name,
+                     "total_label": _money_label(r.total)}
+                    for r in staff_rows
+                ],
+            }
+        )
+    return render(request, "webui/insights.html", ctx)

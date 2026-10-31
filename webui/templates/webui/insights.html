@@ -1,0 +1,65 @@
+{% extends "webui/base.html" %}
+{% block title %}Insights — the numbers{% endblock %}
+{% block body_class %}page-insights page-light{% endblock %}
+{% block content %}
+<div class="day-head">
+  <div class="day-title-wrap">
+    <div class="day-title">Insights</div>
+    <div class="day-sub">The salon's numbers, straight from the records — nothing estimated, nothing invented</div>
+  </div>
+</div>
+{% if salon %}
+<div class="pos-grid">
+  <section class="pos-card">
+    <h2 class="pos-h">Last 7 days — {{ split.start_date|date:"M j" }} to {{ split.end_date|date:"M j" }}</h2>
+    <div class="pos-tender"><span>Services</span><b>{{ split_service }}</b></div>
+    <div class="pos-tender"><span>Retail</span><b>{{ split_retail }}</b></div>
+    <div class="pos-tender pos-total"><span>Total</span><b>{{ split_total }}</b></div>
+    <p class="ins-note">Series isn't a figure yet — the till records services and retail, and this page won't invent a third kind.</p>
+  </section>
+
+  <section class="pos-card">
+    <h2 class="pos-h">The future book</h2>
+    <div class="ins-big">{{ future_total_label }}</div>
+    <p class="ins-note">{{ future.count }} appointment{{ future.count|pluralize }} ahead, priced live from the price book. Appointments without a price count toward the number, never toward a guessed dollar.</p>
+    {% for d in future_days %}
+    {% if d.count %}<div class="pos-tender"><span>{{ d.day|date:"D, M j" }}</span><b>{{ d.label }}</b></div>{% endif %}
+    {% endfor %}
+  </section>
+</div>
+
+<section class="pos-card pos-sales">
+  <h2 class="pos-h">Revenue trend — 14 days</h2>
+  <div class="ins-trend">
+    {% for t in trend %}
+    <div class="ins-bar-wrap" title="{{ t.day.date|date:'M j' }} — ${{ t.day.total }}">
+      <div class="ins-bar" style="height:{{ t.pct }}%"></div>
+      <span class="ins-bar-d">{{ t.day.date|date:"j" }}</span>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
+<div class="pos-grid">
+  <section class="pos-card">
+    <h2 class="pos-h">Busiest days — last 28 days</h2>
+    {% for b in busiest %}
+    <div class="pos-tender"><span>{{ b.weekday_name }}</span><span>{{ b.count }} appt{{ b.count|pluralize }} · {{ b.revenue_label }}</span></div>
+    {% empty %}
+    <p class="pos-empty">No appointments in the window yet.</p>
+    {% endfor %}
+  </section>
+
+  <section class="pos-card">
+    <h2 class="pos-h">By stylist — last 7 days</h2>
+    {% for row in staff_rows %}
+    <div class="pos-tender"><span>{{ row.display_name }}</span><b>{{ row.total_label }}</b></div>
+    {% empty %}
+    <p class="pos-empty">No completed sales in the window yet.</p>
+    {% endfor %}
+  </section>
+</div>
+{% else %}
+<p class="rb-law">No salon yet — import or create the salon first.</p>
+{% endif %}
+{% endblock %}
