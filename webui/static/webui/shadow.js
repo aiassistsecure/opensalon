@@ -115,6 +115,39 @@ function applyLocal(op) {
       emit("os:record", doc);
     }
     enqueue({ kind: "status", id: op.id, status: op.status });
+  } else if (op.kind === "price") {
+    if (raw) {
+      const doc = JSON.parse(raw);
+      /* The card's price becomes the doc's amount at once; the
+         label mirrors the server's rule (whole dollars whole).
+         Clearing hands the amount back to the book — the doc
+         keeps its last true label until the drain's re-stamp
+         brings the book's word. */
+      if (op.price !== "" && op.price != null) {
+        doc.amount = String(op.price);
+        const v = parseFloat(op.price);
+        doc.price_label = isNaN(v)
+          ? doc.price_label
+          : v === Math.trunc(v)
+            ? "$" + Math.trunc(v)
+            : "$" + v.toFixed(2);
+      }
+      doc.price_overridden = op.price !== "" && op.price != null;
+      db.put("appointments", String(op.id), JSON.stringify(doc));
+      emit("os:record", doc);
+    }
+    enqueue({ kind: "price", id: op.id, price: op.price == null ? "" : String(op.price) });
+  } else if (op.kind === "note") {
+    /* Notes live on the card, not in the appointment doc: the
+       play is journaled and queued like every other, and the
+       card re-reads its payloads when the drain acks. */
+    enqueue({
+      kind: "note",
+      id: op.id,
+      scope: op.scope,
+      note_id: op.note_id == null ? null : op.note_id,
+      body: op.body,
+    });
   }
   /* Every op is journaled whether it drains or not — the
      chain is the provenance of the desk's plays. */
@@ -153,6 +186,12 @@ async function drain() {
       op.start_minutes = rec.start_minutes;
     }
     if (rec.kind === "status") op.status = rec.status;
+    if (rec.kind === "price") op.price = rec.price;
+    if (rec.kind === "note") {
+      op.scope = rec.scope;
+      op.note_id = rec.note_id;
+      op.body = rec.body;
+    }
     return op;
   });
   draining = true;

@@ -22,7 +22,7 @@ for complete when it is not.
 
 import datetime
 import json
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from django.core.paginator import Paginator
 from django.db.models import Count, Min, Q
@@ -376,12 +376,16 @@ def _day_book_context(request):
         for note in ClientNote.objects.filter(client_id__in=client_ids).order_by(
             "-created_at"
         ):
-            client_notes.setdefault(note.client_id, []).append(note.body)
+            client_notes.setdefault(note.client_id, []).append(
+                {"id": note.pk, "body": note.body}
+            )
         appt_notes = {}
         for note in AppointmentNote.objects.filter(
             appointment_id__in=appt_by_id
         ).order_by("-created_at"):
-            appt_notes.setdefault(note.appointment_id, []).append(note.body)
+            appt_notes.setdefault(note.appointment_id, []).append(
+                {"id": note.pk, "body": note.body}
+            )
         history = {}
         for appt in (
             Appointment.objects.filter(client_id__in=client_ids)
@@ -401,9 +405,12 @@ def _day_book_context(request):
                     stack_total += amount
                 stack.append(
                     {
+                        "id": item.pk,
                         "service": item.service.name if item.service else item.service_name,
                         "duration_label": _duration_label(minutes),
                         "price_label": _price_label(amount),
+                        "price": str(amount) if amount is not None else "",
+                        "price_overridden": item.price_override is not None,
                         "current": item.pk == appt.pk,
                     }
                 )
@@ -443,6 +450,12 @@ def _day_book_context(request):
                 if appt.staff_member.staff_level_id
                 else "",
                 "price_label": _price_label(amount_for(appt)),
+                "price": (
+                    str(amount_for(appt))
+                    if amount_for(appt) is not None
+                    else ""
+                ),
+                "price_overridden": appt.price_override is not None,
                 "salon_name": salon.name,
                 "appt_notes": appt_notes.get(appt.pk, []),
                 "client_notes": client_notes.get(client.pk, []),
@@ -850,7 +863,14 @@ def _do_move(anchor, member, start_minutes, tz):
     anchor.start += delta
     anchor.end += delta
     anchor.staff_member = member
-    anchor.save(update_fields=["start", "end", "staff_member"])
+    # Every desk write stamps itself: the pack version is
+    # (count, max updated_at), and a save that leaves updated_at
+    # untouched leaves the version standing still — clients
+    # polling with their stamp are told "nothing changed" and
+    # the mirror never converges on the write. update_fields
+    # saves do not move auto_now on their own; the write must.
+    anchor.updated_at = timezone.now()
+    anchor.save(update_fields=["start", "end", "staff_member", "updated_at"])
     return snapped
 
 
@@ -862,7 +882,70 @@ def _do_status(appt, target):
     if target not in allowed:
         return f"cannot move {appt.status} to {target}"
     appt.status = target
-    appt.save(update_fields=["status"])
+    appt.updated_at = timezone.now()
+    appt.save(update_fields=["status", "updated_at"])
+    return None
+
+
+def _do_price(appt, raw):
+    """Set (or clear) an appointment's own price from the card.
+
+    The card's word becomes ``price_override`` — the book row is
+    never touched. An empty value clears the override and the
+    book speaks again. Money is validated as money: finite,
+    non-negative, cent-quantized, never via float.
+    """
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        appt.price_override = None
+        appt.updated_at = timezone.now()
+        appt.save(update_fields=["price_override", "updated_at"])
+        return None
+    try:
+        value = Decimal(str(raw).strip())
+    except (InvalidOperation, ValueError):
+        return "price is not a number"
+    if not value.is_finite():
+        return "price is not a number"
+    if value < 0:
+        return "price cannot be negative"
+    if value > Decimal("99999.99"):
+        return "price is too large"
+    appt.price_override = value.quantize(Decimal("0.01"))
+    appt.updated_at = timezone.now()
+    appt.save(update_fields=["price_override", "updated_at"])
+    return None
+
+
+def _do_note(appt, op):
+    """Create or edit a note from the client card.
+
+    Two kinds, never blurred: scope ``appt`` writes an
+    appointment-only note on this appointment; scope ``client``
+    writes the persistent client record note. An edit must name
+    a note that belongs to its target — the card can never reach
+    another visit's or another client's words.
+    """
+    scope = str(op.get("scope") or "")
+    body = str(op.get("body") or "").strip()
+    if scope not in ("appt", "client"):
+        return "unknown note scope"
+    if not body:
+        return "note cannot be empty"
+    if len(body) > 2000:
+        return "note is too long"
+    note_id = op.get("note_id")
+    if scope == "appt":
+        model, owner = AppointmentNote, {"appointment": appt}
+    else:
+        model, owner = ClientNote, {"client": appt.client}
+    if note_id in (None, ""):
+        model.objects.create(body=body, **owner)
+        return None
+    note = model.objects.filter(pk=int(note_id), **owner).first()
+    if note is None:
+        return "no such note"
+    note.body = body
+    note.save(update_fields=["body"])
     return None
 
 
@@ -914,6 +997,18 @@ def day_book_apply(request):
                     result["error"] = error
                 else:
                     result["ok"] = True
+            elif kind == "price":
+                error = _do_price(appt, op.get("price"))
+                if error:
+                    result["error"] = error
+                else:
+                    result["ok"] = True
+            elif kind == "note":
+                error = _do_note(appt, op)
+                if error:
+                    result["error"] = error
+                else:
+                    result["ok"] = True
             else:
                 result["error"] = f"unknown op kind {kind}"
         except (ValueError, KeyError, TypeError) as exc:
@@ -951,6 +1046,50 @@ def day_book_status(request):
     )
 
 
+@require_POST
+def day_book_price(request):
+    """Single-op price write (the batch drain's twin).
+
+    Same law as the apply endpoint's price kind: the value lands
+    as the appointment's own override, or clears it when empty.
+    """
+    try:
+        payload = json.loads(request.body.decode("utf-8"))
+        appt_id = int(payload["appointment_id"])
+    except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+        return JsonResponse({"ok": False, "error": "bad payload"}, status=400)
+    appt = Appointment.objects.filter(pk=appt_id).first()
+    if appt is None:
+        return JsonResponse({"ok": False, "error": "no such appointment"}, status=404)
+    error = _do_price(appt, payload.get("price"))
+    if error:
+        return JsonResponse({"ok": False, "error": error}, status=400)
+    return JsonResponse(
+        {"ok": True, "price": str(appt.price_override) if appt.price_override is not None else ""}
+    )
+
+
+@require_POST
+def day_book_note(request):
+    """Single-op note write (the batch drain's twin).
+
+    Same law as the apply endpoint's note kind: appointment
+    notes stay on the appointment, client notes on the record.
+    """
+    try:
+        payload = json.loads(request.body.decode("utf-8"))
+        appt_id = int(payload["appointment_id"])
+    except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+        return JsonResponse({"ok": False, "error": "bad payload"}, status=400)
+    appt = Appointment.objects.filter(pk=appt_id).first()
+    if appt is None:
+        return JsonResponse({"ok": False, "error": "no such appointment"}, status=404)
+    error = _do_note(appt, payload)
+    if error:
+        return JsonResponse({"ok": False, "error": error}, status=400)
+    return JsonResponse({"ok": True})
+
+
 def _price_lookup(salon):
     """Every active price row for the salon, plus the Base level.
 
@@ -968,6 +1107,10 @@ def _price_lookup(salon):
 
 
 def _amount_for(appt, prices, base_level_id):
+    if appt.price_override is not None:
+        # The client card set this visit's price: it wins over
+        # every book row, everywhere the amount is read.
+        return appt.price_override
     amount = prices.get((appt.service_id, appt.staff_member.staff_level_id))
     if amount is None and base_level_id is not None:
         # No row at the stylist's own level: price at the service's

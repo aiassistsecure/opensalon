@@ -26,6 +26,22 @@
     return '<span class="pill pill-' + esc(d.status) + '">' + esc(d.status_label) + "</span>";
   }
 
+  /* The card's price is a control, not a label: click it and
+     it becomes an editor. An edited price carries the marker
+     so the desk can see the card spoke, not the book. */
+  function priceBtn(apptId, raw, label, overridden) {
+    return '<button type="button" class="price-edit' + (overridden ? " overridden" : "") +
+      '" data-price-edit data-appt="' + esc(apptId) + '" data-price="' + esc(raw || "") +
+      '" title="Edit price' + (overridden ? " — edited from the book price" : "") +
+      '">' + esc(label || "—") + (overridden ? ' <span class="price-dot" aria-hidden="true">•</span>' : "") + "</button>";
+  }
+
+  function noteBox(n, scope, apptId) {
+    return '<div class="note-box"><span class="note-body">' + esc(n.body) + "</span>" +
+      '<button type="button" class="note-edit" data-note-edit data-scope="' + scope +
+      '" data-note-id="' + esc(n.id) + '" data-appt="' + esc(apptId) + '">Edit</button></div>';
+  }
+
   function renderRail(d) {
     if (!railBody || !d) return;
     var contact = [d.client_email, d.client_phone].filter(Boolean).map(esc).join(" · ");
@@ -34,7 +50,7 @@
         '<span class="stack-dot"></span>' +
         '<span class="stack-name">' + esc(item.service) + "</span>" +
         '<span class="stack-dur">' + esc(item.duration_label) + "</span>" +
-        '<span class="stack-price">' + esc(item.price_label || "—") + "</span></div>";
+        '<span class="stack-price">' + priceBtn(item.id, item.price, item.price_label, item.price_overridden) + "</span></div>";
     }).join("");
     var history = d.history.length ? d.history.map(function (h) {
       return '<div class="hrow"><span class="hrow-date">' + esc(h.date_label) + " · " +
@@ -42,12 +58,16 @@
         '</span><span class="hrow-meta">' + esc(h.stylist) + " · " + esc(h.status_label) +
         "</span></div>";
     }).join("") : '<p class="rail-empty">No other appointments on file.</p>';
-    var apptNotes = d.appt_notes.length ? d.appt_notes.map(function (n) {
-      return '<div class="note-box">' + esc(n) + "</div>";
-    }).join("") : '<p class="rail-empty">No appointment notes.</p>';
-    var clientNotes = d.client_notes.length ? d.client_notes.map(function (n) {
-      return '<div class="note-box">' + esc(n) + "</div>";
-    }).join("") : '<p class="rail-empty">No client record notes.</p>';
+    var apptNotes = (d.appt_notes.length ? d.appt_notes.map(function (n) {
+      return noteBox(n, "appt", d.id);
+    }).join("") : '<p class="rail-empty">No appointment notes.</p>') +
+      '<button type="button" class="note-add" data-note-add data-scope="appt" data-appt="' +
+      esc(d.id) + '">+ Add note</button>';
+    var clientNotes = (d.client_notes.length ? d.client_notes.map(function (n) {
+      return noteBox(n, "client", d.id);
+    }).join("") : '<p class="rail-empty">No client record notes.</p>') +
+      '<button type="button" class="note-add" data-note-add data-scope="client" data-appt="' +
+      esc(d.id) + '">+ Add note</button>';
 
     railBody.innerHTML =
       '<div class="rail-head"><div><div class="rail-time">' + esc(d.time_label) +
@@ -73,7 +93,7 @@
       '<div class="drow"><span class="drow-k">Date &amp; Time</span><span class="drow-v">' +
       esc(d.date_label) + "<br>" + esc(d.time_label) + "</span></div>" +
       '<div class="drow"><span class="drow-k">Price</span><span class="drow-v">' +
-      esc(d.price_label || "—") + "</span></div>" +
+      priceBtn(d.id, d.price, d.price_label, d.price_overridden) + "</span></div>" +
       '<div class="drow"><span class="drow-k">Status</span><span class="drow-v">' + pill(d) + "</span></div>" +
       '<div class="drow"><span class="drow-k">Location</span><span class="drow-v">' +
       esc(d.salon_name) + "</span></div></div>" +
@@ -328,7 +348,16 @@
           "aria-checked", btn.classList.contains("on") ? "true" : "false"
         );
       }
-      refreshRailData(apptId);
+      /* The rail re-read waits for the drain's ack. Reading it
+         now races the write: the fragment can land carrying the
+         pre-write state and the card visibly un-flips the very
+         toggle the desk just flipped. The ack is the first
+         moment the server's word includes this play. */
+      var onDrain = function () {
+        document.removeEventListener("os:drain", onDrain);
+        refreshRailData(apptId);
+      };
+      document.addEventListener("os:drain", onDrain);
       return;
     }
     var tokenEl = layout.querySelector('input[name="csrfmiddlewaretoken"]');
@@ -350,13 +379,198 @@
     }).catch(function () { refreshDay(apptId); });
   }
 
+  /* ---- the card's editors: prices and notes ----
+     Both write the way every play on this desk writes: store
+     first when the embedded NEDB is live (journaled, queued,
+     drained), the single-op endpoint when it is not. The card
+     repaints from its payload at once; the server's re-read
+     converges anything the local word got wrong. */
+
+  function fmtPrice(v) {
+    /* The server's label rule, mirrored: whole dollars whole. */
+    if (v === "" || v == null || isNaN(parseFloat(v))) return "";
+    var n = parseFloat(v);
+    return n === Math.trunc(n) ? "$" + Math.trunc(n) : "$" + n.toFixed(2);
+  }
+
+  function renderRailKeepingTab(d) {
+    var active = railBody
+      ? railBody.querySelector(".rtab.active")
+      : null;
+    var tab = active ? active.dataset.tab : null;
+    renderRail(d);
+    if (tab && tab !== "appointment" && railBody) {
+      railBody.querySelectorAll(".rtab").forEach(function (t) {
+        t.classList.toggle("active", t.dataset.tab === tab);
+      });
+      railBody.querySelectorAll(".rpanel").forEach(function (p) {
+        p.classList.toggle("hidden", p.dataset.panel !== tab);
+      });
+    }
+  }
+
+  function currentPayload() {
+    return railEl ? payloads[railEl.getAttribute("data-current")] : null;
+  }
+
+  function postPrice(apptId, value) {
+    var layout = document.querySelector(".book-layout");
+    if (!layout) return;
+    if (window.OpenSalonShadow && window.OpenSalonShadow.ready) {
+      document.dispatchEvent(new CustomEvent("os:op", {
+        detail: { kind: "price", id: parseInt(apptId, 10), price: value },
+      }));
+      return;
+    }
+    if (!layout.dataset.price) return;
+    var tokenEl = layout.querySelector('input[name="csrfmiddlewaretoken"]');
+    fetch(layout.dataset.price, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRFToken": tokenEl ? tokenEl.value : "",
+      },
+      body: JSON.stringify({ appointment_id: parseInt(apptId, 10), price: value }),
+    }).then(function () {
+      refreshRailData(apptId);
+      pollPack();
+    }).catch(function () { refreshRailData(apptId); });
+  }
+
+  function commitPrice(apptId, value) {
+    var d = currentPayload();
+    if (d) {
+      var label = fmtPrice(value);
+      d.stack.forEach(function (item) {
+        if (String(item.id) === String(apptId)) {
+          item.price = value;
+          item.price_label = label;
+          item.price_overridden = value !== "";
+        }
+      });
+      if (String(d.id) === String(apptId)) {
+        d.price = value;
+        d.price_label = label;
+        d.price_overridden = value !== "";
+      }
+      if (d.stack.every(function (i) { return i.price !== ""; })) {
+        var total = d.stack.reduce(function (sum, i) {
+          return sum + parseFloat(i.price || 0);
+        }, 0);
+        d.stack_price_label = fmtPrice(String(total));
+      }
+      renderRailKeepingTab(d);
+    }
+    postPrice(apptId, value);
+  }
+
+  function openPriceEditor(btn) {
+    if (btn.dataset.editing) return;
+    btn.dataset.editing = "1";
+    var wrap = document.createElement("span");
+    wrap.className = "price-editor";
+    wrap.innerHTML =
+      '<input class="price-input" type="text" inputmode="decimal" ' +
+      'aria-label="Price" value="' + esc(btn.dataset.price || "") + '">' +
+      '<span class="price-hint">Enter saves · empty clears to the book price</span>';
+    btn.replaceWith(wrap);
+    var input = wrap.querySelector(".price-input");
+    input.focus();
+    input.select();
+    input.addEventListener("keydown", function (event) {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        commitPrice(btn.dataset.appt, input.value.trim());
+      } else if (event.key === "Escape") {
+        var d = currentPayload();
+        if (d) renderRailKeepingTab(d);
+      }
+    });
+    input.addEventListener("blur", function () {
+      /* Blur commits — unless Escape already restored the card. */
+      if (document.body.contains(wrap)) {
+        commitPrice(btn.dataset.appt, input.value.trim());
+      }
+    });
+  }
+
+  function postNote(apptId, scope, noteId, body) {
+    var layout = document.querySelector(".book-layout");
+    if (!layout) return;
+    if (window.OpenSalonShadow && window.OpenSalonShadow.ready) {
+      document.dispatchEvent(new CustomEvent("os:op", {
+        detail: {
+          kind: "note", id: parseInt(apptId, 10), scope: scope,
+          note_id: noteId, body: body,
+        },
+      }));
+      /* The card re-reads once this drain acks — the note's
+         real id and ordering are the server's word. */
+      var onDrain = function () {
+        document.removeEventListener("os:drain", onDrain);
+        refreshRailData(apptId);
+      };
+      document.addEventListener("os:drain", onDrain);
+      return;
+    }
+    if (!layout.dataset.note) return;
+    var tokenEl = layout.querySelector('input[name="csrfmiddlewaretoken"]');
+    fetch(layout.dataset.note, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRFToken": tokenEl ? tokenEl.value : "",
+      },
+      body: JSON.stringify({
+        appointment_id: parseInt(apptId, 10), scope: scope,
+        note_id: noteId, body: body,
+      }),
+    }).then(function () { refreshRailData(apptId); })
+      .catch(function () { refreshRailData(apptId); });
+  }
+
+  function commitNote(scope, noteId, body, apptId) {
+    var d = currentPayload();
+    if (d) {
+      var list = scope === "appt" ? d.appt_notes : d.client_notes;
+      if (noteId != null) {
+        list.forEach(function (n) {
+          if (String(n.id) === String(noteId)) n.body = body;
+        });
+      } else {
+        list.unshift({ id: 0, body: body });
+      }
+      renderRailKeepingTab(d);
+    }
+    postNote(apptId, scope, noteId, body);
+  }
+
+  function openNoteEditor(anchor, scope, noteId, apptId, currentBody) {
+    if (railBody.querySelector(".note-editor")) return;
+    var wrap = document.createElement("div");
+    wrap.className = "note-editor";
+    wrap.innerHTML =
+      '<textarea class="note-input" rows="3" aria-label="Note">' +
+      esc(currentBody || "") + "</textarea>" +
+      '<div class="note-tools">' +
+      '<button type="button" class="btn-grad" data-note-save>Save note</button>' +
+      '<button type="button" class="btn-ghost" data-note-cancel>Cancel</button></div>';
+    wrap.dataset.scope = scope;
+    wrap.dataset.appt = apptId;
+    if (noteId != null) wrap.dataset.noteId = noteId;
+    anchor.closest(".note-box, .rpanel").appendChild(wrap);
+    var input = wrap.querySelector(".note-input");
+    input.focus();
+  }
+
   /* Bind everything that lives inside the day-book layout. Runs
      on first load and again after every hot-range swap, because a
      swap replaces the layout node wholesale. */
   function bindBlock(block) {
-    block.addEventListener("mouseenter", function () {
-      if (window.innerWidth > 760) renderRail(payloads[block.dataset.appt]);
-    });
+    /* The card answers to deliberate acts only — a click, or
+       Enter/Space on a focused block. Hover never opens it:
+       the desk points at appointments all day without meaning
+       to summon their cards. */
     block.addEventListener("click", function () { choose(block, true); });
     block.addEventListener("keydown", function (event) {
       if (event.key === "Enter" || event.key === " ") {
@@ -407,6 +621,40 @@
 
     if (railBody) {
       railBody.addEventListener("click", function (event) {
+        var priceBtnEl = event.target.closest("[data-price-edit]");
+        if (priceBtnEl) { openPriceEditor(priceBtnEl); return; }
+        var noteEdit = event.target.closest("[data-note-edit]");
+        if (noteEdit) {
+          var box = noteEdit.closest(".note-box");
+          openNoteEditor(
+            noteEdit, noteEdit.dataset.scope,
+            noteEdit.dataset.noteId, noteEdit.dataset.appt,
+            box ? box.querySelector(".note-body").textContent : ""
+          );
+          return;
+        }
+        var noteAdd = event.target.closest("[data-note-add]");
+        if (noteAdd) {
+          openNoteEditor(noteAdd, noteAdd.dataset.scope, null, noteAdd.dataset.appt, "");
+          return;
+        }
+        var noteSave = event.target.closest("[data-note-save]");
+        if (noteSave) {
+          var editor = noteSave.closest(".note-editor");
+          var body = editor.querySelector(".note-input").value.trim();
+          if (!body) { editor.querySelector(".note-input").focus(); return; }
+          commitNote(
+            editor.dataset.scope,
+            editor.dataset.noteId ? parseInt(editor.dataset.noteId, 10) : null,
+            body, editor.dataset.appt
+          );
+          return;
+        }
+        if (event.target.closest("[data-note-cancel]")) {
+          var d = currentPayload();
+          if (d) renderRailKeepingTab(d);
+          return;
+        }
         var actionBtn = event.target.closest("[data-status-action]");
         if (actionBtn) {
           postStatus(actionBtn.dataset.appt, actionBtn.dataset.statusAction);
@@ -1008,6 +1256,8 @@
         e.start_min = doc.start_min;
         e.end_min = doc.end_min;
         e.status = doc.status;
+        e.amount = doc.amount;
+        e.price_label = doc.price_label;
       }
     });
   });

@@ -35,12 +35,12 @@
         <span class="stack-dot" aria-hidden="true"></span>
         <span class="stack-name">{{ item.service }}</span>
         <span class="stack-dur">{{ item.duration_label }}</span>
-        <span class="stack-price">{{ item.price_label|default:"—" }}</span>
+        <span class="stack-price"><button type="button" class="price-edit{% if item.price_overridden %} overridden{% endif %}" data-price-edit data-appt="{{ item.id }}" data-price="{{ item.price }}" title="Edit price{% if item.price_overridden %} — edited from the book price{% endif %}">{{ item.price_label|default:"—" }}{% if item.price_overridden %} <span class="price-dot" aria-hidden="true">•</span>{% endif %}</button></span>
       </div>
       {% endfor %}
       <div class="drow"><span class="drow-k">Stylist</span><span class="drow-v"><span class="avatar-sm" aria-hidden="true">{{ rail.stylist_initials }}</span>{{ rail.stylist_name }}{% if rail.stylist_level %} · {{ rail.stylist_level }}{% endif %}</span></div>
       <div class="drow"><span class="drow-k">Date &amp; Time</span><span class="drow-v">{{ rail.date_label }}<br>{{ rail.time_label }}</span></div>
-      <div class="drow"><span class="drow-k">Price</span><span class="drow-v">{{ rail.price_label|default:"—" }}</span></div>
+      <div class="drow"><span class="drow-k">Price</span><span class="drow-v"><button type="button" class="price-edit{% if rail.price_overridden %} overridden{% endif %}" data-price-edit data-appt="{{ rail.id }}" data-price="{{ rail.price }}" title="Edit price{% if rail.price_overridden %} — edited from the book price{% endif %}">{{ rail.price_label|default:"—" }}{% if rail.price_overridden %} <span class="price-dot" aria-hidden="true">•</span>{% endif %}</button></span></div>
       <div class="drow"><span class="drow-k">Status</span><span class="drow-v"><span class="pill pill-{{ rail.status }}">{{ rail.status_label }}</span></span></div>
       <div class="drow"><span class="drow-k">Location</span><span class="drow-v">{{ rail.salon_name }}</span></div>
     </div>
@@ -67,9 +67,11 @@
 
     <div class="rpanel hidden" data-panel="notes">
       <div class="notes-k">This appointment</div>
-      {% for note in rail.appt_notes %}<div class="note-box">{{ note }}</div>{% empty %}<p class="rail-empty">No appointment notes.</p>{% endfor %}
+      {% for note in rail.appt_notes %}<div class="note-box"><span class="note-body">{{ note.body }}</span><button type="button" class="note-edit" data-note-edit data-scope="appt" data-note-id="{{ note.id }}" data-appt="{{ rail.id }}">Edit</button></div>{% empty %}<p class="rail-empty">No appointment notes.</p>{% endfor %}
+      <button type="button" class="note-add" data-note-add data-scope="appt" data-appt="{{ rail.id }}">+ Add note</button>
       <div class="notes-k">Client record</div>
-      {% for note in rail.client_notes %}<div class="note-box">{{ note }}</div>{% empty %}<p class="rail-empty">No client record notes.</p>{% endfor %}
+      {% for note in rail.client_notes %}<div class="note-box"><span class="note-body">{{ note.body }}</span><button type="button" class="note-edit" data-note-edit data-scope="client" data-note-id="{{ note.id }}" data-appt="{{ rail.id }}">Edit</button></div>{% empty %}<p class="rail-empty">No client record notes.</p>{% endfor %}
+      <button type="button" class="note-add" data-note-add data-scope="client" data-appt="{{ rail.id }}">+ Add note</button>
     </div>
 
     {% if rail.toggles %}

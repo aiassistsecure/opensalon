@@ -65,6 +65,14 @@ class Appointment(StrictConstraints):
     origin = models.CharField(
         max_length=20, choices=Origin.choices, default=Origin.UNKNOWN
     )
+    # The desk's own price for THIS appointment, set from the
+    # client card when the visit's price differs from the book
+    # (a discount, an add-on folded in, a correction). NULL means
+    # the price book speaks; a value means the card spoke. The
+    # book row itself is never mutated by a visit-level edit.
+    price_override = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
