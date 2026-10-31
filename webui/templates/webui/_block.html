@@ -1,6 +1,9 @@
-<article class="appt-block status-{{ block.status }}" style="top:{{ block.top }}%;height:{{ block.height }}%;">
-  <div class="appt-client">{{ block.client_name }}</div>
-  <div class="appt-service">{{ block.service_name }}</div>
-  <div class="appt-time">{{ block.time_label }}</div>
-  {% if block.note %}<div class="appt-note">{{ block.note }}</div>{% endif %}
+<article class="appt-block cat-{{ block.cat_key }} status-{{ block.status }}{% if block.mini %} mini{% endif %}"
+  style="top:{{ block.top }}%;height:{{ block.height }}%;left:calc({{ block.left }}% + 5px);width:calc({{ block.width }}% - 10px);--i:{{ block.index }}"
+  tabindex="0" role="button" data-appt="{{ block.appointment_id }}"
+  aria-label="{{ block.client_name }}, {{ block.service_name }}, {{ block.time_label }}">
+  <div class="b-top"><span class="b-time">{{ block.time_label }}</span><span class="b-ico" aria-hidden="true"></span></div>
+  <div class="b-client">{{ block.client_name }}</div>
+  <div class="b-service">{{ block.service_name }}</div>
+  {% if block.price_label %}<div class="b-price">{{ block.price_label }}</div>{% endif %}
 </article>
