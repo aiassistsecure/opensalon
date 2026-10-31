@@ -203,8 +203,10 @@ function delDoc(id) {
   idbDeleteIn("docs", String(id));
 }
 
-/* The journal is append-only: entries are written once and
-   never struck — the chain is the provenance, kept whole. */
+/* The journal is append-only while it lives: entries are
+   written once and never struck in place — the chain is the
+   provenance. Boot restores a working window of it (see
+   restorePreserved); the node's own store is the archive. */
 function journal(op) {
   const key = opKey();
   const json = JSON.stringify(Object.assign({ at: Date.now() }, op));
@@ -241,14 +243,38 @@ async function restorePreserved() {
     out.docs += 1;
     if (String(doc.id).indexOf("tmp_") === 0) out.births.push(doc);
   });
+  /* The journal's working window: the newest 5,000 entries
+     inside 30 days come home; older entries are let go from
+     the mirror. The node holds the durable archive — every
+     entry here was drained and acked long ago — and an
+     unbounded in-tab journal would tax every boot and every
+     write a little more each week of the salon's life. The
+     chain's attested head rides separately (chain:last) and
+     is never windowed out. */
   const entries = await idbAll("journal");
+  const cutoff = Date.now() - 30 * 86400000;
+  const keep = [];
   entries.forEach(function (rec) {
     if (rec.key === "chain:last") {
       try { lastChain = JSON.parse(rec.chain); } catch (err) {}
       return;
     }
     if (!rec.op) return;
-    db.put("ops", rec.key, rec.op);
+    let at = 0;
+    try { at = JSON.parse(rec.op).at || 0; } catch (err) {}
+    if (at && at < cutoff) {
+      idbDeleteIn("journal", rec.key);
+      return;
+    }
+    keep.push({ rec: rec, at: at });
+  });
+  keep.sort(function (a, b) { return b.at - a.at; });
+  keep.forEach(function (item, i) {
+    if (i >= 5000) {
+      idbDeleteIn("journal", item.rec.key);
+      return;
+    }
+    db.put("ops", item.rec.key, item.rec.op);
     out.journal += 1;
   });
   return out;
@@ -478,7 +504,13 @@ let lastChain = null;
 function createLocal(detail) {
   if (!ready || !detail || !detail.payload || !detail.doc) return;
   const p = detail.payload;
-  const ref = "tmp_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+  /* The desk may already have painted this birth (paint
+     before everything): when it hands the birth a ref, the
+     doc is born under that very ref, so the record adopts
+     the standing block in place instead of birthing a twin. */
+  const ref = (detail.ref && String(detail.ref).indexOf("tmp_") === 0)
+    ? String(detail.ref)
+    : "tmp_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
   const doc = Object.assign({}, detail.doc, {
     id: ref, day: p.date, staff_id: p.staff_member_id,
     status: "booked", visit: ref, local: true,
