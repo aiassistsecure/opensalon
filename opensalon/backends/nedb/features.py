@@ -51,8 +51,9 @@ single-collection`` -- is a statement carrying an aggregate
 SQL evaluator for the single-collection NQL path, which refuses
 the join (all 19 live-suite JOIN errors are this shape: 17x
 ``clients.inactive``'s filtered ``Max`` over the reverse
-appointments relation, plus the same clause in bookings search's
-date variant is a separate ``__date`` surface, not fixed here).
+appointments relation; bookings search's date variant was a
+separate ``__date`` surface, fixed separately in N-M8e via
+``operations.datetime_cast_date_sql``).
 Declaring False is the execution/semantics-layer fix (DYOR 9.1):
 Django's own aggregate compiler then expresses the identical
 semantics as ``AGG(CASE WHEN <filter> THEN <expr> END)`` over the

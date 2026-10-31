@@ -29,6 +29,12 @@ refuses by design (see ``EVIDENCE.md``). Here the hooks return ISO
 that compare chronologically, and ``get_db_converters`` registers the
 mirror-image parsers so values read back as real temporal objects.
 
+Date cast (N-M8e, DYOR implication 1): ``datetime_cast_date_sql``
+below returns a padded EXTRACT composite instead of stock
+PostgreSQL's ``(sql AT TIME ZONE %s)::date`` -- the timezone clause
+routes statements off NEDB's SQL evaluator and its casts are
+transparent; details in ``temporal.date_part_sql``.
+
 Decimal read path (N-M6e, DYOR implications 1 and 9): NEDB stores a
 Decimal parameter as a JSON number and pgwire returns it as a Python
 ``float`` (live-suite signature: ``Decimal + float`` TypeError), so
@@ -197,6 +203,31 @@ class DatabaseOperations(PostgresDatabaseOperations):
 
     def adapt_timefield_value(self, value):
         return temporal.adapt_time_value(value)
+
+    # -- date cast: no AT TIME ZONE, no ::date cast (N-M8e) ----------
+    # datetime_cast_date_sql is Django's designated per-backend hook
+    # for the __date transform's expression (MySQL emits DATE(...),
+    # Oracle TRUNC(...)). Stock PostgreSQL emits
+    # "(sql AT TIME ZONE %s)::date", and on NEDB the AT TIME ZONE
+    # clause routes the statement off the SQL evaluator (JOIN
+    # refusal over joins; NQL syntax error unjoined), while the
+    # ::date cast alone is transparent and would compare the full
+    # ISO string against the date. Here the hook returns
+    # temporal.date_part_sql's padded EXTRACT composite instead --
+    # an expression tree NEDB's evaluator answers with correct
+    # date semantics (DYOR 9.1; probe nedb-date-probe-2026-10-31.md).
+    # tzname is intentionally unused: the date part is the stored
+    # (UTC) date (see temporal.date_part_sql).
+
+    def datetime_cast_date_sql(self, sql, params, tzname):
+        if params:
+            # The composite repeats the LHS SQL, so a parameterised
+            # LHS (an exotic expression, not a column) would duplicate
+            # its placeholders. Keep the stock shape there: NEDB
+            # refuses it, as before -- no regression, and no silently
+            # wrong rows from a mismatched parameter count.
+            return super().datetime_cast_date_sql(sql, params, tzname)
+        return temporal.date_part_sql(sql), params
 
     # -- temporal read path: stored strings back to objects ----------
 

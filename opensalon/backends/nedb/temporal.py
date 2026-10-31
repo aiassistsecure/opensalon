@@ -69,6 +69,48 @@ def adapt_time_value(value):
     return value.isoformat()
 
 
+def date_part_sql(sql):
+    """Date-part expression for ``sql`` that NEDB's evaluator answers.
+
+    N-M8e (DYOR implication 1; probe: nedb-date-probe-2026-10-31.md).
+    Stock PostgreSQL's ``datetime_cast_date_sql`` emits
+    ``(sql AT TIME ZONE %s)::date``; on nedbd-v2 12.15.16 any
+    statement carrying ``AT TIME ZONE`` leaves the SQL evaluator for
+    the NQL path, which refuses JOINs verbatim ("JOIN is not
+    supported -- NQL is single-collection") and cannot parse ``AT``
+    at all unjoined. Dropping the timezone clause is not enough:
+    NEDB casts are transparent (``(start)::date`` returns the full
+    ISO string), so ``=`` / ``<=`` against a date would match
+    nothing. ``DATE()``, ``DATE_TRUNC()`` and ``LEFT()`` are refused
+    by name. What the evaluator does answer, joined and unjoined, is
+    ``EXTRACT(YEAR/MONTH/DAY FROM ...)`` over the stored ISO string
+    (EXTRACT reports the stored fields). Composing the parts with
+    zero-padding yields ``YYYY-MM-DD`` text that compares
+    chronologically against Django's date parameter for every
+    lookup (``=``, ``>``, ``>=``, ``<``, ``<=``, ``BETWEEN``,
+    parenthesised ``IS [NOT] NULL`` -- all verified live).
+
+    The parentheses matter: unparenthesised, NEDB's parser binds
+    ``IS NOT NULL`` to the last ``||`` segment only.
+
+    The date part is the stored (UTC) date: NEDB offers no
+    ``AT TIME ZONE`` on this path, this backend stores every
+    datetime as a UTC ISO string, and the connection timezone is
+    UTC by project default. A non-UTC connection timezone therefore
+    gets UTC dates from ``__date`` on NEDB, where stock PostgreSQL
+    would convert first -- a documented divergence, not a silent
+    one-off.
+    """
+    year = f"EXTRACT(YEAR FROM {sql})"
+    month = f"EXTRACT(MONTH FROM {sql})"
+    day = f"EXTRACT(DAY FROM {sql})"
+    return (
+        f"({year} || '-' || "
+        f"CASE WHEN {month} < 10 THEN '0' ELSE '' END || {month} || '-' || "
+        f"CASE WHEN {day} < 10 THEN '0' ELSE '' END || {day})"
+    )
+
+
 def convert_datetime_value(value, connection):
     """Stored string -> datetime; real datetimes pass through."""
     if value is None or isinstance(value, datetime.datetime):

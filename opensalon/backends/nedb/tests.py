@@ -2008,3 +2008,165 @@ class NedbFilteredAggregateJoinLiveTests(SimpleTestCase):
         rows = inactive_clients(salon=salon, now=now)
         self.assertEqual([r.client_id for r in rows], [never.pk])
         self.assertIsNone(rows[0].last_appointment)
+
+
+# -- N-M8e: __date transform over joins (DYOR 9.1) --------------------
+#
+# Census on nedbd-v2 12.15.16 (nedb-date-probe-2026-10-31.md): the
+# __date transform's stock expression "(start AT TIME ZONE %s)::date"
+# routes any statement off NEDB's SQL evaluator -- over the bookings
+# search joins it fails verbatim with "JOIN is not supported -- NQL
+# is single-collection" (bookings.test_search: the plain-date range
+# test and the combined-filters test). The ::date cast alone is
+# transparent on NEDB, DATE()/DATE_TRUNC()/LEFT() are refused by
+# name, and EXTRACT(YEAR/MONTH/DAY ...) is answered correctly. The
+# guard is Django's per-backend ops hook: datetime_cast_date_sql
+# returns temporal.date_part_sql's padded EXTRACT composite, so no
+# AT TIME ZONE and no ::date cast ever reach nedbd. This is the
+# semantics layer (DYOR 9.1), not statement-text rewriting: other
+# backends supply their own cast-date expression through the same
+# hook (MySQL DATE(...), Oracle TRUNC(...)).
+
+import datetime as _dt_mod
+
+_DATE_DAY = _dt_mod.date(2026, 11, 2)
+
+
+def _search_date_sql():
+    """Compile the bookings-search __date shape offline."""
+    from bookings.models import Appointment
+
+    wrapper = _wrapper()
+    qs = Appointment.objects.filter(
+        client__salon_id=1, staff_member__salon_id=1,
+        start__date__gte=_DATE_DAY, start__date__lte=_DATE_DAY,
+    )
+    sql, _params = qs.query.get_compiler(connection=wrapper).as_sql()
+    return sql
+
+
+class DateCastSqlTests(SimpleTestCase):
+    def test_cast_date_sql_has_no_at_time_zone_or_date_cast(self):
+        wrapper = _wrapper()
+        sql, params = wrapper.ops.datetime_cast_date_sql(
+            '"bookings_appointment"."start"', (), "UTC"
+        )
+        self.assertNotIn("AT TIME ZONE", sql)
+        self.assertNotIn("::date", sql)
+        self.assertEqual(params, ())
+
+    def test_cast_date_sql_is_padded_extract_composite(self):
+        wrapper = _wrapper()
+        sql, _params = wrapper.ops.datetime_cast_date_sql(
+            '"bookings_appointment"."start"', (), "UTC"
+        )
+        self.assertIn('EXTRACT(YEAR FROM "bookings_appointment"."start")', sql)
+        self.assertIn('EXTRACT(MONTH FROM "bookings_appointment"."start")', sql)
+        self.assertIn('EXTRACT(DAY FROM "bookings_appointment"."start")', sql)
+        self.assertIn("CASE WHEN", sql)
+        self.assertTrue(sql.startswith("(") and sql.endswith(")"))
+
+    def test_cast_date_sql_with_params_keeps_stock_shape(self):
+        # A parameterised LHS would duplicate its placeholders in the
+        # composite; the fallback keeps the stock (refused) shape
+        # rather than silently mismatching parameters.
+        wrapper = _wrapper()
+        sql, params = wrapper.ops.datetime_cast_date_sql(
+            "some_expr(%s)", (7,), "UTC"
+        )
+        self.assertIn("AT TIME ZONE", sql)
+        self.assertIn("::date", sql)
+        self.assertEqual(params, (7, "UTC"))
+
+    def test_search_date_shape_compiles_without_at_time_zone(self):
+        sql = _search_date_sql()
+        self.assertIn("INNER JOIN", sql)
+        self.assertNotIn("AT TIME ZONE", sql)
+        self.assertNotIn("::date", sql)
+        self.assertIn("EXTRACT(YEAR FROM", sql)
+
+
+@unittest.skipUnless(
+    os.environ.get("OPENSALON_NEDB_LIVE_TEST") == "1",
+    "live nedbd __date test: set OPENSALON_NEDB_LIVE_TEST=1 with "
+    "the default connection on the NEDB backend (nedbd running)",
+)
+class NedbDateTransformLiveTests(SimpleTestCase):
+    """N-M8e acceptance against a real nedbd (guarded, never offline).
+
+    Before the fix both shapes failed live with:
+    NotSupportedError: JOIN is not supported -- NQL is
+    single-collection; join in your client or model the relation
+    with LINK/TRAVERSE.
+    """
+
+    databases = {"default"}
+
+    def _seed(self):
+        from bookings.models import Appointment
+        from clients.models import Client
+        from saloncore.models import Salon, Service, ServiceCategory
+        from team.models import StaffMember
+
+        salon = Salon.objects.create(name="Date Probe Salon", timezone="UTC")
+        staff = StaffMember.objects.create(
+            salon=salon, display_name="Date Stylist"
+        )
+        client = Client.objects.create(
+            salon=salon, first_name="Dana", last_name="Probe"
+        )
+        category = ServiceCategory.objects.create(salon=salon, name="Hair")
+        service = Service.objects.create(
+            category=category, name="Cut", service_minutes=60
+        )
+
+        def appt(day, hour, status):
+            start = _dt_mod.datetime.combine(
+                day, _dt_mod.time(hour), tzinfo=_dt_mod.timezone.utc
+            )
+            return Appointment.objects.create(
+                client=client, staff_member=staff, service=service,
+                start=start, end=start + _dt_mod.timedelta(hours=1),
+                status=status,
+            )
+
+        early = appt(_DATE_DAY, 9, Appointment.Status.CONFIRMED)
+        late = appt(_DATE_DAY, 14, Appointment.Status.BOOKED)
+        nxt = appt(
+            _DATE_DAY + _dt_mod.timedelta(days=1), 9,
+            Appointment.Status.BOOKED,
+        )
+        return salon, staff, early, late, nxt
+
+    def test_plain_date_range_covers_whole_day_on_live_nedb(self):
+        from django.db import connection
+
+        self.assertEqual(connection.display_name, "NEDB (PostgreSQL pgwire)")
+        from bookings.search import search_appointments
+
+        salon, _staff, early, late, nxt = self._seed()
+        rows = list(
+            search_appointments(salon, date_from=_DATE_DAY, date_to=_DATE_DAY)
+        )
+        self.assertEqual(rows, [early, late])
+        rows = list(
+            search_appointments(
+                salon, date_from=_DATE_DAY + _dt_mod.timedelta(days=1)
+            )
+        )
+        self.assertEqual(rows, [nxt])
+
+    def test_combined_filters_with_plain_dates_on_live_nedb(self):
+        from django.db import connection
+
+        self.assertEqual(connection.display_name, "NEDB (PostgreSQL pgwire)")
+        from bookings.search import search_appointments
+
+        salon, staff, _early, late, _nxt = self._seed()
+        rows = list(
+            search_appointments(
+                salon, query="dana", staff_member=staff, status="booked",
+                date_from=_DATE_DAY, date_to=_DATE_DAY,
+            )
+        )
+        self.assertEqual(rows, [late])
