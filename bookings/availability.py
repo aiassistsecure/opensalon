@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from bookings.models import Appointment
+from bookings.models import Appointment, Break
 from team.models import RosterPattern, ShiftOverride, StaffMember
 
 
@@ -143,6 +143,14 @@ def available_slots(salon, day, service=None, *, online_only=False):
     busy = {}
     for appt in appointments:
         busy.setdefault(appt.staff_member_id, []).append((appt.start, appt.end))
+    # Breaks are busy time too: no client, no service, but the
+    # span is not bookable — paid or unpaid makes no difference
+    # to the math.
+    for br in Break.objects.filter(
+        staff_member_id__in=windows.keys(),
+        start__lt=day_end, end__gt=day_start,
+    ):
+        busy.setdefault(br.staff_member_id, []).append((br.start, br.end))
 
     min_minutes = service.total_minutes if service is not None else None
     results = []

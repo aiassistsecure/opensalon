@@ -25,6 +25,12 @@ urlpatterns = [
     path("daybook/pack/", views.day_book_pack, name="daybook_pack"),
     path("daybook/apply/", views.day_book_apply, name="daybook_apply"),
     path("daybook/price/", views.day_book_price, name="daybook_price"),
+    path("daybook/break/", views.day_book_break, name="daybook_break"),
+    path(
+        "daybook/break/remove/",
+        views.day_book_break_remove,
+        name="daybook_break_remove",
+    ),
     path("daybook/checkout/", views.day_book_checkout, name="daybook_checkout"),
     path("clock/status/", views.clock_status, name="clock_status"),
     path("clock/toggle/", views.clock_toggle, name="clock_toggle"),

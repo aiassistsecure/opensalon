@@ -585,17 +585,18 @@
   }
 
   /* Empty space is operable space (the roster book's gesture,
-     brought to the day book): press on a column's empty span and
-     the booking sheet opens for that stylist at that time; drag
-     to mark the span first — the sheet still starts where the
-     drag began, and the service sets the length. Blocks keep
-     their own click/drag; this handler ignores them. */
+     brought to the day book): press on a column's empty span,
+     drag to mark the span, and on release a small chooser asks
+     what the span is — a new appointment (the booking sheet
+     opens for that stylist at that time) or a break (blocked
+     off, paid or unpaid, drawn on the book at once). Blocks and
+     breaks keep their own gestures; this handler ignores them. */
   function bindColumn(col) {
     if (col.dataset.osBound) return;
     col.dataset.osBound = "1";
     col.addEventListener("pointerdown", function (ev) {
       if (ev.button !== 0 && ev.pointerType === "mouse") return;
-      if (ev.target.closest(".appt-block, button, a, input, select")) return;
+      if (ev.target.closest(".appt-block, .break-block, button, a, input, select")) return;
       var wrap = col.closest(".gridwrap");
       if (!wrap) return;
       var startHour = parseInt(wrap.dataset.startHour || "8", 10);
@@ -619,31 +620,247 @@
       var ghost = document.createElement("div");
       ghost.className = "db-ghost";
       col.appendChild(ghost);
+      var lastA = startMin, lastB = startMin;
       function draw() {
         var a = Math.min(startMin, cur), b = Math.max(startMin, cur);
+        lastA = a; lastB = b;
         ghost.style.top = ((a - startHour * 60) / span * 100) + "%";
         ghost.style.height = Math.max((b - a) / span * 100, 2) + "%";
         return a;
       }
       draw();
       function move(e2) { cur = minutes(e2.clientY); draw(); }
-      function up() {
+      function up(e2) {
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", up);
         var at = draw();
+        var spanMin = Math.max(lastB - lastA, 15);
         ghost.remove();
-        if (typeof window.osOpenBooking === "function") {
-          window.osOpenBooking({
-            member: col.dataset.member,
-            date: currentDate,
-            time: hhmm(at),
-          });
-        }
+        openSlotPop({
+          member: col.dataset.member,
+          name: memberNameFor(col),
+          date: currentDate,
+          time: hhmm(at),
+          minutes: spanMin,
+          x: e2 && e2.clientX ? e2.clientX : 0,
+          y: e2 && e2.clientY ? e2.clientY : 0,
+        }, col);
       }
       window.addEventListener("pointermove", move);
       window.addEventListener("pointerup", up);
     });
   }
+
+  function memberNameFor(col) {
+    var wrap = col.closest(".gridwrap");
+    var section = wrap ? wrap.parentElement : null;
+    if (!section) return "";
+    var heads = section.querySelectorAll(".colhead .cname");
+    var cols = wrap.querySelectorAll(".db-column");
+    var idx = Array.prototype.indexOf.call(cols, col);
+    return heads[idx] ? heads[idx].textContent.trim() : "";
+  }
+
+  /* ---- the open-slot popover and breaks ----
+     One card, three faces: the chooser (appointment or break),
+     the break form (length chips + the paid toggle), and a
+     placed break's facts with its way out. It lives in the day
+     fragment, so every lookup goes by id at call time and the
+     wiring binds once per element. */
+  var slotCtx = null;
+
+  function slotPopEl() { return document.getElementById("slotPop"); }
+
+  function fmtMin(mins) {
+    var h = Math.floor(mins / 60), m = mins % 60;
+    var ap = h >= 12 ? "PM" : "AM";
+    var hh = h % 12 === 0 ? 12 : h % 12;
+    return m ? hh + ":" + String(m).padStart(2, "0") + " " + ap : hh + " " + ap;
+  }
+
+  function slotPopShow(el, face) {
+    el.querySelector("#slotPopChoices").classList.toggle("hidden", face !== "choose");
+    el.querySelector("#slotPopForm").classList.toggle("hidden", face !== "break");
+    el.querySelector("#slotPopInfo").classList.toggle("hidden", face !== "info");
+  }
+
+  function placeSlotPop(el, x, y) {
+    el.classList.remove("hidden");
+    var w = el.offsetWidth, h = el.offsetHeight;
+    el.style.left = Math.max(8, Math.min(x, window.innerWidth - w - 8)) + "px";
+    el.style.top = Math.max(8, Math.min(y, window.innerHeight - h - 8)) + "px";
+  }
+
+  function closeSlotPop() {
+    var el = slotPopEl();
+    if (el) el.classList.add("hidden");
+    slotCtx = null;
+  }
+
+  function openSlotPop(ctx, anchorEl) {
+    var el = slotPopEl();
+    if (!el) {
+      /* No popover on this page: the press means a booking. */
+      if (typeof window.osOpenBooking === "function") {
+        window.osOpenBooking({ member: ctx.member, date: ctx.date, time: ctx.time });
+      }
+      return;
+    }
+    bindSlotPop(el);
+    slotCtx = ctx;
+    el.querySelector("#slotPopTitle").textContent =
+      (ctx.name ? ctx.name + " · " : "") + fmtMin(
+        parseInt(ctx.time.split(":")[0], 10) * 60 + parseInt(ctx.time.split(":")[1], 10)
+      );
+    var err = el.querySelector("#slotPopErr");
+    err.classList.add("hidden"); err.textContent = "";
+    /* The dragged span picks the nearest length chip. */
+    var chips = [15, 30, 45, 60, 90, 120];
+    var pick = chips.reduce(function (best, c) {
+      return Math.abs(c - ctx.minutes) < Math.abs(best - ctx.minutes) ? c : best;
+    }, 30);
+    slotCtx.minutes = pick;
+    el.querySelectorAll("#slotPopChips button").forEach(function (b) {
+      b.classList.toggle("on", parseInt(b.dataset.min, 10) === pick);
+    });
+    el.querySelectorAll("#slotPopPaid button").forEach(function (b) {
+      b.classList.toggle("on", b.dataset.paid === "0");
+    });
+    slotCtx.paid = false;
+    slotPopShow(el, "choose");
+    placeSlotPop(el, ctx.x, ctx.y);
+    if (anchorEl) slotCtx.anchor = anchorEl;
+  }
+
+  function openBreakInfo(blockEl, x, y) {
+    var el = slotPopEl();
+    if (!el) return;
+    bindSlotPop(el);
+    var label = blockEl.querySelector(".break-label");
+    var time = blockEl.querySelector(".break-time");
+    slotCtx = { breakId: blockEl.dataset.break, blockEl: blockEl };
+    el.querySelector("#slotPopTitle").textContent =
+      (label ? label.textContent : "Break");
+    el.querySelector("#slotPopFact").textContent =
+      (time ? time.textContent : "") + " — tap Remove to give the time back to the book.";
+    slotPopShow(el, "info");
+    placeSlotPop(el, x, y);
+  }
+
+  function paintBreak(b) {
+    var col = document.querySelector(
+      '.db-column[data-member="' + b.staff_id + '"]'
+    );
+    if (!col) return;
+    var wrap = col.closest(".gridwrap");
+    var startHour = parseInt(wrap.dataset.startHour || "8", 10);
+    var endHour = parseInt(wrap.dataset.endHour || "20", 10);
+    var span = (endHour - startHour) * 60;
+    var div = document.createElement("div");
+    div.className = "break-block" + (b.paid ? " paid" : "");
+    div.dataset.break = b.id;
+    div.setAttribute("role", "button");
+    div.style.top = ((b.start_min - startHour * 60) / span * 100) + "%";
+    div.style.height = Math.max(b.minutes / span * 100, 4) + "%";
+    div.title = b.label + " · " + b.time_label + " — tap to remove";
+    var l = document.createElement("span");
+    l.className = "break-label"; l.textContent = b.label;
+    var t = document.createElement("span");
+    t.className = "break-time"; t.textContent = b.time_label;
+    div.appendChild(l); div.appendChild(t);
+    col.appendChild(div);
+  }
+
+  function bindSlotPop(el) {
+    if (el.dataset.osBound) return;
+    el.dataset.osBound = "1";
+    var layout = document.querySelector(".book-layout");
+    function csrf() {
+      var t = layout ? layout.querySelector('input[name="csrfmiddlewaretoken"]') : null;
+      return t ? t.value : "";
+    }
+    el.querySelector("#slotPopClose").addEventListener("click", closeSlotPop);
+    el.querySelector("#slotPopBack").addEventListener("click", function () {
+      slotPopShow(el, "choose");
+    });
+    el.querySelector("#slotPopKeep").addEventListener("click", closeSlotPop);
+    el.querySelector("#slotPopAppt").addEventListener("click", function () {
+      var ctx = slotCtx;
+      closeSlotPop();
+      if (ctx && typeof window.osOpenBooking === "function") {
+        window.osOpenBooking({ member: ctx.member, date: ctx.date, time: ctx.time });
+      }
+    });
+    el.querySelector("#slotPopBreak").addEventListener("click", function () {
+      slotPopShow(el, "break");
+    });
+    el.querySelectorAll("#slotPopChips button").forEach(function (b) {
+      b.addEventListener("click", function () {
+        el.querySelectorAll("#slotPopChips button").forEach(function (o) {
+          o.classList.toggle("on", o === b);
+        });
+        if (slotCtx) slotCtx.minutes = parseInt(b.dataset.min, 10);
+      });
+    });
+    el.querySelectorAll("#slotPopPaid button").forEach(function (b) {
+      b.addEventListener("click", function () {
+        el.querySelectorAll("#slotPopPaid button").forEach(function (o) {
+          o.classList.toggle("on", o === b);
+        });
+        if (slotCtx) slotCtx.paid = b.dataset.paid === "1";
+      });
+    });
+    el.querySelector("#slotPopAdd").addEventListener("click", function () {
+      if (!slotCtx || !layout || !layout.dataset.break) return;
+      var err = el.querySelector("#slotPopErr");
+      fetch(layout.dataset.break, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRFToken": csrf() },
+        body: JSON.stringify({
+          staff_member_id: parseInt(slotCtx.member, 10),
+          date: slotCtx.date,
+          time: slotCtx.time,
+          minutes: slotCtx.minutes,
+          paid: !!slotCtx.paid,
+        }),
+      }).then(function (r) { return r.json(); }).then(function (data) {
+        if (data && data.ok) {
+          paintBreak(data.break);
+          closeSlotPop();
+          scheduleStoreRefresh();
+        } else {
+          err.textContent = (data && data.error) || "That break did not save.";
+          err.classList.remove("hidden");
+        }
+      }).catch(function () {
+        err.textContent = "That break did not save.";
+        err.classList.remove("hidden");
+      });
+    });
+    el.querySelector("#slotPopRemove").addEventListener("click", function () {
+      if (!slotCtx || !slotCtx.breakId || !layout || !layout.dataset.breakRemove) return;
+      fetch(layout.dataset.breakRemove, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRFToken": csrf() },
+        body: JSON.stringify({ break_id: parseInt(slotCtx.breakId, 10) }),
+      }).then(function (r) { return r.json(); }).then(function (data) {
+        if (data && data.ok) {
+          if (slotCtx.blockEl) slotCtx.blockEl.remove();
+          closeSlotPop();
+          scheduleStoreRefresh();
+        }
+      }).catch(function () { closeSlotPop(); });
+    });
+  }
+
+  document.addEventListener("click", function (e) {
+    var bb = e.target.closest ? e.target.closest(".break-block") : null;
+    if (bb) { openBreakInfo(bb, e.clientX, e.clientY); return; }
+    var el = slotPopEl();
+    if (el && !el.classList.contains("hidden") && !e.target.closest("#slotPop")) {
+      closeSlotPop();
+    }
+  });
 
   function bindBook() {
     sweepStrays();
