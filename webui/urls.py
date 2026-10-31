@@ -16,6 +16,7 @@ urlpatterns = [
         name="home",
     ),
     path("", views.day_book, name="daybook"),
+    path("daybook/fragment/", views.day_book_fragment, name="daybook_fragment"),
     path("price-book/", views.price_book, name="pricebook"),
     path("clients/", views.clients, name="clients"),
     path(

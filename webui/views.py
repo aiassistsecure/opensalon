@@ -193,7 +193,7 @@ def _duration_label(minutes):
     return f"{hours}h" if hours else f"{mins}m"
 
 
-def day_book(request):
+def _day_book_context(request):
     salon = Salon.objects.order_by("id").first()
     tz = _tz(salon) if salon is not None else timezone.get_current_timezone()
     # "Today" is the salon's today. The server clock (UTC) rolls into
@@ -707,7 +707,21 @@ def day_book(request):
         "now_label": now_label,
         "tz_label": tz.tzname(day_start) if hasattr(tz, "tzname") else "",
     }
-    return render(request, "webui/daybook.html", context)
+    return context
+
+
+def day_book(request):
+    return render(request, "webui/daybook.html", _day_book_context(request))
+
+
+def day_book_fragment(request):
+    """The day book's content without the app chrome.
+
+    The client's hot range fetches one of these per date and caches
+    it, so moving between days renders from memory — no server
+    round-trip stands between a tap and the paint.
+    """
+    return render(request, "webui/_daybook_main.html", _day_book_context(request))
 
 
 def price_book(request):

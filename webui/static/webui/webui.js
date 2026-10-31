@@ -1,9 +1,13 @@
 /* OpenSalon webui behaviour: the day book's detail rail, tabs,
-   team-chip column jumps, and filter auto-submit.
-   The rail is server-rendered for the day's first appointment;
-   this script re-renders it from the JSON payloads the view
-   embeds (#rail-data) when another appointment is chosen. On
-   phones the rail is a bottom sheet (.rail.open). */
+   team-chip column jumps, filter auto-submit — and the hot range.
+
+   The hot range: the server remains the only renderer. On load
+   the client caches the rendered day-book fragment for the shown
+   date, then prefetches the rest of the week strip plus the
+   neighbouring days. Switching days swaps a cached fragment in —
+   no server round-trip stands between a tap and the paint — and
+   falls back to a normal navigation whenever a fragment is not
+   in hand. Every swap rebinds the book (rail, blocks, chips). */
 (function () {
   "use strict";
 
@@ -13,13 +17,10 @@
     });
   }
 
-  var railEl = document.getElementById("detailRail");
-  var railBody = document.getElementById("railBody");
-  var dataEl = document.getElementById("rail-data");
+  var railEl = null;
+  var railBody = null;
   var payloads = {};
-  if (dataEl) {
-    try { payloads = JSON.parse(dataEl.textContent); } catch (e) { payloads = {}; }
-  }
+  var selected = null;
 
   function pill(d) {
     return '<span class="pill pill-' + esc(d.status) + '">' + esc(d.status_label) + "</span>";
@@ -94,7 +95,6 @@
     if (railEl) railEl.setAttribute("data-current", d.id);
   }
 
-  var selected = null;
   function choose(block, openSheet) {
     if (selected) selected.classList.remove("sel");
     selected = block;
@@ -105,64 +105,181 @@
     }
   }
 
-  document.querySelectorAll(".appt-block, .acard").forEach(function (block) {
-    block.addEventListener("mouseenter", function () {
-      if (window.innerWidth > 760) renderRail(payloads[block.dataset.appt]);
-    });
-    block.addEventListener("click", function () { choose(block, true); });
-    block.addEventListener("keydown", function (event) {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        choose(block, true);
-      }
-    });
-  });
+  /* Bind everything that lives inside the day-book layout. Runs
+     on first load and again after every hot-range swap, because a
+     swap replaces the layout node wholesale. */
+  function bindBook() {
+    railEl = document.getElementById("detailRail");
+    railBody = document.getElementById("railBody");
+    payloads = {};
+    var dataEl = document.getElementById("rail-data");
+    if (dataEl) {
+      try { payloads = JSON.parse(dataEl.textContent); } catch (e) { payloads = {}; }
+    }
+    selected = null;
 
-  // Mark the server-rendered default appointment as selected.
-  if (railEl && railEl.getAttribute("data-current")) {
-    var first = document.querySelector(
-      '.appt-block[data-appt="' + railEl.getAttribute("data-current") + '"]'
-    );
-    if (first) { selected = first; first.classList.add("sel"); }
+    document.querySelectorAll(".appt-block, .acard").forEach(function (block) {
+      block.addEventListener("mouseenter", function () {
+        if (window.innerWidth > 760) renderRail(payloads[block.dataset.appt]);
+      });
+      block.addEventListener("click", function () { choose(block, true); });
+      block.addEventListener("keydown", function (event) {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          choose(block, true);
+        }
+      });
+    });
+
+    // Mark the server-rendered default appointment as selected.
+    if (railEl && railEl.getAttribute("data-current")) {
+      var first = document.querySelector(
+        '.appt-block[data-appt="' + railEl.getAttribute("data-current") + '"]'
+      );
+      if (first) { selected = first; first.classList.add("sel"); }
+    }
+
+    if (railBody) {
+      railBody.addEventListener("click", function (event) {
+        var tab = event.target.closest(".rtab");
+        if (tab) {
+          railBody.querySelectorAll(".rtab").forEach(function (t) {
+            t.classList.toggle("active", t === tab);
+          });
+          railBody.querySelectorAll(".rpanel").forEach(function (p) {
+            p.classList.toggle("hidden", p.dataset.panel !== tab.dataset.tab);
+          });
+          return;
+        }
+        if (event.target.closest("#railClose") && railEl) {
+          railEl.classList.remove("open");
+        }
+      });
+    }
+
+    /* ---- team chips jump to a column (phone-first) ---- */
+    var scroller = document.getElementById("bookscroll");
+    document.querySelectorAll(".fchip").forEach(function (chip) {
+      chip.addEventListener("click", function () {
+        var col = document.getElementById("col-" + chip.dataset.col);
+        if (!scroller || !col) return;
+        var gutter = document.querySelector(".db-gutter");
+        var offset = gutter ? gutter.offsetWidth : 0;
+        var target = col.getBoundingClientRect().left -
+          scroller.getBoundingClientRect().left + scroller.scrollLeft - offset;
+        scroller.scrollTo({ left: Math.max(0, target), behavior: "smooth" });
+      });
+    });
+
+    /* ---- filter selects apply immediately ---- */
+    document.querySelectorAll(".filters select[name]").forEach(function (sel) {
+      sel.addEventListener("change", function () { sel.form.submit(); });
+    });
   }
 
-  if (railBody) {
-    railBody.addEventListener("click", function (event) {
-      var tab = event.target.closest(".rtab");
-      if (tab) {
-        railBody.querySelectorAll(".rtab").forEach(function (t) {
-          t.classList.toggle("active", t === tab);
-        });
-        railBody.querySelectorAll(".rpanel").forEach(function (p) {
-          p.classList.toggle("hidden", p.dataset.panel !== tab.dataset.tab);
-        });
-        return;
-      }
-      if (event.target.closest("#railClose") && railEl) {
-        railEl.classList.remove("open");
-      }
-    });
-  }
   document.addEventListener("keydown", function (event) {
     if (event.key === "Escape" && railEl) railEl.classList.remove("open");
   });
 
-  /* ---- team chips jump to a column (phone-first) ---- */
-  var scroller = document.getElementById("bookscroll");
-  document.querySelectorAll(".fchip").forEach(function (chip) {
-    chip.addEventListener("click", function () {
-      var col = document.getElementById("col-" + chip.dataset.col);
-      if (!scroller || !col) return;
-      var gutter = document.querySelector(".db-gutter");
-      var offset = gutter ? gutter.offsetWidth : 0;
-      var target = col.getBoundingClientRect().left -
-        scroller.getBoundingClientRect().left + scroller.scrollLeft - offset;
-      scroller.scrollTo({ left: Math.max(0, target), behavior: "smooth" });
-    });
-  });
+  /* ================= the hot range ================= */
+  var layoutEl = document.querySelector(".book-layout");
+  var filtersActive = /[?&](cat|status)=[^&]/.test(window.location.search);
+  var hotCache = {};
+  var currentDate = null;
+  var fragmentBase = null;
 
-  /* ---- filter selects apply immediately ---- */
-  document.querySelectorAll(".filters select[name]").forEach(function (sel) {
-    sel.addEventListener("change", function () { sel.form.submit(); });
-  });
+  function pad(n) { return (n < 10 ? "0" : "") + n; }
+  function toISO(d) {
+    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+  }
+  function addDays(iso, n) {
+    var p = iso.split("-");
+    var d = new Date(+p[0], +p[1] - 1, +p[2]);
+    d.setDate(d.getDate() + n);
+    return toISO(d);
+  }
+  var scheduleIdle = window.requestIdleCallback
+    ? function (fn) { window.requestIdleCallback(fn, { timeout: 1200 }); }
+    : function (fn) { window.setTimeout(fn, 350); };
+
+  function fetchFragment(iso) {
+    return fetch(fragmentBase + "?date=" + iso, {
+      headers: { "X-Requested-With": "XMLHttpRequest" },
+    }).then(function (r) {
+      if (!r.ok) throw new Error("fragment " + r.status);
+      return r.text();
+    }).then(function (html) {
+      hotCache[iso] = html;
+      return html;
+    });
+  }
+
+  function prefetchAround(iso) {
+    var dates = [addDays(iso, -1), addDays(iso, 1)];
+    document.querySelectorAll(".wpill").forEach(function (a) {
+      var m = /date=(\d{4}-\d{2}-\d{2})/.exec(a.getAttribute("href") || "");
+      if (m) dates.push(m[1]);
+    });
+    dates.forEach(function (d) {
+      if (!hotCache[d]) {
+        scheduleIdle(function () {
+          if (!hotCache[d]) fetchFragment(d).catch(function () {});
+        });
+      }
+    });
+  }
+
+  function swapTo(iso, push) {
+    var html = hotCache[iso];
+    if (!html || !layoutEl) { window.location.href = "?date=" + iso; return; }
+    var wrap = document.createElement("div");
+    wrap.innerHTML = html;
+    var fresh = wrap.querySelector(".book-layout");
+    if (!fresh) { window.location.href = "?date=" + iso; return; }
+    layoutEl.replaceWith(fresh);
+    layoutEl = fresh;
+    currentDate = iso;
+    bindBook();
+    var title = fresh.querySelector(".day-title");
+    var sub = fresh.querySelector(".day-sub");
+    if (title && sub) {
+      document.title = "Daybook — " + title.textContent.trim() + ", " +
+        sub.textContent.trim() + " · OpenSalon";
+    }
+    if (push) history.pushState({ date: iso }, "", "?date=" + iso);
+    prefetchAround(iso);
+  }
+
+  function goTo(iso, push) {
+    if (hotCache[iso]) { swapTo(iso, push); return; }
+    fetchFragment(iso).then(function () { swapTo(iso, push); }).catch(function () {
+      window.location.href = "?date=" + iso;
+    });
+  }
+
+  if (layoutEl && layoutEl.dataset.date && layoutEl.dataset.fragment && !filtersActive) {
+    currentDate = layoutEl.dataset.date;
+    fragmentBase = layoutEl.dataset.fragment;
+    hotCache[currentDate] = layoutEl.outerHTML;
+    history.replaceState({ date: currentDate }, "", window.location.href);
+
+    document.addEventListener("click", function (event) {
+      var a = event.target.closest('a[href*="?date="]');
+      if (!a) return;
+      var m = /date=(\d{4}-\d{2}-\d{2})/.exec(a.getAttribute("href") || "");
+      if (!m) return;
+      event.preventDefault();
+      if (m[1] !== currentDate) goTo(m[1], true);
+    });
+
+    window.addEventListener("popstate", function () {
+      var m = /date=(\d{4}-\d{2}-\d{2})/.exec(window.location.search);
+      var iso = m ? m[1] : currentDate;
+      if (iso && iso !== currentDate) goTo(iso, false);
+    });
+
+    prefetchAround(currentDate);
+  }
+
+  bindBook();
 })();
