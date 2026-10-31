@@ -202,3 +202,79 @@ class AttendanceRecordModelTests(TestCase):
         self._record(AttendanceRecord.EventType.CHECK_IN)
         self.assertTrue(self.member.is_checked_in())
         self.assertFalse(other.is_checked_in())
+
+
+class StrictConstraintsTests(TestCase):
+    """N-M17: StrictConstraints enforces team Meta.constraints on save().
+
+    NEDB DYOR §9.3/§9.4: schemaless NEDB creates no DB constraints, so
+    the declared catalog is enforced in the app layer; violations
+    surface as IntegrityError, as on an enforcing backend.
+    """
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Mint On The Avenue")
+        self.other_salon = Salon.objects.create(name="Other Salon")
+        self.member = StaffMember.objects.create(
+            display_name="Maribel Gonzalez", salon=self.salon, external_id="staff-1"
+        )
+
+    def test_duplicate_staff_external_id_per_salon_rejected(self):
+        duplicate = StaffMember(
+            display_name="Copy", salon=self.salon, external_id="staff-1"
+        )
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                duplicate.save()
+        self.assertEqual(StaffMember.objects.filter(external_id="staff-1").count(), 1)
+
+    def test_same_external_id_in_other_salon_allowed(self):
+        StaffMember.objects.create(
+            display_name="Other", salon=self.other_salon, external_id="staff-1"
+        )
+
+    def test_duplicate_blank_staff_external_id_allowed(self):
+        StaffMember.objects.create(display_name="A", salon=self.salon)
+        StaffMember.objects.create(display_name="B", salon=self.salon)
+
+    def test_update_into_duplicate_staff_external_id_rejected(self):
+        other = StaffMember.objects.create(
+            display_name="Sonia Taylor", salon=self.salon, external_id="staff-2"
+        )
+        other.external_id = "staff-1"
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                other.save()
+
+    def test_roster_end_not_after_start_rejected_on_save(self):
+        pattern = RosterPattern(
+            staff_member=self.member, weekday=0,
+            start_time=datetime.time(9, 0), end_time=datetime.time(9, 0),
+        )
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                pattern.save()
+        self.assertEqual(RosterPattern.objects.count(), 0)
+
+    def test_roster_update_into_invalid_range_rejected(self):
+        pattern = RosterPattern.objects.create(
+            staff_member=self.member, weekday=0,
+            start_time=datetime.time(9, 0), end_time=datetime.time(17, 0),
+        )
+        pattern.end_time = datetime.time(8, 0)
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                pattern.save()
+
+    def test_legitimate_saves_and_updates_pass(self):
+        self.member.display_name = "Maribel G."
+        self.member.save()
+        self.member.save(update_fields=["display_name"])
+        pattern = RosterPattern.objects.create(
+            staff_member=self.member, weekday=1,
+            start_time=datetime.time(9, 0), end_time=datetime.time(17, 0),
+        )
+        pattern.end_time = datetime.time(18, 0)
+        pattern.save()
+        pattern.refresh_from_db()
+        self.assertEqual(pattern.end_time, datetime.time(18, 0))

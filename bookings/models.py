@@ -1,11 +1,15 @@
 from django.db import models
 
 from clients.models import Client
-from saloncore.models import Service
+from saloncore.models import Service, StrictConstraints
+
+# N-M17: StrictConstraints rollout (NEDB DYOR §9.3/§9.4) — declared
+# Meta.constraints are enforced in the app layer on save(), since
+# schemaless NEDB creates no database-level constraints.
 from team.models import StaffMember
 
 
-class Appointment(models.Model):
+class Appointment(StrictConstraints):
     """A booked appointment in the day book.
 
     One appointment links one client, one staff member, and one

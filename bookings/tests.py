@@ -1,5 +1,6 @@
 from datetime import timedelta
 
+from django.db import IntegrityError, transaction
 from django.test import TestCase
 from django.utils import timezone
 
@@ -131,3 +132,73 @@ class AppointmentNoteModelTests(TestCase):
             appointment=self.appointment, body="No author"
         )
         self.assertEqual(note.author_name, "")
+
+
+class StrictConstraintsTests(TestCase):
+    """N-M17: StrictConstraints enforces bookings Meta.constraints on save().
+
+    NEDB DYOR §9.3/§9.4: schemaless NEDB creates no DB constraints, so
+    the declared catalog is enforced in the app layer; violations
+    surface as IntegrityError, as on an enforcing backend.
+    """
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon")
+        self.client = Client.objects.create(
+            salon=self.salon, first_name="Test", last_name="Example"
+        )
+        self.staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Stylist One"
+        )
+        self.category = ServiceCategory.objects.create(
+            salon=self.salon, name="Haircuts"
+        )
+        self.service = Service.objects.create(
+            category=self.category, name="Haircut", service_minutes=45
+        )
+        self.start = timezone.now() + timedelta(days=1)
+        self.end = self.start + timedelta(minutes=45)
+        self.appointment = Appointment.objects.create(
+            client=self.client, staff_member=self.staff, service=self.service,
+            start=self.start, end=self.end, external_id="appt-1",
+        )
+
+    def _duplicate(self, **kwargs):
+        defaults = dict(
+            client=self.client, staff_member=self.staff, service=self.service,
+            start=self.start, end=self.end, external_id="appt-1",
+        )
+        defaults.update(kwargs)
+        return Appointment(**defaults)
+
+    def test_duplicate_appointment_external_id_rejected(self):
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                self._duplicate().save()
+        self.assertEqual(Appointment.objects.filter(external_id="appt-1").count(), 1)
+
+    def test_duplicate_blank_appointment_external_id_allowed(self):
+        for _ in range(2):
+            Appointment.objects.create(
+                client=self.client, staff_member=self.staff, service=self.service,
+                start=self.start, end=self.end,
+            )
+
+    def test_update_into_duplicate_appointment_external_id_rejected(self):
+        other = Appointment.objects.create(
+            client=self.client, staff_member=self.staff, service=self.service,
+            start=self.start, end=self.end, external_id="appt-2",
+        )
+        other.external_id = "appt-1"
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                other.save()
+
+    def test_legitimate_saves_and_updates_pass(self):
+        self.appointment.status = Appointment.Status.CONFIRMED
+        self.appointment.save()
+        self.appointment.save(update_fields=["status"])
+        self.appointment.external_id = "appt-1b"
+        self.appointment.save(update_fields=["external_id"])
+        self.appointment.refresh_from_db()
+        self.assertEqual(self.appointment.external_id, "appt-1b")

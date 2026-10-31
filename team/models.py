@@ -1,10 +1,14 @@
 from django.db import models
 from django.utils import timezone
 
-from saloncore.models import Salon, StaffLevel
+from saloncore.models import Salon, StaffLevel, StrictConstraints
+
+# N-M17: StrictConstraints rollout (NEDB DYOR §9.3/§9.4) — declared
+# Meta.constraints are enforced in the app layer on save(), since
+# schemaless NEDB creates no database-level constraints.
 
 
-class StaffMember(models.Model):
+class StaffMember(StrictConstraints):
     """A person who works at a salon.
 
     ``online_bookable`` is the per-staff online-booking toggle: whether
@@ -52,7 +56,7 @@ class StaffMember(models.Model):
         return latest is not None and latest.event_type == AttendanceRecord.EventType.CHECK_IN
 
 
-class RosterPattern(models.Model):
+class RosterPattern(StrictConstraints):
     """Recurring weekly availability for a staff member.
 
     This is the ROSTER where availability is programmed: one row is a

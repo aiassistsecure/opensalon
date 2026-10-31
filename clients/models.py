@@ -1,9 +1,13 @@
 from django.db import models
 
-from saloncore.models import Salon
+from saloncore.models import Salon, StrictConstraints
+
+# N-M17: StrictConstraints rollout (NEDB DYOR §9.3/§9.4) — declared
+# Meta.constraints are enforced in the app layer on save(), since
+# schemaless NEDB creates no database-level constraints.
 
 
-class Client(models.Model):
+class Client(StrictConstraints):
     """A salon client.
 
     Opt-ins default to False: appointment reminders and marketing
