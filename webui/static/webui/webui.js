@@ -88,6 +88,17 @@
       '<div class="rpanel hidden" data-panel="notes">' +
       '<div class="notes-k">This appointment</div>' + apptNotes +
       '<div class="notes-k">Client record</div>' + clientNotes + "</div>" +
+      ((d.toggles && d.toggles.length)
+        ? '<div class="rail-toggles">' + d.toggles.map(function (t) {
+            return '<div class="rtoggle-row"><span class="rtoggle-label">' +
+              esc(t.label) + '</span><button type="button" class="tswitch t-' +
+              esc(t.key) + (t.on ? " on" : "") + '" role="switch" aria-checked="' +
+              (t.on ? "true" : "false") + '"' + (t.enabled ? "" : " disabled") +
+              ' data-status-action="' + esc(t.target) + '" data-appt="' +
+              esc(d.id) + '" aria-label="Toggle ' + esc(t.label.toLowerCase()) +
+              '"></button></div>';
+          }).join("") + "</div>"
+        : "") +
       ((d.actions && d.actions.length)
         ? '<div class="rail-actions">' + d.actions.map(function (a) {
             return '<button type="button" class="' +
@@ -117,8 +128,11 @@
      increments, the visit's whole stack moving as one piece).
      On drop the move posts to the server and the day re-reads —
      the book never keeps a position the server did not save. */
-  function bindDrag() {
-    document.querySelectorAll(".db-column .appt-block").forEach(function (tile) {
+  function bindDrag(onlyTile) {
+    var tiles = onlyTile
+      ? [onlyTile]
+      : document.querySelectorAll(".db-column .appt-block");
+    tiles.forEach(function (tile) {
       tile.addEventListener("pointerdown", function (event) {
         if (event.button !== undefined && event.button !== 0) return;
         var grid = tile.closest(".gridwrap");
@@ -179,6 +193,27 @@
           ghost.style.top = (snapped / winMin * 100) + "%";
           ghost.querySelector(".ghost-time").textContent =
             fmt(dayStartMin + snapped) + (target.member !== originMember ? " · new stylist" : "");
+          /* Live stacking: the lanes make room DURING the drag,
+             not after it — the column re-lanes around the tile's
+             hover position on the next animation frame. */
+          if (!filtersActive) {
+            var previewStart = dayStartMin + target.startMin;
+            if (!dragPreview || dragPreview.staff_id !== parseInt(target.member, 10) ||
+                dragPreview.start_min !== previewStart) {
+              dragPreview = {
+                id: parseInt(tile.dataset.appt, 10),
+                staff_id: parseInt(target.member, 10),
+                start_min: previewStart,
+              };
+              if (!previewRaf) {
+                previewRaf = true;
+                requestAnimationFrame(function () {
+                  previewRaf = false;
+                  repaintDay();
+                });
+              }
+            }
+          }
         }
         function finish(commit) {
           tile.removeEventListener("pointermove", onMove);
@@ -187,6 +222,7 @@
           tile.removeEventListener("lostpointercapture", onCancel);
           if (!engaged) return;
           if (ghost) ghost.remove();
+          dragPreview = null;
           var changed = target.member !== originMember || target.startMin !== startMin0;
           if (commit && changed && !filtersActive) {
             /* Optimistic: the model moves first and the grid
@@ -221,6 +257,9 @@
               }),
             }).then(function () { refreshDay(); }).catch(function () { refreshDay(); });
           } else {
+            /* Cancelled or unmoved: the preview lanes snap back
+               from the model instantly; the re-read converges. */
+            repaintDay();
             refreshDay();
           }
         }
@@ -263,13 +302,29 @@
       document.dispatchEvent(new CustomEvent("os:op", {
         detail: { kind: "status", id: parseInt(apptId, 10), status: status },
       }));
-      refreshDay(apptId);
+      /* The grid syncs in place from the pack; only the rail
+         re-reads its payloads. No rebuild, no flicker. */
+      pollPack();
+      refreshRailData(apptId);
     }).catch(function () { refreshDay(apptId); });
   }
 
   /* Bind everything that lives inside the day-book layout. Runs
      on first load and again after every hot-range swap, because a
      swap replaces the layout node wholesale. */
+  function bindBlock(block) {
+    block.addEventListener("mouseenter", function () {
+      if (window.innerWidth > 760) renderRail(payloads[block.dataset.appt]);
+    });
+    block.addEventListener("click", function () { choose(block, true); });
+    block.addEventListener("keydown", function (event) {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        choose(block, true);
+      }
+    });
+  }
+
   function bindBook() {
     sweepStrays();
     var shadowEl = document.getElementById("shadowState");
@@ -286,18 +341,7 @@
     }
     selected = null;
 
-    document.querySelectorAll(".appt-block, .acard").forEach(function (block) {
-      block.addEventListener("mouseenter", function () {
-        if (window.innerWidth > 760) renderRail(payloads[block.dataset.appt]);
-      });
-      block.addEventListener("click", function () { choose(block, true); });
-      block.addEventListener("keydown", function (event) {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          choose(block, true);
-        }
-      });
-    });
+    document.querySelectorAll(".appt-block, .acard").forEach(bindBlock);
 
     bindDrag();
 
@@ -432,10 +476,12 @@
     wrap.innerHTML = html;
     var fresh = wrap.querySelector(".book-layout");
     if (!fresh) { window.location.href = "?date=" + iso; return; }
+    fresh.classList.add("synced");
     layoutEl.replaceWith(fresh);
     layoutEl = fresh;
     currentDate = iso;
     bindBook();
+    pollPack();
     var title = fresh.querySelector(".day-title");
     var sub = fresh.querySelector(".day-sub");
     if (title && sub) {
@@ -487,12 +533,20 @@
      from the server fragment as always. If the model cannot
      answer (filtered view, day not packed), the gesture falls
      back to the plain server path. */
-  var model = { days: {}, staff: [] };
+  var model = { days: {}, staff: [], anchor: null, anchorDate: "" };
   var filtersActive = /[?&](cat|status)=[^&]/.test(window.location.search);
+  var dragPreview = null;
+  var previewRaf = false;
+  var lastAgendaSig = "";
 
-  function buildModel(pack) {
+  function buildModel(pack, forDate) {
     if (pack && pack.days) {
-      model = { days: pack.days, staff: pack.staff || [] };
+      model = {
+        days: pack.days,
+        staff: pack.staff || [],
+        anchor: pack.anchor || null,
+        anchorDate: pack.anchor ? (forDate || currentDate) : "",
+      };
       /* Feed the shadow store (embedded NEDB) the same pack. */
       document.dispatchEvent(new CustomEvent("os:pack", { detail: pack }));
     }
@@ -551,8 +605,86 @@
     return result;
   }
 
-  function repaintDay() {
+  function paintBlock(el, entry, info) {
+    el.style.top = ((entry.start_min - 480) / 720 * 100) + "%";
+    el.style.height = Math.max((entry.end_min - entry.start_min) / 720 * 100, 4.0) + "%";
+    if (info) {
+      el.style.left = "calc(" + info.left + "% + 5px)";
+      el.style.width = "calc(" + info.width + "% - 10px)";
+    }
+    el.dataset.startMin = String(entry.start_min - 480);
+    var dur = entry.end_min - entry.start_min;
+    el.classList.toggle("mini", dur < 45 || (info && info.overlap >= 3 && dur < 90));
+    el.classList.toggle("micro", dur < 30);
+    if (el.dataset.cat !== entry.cat) {
+      if (el.dataset.cat) el.classList.remove("cat-" + el.dataset.cat);
+      el.classList.add("cat-" + entry.cat);
+      el.dataset.cat = entry.cat;
+    }
+    if (el.dataset.status !== entry.status) {
+      if (el.dataset.status) el.classList.remove("status-" + el.dataset.status);
+      el.classList.add("status-" + entry.status);
+      el.dataset.status = entry.status;
+    }
+    var timeLabel = entry.time_label ||
+      (fmtClock(entry.start_min) + " – " + fmtClock(entry.end_min));
+    var timeEl = el.querySelector(".b-time");
+    if (timeEl) timeEl.textContent = timeLabel;
+    var clientEl = el.querySelector(".b-client");
+    if (clientEl) clientEl.textContent = entry.client;
+    var svcEl = el.querySelector(".b-service");
+    if (svcEl) svcEl.textContent = entry.service;
+    var priceEl = el.querySelector(".b-price");
+    if (entry.price_label) {
+      if (!priceEl) {
+        priceEl = document.createElement("div");
+        priceEl.className = "b-price";
+        el.appendChild(priceEl);
+      }
+      priceEl.textContent = entry.price_label;
+    } else if (priceEl) {
+      priceEl.remove();
+    }
+    el.setAttribute("aria-label", entry.client + ", " + entry.service + ", " + timeLabel);
+  }
+
+  /* A block built on the client, indistinguishable from the
+     server's _block.html — the factory that lets the grid absorb
+     a new appointment without rebuilding the page. */
+  function renderBlock(entry) {
+    var el = document.createElement("article");
+    el.className = "appt-block cat-" + entry.cat + " status-" + entry.status;
+    el.setAttribute("tabindex", "0");
+    el.setAttribute("role", "button");
+    el.dataset.appt = String(entry.id);
+    el.dataset.cat = entry.cat;
+    el.dataset.status = entry.status;
+    el.innerHTML =
+      '<div class="b-top"><span class="b-time"></span>' +
+      '<span class="b-ico" aria-hidden="true"></span></div>' +
+      '<div class="b-client"></div>' +
+      '<div class="b-services"><div class="b-service"></div></div>';
+    bindBlock(el);
+    bindDrag(el);
+    return el;
+  }
+
+  function effectiveEntries() {
     var entries = modelDay();
+    if (!entries || !dragPreview) return entries;
+    return entries.map(function (e) {
+      if (e.id !== dragPreview.id) return e;
+      var dur = e.end_min - e.start_min;
+      return Object.assign({}, e, {
+        staff_id: dragPreview.staff_id,
+        start_min: dragPreview.start_min,
+        end_min: dragPreview.start_min + dur,
+      });
+    });
+  }
+
+  function repaintDay() {
+    var entries = effectiveEntries();
     if (!entries || !layoutEl) return false;
     var byStaff = {};
     entries.forEach(function (e) {
@@ -567,20 +699,9 @@
         var info = lanes[e.id];
         if (info) maxOverlap = Math.max(maxOverlap, info.overlap);
         var el = document.querySelector('.appt-block[data-appt="' + e.id + '"]');
-        if (!el) return;
+        if (!el || el.classList.contains("dragging")) return;
         if (el.parentElement !== col) col.appendChild(el);
-        el.style.top = ((e.start_min - 480) / 720 * 100) + "%";
-        el.style.height = Math.max((e.end_min - e.start_min) / 720 * 100, 4.0) + "%";
-        if (info) {
-          el.style.left = "calc(" + info.left + "% + 5px)";
-          el.style.width = "calc(" + info.width + "% - 10px)";
-        }
-        el.dataset.startMin = String(e.start_min - 480);
-        var dur = e.end_min - e.start_min;
-        el.classList.toggle("mini", dur < 45 || (info && info.overlap >= 3 && dur < 90));
-        el.classList.toggle("micro", dur < 30);
-        var timeEl = el.querySelector(".b-time");
-        if (timeEl) timeEl.textContent = fmtClock(e.start_min) + " – " + fmtClock(e.end_min);
+        paintBlock(el, e, info);
       });
       factors.push(Math.min(3, maxOverlap));
     });
@@ -591,6 +712,208 @@
       el.style.setProperty("--tracks", tracks);
     });
     return true;
+  }
+
+  /* ---- in-place reconcile: the sturdy composition ----
+     The grid absorbs the model's truth by mutating what exists:
+     blocks are created, seated, repainted, or removed — the
+     layout itself is never torn down, scroll and selection
+     survive, and nothing re-animates. A structural change the
+     model cannot express (a stylist column appears or vanishes)
+     returns false and the caller takes one honest rebuild. */
+  function syncFromModel() {
+    if (!layoutEl || filtersActive) return false;
+    var entries = modelDay();
+    if (!entries) return false;
+    var anchor = model.anchorDate === currentDate ? model.anchor : null;
+    if (anchor && anchor.columns) {
+      var domMembers = Array.prototype.map.call(
+        layoutEl.querySelectorAll(".db-column"),
+        function (c) { return c.dataset.member; }
+      );
+      var want = anchor.columns.map(function (c) { return String(c.member); });
+      if (domMembers.join(",") !== want.join(",")) return false;
+    }
+    var byStaff = {};
+    entries.forEach(function (e) {
+      (byStaff[e.staff_id] = byStaff[e.staff_id] || []).push(e);
+    });
+    layoutEl.querySelectorAll(".db-column").forEach(function (col) {
+      var list = byStaff[col.dataset.member] || [];
+      var wantIds = {};
+      list.forEach(function (e) { wantIds[e.id] = true; });
+      col.querySelectorAll(".appt-block").forEach(function (el) {
+        if (!wantIds[el.dataset.appt]) el.remove();
+      });
+      list.forEach(function (e) {
+        if (!document.querySelector('.appt-block[data-appt="' + e.id + '"]')) {
+          var fresh = renderBlock(e);
+          fresh.classList.add("fresh");
+          col.appendChild(fresh);
+          setTimeout(function () { fresh.classList.remove("fresh"); }, 1500);
+        }
+      });
+      var openLabel = col.querySelector(".open-label");
+      if (list.length && openLabel) openLabel.remove();
+      if (!list.length && !openLabel && !col.classList.contains("offduty")) {
+        var label = document.createElement("div");
+        label.className = "open-label";
+        label.textContent = "Open for bookings";
+        col.appendChild(label);
+      }
+    });
+    repaintDay();
+    if (anchor) {
+      updateRibbon(anchor);
+      updateIntel(anchor);
+      updateColheads(anchor);
+      updateAgenda(anchor);
+    }
+    if (selected && !document.querySelector(
+      '.appt-block[data-appt="' + selected.dataset.appt + '"]'
+    )) {
+      selected = null;
+    }
+    return true;
+  }
+
+  function setText(scope, selector, value) {
+    var el = scope.querySelector(selector);
+    if (el) el.textContent = value;
+  }
+
+  function updateRibbon(anchor) {
+    var kpis = layoutEl.querySelectorAll(".kpis .kpi");
+    var r = anchor.ribbon;
+    if (kpis[0]) {
+      setText(kpis[0], ".kpi-v", r.revenue_label);
+      setText(kpis[0], ".kpi-s", r.unpriced ? r.unpriced + " unpriced" : "All priced");
+    }
+    if (kpis[1]) {
+      setText(kpis[1], ".kpi-v", String(r.appointments));
+      setText(kpis[1], ".kpi-s", r.visits + (r.visits === 1 ? " visit" : " visits"));
+    }
+    if (kpis[2]) {
+      setText(kpis[2], ".kpi-v", r.utilization != null ? r.utilization + "%" : "—");
+    }
+    if (kpis[3]) setText(kpis[3], ".kpi-v", r.avg_ticket_label);
+    if (kpis[4]) setText(kpis[4], ".kpi-v", String(r.new_clients));
+  }
+
+  function updateIntel(anchor) {
+    var stats = layoutEl.querySelectorAll(".intel-stats .istat-v");
+    if (stats[0]) stats[0].textContent = String(anchor.ribbon.appointments);
+    if (stats[1]) stats[1].textContent = String(anchor.intel.completed);
+    if (stats[2]) stats[2].textContent = String(anchor.intel.remaining);
+    if (stats[3]) stats[3].textContent = anchor.intel.top_label;
+    setText(layoutEl, ".nba-title", "Next Opening — " + anchor.intel.next_label);
+    setText(layoutEl, ".nba-sub", anchor.intel.next_sub);
+  }
+
+  function updateColheads(anchor) {
+    var heads = layoutEl.querySelectorAll(".colhead:not(.colcorner)");
+    anchor.columns.forEach(function (col, i) {
+      var head = heads[i];
+      if (!head) return;
+      var level = "";
+      model.staff.forEach(function (s) { if (s.id === col.member) level = s.level; });
+      setText(head, ".cutil",
+        (level ? level + " · " : "") + col.day_total_label + " · " +
+        col.visits_count + (col.visits_count === 1 ? " visit" : " visits"));
+    });
+  }
+
+  function updateAgenda(anchor) {
+    var section = layoutEl.querySelector(".agenda");
+    if (!section || !anchor.agenda) return;
+    var sig = anchor.agenda.map(function (a) {
+      return a.appointment_id + ":" + a.time_label + ":" + a.total_label;
+    }).join("|") + "#" + anchor.agenda_now_index;
+    if (sig === lastAgendaSig) return;
+    lastAgendaSig = sig;
+    section.textContent = "";
+    anchor.agenda.forEach(function (item, i) {
+      if (anchor.agenda_now_index === i) {
+        var now = document.createElement("div");
+        now.className = "agenda-now";
+        var span = document.createElement("span");
+        span.textContent = "Now · " + anchor.now_label;
+        now.appendChild(span);
+        section.appendChild(now);
+      }
+      var card = document.createElement("article");
+      card.className = "acard";
+      card.dataset.appt = String(item.appointment_id);
+      card.setAttribute("tabindex", "0");
+      card.setAttribute("role", "button");
+      card.setAttribute("aria-label",
+        item.client_name + ", " + item.services_label + ", " + item.time_label);
+      var t = document.createElement("div");
+      t.className = "acard-t";
+      t.textContent = item.time_label;
+      var b = document.createElement("div");
+      b.className = "acard-b";
+      var c = document.createElement("div");
+      c.className = "acard-c";
+      var name = document.createElement("span");
+      name.textContent = item.client_name;
+      c.appendChild(name);
+      if (item.total_label) {
+        var total = document.createElement("b");
+        total.textContent = item.total_label;
+        c.appendChild(total);
+      }
+      var s = document.createElement("div");
+      s.className = "acard-s";
+      s.textContent = item.services_label;
+      var st = document.createElement("div");
+      st.className = "acard-st";
+      var dot = document.createElement("span");
+      dot.className = "adot av-" + item.staff_index;
+      dot.setAttribute("aria-hidden", "true");
+      st.appendChild(dot);
+      st.appendChild(document.createTextNode(item.staff_name));
+      b.appendChild(c); b.appendChild(s); b.appendChild(st);
+      card.appendChild(t); card.appendChild(b);
+      bindBlock(card);
+      section.appendChild(card);
+    });
+    if (!anchor.agenda.length) {
+      var empty = document.createElement("div");
+      empty.className = "empty-card";
+      empty.innerHTML = '<div class="empty-title">No appointments on the book</div>' +
+        '<p class="empty-sub">Nothing is booked for this day.</p>';
+      section.appendChild(empty);
+    }
+  }
+
+  /* Rail data without a page rebuild: the fragment is fetched
+     only for its rail payloads; the grid never sees it. */
+  function refreshRailData(keepId) {
+    if (!layoutEl) return;
+    fetch(layoutEl.dataset.fragment + "?date=" + encodeURIComponent(currentDate), {
+      headers: { "X-Requested-With": "fetch" },
+    })
+      .then(function (r) { return r.text(); })
+      .then(function (html) {
+        var doc = new DOMParser().parseFromString(html, "text/html");
+        var dataEl = doc.getElementById("rail-data");
+        if (dataEl) {
+          try { payloads = JSON.parse(dataEl.textContent); } catch (e) { /* keep old */ }
+        }
+        if (keepId && payloads[keepId]) {
+          renderRail(payloads[keepId]);
+          var keep = document.querySelector(
+            '.appt-block[data-appt="' + keepId + '"]'
+          );
+          if (keep) {
+            if (selected) selected.classList.remove("sel");
+            selected = keep;
+            keep.classList.add("sel");
+          }
+        }
+      })
+      .catch(function () {});
   }
 
   function applyMove(id, staffId, startMin, via) {
@@ -622,6 +945,17 @@
   document.addEventListener("os:undo-move", function (event) {
     var d = event.detail || {};
     if (applyMove(d.id, d.staff_id, d.start_min, "undo")) queueShadow(d.id);
+  });
+
+  /* A booking made from the modal while the day book is open
+     lands in place: the pack sync creates the block (with the
+     fresh pulse), the rail loads its payload — no page load. */
+  document.addEventListener("os:booked", function (event) {
+    var d = event.detail || {};
+    if (!layoutEl || d.date !== currentDate) return;
+    d.handled = true;
+    pollPack();
+    setTimeout(function () { refreshRailData(d.id); }, 350);
   });
 
   var shadowPending = {};
@@ -657,11 +991,16 @@
       }).catch(function () {});
     });
     shadowPending = {};
-    Promise.all(jobs).then(function () {
-      /* If another drag is already in hand, let it finish and
-         reconcile then — never swap the floor mid-gesture. */
-      if (ids.length && !document.querySelector(".appt-block.dragging")) {
-        refreshDay(parseInt(ids[ids.length - 1], 10));
+    Promise.all(jobs).then(function (responses) {
+      /* Reconcile by pack sync, never by rebuilding the page:
+         the geometry already matches, so the sync is invisible.
+         A failed write is the one case that earns a rebuild —
+         the screen must not keep a position the server refused. */
+      var failed = responses.some(function (r) { return !r || !r.ok; });
+      if (failed) {
+        refreshDay(ids.length ? parseInt(ids[ids.length - 1], 10) : null);
+      } else if (ids.length && !document.querySelector(".appt-block.dragging")) {
+        pollPack();
       }
     });
   }
@@ -733,17 +1072,28 @@
     if (pollBusy || document.hidden) return;
     if (document.querySelector(".appt-block.dragging")) return;
     pollBusy = true;
+    /* A switched day needs a fresh anchor even when the week's
+       version stands — the anchor extras describe one day only. */
+    var staleAnchor = model.anchorDate !== currentDate;
     var url = "/daybook/pack/?date=" + encodeURIComponent(currentDate || "") +
-      (packVersion ? "&stamp=" + encodeURIComponent(packVersion) : "");
+      (packVersion && !staleAnchor
+        ? "&stamp=" + encodeURIComponent(packVersion)
+        : "");
     fetch(url)
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (!data.version) return;
-        if (data.days) buildModel(data);
-        if (packVersion === null) {
-          packVersion = data.version;
-        } else if (data.changed) {
-          packVersion = data.version;
+        var initial = packVersion === null;
+        var moved = data.changed && data.version !== packVersion;
+        packVersion = data.version;
+        if (!data.days) return;
+        buildModel(data, currentDate);
+        if (!initial && !moved && !staleAnchor) return;
+        /* Our own writes still in flight: their flush re-polls
+           when it lands — syncing now would repaint from a
+           server state that has not seen them yet. */
+        if (Object.keys(shadowPending).length || shadowTimer) return;
+        if (!syncFromModel() && !initial) {
           refreshDay(railEl ? railEl.getAttribute("data-current") : null);
         }
       })
@@ -919,7 +1269,19 @@
       return r.json().then(function (data) { return { ok: r.ok, data: data }; });
     }).then(function (res) {
       if (res.ok && res.data.ok) {
-        window.location.href = "/?date=" + res.data.date;
+        /* On the day book itself, the new block should simply
+           appear — a full page load to show one booking is the
+           old world's manners. The daybook claims the event;
+           anywhere else, navigate as before. */
+        var ev = new CustomEvent("os:booked", {
+          detail: { id: res.data.appointment_id, date: res.data.date, handled: false },
+        });
+        document.dispatchEvent(ev);
+        if (ev.detail.handled) {
+          hide();
+        } else {
+          window.location.href = "/?date=" + res.data.date;
+        }
       } else {
         fail((res.data && res.data.error) || "That booking did not save — try again.");
       }

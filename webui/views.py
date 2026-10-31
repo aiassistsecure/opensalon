@@ -63,11 +63,54 @@ _STATUS_ACTIONS = {
     ],
     Appointment.Status.ARRIVED: [
         (Appointment.Status.IN_SERVICE, "Start Service", True),
+        (Appointment.Status.BOOKED, "Undo Check In", False),
         (Appointment.Status.CANCELLED, "Cancel", False),
     ],
     Appointment.Status.IN_SERVICE: [
         (Appointment.Status.COMPLETED, "Complete", True),
     ],
+    Appointment.Status.NO_SHOW: [
+        (Appointment.Status.BOOKED, "Undo No-show", True),
+    ],
+}
+
+
+def _status_toggles(status):
+    """Check-in and no-show as full toggles, not one-way trips.
+
+    Each toggle carries its current state and the target a flip
+    posts; the transition table above governs legality, so a
+    toggle is just the honest switch for moves the table already
+    allows both ways. A toggle the appointment has outgrown —
+    checked in, then the service started — still shows its
+    state, disabled: history is not rewritten by flipping a
+    switch.
+    """
+    S = Appointment.Status
+    pre_arrival = status in (S.BOOKED, S.CONFIRMED)
+    return [
+        {
+            "key": "checkin",
+            "label": "Checked in",
+            "on": status in (S.ARRIVED, S.IN_SERVICE, S.COMPLETED),
+            "enabled": pre_arrival or status == S.ARRIVED,
+            "target": S.BOOKED if status == S.ARRIVED else S.ARRIVED,
+        },
+        {
+            "key": "noshow",
+            "label": "No-show",
+            "on": status == S.NO_SHOW,
+            "enabled": pre_arrival or status == S.NO_SHOW,
+            "target": S.BOOKED if status == S.NO_SHOW else S.NO_SHOW,
+        },
+    ]
+
+
+# Targets the toggles own; the button row keeps the rest.
+_TOGGLE_TARGETS = {
+    Appointment.Status.ARRIVED,
+    Appointment.Status.NO_SHOW,
+    Appointment.Status.BOOKED,
 }
 
 # A follow-on service starting within this gap of the previous one's
@@ -377,7 +420,9 @@ def _day_book_context(request):
                 "actions": [
                     {"status": s, "label": label, "primary": primary}
                     for s, label, primary in _STATUS_ACTIONS.get(appt.status, [])
+                    if s not in _TOGGLE_TARGETS
                 ],
+                "toggles": _status_toggles(appt.status),
                 "client_name": client.display_name
                 if hasattr(client, "display_name")
                 else f"{client.first_name} {client.last_name}".strip(),
@@ -1039,33 +1084,108 @@ def day_book_pack(request):
     version = f"{in_range.count()}:{(latest.isoformat() if latest else '')}"
     if request.GET.get("stamp") and request.GET.get("stamp") == version:
         return JsonResponse({"changed": False, "version": version})
-    prices, base_level_id = _price_lookup(salon)
-    days = {day.isoformat(): [] for day in week}
-    rows = in_range.select_related(
-        "client", "staff_member", "service", "service__category"
-    ).order_by("start")
-    for appt in rows:
-        local_start = appt.start.astimezone(tz)
-        iso = local_start.date().isoformat()
-        if iso not in days:
-            continue
-        local_end = appt.end.astimezone(tz)
-        amount = _amount_for(appt, prices, base_level_id)
-        days[iso].append(
-            {
-                "id": appt.pk,
-                "staff_id": appt.staff_member_id,
-                "client": f"{appt.client.first_name} {appt.client.last_name}".strip(),
-                "service": appt.service.name if appt.service else appt.service_name,
-                "cat": slugify(appt.service.category.name)
-                if appt.service and appt.service.category_id
-                else "misc",
-                "start_min": local_start.hour * 60 + local_start.minute,
-                "end_min": local_end.hour * 60 + local_end.minute,
-                "status": appt.status,
-                "amount": str(amount) if amount is not None else None,
-            }
+    # Pack v2: every day's entries are lifted from the day book's
+    # own context builder, so the pack can never disagree with the
+    # page about a block, a price, or a visit — same function, same
+    # numbers. The anchor day additionally carries its rendered
+    # ribbon/intel/agenda facts, which lets the client reconcile
+    # in place (update what changed, touch nothing else) instead
+    # of rebuilding the page: the sturdy-composition contract.
+    import types
+
+    client_ids = {
+        row.pk: row.client_id
+        for row in in_range.only("id", "client_id")
+    }
+    days = {}
+    anchor_extra = {}
+    for day in week:
+        ctx = _day_book_context(
+            types.SimpleNamespace(GET={"date": day.isoformat()})
         )
+        tiles = []
+        for col in ctx["staff_columns"]:
+            for tile in col["blocks"]:
+                tile["_staff_id"] = col["member"].pk
+                tiles.append(tile)
+        tiles.sort(key=lambda t: (t["_start"], t["appointment_id"]))
+        # Visit keys with the day book's own chaining rule: same
+        # client + stylist, chained while the gap stays within
+        # VISIT_GAP; the key is the visit's first appointment.
+        visit_of = {}
+        grouped = {}
+        for tile in tiles:
+            grouped.setdefault(
+                (client_ids.get(tile["appointment_id"]), tile["_staff_id"]), []
+            ).append(tile)
+        for group in grouped.values():
+            visit, visit_end = [], None
+            for tile in group:
+                if visit and tile["_start"] > visit_end + VISIT_GAP:
+                    for member_tile in visit:
+                        visit_of[member_tile["appointment_id"]] = visit[0][
+                            "appointment_id"
+                        ]
+                    visit, visit_end = [], None
+                visit.append(tile)
+                visit_end = max(visit_end or tile["_end"], tile["_end"])
+            for member_tile in visit:
+                visit_of[member_tile["appointment_id"]] = visit[0]["appointment_id"]
+        entries = []
+        for tile in tiles:
+            start = tile["_start"].astimezone(tz)
+            end = tile["_end"].astimezone(tz)
+            entries.append(
+                {
+                    "id": tile["appointment_id"],
+                    "staff_id": tile["_staff_id"],
+                    "client": tile["client_name"],
+                    "service": tile["service_name"],
+                    "cat": tile["cat_key"],
+                    "start_min": start.hour * 60 + start.minute,
+                    "end_min": end.hour * 60 + end.minute,
+                    "status": tile["status"],
+                    "amount": str(tile["_amount"])
+                    if tile["_amount"] is not None
+                    else None,
+                    "price_label": tile["price_label"],
+                    "time_label": tile["time_label"],
+                    "visit": visit_of.get(tile["appointment_id"]),
+                }
+            )
+        days[day.isoformat()] = entries
+        if day == anchor:
+            overview, intel, kpi = ctx["overview"], ctx["intel"], ctx["kpi"]
+            anchor_extra = {
+                "ribbon": {
+                    "revenue_label": overview["revenue_label"],
+                    "unpriced": overview["unpriced"],
+                    "appointments": overview["appointments"],
+                    "visits": overview["visits"],
+                    "utilization": overview["utilization"],
+                    "avg_ticket_label": kpi["avg_ticket_label"],
+                    "new_clients": kpi["new_clients"],
+                },
+                "intel": {
+                    "completed": intel["completed"],
+                    "remaining": intel["remaining"],
+                    "top_label": intel["top_label"],
+                    "next_label": intel["next_label"],
+                    "next_sub": intel["next_sub"],
+                },
+                "agenda": ctx["agenda"],
+                "agenda_now_index": ctx["agenda_now_index"],
+                "now_label": ctx["now_label"],
+                "columns": [
+                    {
+                        "member": col["member"].pk,
+                        "visits_count": col["visits_count"],
+                        "day_total_label": col["day_total_label"],
+                        "on_duty": col["on_duty"],
+                    }
+                    for col in ctx["staff_columns"]
+                ],
+            }
     staff = [
         {
             "id": m.pk,
@@ -1079,12 +1199,13 @@ def day_book_pack(request):
     ]
     return JsonResponse(
         {
-            "pack": 1,
+            "pack": 2,
             "changed": True,
             "version": version,
             "week_of": monday.isoformat(),
             "days": days,
             "staff": staff,
+            "anchor": anchor_extra,
         }
     )
 

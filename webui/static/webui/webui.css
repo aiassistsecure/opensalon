@@ -878,3 +878,30 @@ body.side-collapsed .switcher { justify-content: center; padding: 8px; }
 .book-actions .btn-ghost { color: #4c4636; border-color: #e0d5b8; background: #fff; }
 
 .shadow-state { font-size: 11px; font-weight: 600; color: #a2987d; letter-spacing: .02em; }
+
+/* Status toggles (check-in / no-show): real switches with a
+   state, not one-way buttons — flip on, flip back off. */
+.rail-toggles { display: grid; gap: 8px; margin: 14px 0 2px; }
+.rtoggle-row { display: flex; align-items: center; justify-content: space-between; background: #fff; border: 1px solid #e7dfd2; border-radius: 12px; padding: 9px 12px; }
+.rtoggle-label { font-size: 13px; font-weight: 650; color: #4d4636; }
+.tswitch { width: 46px; height: 26px; border-radius: 999px; border: 1px solid #d8cfba; background: #efe9db; position: relative; cursor: pointer; transition: background .18s ease, border-color .18s ease; flex: none; padding: 0; }
+.tswitch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(60, 50, 20, .25); transition: left .18s ease; }
+.tswitch.on { background: #7d9b6a; border-color: #7d9b6a; }
+.tswitch.on::after { left: 22px; }
+.tswitch.t-noshow.on { background: #b0562f; border-color: #b0562f; }
+.tswitch:disabled { opacity: .55; cursor: default; }
+
+/* Sturdy composition: a hot-range swap is a context change, not
+   a premiere — blocks must not replay their entrance animation
+   every time the layout is replaced, or the book flickers. The
+   rise belongs to the first paint only. */
+.book-layout.synced .appt-block { animation: none; }
+
+/* A block the client created (another desk's booking, a booking
+   just made here) announces itself with one gold pulse instead
+   of the entrance choreography. */
+.appt-block.fresh { animation: freshPulse 1.4s ease-out; }
+@keyframes freshPulse {
+  0% { box-shadow: 0 0 0 0 rgba(176, 141, 87, .55); }
+  100% { box-shadow: 0 0 0 14px rgba(176, 141, 87, 0); }
+}
