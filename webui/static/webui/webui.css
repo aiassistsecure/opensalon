@@ -1182,3 +1182,7 @@ button:focus-visible, a:focus-visible, select:focus-visible {
 .ins-bar{width:100%;min-height:2px;border-radius:5px 5px 2px 2px;
   background-image:linear-gradient(180deg,rgba(255,255,255,.5),rgba(255,255,255,0) 55%),linear-gradient(180deg,#7ba468,#3f5a36)}
 .ins-bar-d{font-size:.66rem;color:#9a927e}
+
+/* Checkout modal: email-the-receipt row (revealed once settled). */
+.co-emailrow{display:flex;gap:8px;margin-top:10px}
+.co-emailrow input{flex:1;min-width:0;padding:8px 11px;border:1px solid #ddd5c2;border-radius:9px;font:inherit;font-size:.88rem}

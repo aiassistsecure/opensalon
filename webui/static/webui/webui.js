@@ -1475,6 +1475,10 @@
     coState = { appt: apptId, tender: "cash", products: {}, settled: false };
     coEl("coErr").classList.add("hidden");
     coEl("coReceipt").classList.add("hidden");
+    var emailRow0 = coEl("coEmailRow");
+    if (emailRow0) emailRow0.classList.add("hidden");
+    var sendBtn0 = coEl("coSendReceipt");
+    if (sendBtn0) { sendBtn0.disabled = false; sendBtn0.textContent = "Email receipt"; }
     coEl("coSearch").value = "";
     coEl("coResults").classList.add("hidden");
     var done = coEl("coComplete");
@@ -1593,10 +1597,53 @@
             pre.textContent = data.receipt_text;
             pre.classList.remove("hidden");
           }
+          coState.saleId = data.sale_id;
+          var emailRow = coEl("coEmailRow");
+          if (emailRow) {
+            coEl("coEmail").value = data.client_email || "";
+            emailRow.classList.remove("hidden");
+          }
         })
         .catch(function () {
           var err = coEl("coErr");
           err.textContent = "Checkout could not reach the server.";
+          err.classList.remove("hidden");
+        });
+    });
+    var sendBtn = coEl("coSendReceipt");
+    if (sendBtn) sendBtn.addEventListener("click", function () {
+      var layout = document.querySelector(".book-layout");
+      var tokenEl = layout.querySelector('input[name="csrfmiddlewaretoken"]');
+      sendBtn.disabled = true;
+      sendBtn.textContent = "Sending…";
+      fetch(layout.dataset.receiptEmail, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": tokenEl ? tokenEl.value : "",
+        },
+        body: JSON.stringify({
+          sale_id: coState.saleId,
+          email: coEl("coEmail").value,
+        }),
+      })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (data.ok) {
+            sendBtn.textContent = "Receipt sent ✓";
+          } else {
+            sendBtn.disabled = false;
+            sendBtn.textContent = "Email receipt";
+            var err = coEl("coErr");
+            err.textContent = data.error || "Could not email the receipt.";
+            err.classList.remove("hidden");
+          }
+        })
+        .catch(function () {
+          sendBtn.disabled = false;
+          sendBtn.textContent = "Email receipt";
+          var err = coEl("coErr");
+          err.textContent = "Receipt email could not reach the server.";
           err.classList.remove("hidden");
         });
     });

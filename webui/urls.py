@@ -26,6 +26,7 @@ urlpatterns = [
     path("daybook/apply/", views.day_book_apply, name="daybook_apply"),
     path("daybook/price/", views.day_book_price, name="daybook_price"),
     path("daybook/checkout/", views.day_book_checkout, name="daybook_checkout"),
+    path("daybook/receipt-email/", views.day_book_receipt_email, name="daybook_receipt_email"),
     path("daybook/products/", views.day_book_products, name="daybook_products"),
     path("daybook/note/", views.day_book_note, name="daybook_note"),
     path("price-book/", views.price_book, name="pricebook"),
