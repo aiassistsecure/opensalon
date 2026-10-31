@@ -25,7 +25,7 @@ import json
 from decimal import Decimal, InvalidOperation
 
 from django.core.paginator import Paginator
-from django.db.models import Count, Min, Q
+from django.db.models import Count, Max, Min, Q
 from django.http import JsonResponse
 from django.shortcuts import render
 from django.utils import timezone
@@ -264,7 +264,17 @@ def _duration_label(minutes):
     return f"{hours}h" if hours else f"{mins}m"
 
 
-def _day_book_context(request):
+def _day_book_context(request, *, light=False, kit=None):
+    """Build one day's book.
+
+    ``kit`` lets a caller that already holds shared facts hand
+    them down (members, prices, the day's rows, client
+    aggregates) instead of every day re-scanning for them — on
+    a scan-priced store each avoided pass is real time. ``light``
+    skips the rail-only reads (notes, history, payloads) for
+    callers that need blocks and facts, not cards: the week
+    pack's non-anchor days.
+    """
     salon = Salon.objects.order_by("id").first()
     tz = _tz(salon) if salon is not None else timezone.get_current_timezone()
     # "Today" is the salon's today. The server clock (UTC) rolls into
@@ -327,21 +337,50 @@ def _day_book_context(request):
                 "sort_order", "name"
             )
         )
-        members = list(
-            StaffMember.objects.filter(salon=salon, active=True)
-            .select_related("staff_level")
-            .prefetch_related("roster_patterns")
-        )
-        feed = {c.staff_member_id: c for c in feed_blocks_for_day(salon, day)}
-        prices, base_level_id = _price_lookup(salon)
-        day_appts = list(
-            Appointment.objects.filter(
-                staff_member__in=members, start__lt=day_end, end__gt=day_start
+        kit = kit or {}
+        members = (
+            kit["members"]
+            if "members" in kit
+            else list(
+                StaffMember.objects.filter(salon=salon, active=True)
+                .select_related("staff_level")
+                .prefetch_related("roster_patterns")
             )
-            .exclude(status=Appointment.Status.CANCELLED)
-            .select_related("client", "staff_member", "service", "service__category")
-            .order_by("start")
         )
+        prices, base_level_id = (
+            kit["prices"] if "prices" in kit else _price_lookup(salon)
+        )
+        if "day_appts" in kit:
+            day_appts = list(kit["day_appts"])
+        else:
+            # Midnight bounds — the feed's own. The day's rows
+            # are fetched once and shared by the grid, the rail
+            # and the pack; the visible 8–20 window stays a
+            # rendering choice, and an appointment outside it is
+            # still a real appointment with a real card (before
+            # this, one at 7am had a block but no payload and
+            # priced as unpriced).
+            midnight = datetime.datetime.combine(
+                day, datetime.time.min, tzinfo=tz
+            )
+            day_appts = list(
+                Appointment.objects.filter(
+                    staff_member__in=members,
+                    start__lt=midnight + datetime.timedelta(days=1),
+                    end__gt=midnight,
+                )
+                .exclude(status=Appointment.Status.CANCELLED)
+                .select_related(
+                    "client", "staff_member", "service", "service__category"
+                )
+                .order_by("start")
+            )
+        # The feed renders the SAME rows: hand them over instead
+        # of letting it scan the appointments table a second time.
+        feed = {
+            c.staff_member_id: c
+            for c in feed_blocks_for_day(salon, day, appointments=day_appts)
+        }
         appt_by_id = {a.pk: a for a in day_appts}
 
         def amount_for(appt):
@@ -366,42 +405,51 @@ def _day_book_context(request):
 
         # ---- per-client facts for the rail (record only) ----
         client_ids = {a.client_id for a in day_appts}
-        visit_counts = {
-            row["client_id"]: row["n"]
-            for row in Appointment.objects.filter(client_id__in=client_ids)
-            .values("client_id")
-            .annotate(n=Count("id"))
-        }
-        # First-visit days, one rule shared by the ribbon's new
-        # count and the blocks' new-guest highlight: a client is
-        # new on the day of their first-ever appointment.
+        # One aggregate pass over the day's clients, not three:
+        # visit counts and first-visit days come from the same
+        # grouped scan. First-visit days follow one rule shared
+        # by the ribbon's new count and the blocks' new-guest
+        # highlight: a client is new on the day of their
+        # first-ever appointment.
+        aggregates = (
+            kit["aggregates"]
+            if "aggregates" in kit
+            else {
+                row["client_id"]: row
+                for row in Appointment.objects.filter(client_id__in=client_ids)
+                .values("client_id")
+                .annotate(n=Count("id"), first=Min("start"))
+            }
+        )
+        visit_counts = {cid: row["n"] for cid, row in aggregates.items()}
         first_days = {
-            row["client_id"]: row["first"].astimezone(tz).date()
-            for row in Appointment.objects.filter(client_id__in=client_ids)
-            .values("client_id")
-            .annotate(first=Min("start"))
+            cid: row["first"].astimezone(tz).date()
+            for cid, row in aggregates.items()
         }
+        # Rail-only reads: light callers (the pack's non-anchor
+        # days) never render a card, so they never pay for them.
         client_notes = {}
-        for note in ClientNote.objects.filter(client_id__in=client_ids).order_by(
-            "-created_at"
-        ):
-            client_notes.setdefault(note.client_id, []).append(
-                {"id": note.pk, "body": note.body}
-            )
         appt_notes = {}
-        for note in AppointmentNote.objects.filter(
-            appointment_id__in=appt_by_id
-        ).order_by("-created_at"):
-            appt_notes.setdefault(note.appointment_id, []).append(
-                {"id": note.pk, "body": note.body}
-            )
         history = {}
-        for appt in (
-            Appointment.objects.filter(client_id__in=client_ids)
-            .select_related("staff_member", "service")
-            .order_by("-start")
-        ):
-            history.setdefault(appt.client_id, []).append(appt)
+        if not light:
+            for note in ClientNote.objects.filter(
+                client_id__in=client_ids
+            ).order_by("-created_at"):
+                client_notes.setdefault(note.client_id, []).append(
+                    {"id": note.pk, "body": note.body}
+                )
+            for note in AppointmentNote.objects.filter(
+                appointment_id__in=appt_by_id
+            ).order_by("-created_at"):
+                appt_notes.setdefault(note.appointment_id, []).append(
+                    {"id": note.pk, "body": note.body}
+                )
+            for appt in (
+                Appointment.objects.filter(client_id__in=client_ids)
+                .select_related("staff_member", "service")
+                .order_by("-start")
+            ):
+                history.setdefault(appt.client_id, []).append(appt)
 
         def rail_payload(appt):
             visit = visits[appt.pk]
@@ -514,7 +562,8 @@ def _day_book_context(request):
                     unpriced += 1
                 else:
                     revenue += amount
-                rail_payloads[raw.appointment_id] = rail_payload(appt)
+                if not light and appt is not None:
+                    rail_payloads[raw.appointment_id] = rail_payload(appt)
                 blocks.append(
                     {
                         "appointment_id": raw.appointment_id,
@@ -688,18 +737,14 @@ def _day_book_context(request):
             )
 
         # ---- KPI ribbon facts: each one computed, never styled in
-        firsts = (
-            Appointment.objects.filter(client_id__in=client_ids)
-            .values("client_id")
-            .annotate(first=Min("start"))
-        )
         kpi = {
             "avg_ticket_label": _money_label(revenue / visits_count)
             if visits_count
             else "—",
-            "new_clients": sum(
-                1 for row in firsts if row["first"].astimezone(tz).date() == day
-            ),
+            # The shared first-days map from the one aggregate
+            # pass — the ribbon and the block glow can never
+            # disagree about who is new.
+            "new_clients": sum(1 for d in first_days.values() if d == day),
         }
 
         # ---- intelligence strip: real answers from the day itself
@@ -767,7 +812,7 @@ def _day_book_context(request):
             for tile, member in ordered
         ]
 
-        if day_appts:
+        if day_appts and day_appts[0].pk in rail_payloads:
             default_rail = rail_payloads[day_appts[0].pk]
 
     now_top = None
@@ -1300,16 +1345,27 @@ def day_book_pack(request):
     range_end = datetime.datetime.combine(
         week[-1] + datetime.timedelta(days=1), datetime.time.min, tzinfo=tz
     )
-    in_range = Appointment.objects.filter(
-        staff_member__salon=salon, start__lt=range_end, end__gt=range_start
-    ).exclude(status=Appointment.Status.CANCELLED)
-    latest = (
-        Appointment.objects.filter(staff_member__salon=salon)
-        .order_by("-updated_at")
-        .values_list("updated_at", flat=True)
-        .first()
+    # The kit's members are fetched first: filtering the range
+    # by their ids (a narrow column predicate) instead of by
+    # staff_member__salon (a join) is the difference between a
+    # scan and a scan-with-a-join on the wire — and the pack
+    # only ever carries these members' appointments anyway.
+    members = list(
+        StaffMember.objects.filter(salon=salon, active=True)
+        .select_related("staff_level")
+        .prefetch_related("roster_patterns")
     )
-    version = f"{in_range.count()}:{(latest.isoformat() if latest else '')}"
+    in_range = Appointment.objects.filter(
+        staff_member_id__in=[m.pk for m in members],
+        start__lt=range_end,
+        end__gt=range_start,
+    ).exclude(status=Appointment.Status.CANCELLED)
+    # One aggregate pass answers the stamp: how many rows the
+    # pack would carry, and the freshest write among them. A
+    # write outside the visible week cannot change this pack,
+    # so it no longer invalidates it either.
+    stats = in_range.aggregate(n=Count("id"), m=Max("updated_at"))
+    version = f"{stats['n']}:{(stats['m'].isoformat() if stats['m'] else '')}"
     if request.GET.get("stamp") and request.GET.get("stamp") == version:
         return JsonResponse({"changed": False, "version": version})
     # Pack v2: every day's entries are lifted from the day book's
@@ -1321,15 +1377,48 @@ def day_book_pack(request):
     # of rebuilding the page: the sturdy-composition contract.
     import types
 
-    client_ids = {
-        row.pk: row.client_id
-        for row in in_range.only("id", "client_id")
+    # The week's rows are fetched ONCE, with their joins, and
+    # handed to each day: seven contexts used to mean seven
+    # scans of the appointments table (plus seven of everything
+    # else). Shared kit — members, prices, and one aggregate
+    # pass over the week's clients — is computed here, once.
+    week_appts = list(
+        in_range.select_related(
+            "client", "staff_member", "service", "service__category"
+        ).order_by("start")
+    )
+    client_ids = {row.pk: row.client_id for row in week_appts}
+    week_client_ids = {row.client_id for row in week_appts}
+    aggregates = (
+        {
+            row["client_id"]: row
+            for row in Appointment.objects.filter(client_id__in=week_client_ids)
+            .values("client_id")
+            .annotate(n=Count("id"), first=Min("start"))
+        }
+        if week_client_ids
+        else {}
+    )
+    kit_base = {
+        "members": members,
+        "prices": _price_lookup(salon),
+        "aggregates": aggregates,
     }
     days = {}
     anchor_extra = {}
     for day in week:
+        day_lo = datetime.datetime.combine(day, datetime.time.min, tzinfo=tz)
+        day_hi = day_lo + datetime.timedelta(days=1)
+        kit = dict(
+            kit_base,
+            day_appts=[
+                a for a in week_appts if a.start < day_hi and a.end > day_lo
+            ],
+        )
         ctx = _day_book_context(
-            types.SimpleNamespace(GET={"date": day.isoformat()})
+            types.SimpleNamespace(GET={"date": day.isoformat()}),
+            light=(day != anchor),
+            kit=kit,
         )
         tiles = []
         for col in ctx["staff_columns"]:

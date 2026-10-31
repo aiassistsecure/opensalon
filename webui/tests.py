@@ -720,6 +720,31 @@ class CardEditTests(WritePathTests):
         ][0]
         self.assertEqual(entry["status"], "arrived")
 
+    def test_appointment_outside_the_window_still_has_a_card(self):
+        """The visible window is 8-20, but the feed runs on
+        midnight bounds: an early appointment always rendered a
+        block while the window-bounded rail lookup missed it —
+        and the payload build crashed on the miss. One fetch on
+        midnight bounds serves grid and rail alike now."""
+        early = Appointment.objects.create(
+            client=self.person,
+            staff_member=self.member,
+            service=self.service,
+            start=timezone.make_aware(datetime.datetime(2026, 11, 2, 7, 0)),
+            end=timezone.make_aware(datetime.datetime(2026, 11, 2, 7, 45)),
+            status="booked",
+        )
+        url = reverse("webui:daybook") + "?date=2026-11-02"
+        page = self.client.get(url)
+        self.assertEqual(page.status_code, 200)
+        self.assertContains(page, "Jaime Orta")
+        pack = self.client.get(
+            reverse("webui:daybook_pack") + "?date=2026-11-02"
+        ).json()
+        self.assertIn(
+            early.pk, [e["id"] for e in pack["days"]["2026-11-02"]]
+        )
+
     def test_pack_marks_first_visit_clients_new(self):
         """One rule for the ribbon count and the block glow:
         a client is new on the day of their first-ever visit."""
