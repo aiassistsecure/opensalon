@@ -300,6 +300,7 @@ button { font-family: inherit; }
 .appt-block {
   --hue: #94a3c8;
   position: absolute; z-index: 3; overflow: hidden; cursor: pointer;
+  display: flex; flex-direction: column;
   border-radius: 11px; padding: 7px 10px 6px;
   background: linear-gradient(150deg, color-mix(in srgb, var(--hue) 26%, rgba(10, 16, 36, .88)), color-mix(in srgb, var(--hue) 10%, rgba(8, 12, 28, .92)));
   border: 1px solid color-mix(in srgb, var(--hue) 52%, transparent);
@@ -320,7 +321,7 @@ button { font-family: inherit; }
 .cat-texture { --hue: #c084fc; } .cat-treatments { --hue: #4ade80; } .cat-nails { --hue: #38bdf8; }
 .cat-consultation { --hue: #60a5fa; } .cat-waxing { --hue: #7dd3fc; } .cat-misc { --hue: #94a3c8; }
 .b-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; }
-.b-time { font-size: 10px; font-weight: 650; color: color-mix(in srgb, var(--hue) 72%, #fff); letter-spacing: .02em; white-space: nowrap; }
+.b-time { font-size: 10.5px; line-height: 1.15; font-weight: 650; color: color-mix(in srgb, var(--hue) 72%, #fff); letter-spacing: .02em; white-space: nowrap; }
 .b-ico {
   width: 15px; height: 15px; border-radius: 50%; flex: none; display: grid; place-items: center;
   font-size: 9px; font-weight: 800; color: #04140d; background: var(--tx3);
@@ -331,20 +332,29 @@ button { font-family: inherit; }
 .status-arrived .b-ico { background: var(--sky); } .status-arrived .b-ico::before { content: "●"; font-size: 7px; }
 .status-in_service .b-ico { background: #f472b6; } .status-in_service .b-ico::before { content: "◉"; font-size: 8px; }
 .status-no_show .b-ico { background: #f87171; } .status-no_show .b-ico::before { content: "✕"; }
-.b-client { font-weight: 700; font-size: 13px; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+.b-main { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.b-client { flex: 1 1 auto; min-width: 0; font-weight: 700; font-size: 13px; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+.b-services { flex: 0 1 auto; min-height: 0; overflow: hidden; }
 .b-service {
   color: var(--tx2); font-size: 11px; overflow: hidden;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
 }
-.b-price { position: absolute; right: 10px; bottom: 6px; font-weight: 700; font-size: 12px; color: #fff; }
+/* The price rides the name row, in flow: the name ellipsizes
+   before the price ever moves, and no text is drawn over any
+   other text at any block height. (It used to float absolute
+   at the block's bottom-right, on top of the service line —
+   the founder's screenshot of 2026-10-31 is the obituary.) */
+.b-price { flex: none; font-weight: 700; font-size: 12.5px; line-height: 1.2; white-space: nowrap; color: #fff; }
 .appt-block.mini { padding: 5px 9px; }
-/* Degradation order: mini yields the service line but keeps the
-   price; only a micro block (too short for three rows at all)
-   yields both. A resolved price otherwise always shows. */
-.appt-block.mini .b-service { display: none; }
+/* Degradation order as a block shortens, one law everywhere:
+   the service band yields first (it flexes away inside its own
+   band); a mini block then keeps ONE row — the name and its
+   price, the two things the desk reads at a glance — with the
+   time on the axis and the status in the block's colour; a
+   micro block keeps the name alone. */
+.appt-block.mini .b-top, .appt-block.mini .b-services { display: none; }
+.appt-block.mini .b-client { font-size: 12.5px; margin-top: 0; }
 .appt-block.micro .b-service, .appt-block.micro .b-price { display: none; }
-.appt-block.mini .b-client { font-size: 11.5px; margin-top: 0; }
-.appt-block.mini .b-time { font-size: 9px; }
 
 /* ---------- intelligence bar ---------- */
 .intelbar {
