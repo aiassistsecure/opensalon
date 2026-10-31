@@ -132,6 +132,25 @@ class BreakOnTheBookTests(WebuiTestBase):
         self.assertIn('id="slotPopPaid"', html)
 
 
+class SlotPopGestureTests(TestCase):
+    """The popover opens on pointerup; the opening press's own
+    trailing click must not read as an outside click and close
+    it in the same gesture — the founder hit exactly that: the
+    empty-space press appeared to do nothing at all. The closer
+    carries a birth guard, and both openers stamp it."""
+
+    def test_the_closer_honours_the_birth_guard(self):
+        from pathlib import Path
+
+        js = (
+            Path(__file__).resolve().parent / "static" / "webui" / "webui.js"
+        ).read_text(encoding="utf-8")
+        self.assertIn("slotPopBornAt = performance.now()", js)
+        self.assertIn("performance.now() - slotPopBornAt < 400", js)
+        # Both faces stamp the birth: the chooser and break info.
+        self.assertEqual(js.count("slotPopBornAt = performance.now()"), 2)
+
+
 class BreakAvailabilityTests(WebuiTestBase):
     def setUp(self):
         super().setUp()

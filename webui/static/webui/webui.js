@@ -668,6 +668,12 @@
      fragment, so every lookup goes by id at call time and the
      wiring binds once per element. */
   var slotCtx = null;
+  /* When the popover was born. It opens on pointerup, and the
+     press that opened it still has its trailing click to fire —
+     the outside-click closer must not eat the popover's own
+     opening gesture, or the desk sees the card for zero frames
+     and concludes the press did nothing. */
+  var slotPopBornAt = 0;
 
   function slotPopEl() { return document.getElementById("slotPop"); }
 
@@ -729,6 +735,7 @@
     slotCtx.paid = false;
     slotPopShow(el, "choose");
     placeSlotPop(el, ctx.x, ctx.y);
+    slotPopBornAt = performance.now();
     if (anchorEl) slotCtx.anchor = anchorEl;
   }
 
@@ -745,6 +752,7 @@
       (time ? time.textContent : "") + " — tap Remove to give the time back to the book.";
     slotPopShow(el, "info");
     placeSlotPop(el, x, y);
+    slotPopBornAt = performance.now();
   }
 
   function paintBreak(b) {
@@ -858,6 +866,10 @@
     if (bb) { openBreakInfo(bb, e.clientX, e.clientY); return; }
     var el = slotPopEl();
     if (el && !el.classList.contains("hidden") && !e.target.closest("#slotPop")) {
+      /* The opening press's own trailing click lands a few
+         milliseconds after pointerup — inside the guard window
+         it is the gesture that BORNED the card, not a dismissal. */
+      if (performance.now() - slotPopBornAt < 400) return;
       closeSlotPop();
     }
   });
