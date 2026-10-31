@@ -2,8 +2,9 @@
 
 Run with: python manage.py test opensalon.backends.nedb
 These tests pin: no session-setup SQL, no SQL test-database creation,
-the schema editor's catalog-validating no-op DDL handling (N-M3d), and
-savepoint no-ops so nested atomic() sends no savepoint SQL (N-M3e).
+the schema editor's catalog-validating no-op DDL handling (N-M3d),
+savepoint no-ops so nested atomic() sends no savepoint SQL (N-M3e), and
+no FOR UPDATE clause from select_for_update() (N-M3i, DYOR 9.7).
 """
 
 from unittest import mock
@@ -831,3 +832,63 @@ class NedbIdentityLiveTests(SimpleTestCase):
         self.assertTrue(
             all(isinstance(p, int) for p in Permission.objects.values_list("id", flat=True))
         )
+
+
+# -- N-M3i: FOR UPDATE guard (DYOR 9.7) -------------------------------
+
+from django.db.models.sql import Query as DjangoQuery
+
+
+def _select_for_update_sql(**flags):
+    """Compile a select_for_update SELECT offline on a NEDB wrapper."""
+    from saloncore.models import Salon
+
+    wrapper = _wrapper()
+    query = DjangoQuery(Salon)
+    query.select_for_update = True
+    query.select_for_update_nowait = flags.get("nowait", False)
+    query.select_for_update_skip_locked = flags.get("skip_locked", False)
+    query.select_for_update_of = flags.get("of", ())
+    query.select_for_no_key_update = flags.get("no_key", False)
+    compiler = query.get_compiler(connection=wrapper)
+    sql, params = compiler.as_sql()
+    return sql
+
+
+class ForUpdateFeatureTests(SimpleTestCase):
+    def test_wrapper_uses_nedb_features_without_select_for_update(self):
+        wrapper = _wrapper()
+        self.assertIs(wrapper.features_class, DatabaseFeatures)
+        self.assertFalse(wrapper.features.has_select_for_update)
+        self.assertFalse(wrapper.features.has_select_for_update_nowait)
+        self.assertFalse(wrapper.features.has_select_for_update_skip_locked)
+        self.assertFalse(wrapper.features.has_select_for_update_of)
+        self.assertFalse(wrapper.features.has_select_for_no_key_update)
+
+
+class ForUpdateSqlTests(SimpleTestCase):
+    def test_operations_build_no_for_update_sql(self):
+        wrapper = _wrapper()
+        self.assertEqual(wrapper.ops.for_update_sql(), "")
+        self.assertEqual(wrapper.ops.for_update_sql(nowait=True), "")
+        self.assertEqual(wrapper.ops.for_update_sql(skip_locked=True), "")
+        self.assertEqual(
+            wrapper.ops.for_update_sql(of=("saloncore_salon",)), ""
+        )
+        self.assertEqual(wrapper.ops.for_update_sql(no_key=True), "")
+
+    def test_compiled_select_for_update_has_no_lock_clause(self):
+        for flags in (
+            {},
+            {"nowait": True},
+            {"skip_locked": True},
+            {"no_key": True},
+        ):
+            with self.subTest(flags=flags):
+                sql = _select_for_update_sql(**flags)
+                self.assertTrue(sql.startswith("SELECT"))
+                self.assertIn('"saloncore_salon"', sql)
+                self.assertNotIn("FOR UPDATE", sql)
+                self.assertNotIn("FOR NO KEY UPDATE", sql)
+                self.assertNotIn("NOWAIT", sql)
+                self.assertNotIn("SKIP LOCKED", sql)

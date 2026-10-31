@@ -14,6 +14,12 @@ Flush (N-M3h, DYOR implication 5): TRUNCATE is refused by design, so
 replaces the flush with the creation layer's drop + recreate of the
 whole database over the nedbd HTTP API.
 
+FOR UPDATE (N-M3i, DYOR implication 7): lock clauses are refused by
+design, so ``features.has_select_for_update`` is False and
+``for_update_sql`` below returns an empty string -- a
+``select_for_update()`` queryset compiles to a plain unlocked SELECT
+on this backend (documented no-op; see ``features.py``).
+
 Temporal adaptation (N-M3f, DYOR implications 1 and 9): the stock
 PostgreSQL ``adapt_*field_value`` hooks return datetime/date/time
 objects untouched, and psycopg then renders them as
@@ -92,6 +98,18 @@ class DatabaseOperations(PostgresDatabaseOperations):
         # the flush is a database-level reset, not row deletion.
         name = self.connection.settings_dict["NAME"]
         self.connection.creation.reset_database(name)
+
+    # -- FOR UPDATE: no lock clause exists on this backend (9.7) -----
+    # NEDB refuses FOR UPDATE at execution, and
+    # features.has_select_for_update is False, so Django's compiler
+    # never asks for this SQL. Returning an empty string (falsy, so
+    # the compiler appends nothing) keeps the builder inert for any
+    # direct caller, mirroring set_time_zone_sql below and the
+    # savepoint builders above. All variants (NOWAIT, SKIP LOCKED,
+    # OF, NO KEY) degrade the same way: no locking is performed.
+
+    def for_update_sql(self, nowait=False, skip_locked=False, of=(), no_key=False):
+        return ""
 
     def set_time_zone_sql(self):
         # Neutralized: NEDB refuses set_config() on pgwire, and the
