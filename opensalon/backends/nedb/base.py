@@ -39,6 +39,13 @@ TRUNCATE/flush replacement (implication 5, N-M3h) lives in
 nedbd HTTP API) and ``operations.py`` (``sql_flush`` builds nothing;
 ``execute_sql_flush`` delegates to that reset).
 
+Test isolation (N-M6a, implication 4): ``features.py`` declares
+``supports_transactions = False`` because a pgwire ROLLBACK does not
+remove appended rows, so TestCase's wrap-and-rollback leaked rows
+between tests. Django then isolates TestCase like
+TransactionTestCase -- by flushing after each test -- and flush on
+this backend is the drop + recreate above, which does isolate.
+
 * Implication 7: FOR UPDATE is banned (N-M3i). ``features.py``
   declares ``has_select_for_update = False`` (variants included), so
   ``select_for_update()`` compiles to a plain unlocked SELECT, and
