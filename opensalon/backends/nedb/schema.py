@@ -183,8 +183,48 @@ class DatabaseSchemaEditor(PostgresDatabaseSchemaEditor):
                 "validation: %s",
                 sql_text.strip()[:200],
             )
+            self._materialize_created_tables(sql_text)
             return None
         return super().execute(sql, params)
+
+    def _materialize_created_tables(self, sql):
+        """Materialize each CREATE TABLE's collection (N-M8c, 9.3).
+
+        CREATE TABLE is the one DDL whose NEDB-semantics equivalent
+        is not nothing: in PostgreSQL it makes the empty relation
+        exist, and NEDB's write path / JOIN resolution refuse a
+        never-written collection by name. The creation layer's
+        put + tombstone sentinel makes the collection exist, empty
+        (see creation.py). Best-effort by design (the wrap
+        philosophy, DYOR section 7 -- never break the host): an
+        unreachable nedbd HTTP surface is logged, never allowed to
+        fail the migration; the flush/reset path materializes the
+        whole catalog again regardless. Skipped under collect_sql
+        (a dry run must not touch the store).
+        """
+        if self.collect_sql:
+            return
+        tables = {
+            match.group(1).strip('"')
+            for match in _TABLE_PATTERNS[0].finditer(sql)
+        }
+        if not tables:
+            return
+        creation = getattr(self.connection, "creation", None)
+        materialize = getattr(creation, "materialize_collections", None)
+        name = self.connection.settings_dict.get("NAME")
+        if materialize is None or not name:
+            return
+        try:
+            materialize(name, tables)
+        except Exception as exc:  # never break the migration
+            logger.warning(
+                "NEDB schema editor: could not materialize "
+                "collection(s) %s in database %s: %s",
+                ", ".join(sorted(tables)),
+                name,
+                exc,
+            )
 
     # -- AlterField: catalog-validating no-op (N-M6c, DYOR 9.1/9.3) ---
 

@@ -16,6 +16,17 @@ work at the execution/semantics layer only (implication 1):
 * The TestCase wrap-in-transaction replacement from implication 4
   starts here: a fresh test database per run is created by
   drop + recreate, never by savepoints or row deletion.
+* Relation materialization (N-M8c, implication 3): a catalogued
+  collection that has never been written does not exist as a
+  relation for NEDB's write path (DELETE/UPDATE) or its SQL
+  evaluator's JOIN resolution -- ``relation "<table>" does not
+  exist`` (live-suite signature #2, x37) -- while a plain
+  single-table SELECT tolerates it. CREATE TABLE's NEDB-semantics
+  equivalent is materializing the empty collection: one sentinel
+  document put + tombstone delete per table, in a single CAS batch
+  call (probe: nedb-relation-probe-2026-10-31.md). ``reset_database``
+  re-materializes the declared catalog after every recreate, and
+  the schema editor materializes each CREATE TABLE it validates.
 
 The HTTP endpoint is resolved, in order, from the connection's
 ``OPTIONS`` (``nedbd_url`` / ``nedbd_http_port`` / ``nedbd_token``),
@@ -161,10 +172,60 @@ class DatabaseCreation(PostgresDatabaseCreation):
             raise
         return True
 
+    # -- relation materialization (N-M8c, DYOR 9.3) -------------------
+    # The sentinel's only job is to make the collection exist; it is
+    # tombstoned in the same batch, so no read ever sees it (its put
+    # and tombstone remain in the append-only log, DYOR section 1).
+    MATERIALIZED_SENTINEL_ID = "__opensalon_materialized__"
+
+    def materialize_collections(self, name, tables):
+        """Create each table's collection, empty, via one batch call.
+
+        put + del of the sentinel per table over the CAS batch
+        endpoint (DYOR section 4). Idempotent: re-materializing an
+        existing collection rewrites and re-tombstones only the
+        sentinel id, never a real row. Returns the table count.
+        """
+        tables = sorted({table for table in tables if table})
+        if not tables:
+            return 0
+        ops = []
+        for table in tables:
+            ops.append(
+                {
+                    "op": "put",
+                    "coll": table,
+                    "id": self.MATERIALIZED_SENTINEL_ID,
+                    "doc": {"id": 0},
+                }
+            )
+            ops.append(
+                {"op": "del", "coll": table, "id": self.MATERIALIZED_SENTINEL_ID}
+            )
+        self._http_request(
+            "POST",
+            "/v1/databases/%s/batch" % urllib.parse.quote(name, safe=""),
+            {"ops": ops},
+        )
+        return len(tables)
+
+    def materialize_catalog(self, name):
+        """Materialize every table in the declared catalog (9.3)."""
+        from .schema import declared_catalog
+
+        return self.materialize_collections(name, declared_catalog())
+
     def reset_database(self, name):
-        """Flush by drop + recreate over HTTP -- never TRUNCATE (9.5)."""
+        """Flush by drop + recreate over HTTP -- never TRUNCATE (9.5).
+
+        The recreate is followed by catalog materialization (N-M8c):
+        a fresh database otherwise has no relations at all for
+        never-written tables, which NEDB's write path and JOIN
+        resolution refuse by name.
+        """
         self.drop_database(name)
         self.create_database(name)
+        self.materialize_catalog(name)
         return name
 
     # The flush/teardown primitive under its Django-facing name.
