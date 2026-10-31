@@ -41,9 +41,15 @@ def adapt_datetime_value(value):
         return value
     if not isinstance(value, datetime.datetime):
         return value
-    # Django's field prep has already converted aware values to the
-    # connection timezone (UTC under USE_TZ here), so isoformat()
-    # yields one canonical shape whose text order is chronological.
+    # N-M13 (DYOR §9.1, §9.9; probe nedb-datebucket-probe-2026-10-31):
+    # work at the execution/semantics layer (§9.1) — the adapter owns
+    # the stored shape (§9.9). Django 5.2 get_prep_value does NOT
+    # convert aware datetimes to UTC, and NEDB compares datetime text
+    # lexically, so a non-UTC offset mis-buckets salon-local windows.
+    # Normalize aware values to UTC before isoformat(); naive values
+    # are unchanged (no offset to normalize).
+    if timezone.is_aware(value):
+        value = value.astimezone(datetime.timezone.utc)
     return value.isoformat()
 
 
