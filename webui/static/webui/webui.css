@@ -414,15 +414,27 @@ button { font-family: inherit; }
    at the block's bottom-right, on top of the service line —
    the founder's screenshot of 2026-10-31 is the obituary.) */
 .b-price { flex: none; font-weight: 700; font-size: 12.5px; line-height: 1.2; white-space: nowrap; color: #fff; }
-.appt-block.mini { padding: 5px 9px; }
-/* Degradation order as a block shortens, one law everywhere:
-   the service band yields first (it flexes away inside its own
-   band); a mini block then keeps ONE row — the name and its
-   price, the two things the desk reads at a glance — with the
-   time on the axis and the status in the block's colour; a
-   micro block keeps the name alone. */
-.appt-block.mini .b-top, .appt-block.mini .b-services { display: none; }
-.appt-block.mini .b-client { font-size: 12.5px; margin-top: 0; }
+.appt-block.mini { padding: 3px 8px; }
+/* What a block shows as it shortens — the founder's law
+   (2026-10-31, from his own screen): the SERVICE is always
+   readable without a click, in fine print under the name.
+   A mini block drops its time row (the axis carries time)
+   and tightens so name + one fine-print service line fit;
+   the band still flexes inside itself if a block is shorter
+   than two lines can physically be. A micro block has one
+   line only, so its service rides that line in fine print
+   beside the name (.b-svc-inline) and the price yields —
+   the rail carries the money for the shortest blocks. */
+.appt-block.mini .b-top { display: none; }
+.appt-block.mini .b-client { font-size: 12px; line-height: 1.15; margin-top: 0; }
+.appt-block.mini .b-service { -webkit-line-clamp: 1; font-size: 10px; line-height: 1.15; }
+.b-svc-inline {
+  display: none; flex: 0 2 auto; min-width: 0;
+  font-size: 10px; line-height: 1.15; color: var(--tx2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.b-svc-inline::before { content: "· "; }
+.appt-block.micro .b-svc-inline { display: inline; }
 .appt-block.micro .b-service, .appt-block.micro .b-price { display: none; }
 
 /* ---------- intelligence bar ---------- */

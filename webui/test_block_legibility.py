@@ -78,10 +78,13 @@ class BlockLegibilityTests(TestCase):
         html = self.client.get(
             reverse("webui:daybook"), {"date": "2026-11-02"}
         ).content.decode()
-        # One row, in flow: client first, price after — the exact
-        # structure the stylesheet lays out without overlap.
+        # One row, in flow: client first, the service's inline
+        # fine print beside it (shown on the shortest blocks),
+        # price after — the exact structure the stylesheet lays
+        # out without overlap.
         self.assertIn(
             '<div class="b-main"><div class="b-client">Jaime Orta</div>'
+            '<span class="b-svc-inline">Women&#x27;s Haircut</span>'
             '<div class="b-price">$85</div></div>',
             html,
         )
@@ -99,8 +102,14 @@ class BlockLegibilityTests(TestCase):
         # The service band is the shock absorber: it flexes and
         # clips inside itself instead of being covered.
         self.assertIn(".b-services { flex: 0 1 auto; min-height: 0;", css)
-        # Mini keeps exactly one row: the time row yields too.
+        # Mini yields the time row only — the service is never
+        # spent (the founder's fine-print law): it stays under
+        # the name at one clamped fine-print line.
         self.assertIn(
+            ".appt-block.mini .b-top { display: none; }",
+            css,
+        )
+        self.assertNotIn(
             ".appt-block.mini .b-top, .appt-block.mini .b-services "
             "{ display: none; }",
             css,
