@@ -38,6 +38,20 @@ call is a no-op, including its variants, not an error. Callers must
 not rely on it for mutual exclusion or row locking on this backend;
 where exclusion matters, use NEDB's native atomicity unit, the CAS
 batch / ``if_seq`` transaction (DYOR sections 1 and 9.4).
+
+GROUP BY (N-M6d, DYOR 9.1): ``allows_group_by_selected_pks = False``.
+PostgreSQL collapses GROUP BY to the selected PKs, relying on
+functional dependency (a grouped PK determines the row's other
+columns). NEDB's SQL evaluator does not implement that dependency:
+it rejects any selected column that is neither grouped nor
+aggregated (live on nedbd-v2 12.15.16:
+``column "catalog_product.salon_id" must appear in the GROUP BY
+clause or be used in an aggregate function`` -- nedb-live-suite
+2026-10-30-2112, signatures 3/5). Declaring False is the
+execution/semantics-layer fix (DYOR 9.1): Django's compiler then
+emits every selected column in GROUP BY, which NEDB accepts, with
+identical grouping semantics (grouping by a PK plus its own row's
+columns splits no PK group further).
 """
 
 from django.db.backends.postgresql.features import (
@@ -74,3 +88,8 @@ class DatabaseFeatures(PostgresDatabaseFeatures):
     has_select_for_update_skip_locked = False
     has_select_for_update_of = False
     has_select_for_no_key_update = False
+
+    # GROUP BY: NEDB has no PK functional-dependency reduction
+    # (N-M6d, DYOR 9.1) -- see module docstring. False makes the
+    # compiler group by every selected column instead of only the PK.
+    allows_group_by_selected_pks = False
