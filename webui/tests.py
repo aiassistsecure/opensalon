@@ -792,6 +792,111 @@ class CardEditTests(WritePathTests):
             self.assertEqual(response.status_code, 400, payload)
 
 
+class CheckoutTests(WritePathTests):
+    def _product(self, stock=3):
+        from catalog.models import Product, StockMovement
+
+        product = Product.objects.create(
+            salon=self.salon,
+            name="Nutriplenish Shampoo",
+            brand_name="Aveda",
+            price=Decimal("30.00"),
+            product_type="RETAIL",
+        )
+        StockMovement.objects.create(
+            product=product,
+            kind=StockMovement.Kind.RECEIVE,
+            quantity_delta=stock,
+            note="opening",
+        )
+        return product
+
+    def test_checkout_settles_the_whole_visit_in_cash(self):
+        from checkout.models import Sale
+
+        first = self._make_appt()
+        second = self._make_appt(start_hour=11, end_hour=12)
+        before = first.updated_at
+        response = self._post(
+            "webui:daybook_checkout",
+            {"appointment_id": first.pk, "method": "cash", "products": []},
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["ok"])
+        sale = Sale.objects.get(pk=data["sale_id"])
+        self.assertEqual(sale.status, "completed")
+        self.assertEqual(sale.total, Decimal("170.00"))
+        self.assertEqual(sale.items.filter(kind="service").count(), 2)
+        payment = sale.payments.get()
+        self.assertEqual(payment.method, "cash")
+        self.assertEqual(payment.status, "completed")
+        self.assertTrue(payment.provider_reference)
+        self.assertEqual(sale.receipt.total, Decimal("170.00"))
+        for appt in (first, second):
+            appt.refresh_from_db()
+            self.assertEqual(appt.status, "completed")
+            self.assertGreater(appt.updated_at, before)
+        # A settled visit cannot settle twice.
+        again = self._post(
+            "webui:daybook_checkout",
+            {"appointment_id": first.pk, "method": "cash", "products": []},
+        )
+        self.assertEqual(again.status_code, 400)
+
+    def test_checkout_with_products_takes_stock_off_the_shelf(self):
+        from catalog.models import StockMovement
+
+        appt = self._make_appt()
+        product = self._product(stock=3)
+        response = self._post(
+            "webui:daybook_checkout",
+            {
+                "appointment_id": appt.pk,
+                "method": "external",
+                "products": [{"product_id": product.pk, "qty": 2}],
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(Decimal(data["total"]), Decimal("145.00"))
+        movement = StockMovement.objects.get(
+            product=product, kind=StockMovement.Kind.SALE
+        )
+        self.assertEqual(movement.quantity_delta, -2)
+        product.refresh_from_db()
+        self.assertEqual(product.current_stock, 1)
+
+    def test_checkout_rejects_an_unpriced_service(self):
+        bare = Service.objects.create(
+            name="Unpriced Ritual", category=self.category, service_minutes=30
+        )
+        appt = Appointment.objects.create(
+            client=self.person,
+            staff_member=self.member,
+            service=bare,
+            start=timezone.make_aware(datetime.datetime(2026, 11, 2, 14, 0)),
+            end=timezone.make_aware(datetime.datetime(2026, 11, 2, 14, 30)),
+            status="confirmed",
+        )
+        response = self._post(
+            "webui:daybook_checkout",
+            {"appointment_id": appt.pk, "method": "cash", "products": []},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("unpriced", response.json()["error"])
+
+    def test_product_search_finds_the_retail_shelf(self):
+        product = self._product()
+        response = self.client.get(
+            reverse("webui:daybook_products"), {"q": "nutriplenish"}
+        )
+        rows = response.json()["products"]
+        self.assertEqual([row["id"] for row in rows], [product.pk])
+        self.assertEqual(rows[0]["stock"], 3)
+        self.assertEqual(rows[0]["price_label"], "$30")
+
+
 class ShadowStoreTests(WebuiTestBase):
     def test_daybook_loads_the_shadow_module(self):
         response = self.client.get("/")

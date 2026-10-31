@@ -91,6 +91,13 @@
       <button type="button" class="{% if action.primary %}btn-grad grow{% else %}btn-ghost{% endif %}" data-status-action="{{ action.status }}" data-appt="{{ rail.id }}">{{ action.label }}</button>
       {% endfor %}
     </div>
+    {% if rail.status == "booked" or rail.status == "confirmed" or rail.status == "arrived" or rail.status == "in_service" %}
+    {% if rail.stack_price_label %}
+    <div class="rail-actions">
+      <button type="button" class="btn-grad grow" data-checkout data-appt="{{ rail.id }}">Checkout · {{ rail.stack_price_label }}</button>
+    </div>
+    {% endif %}
+    {% endif %}
     <p class="rail-hint">Drag to move · Arrow keys nudge 5 min, ←/→ switch stylist · Ctrl+Z undoes a move.</p>
     {% endif %}
   {% else %}

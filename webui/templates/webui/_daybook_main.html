@@ -1,4 +1,4 @@
-<div class="book-layout" data-date="{{ day|date:'Y-m-d' }}" data-fragment="{% url 'webui:daybook_fragment' %}" data-move="{% url 'webui:daybook_move' %}" data-status="{% url 'webui:daybook_status' %}" data-apply="{% url 'webui:daybook_apply' %}" data-price="{% url 'webui:daybook_price' %}" data-note="{% url 'webui:daybook_note' %}">{% csrf_token %}
+<div class="book-layout" data-date="{{ day|date:'Y-m-d' }}" data-fragment="{% url 'webui:daybook_fragment' %}" data-move="{% url 'webui:daybook_move' %}" data-status="{% url 'webui:daybook_status' %}" data-apply="{% url 'webui:daybook_apply' %}" data-price="{% url 'webui:daybook_price' %}" data-note="{% url 'webui:daybook_note' %}" data-checkout="{% url 'webui:daybook_checkout' %}" data-products="{% url 'webui:daybook_products' %}">{% csrf_token %}
   <div class="book-main">
     <section class="day-head">
       <div class="day-title-wrap">

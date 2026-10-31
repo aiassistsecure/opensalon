@@ -1135,6 +1135,209 @@ def day_book_price(request):
     )
 
 
+def _visit_for(appt):
+    """The visit a checkout settles: the appointment's own chain
+    under the day book's rule (same client + stylist, chained
+    while the gap stays within VISIT_GAP)."""
+    salon = appt.staff_member.salon
+    tz = _tz(salon)
+    day = appt.start.astimezone(tz).date()
+    midnight = datetime.datetime.combine(day, datetime.time.min, tzinfo=tz)
+    rows = list(
+        Appointment.objects.filter(
+            client_id=appt.client_id,
+            staff_member_id=appt.staff_member_id,
+            start__lt=midnight + datetime.timedelta(days=1),
+            end__gt=midnight,
+        )
+        .exclude(status=Appointment.Status.CANCELLED)
+        .select_related("service", "staff_member")
+        .order_by("start")
+    )
+    visit, visit_end = [], None
+    for row in rows:
+        if visit and row.start > visit_end + VISIT_GAP:
+            if any(a.pk == appt.pk for a in visit):
+                return visit
+            visit, visit_end = [], None
+        visit.append(row)
+        visit_end = max(visit_end or row.end, row.end)
+    return visit if any(a.pk == appt.pk for a in visit) else [appt]
+
+
+def _do_checkout(appt, payload):
+    """Settle a visit: sale + items + tender + stock + receipt.
+
+    The one checkout law for the day book (and any future POS
+    surface): services price through the day book's own lookup
+    — a card price override wins — products snapshot the
+    catalogue price, tender runs through the provider-agnostic
+    interface (cash at the till, or an external tender the
+    salon settles on its own terminal; core moves no money and
+    names no vendor), stock leaves the shelf as SALE movements,
+    the receipt snapshots at issue, and the visit's
+    appointments complete carrying the write stamp every other
+    write carries. Returns (error, sale).
+    """
+    from catalog.models import Product, StockMovement
+    from checkout.models import Payment, Sale, SaleItem
+    from checkout.payments import CashProvider, ExternalTenderProvider
+    from checkout.receipts import build_receipt
+
+    salon = appt.staff_member.salon
+    method = str(payload.get("method") or "cash")
+    providers = {
+        "cash": (CashProvider, Payment.Method.CASH),
+        "external": (ExternalTenderProvider, Payment.Method.EXTERNAL),
+    }
+    if method not in providers:
+        return "unknown tender", None
+    visit = _visit_for(appt)
+    if any(a.status == Appointment.Status.COMPLETED for a in visit):
+        return "visit already completed", None
+    if any(a.status == Appointment.Status.NO_SHOW for a in visit):
+        return "visit has a no-show", None
+    prices, base_level_id = _price_lookup(salon)
+    service_lines = []
+    for a in visit:
+        amount = _amount_for(a, prices, base_level_id)
+        if amount is None:
+            return (
+                f"unpriced service on the visit: "
+                f"{a.service_name or 'service'}",
+                None,
+            )
+        service_lines.append((a, amount))
+    product_lines = []
+    for raw in payload.get("products") or []:
+        try:
+            product_id, qty = int(raw["product_id"]), int(raw["qty"])
+        except (KeyError, TypeError, ValueError):
+            return "bad product line", None
+        if qty < 1 or qty > 99:
+            return "bad quantity", None
+        product = Product.objects.filter(
+            pk=product_id, salon=salon, active=True
+        ).first()
+        if product is None:
+            return "no such product", None
+        product_lines.append((product, qty))
+    sale = Sale.objects.create(salon=salon, client=appt.client)
+    for a, amount in service_lines:
+        SaleItem.objects.create(
+            sale=sale,
+            kind=SaleItem.Kind.SERVICE,
+            service=a.service,
+            description=a.service.name if a.service else a.service_name,
+            unit_price=amount,
+            quantity=1,
+        )
+    for product, qty in product_lines:
+        SaleItem.objects.create(
+            sale=sale,
+            kind=SaleItem.Kind.PRODUCT,
+            product=product,
+            description=product.name,
+            unit_price=product.price,
+            quantity=qty,
+        )
+    provider_cls, method_enum = providers[method]
+    result = provider_cls().charge(sale.total, reference=f"sale-{sale.pk}")
+    if not result.success:
+        sale.delete()
+        return "tender failed", None
+    Payment.objects.create(
+        sale=sale,
+        method=method_enum,
+        amount=sale.total,
+        status=result.status,
+        provider_reference=result.reference,
+    )
+    sale.status = Sale.Status.COMPLETED
+    sale.completed_at = timezone.now()
+    sale.save(update_fields=["status", "completed_at"])
+    now = timezone.now()
+    for a in visit:
+        a.status = Appointment.Status.COMPLETED
+        a.updated_at = now
+        a.save(update_fields=["status", "updated_at"])
+    for product, qty in product_lines:
+        StockMovement.objects.create(
+            product=product,
+            kind=StockMovement.Kind.SALE,
+            quantity_delta=-qty,
+            note=f"Sale #{sale.pk}",
+        )
+    build_receipt(sale)
+    return None, sale
+
+
+@require_POST
+def day_book_checkout(request):
+    """Checkout for a visit, from its client card."""
+    from checkout.receipts import render_receipt_text
+
+    try:
+        payload = json.loads(request.body.decode("utf-8"))
+        appt_id = int(payload["appointment_id"])
+    except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+        return JsonResponse({"ok": False, "error": "bad payload"}, status=400)
+    appt = (
+        Appointment.objects.select_related("staff_member", "client")
+        .filter(pk=appt_id)
+        .first()
+    )
+    if appt is None:
+        return JsonResponse(
+            {"ok": False, "error": "no such appointment"}, status=404
+        )
+    error, sale = _do_checkout(appt, payload)
+    if error:
+        return JsonResponse({"ok": False, "error": error}, status=400)
+    receipt = getattr(sale, "receipt", None)
+    return JsonResponse(
+        {
+            "ok": True,
+            "sale_id": sale.pk,
+            "total": str(sale.total),
+            "total_label": _price_label(sale.total),
+            "receipt_text": render_receipt_text(receipt) if receipt else "",
+        }
+    )
+
+
+def day_book_products(request):
+    """Till search over the salon's retail shelf: name, brand or
+    barcode, with the live stock count for each match."""
+    from catalog.models import Product
+
+    salon = _first_salon()
+    if salon is None:
+        return JsonResponse({"products": []})
+    q = (request.GET.get("q") or "").strip()
+    qs = Product.objects.filter(salon=salon, active=True).order_by("name")
+    if q:
+        qs = qs.filter(
+            Q(name__icontains=q) | Q(brand_name__icontains=q) | Q(barcode__icontains=q)
+        )
+    products = [
+        {
+            "id": p.pk,
+            "name": p.name,
+            "brand": p.brand_name,
+            "price": str(p.price),
+            "price_label": _price_label(p.price),
+            "stock": p.current_stock,
+            "retail": p.product_type == "RETAIL",
+        }
+        for p in qs[:60]
+    ]
+    # The till sells from the retail shelf first; other stock
+    # stays findable below it rather than hidden.
+    products.sort(key=lambda row: (not row["retail"], row["name"]))
+    return JsonResponse({"products": products[:12]})
+
+
 @require_POST
 def day_book_note(request):
     """Single-op note write (the batch drain's twin).
