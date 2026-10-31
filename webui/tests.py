@@ -113,6 +113,33 @@ class DayBookTests(WebuiTestBase):
         # The rail still describes the day; the grid itself is empty.
         self.assertNotContains(response, "appt-block")
 
+    def test_snapshot_appointment_renders_under_recorded_name(self):
+        # An appointment whose service is absent from the price book
+        # carries only its verbatim snapshot name (service is NULL).
+        # The block, the rail service stack and the client history
+        # must all render it under that recorded name — never crash.
+        Appointment.objects.create(
+            client=self.person,
+            staff_member=self.member,
+            service=None,
+            service_name="Color - With Ladies Haircut",
+            start=timezone.make_aware(datetime.datetime(2026, 11, 2, 12, 30)),
+            end=timezone.make_aware(datetime.datetime(2026, 11, 2, 14, 0)),
+            status="completed",
+        )
+        Appointment.objects.create(
+            client=self.person,
+            staff_member=self.member,
+            service=None,
+            service_name="Color - With Ladies Haircut",
+            start=timezone.make_aware(datetime.datetime(2026, 10, 26, 12, 30)),
+            end=timezone.make_aware(datetime.datetime(2026, 10, 26, 14, 0)),
+            status="completed",
+        )
+        response = self.client.get(reverse("webui:daybook"), {"date": "2026-11-02"})
+        self.assertContains(response, "Color - With Ladies Haircut")
+        self.assertContains(response, "Jaime Orta")
+
     def test_theme_is_dark(self):
         response = self.client.get(reverse("webui:daybook"))
         self.assertContains(response, 'data-theme="dark"')
