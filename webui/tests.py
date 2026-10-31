@@ -720,6 +720,27 @@ class CardEditTests(WritePathTests):
         ][0]
         self.assertEqual(entry["status"], "arrived")
 
+    def test_pack_marks_first_visit_clients_new(self):
+        """One rule for the ribbon count and the block glow:
+        a client is new on the day of their first-ever visit."""
+        appt = self._make_appt()
+        url = reverse("webui:daybook_pack") + "?date=2026-11-02"
+
+        def entry():
+            data = self.client.get(url).json()
+            return [e for e in data["days"]["2026-11-02"] if e["id"] == appt.pk][0]
+
+        self.assertTrue(entry()["is_new"])
+        Appointment.objects.create(
+            client=self.person,
+            staff_member=self.member,
+            service=self.service,
+            start=timezone.make_aware(datetime.datetime(2026, 10, 20, 10, 0)),
+            end=timezone.make_aware(datetime.datetime(2026, 10, 20, 11, 0)),
+            status="completed",
+        )
+        self.assertFalse(entry()["is_new"])
+
     def test_note_rejects_empty_and_unknown_scope(self):
         appt = self._make_appt()
         for payload in (

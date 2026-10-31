@@ -623,18 +623,73 @@ body.page-light .foot { color: #a2987d; }
 .page-light .empty-card { background: none; color: #1d2530; }
 .page-light .empty-sub { color: #8a826f; }
 
-/* visit tiles: pastel on ivory, ink text */
+/* visit tiles: pastel on ivory, ink text. Gloss v3: every
+   block carries the OS X sheen — a white light layer falling
+   from the top edge — over its wash. */
 .page-light .appt-block {
-  background: linear-gradient(150deg, color-mix(in srgb, var(--hue) 22%, #fff), color-mix(in srgb, var(--hue) 11%, #fff));
+  background-image:
+    linear-gradient(180deg, rgba(255, 255, 255, .55), rgba(255, 255, 255, 0) 46%),
+    linear-gradient(150deg, color-mix(in srgb, var(--hue) 22%, #fff), color-mix(in srgb, var(--hue) 11%, #fff));
   border-color: color-mix(in srgb, var(--hue) 48%, transparent);
   border-left: 3px solid var(--hue);
   color: #1d2530; box-shadow: 0 3px 10px rgba(96, 76, 24, .07);
 }
 .page-light .appt-block:hover { box-shadow: 0 9px 22px rgba(96, 76, 24, .14), 0 0 12px color-mix(in srgb, var(--hue) 30%, transparent); }
 .page-light .appt-block.sel {
-  background: linear-gradient(150deg, color-mix(in srgb, var(--hue) 34%, #fff), color-mix(in srgb, var(--hue) 18%, #fff));
+  background-image:
+    linear-gradient(180deg, rgba(255, 255, 255, .55), rgba(255, 255, 255, 0) 46%),
+    linear-gradient(150deg, color-mix(in srgb, var(--hue) 34%, #fff), color-mix(in srgb, var(--hue) 18%, #fff));
   border-color: #b98a2f; border-left-color: #b98a2f;
   box-shadow: 0 0 0 1.5px rgba(185, 138, 47, .85), 0 10px 24px rgba(96, 76, 24, .16);
+}
+
+/* ---- the color language: the wash IS the status ----
+   Booked keeps the calm category pastel above. Checked in
+   turns sage — she is in the building. In service turns rich
+   gold — the chair is working. Done goes quiet; no-show
+   rusts. A new guest glows brighter than everything around
+   her, whichever wash she wears. */
+.page-light .appt-block.status-arrived {
+  background-image:
+    linear-gradient(180deg, rgba(255, 255, 255, .6), rgba(255, 255, 255, 0) 46%),
+    linear-gradient(150deg, #e6f1de, #cfe4c2);
+  border-color: #84ac76; border-left-color: #5d9153;
+}
+.page-light .appt-block.status-in_service {
+  background-image:
+    linear-gradient(180deg, rgba(255, 255, 255, .68), rgba(255, 255, 255, 0) 42%),
+    linear-gradient(150deg, #f8e7b2, #eed18c);
+  border-color: #c19a3f; border-left-color: #a97c1f;
+  box-shadow: 0 4px 14px rgba(169, 124, 36, .24);
+}
+.page-light .appt-block.status-completed {
+  background-image: none; background-color: #f4efe2;
+  border-color: #ddd2b8; border-left-color: #c9bc97; opacity: .68;
+}
+.page-light .appt-block.status-no_show {
+  background-image:
+    linear-gradient(180deg, rgba(255, 255, 255, .45), rgba(255, 255, 255, 0) 46%),
+    linear-gradient(150deg, #f7ded0, #f0cdb8);
+  border-color: #cf9a76; border-left-color: #b0562f;
+}
+.page-light .appt-block.is-new {
+  box-shadow:
+    inset 0 0 0 999px rgba(255, 255, 255, .13),
+    0 0 0 2px rgba(201, 162, 39, .85),
+    0 0 20px rgba(201, 162, 39, .5);
+}
+.page-light .appt-block.is-new.sel {
+  box-shadow:
+    inset 0 0 0 999px rgba(255, 255, 255, .13),
+    0 0 0 2px #b98a2f,
+    0 0 24px rgba(201, 162, 39, .6),
+    0 10px 24px rgba(96, 76, 24, .16);
+}
+.b-new {
+  font-size: 8.5px; font-weight: 800; letter-spacing: .08em;
+  text-transform: uppercase; background: #b98a2f; color: #fff;
+  border-radius: 999px; padding: 1px 5px; margin-left: 5px;
+  vertical-align: 1px; box-shadow: 0 1px 5px rgba(169, 124, 36, .5);
 }
 .page-light .b-time { color: color-mix(in srgb, var(--hue) 62%, #3c4656); }
 .page-light .b-client { color: #1d2530; }
