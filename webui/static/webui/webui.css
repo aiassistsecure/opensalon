@@ -1128,3 +1128,27 @@ button:focus-visible, a:focus-visible, select:focus-visible {
 .rb-switch.sm span{width:28px;height:16px}
 .rb-switch.sm span::after{width:12px;height:12px}
 .rb-switch.sm input:checked + span::after{left:14px}
+
+/* POS — the till's home: today's takings, cashups, sales. */
+.pos-cashup-btn{padding:10px 20px;border:0;border-radius:999px;cursor:pointer;
+  background:linear-gradient(120deg,#b49a5e,#8a6d2f);color:#fff;font-weight:700;font-size:.92rem;
+  box-shadow:0 6px 16px rgba(138,109,47,.3)}
+.pos-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
+@media (max-width:760px){.pos-grid{grid-template-columns:1fr}}
+.pos-card{border:1px solid #e7e1d2;border-radius:14px;background:#fff;padding:16px 18px}
+.pos-h{font-size:.78rem;text-transform:uppercase;letter-spacing:.09em;color:#8a8172;margin:0 0 12px}
+.pos-tender{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid #f0ebdd;font-size:.95rem}
+.pos-tender.pos-total{border-bottom:0;border-top:2px solid #e7e1d2;margin-top:6px;padding-top:10px;font-size:1.05rem}
+.pos-empty{color:#9a927e;font-size:.9rem;margin:4px 0}
+.pos-cu{padding:8px 0;border-bottom:1px solid #f0ebdd}
+.pos-cu:last-child{border-bottom:0}
+.pos-cu-top{display:flex;justify-content:space-between;font-size:.98rem}
+.pos-cu-top span{color:#9a927e;font-size:.85rem}
+.pos-cu-sub{color:#6c6455;font-size:.85rem;margin-top:2px}
+.pos-sales{margin-bottom:8px}
+.pos-sale{display:flex;gap:12px;align-items:baseline;padding:7px 0;border-bottom:1px solid #f0ebdd;font-size:.93rem}
+.pos-sale:last-child{border-bottom:0}
+.pos-sale-when{color:#9a927e;min-width:74px}
+.pos-sale-client{font-weight:600;flex:1}
+.pos-sale-tender{color:#6c6455}
+.pos-sale-total{min-width:70px;text-align:right}

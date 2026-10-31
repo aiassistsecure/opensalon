@@ -2065,3 +2065,91 @@ def roster_book(request):
             "columns": columns,
         },
     )
+
+
+def pos(request):
+    """Point of Sale — the till's home: today's takings and Cashup.
+
+    The day book settles visits; this page counts the drawer. It
+    reads the checkout lane's own law: compute_tender_totals for the
+    live day-so-far, run_cashup for the snapshot. A cashup is a
+    snapshot, not a lock — closing more than once a day is fine and
+    later sales are simply counted by the next one.
+    """
+    from checkout.cashup import compute_tender_totals, run_cashup
+    from checkout.models import Cashup, Payment, Sale
+
+    salon = Salon.objects.order_by("id").first()
+    tz = _tz(salon) if salon is not None else timezone.get_current_timezone()
+    now = timezone.now().astimezone(tz)
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    if request.method == "POST" and salon is not None:
+        if request.POST.get("action") == "cashup":
+            run_cashup(salon, day_start, timezone.now())
+        return redirect("webui:pos")
+
+    tender_rows, day_total = [], Decimal("0")
+    sales_rows, cashups = [], []
+    if salon is not None:
+        labels = dict(Payment.Method.choices)
+        totals = compute_tender_totals(salon, day_start, timezone.now())
+        for method, amount in totals.items():
+            tender_rows.append(
+                {"label": labels.get(method, method), "amount": amount}
+            )
+            day_total += amount
+        sales = (
+            Sale.objects.filter(
+                salon=salon,
+                status=Sale.Status.COMPLETED,
+                completed_at__gte=day_start,
+            )
+            .select_related("client")
+            .prefetch_related("items", "payments")
+            .order_by("-completed_at")
+        )
+        for sale in sales:
+            tender = ", ".join(
+                sorted(
+                    {
+                        labels.get(p.method, p.method)
+                        for p in sale.payments.all()
+                        if p.status == Payment.Status.COMPLETED
+                    }
+                )
+            )
+            sales_rows.append(
+                {
+                    "sale": sale,
+                    "when": sale.completed_at.astimezone(tz) if sale.completed_at else None,
+                    "client_name": str(sale.client) if sale.client_id else "",
+                    "tender": tender,
+                    "total": sale.total,
+                }
+            )
+        for cu in Cashup.objects.filter(salon=salon, created_at__gte=day_start):
+            breakdown = ", ".join(
+                f"{labels.get(m, m)} {_money_label(Decimal(v))}"
+                for m, v in cu.tender_totals.items()
+            )
+            cashups.append(
+                {
+                    "cashup": cu,
+                    "when": cu.created_at.astimezone(tz),
+                    "breakdown": breakdown,
+                }
+            )
+    return render(
+        request,
+        "webui/pos.html",
+        {
+            "salon": salon,
+            "nav_key": "pos",
+            "today": now.date(),
+            "tender_rows": tender_rows,
+            "day_total": day_total,
+            "sales_rows": sales_rows,
+            "cashups": cashups,
+        },
+    )

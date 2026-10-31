@@ -1,0 +1,55 @@
+{% extends "webui/base.html" %}
+{% block title %}POS — {{ today|date:"l, F j" }}{% endblock %}
+{% block body_class %}page-pos page-light{% endblock %}
+{% block content %}
+<div class="day-head">
+  <div class="day-title-wrap">
+    <div class="day-title">Point of Sale</div>
+    <div class="day-sub">{{ today|date:"l, F j, Y" }} · the drawer, counted — checkout itself lives on the day book's client cards</div>
+  </div>
+  <form method="post">{% csrf_token %}
+    <input type="hidden" name="action" value="cashup">
+    <button class="pos-cashup-btn" type="submit">Run cashup</button>
+  </form>
+</div>
+<p class="rb-law"><strong>A cashup is a snapshot, not a lock.</strong> Run it as often as the day needs — sales after it are simply counted by the next one. The day never hard-locks.</p>
+
+<div class="pos-grid">
+  <section class="pos-card">
+    <h2 class="pos-h">Taken today</h2>
+    {% for row in tender_rows %}
+    <div class="pos-tender"><span>{{ row.label }}</span><b>${{ row.amount }}</b></div>
+    {% empty %}
+    <p class="pos-empty">Nothing taken yet today.</p>
+    {% endfor %}
+    <div class="pos-tender pos-total"><span>Total</span><b>${{ day_total }}</b></div>
+  </section>
+
+  <section class="pos-card">
+    <h2 class="pos-h">Today's cashups</h2>
+    {% for row in cashups %}
+    <div class="pos-cu">
+      <div class="pos-cu-top"><b>${{ row.cashup.total }}</b><span>{{ row.when|date:"g:i A" }}</span></div>
+      {% if row.breakdown %}<div class="pos-cu-sub">{{ row.breakdown }}</div>{% endif %}
+      {% if row.cashup.note %}<div class="pos-cu-sub">{{ row.cashup.note }}</div>{% endif %}
+    </div>
+    {% empty %}
+    <p class="pos-empty">No cashup yet today — the button above takes the first snapshot.</p>
+    {% endfor %}
+  </section>
+</div>
+
+<section class="pos-card pos-sales">
+  <h2 class="pos-h">Today's sales</h2>
+  {% for row in sales_rows %}
+  <div class="pos-sale">
+    <span class="pos-sale-when">{{ row.when|date:"g:i A" }}</span>
+    <span class="pos-sale-client">{{ row.client_name|default:"Walk-in" }}</span>
+    <span class="pos-sale-tender">{{ row.tender }}</span>
+    <b class="pos-sale-total">${{ row.total }}</b>
+  </div>
+  {% empty %}
+  <p class="pos-empty">No completed sales yet today. Settle a visit from its day-book card and it lands here.</p>
+  {% endfor %}
+</section>
+{% endblock %}
