@@ -287,6 +287,27 @@
   function postStatus(apptId, status) {
     var layout = document.querySelector(".book-layout");
     if (!layout || !layout.dataset.status) return;
+    if (window.OpenSalonShadow && window.OpenSalonShadow.ready) {
+      /* Store first: the status flips in the embedded NEDB,
+         the block and the switch repaint from it, the drain
+         persists behind. Rail payloads re-read a beat later —
+         a read, never a gate. */
+      document.dispatchEvent(new CustomEvent("os:op", {
+        detail: { kind: "status", id: parseInt(apptId, 10), status: status },
+      }));
+      repaintDay();
+      var btn = railBody ? railBody.querySelector(
+        '[data-status-action="' + status + '"][data-appt="' + apptId + '"]'
+      ) : null;
+      if (btn && btn.classList.contains("tswitch")) {
+        btn.classList.toggle("on");
+        btn.setAttribute(
+          "aria-checked", btn.classList.contains("on") ? "true" : "false"
+        );
+      }
+      refreshRailData(apptId);
+      return;
+    }
     var tokenEl = layout.querySelector('input[name="csrfmiddlewaretoken"]');
     fetch(layout.dataset.status, {
       method: "POST",
@@ -299,9 +320,6 @@
         status: status,
       }),
     }).then(function () {
-      document.dispatchEvent(new CustomEvent("os:op", {
-        detail: { kind: "status", id: parseInt(apptId, 10), status: status },
-      }));
       /* The grid syncs in place from the pack; only the rail
          re-reads its payloads. No rebuild, no flicker. */
       pollPack();
@@ -924,20 +942,58 @@
     if (!found) return false;
     var before = { staff_id: found.staff_id, start_min: found.start_min };
     var dur = found.end_min - found.start_min;
-    found.staff_id = staffId;
-    found.start_min = startMin;
-    found.end_min = startMin + dur;
-    var painted = repaintDay();
-    if (painted) {
-      document.dispatchEvent(new CustomEvent("os:op", {
-        detail: {
-          kind: "move", id: id, via: via || "",
-          before: before, after: { staff_id: staffId, start_min: startMin },
-        },
-      }));
+    /* The founder's order of operations: the play records in
+       the embedded store FIRST (its os:record syncs this very
+       entry, synchronously), the repaint reads the store's
+       truth, and persistence drains behind. Only when the
+       engine is down does the projection move on its own and
+       the legacy shadow-write carry the save. */
+    var storeDriven = !!(window.OpenSalonShadow && window.OpenSalonShadow.ready);
+    if (!storeDriven) {
+      found.staff_id = staffId;
+      found.start_min = startMin;
+      found.end_min = startMin + dur;
     }
-    return painted;
+    document.dispatchEvent(new CustomEvent("os:op", {
+      detail: {
+        kind: "move", id: id, via: via || "",
+        before: before, after: { staff_id: staffId, start_min: startMin },
+      },
+    }));
+    return repaintDay();
   }
+
+  /* The store's word on a record is the projection's word:
+     when the embedded NEDB applies a play, its doc lands here
+     and the render model follows it — one writer, one truth. */
+  document.addEventListener("os:record", function (event) {
+    var doc = event.detail;
+    if (!doc || doc.day !== currentDate) return;
+    var entries = modelDay();
+    if (!entries) return;
+    entries.forEach(function (e) {
+      if (e.id === doc.id) {
+        e.staff_id = doc.staff_id;
+        e.start_min = doc.start_min;
+        e.end_min = doc.end_min;
+        e.status = doc.status;
+      }
+    });
+  });
+
+  /* A rejected op means the server's book disagrees with a
+     play the desk already saw — converge on the truth. */
+  document.addEventListener("os:drain", function (event) {
+    var failed = (event.detail && event.detail.failed) || [];
+    if (failed.length) {
+      refreshDay(selected ? selected.dataset.appt : null);
+    } else {
+      /* Acked: re-stamp against the server so the mirror and
+         the book agree — the sync it triggers is invisible,
+         because the geometry already matches. */
+      pollPack();
+    }
+  });
 
   /* Undo: the shadow journal still holds the move's before
      state — Ctrl+Z asks it for the restore and applies it like
@@ -961,6 +1017,9 @@
   var shadowPending = {};
   var shadowTimer = null;
   function queueShadow(id) {
+    /* Store-driven plays already sit in the embedded outbox;
+       the drainer owns their persistence. */
+    if (window.OpenSalonShadow && window.OpenSalonShadow.ready) return;
     var entries = modelDay();
     if (!entries) return;
     entries.forEach(function (e) {
@@ -1089,10 +1148,13 @@
         if (!data.days) return;
         buildModel(data, currentDate);
         if (!initial && !moved && !staleAnchor) return;
-        /* Our own writes still in flight: their flush re-polls
-           when it lands — syncing now would repaint from a
-           server state that has not seen them yet. */
-        if (Object.keys(shadowPending).length || shadowTimer) return;
+        /* Our own writes still in flight (the legacy shadow
+           queue, or the embedded store's undrained outbox):
+           syncing now would repaint from a server state that
+           has not seen them yet. The drain ack re-polls. */
+        var storePending = window.OpenSalonShadow && window.OpenSalonShadow.ready &&
+          window.OpenSalonShadow.pending();
+        if (Object.keys(shadowPending).length || shadowTimer || storePending) return;
         if (!syncFromModel() && !initial) {
           refreshDay(railEl ? railEl.getAttribute("data-current") : null);
         }

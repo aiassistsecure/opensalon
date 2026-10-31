@@ -23,6 +23,7 @@ urlpatterns = [
     path("daybook/book/options/", views.day_book_book_options, name="daybook_book_options"),
     path("daybook/clients/search/", views.day_book_client_search, name="daybook_client_search"),
     path("daybook/pack/", views.day_book_pack, name="daybook_pack"),
+    path("daybook/apply/", views.day_book_apply, name="daybook_apply"),
     path("price-book/", views.price_book, name="pricebook"),
     path("clients/", views.clients, name="clients"),
     path("team/", views.team, name="team"),
