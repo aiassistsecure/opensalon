@@ -38,6 +38,13 @@ TRUNCATE/flush replacement (implication 5, N-M3h) lives in
 ``creation.py`` (test-database teardown = drop + recreate over the
 nedbd HTTP API) and ``operations.py`` (``sql_flush`` builds nothing;
 ``execute_sql_flush`` delegates to that reset).
+
+* Implication 7: FOR UPDATE is banned (N-M3i). ``features.py``
+  declares ``has_select_for_update = False`` (variants included), so
+  ``select_for_update()`` compiles to a plain unlocked SELECT, and
+  ``operations.py`` returns no lock clause; no FOR UPDATE statement
+  is ever sent to nedbd. The locking guarantee is not provided --
+  exclusion belongs to NEDB's CAS batch / ``if_seq`` unit (9.4).
 """
 
 from django.db.backends.postgresql.base import (
