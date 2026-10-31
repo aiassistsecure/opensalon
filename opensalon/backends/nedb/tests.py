@@ -236,6 +236,40 @@ class FlushNeverTruncateTests(SimpleTestCase):
         self.assertEqual(reset.call_args[0][1], "opensalon")
 
 
+class TestIsolationFeatureTests(SimpleTestCase):
+    """N-M6a: TestCase must isolate by flush, not rollback (DYOR 9.4)."""
+
+    def test_supports_transactions_is_false(self):
+        # A pgwire ROLLBACK does not remove appended rows, so the
+        # backend must not claim transaction support: Django's
+        # TestCase checks this flag and, when False, behaves as
+        # TransactionTestCase (flush between tests) instead of
+        # entering a rollback wrap that would leak rows.
+        wrapper = _wrapper()
+        self.assertIs(wrapper.features_class, DatabaseFeatures)
+        self.assertFalse(wrapper.features.supports_transactions)
+
+    def test_testcase_support_probe_sees_no_transactions(self):
+        from django.test.testcases import connections_support_transactions
+
+        wrapper = _wrapper()
+        with mock.patch(
+            "django.test.testcases.connections"
+        ) as conns:
+            conns.all.return_value = [wrapper]
+            self.assertFalse(connections_support_transactions())
+
+    def test_isolation_path_is_the_http_flush(self):
+        # The flush TransactionTestCase teardown calls is the
+        # drop + recreate reset over HTTP, never TRUNCATE (9.5).
+        wrapper = _wrapper()
+        with mock.patch.object(
+            DatabaseCreation, "reset_database", autospec=True
+        ) as reset:
+            wrapper.ops.execute_sql_flush([])
+        reset.assert_called_once()
+
+
 @unittest.skipUnless(
     os.environ.get("OPENSALON_NEDB_LIVE_TEST") == "1",
     "live nedbd test-database lifecycle: set OPENSALON_NEDB_LIVE_TEST=1 "

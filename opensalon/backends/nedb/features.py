@@ -1,4 +1,11 @@
-"""NEDB features: savepoints and FOR UPDATE are not supported (N-M3e/i).
+"""NEDB features: transactions, savepoints, FOR UPDATE unsupported.
+
+Transactions (N-M6a, DYOR 9.4): ``supports_transactions = False`` --
+NEDB pgwire writes are appends to an append-only log and ROLLBACK
+does not undo them, so Django's TestCase must not wrap tests in a
+transaction it expects to roll back; with this flag TestCase falls
+back to TransactionTestCase behaviour and isolates by flushing,
+which this backend implements as HTTP drop + recreate (9.5).
 
 Per the NEDB DYOR note (2026-10-30), section 9.4: SAVEPOINT /
 RELEASE SAVEPOINT / ROLLBACK TO SAVEPOINT are execution/semantics
@@ -39,6 +46,20 @@ from django.db.backends.postgresql.features import (
 
 
 class DatabaseFeatures(PostgresDatabaseFeatures):
+    # Transactions: NEDB pgwire does not roll back (N-M6a, DYOR 9.4).
+    # Writes append immediately to the append-only log; a ROLLBACK
+    # does not remove them (measured on nedbd-v2 12.15.16: TestCase's
+    # rollback left every row visible to the next test --
+    # MultipleObjectsReturned across the suite). Declaring False is
+    # the honest capability: Django's TestCase then behaves as
+    # TransactionTestCase and isolates each test by flushing, and on
+    # this backend flush is drop + recreate over HTTP (operations.py /
+    # creation.py, DYOR 9.5) -- isolation that actually happens,
+    # instead of a rollback wrap that pretends to. Production code
+    # must not rely on atomic() rollback on NEDB either; its atomicity
+    # unit is the CAS batch / if_seq transaction (DYOR 9.4).
+    supports_transactions = False
+
     uses_savepoints = False
     # Release is meaningless without savepoints; keep the pair
     # consistent so no caller can reintroduce RELEASE SAVEPOINT.
