@@ -141,7 +141,7 @@ class StoreCreateSourceTests(TestCase):
             'document.addEventListener("os:create"',
             "function createLocal(detail)",
             # plays chained onto an unacked birth hold for its name
-            "if (renames[rec.id] == null) break;",
+            "if (renames[rec.id] == null) skip = true;",
             'emit("os:rename"',
             # adoption never vanishes an unacked birth
             'if (id.indexOf("tmp_") === 0)',
