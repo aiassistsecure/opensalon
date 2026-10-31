@@ -86,9 +86,15 @@ class Command(BaseCommand):
             raise CommandError("Clients file must be a JSON list of clients.")
 
         stats = dict.fromkeys(["created", "updated", "skipped"], 0)
+        total = len(data)
+        seen = 0
         with transaction.atomic():
             salon, _ = Salon.objects.get_or_create(name=options["salon"])
             for row in data:
+                seen += 1
+                if total >= 1000 and seen % 500 == 0:
+                    self.stdout.write(
+                        f"  ... {seen} / {total} clients processed")
                 if not isinstance(row, dict):
                     stats["skipped"] += 1
                     continue
