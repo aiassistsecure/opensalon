@@ -1334,6 +1334,13 @@ button:focus-visible, a:focus-visible, select:focus-visible {
 .rep-table tfoot td{font-weight:750;border-top:2px solid #e6ddc6}
 .rep-dl{float:right;font-size:12.5px;font-weight:650;color:#3f5a36;text-decoration:none}
 .rep-dl:hover{text-decoration:underline}
+
+/* Automations: eligibility chips, the send row, the run notice */
+.auto-chip{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:650}
+.auto-chip.ok{background:#e3efdc;color:#3f5a36}
+.auto-chip.no{background:#f3ecdc;color:#8a6d3b}
+.auto-send{display:flex;align-items:center;gap:12px;margin-top:14px}
+.auto-notice{background:#eef5e8;border:1px solid #cfdfbf;color:#3f5a36;border-radius:12px;padding:11px 15px;font-size:14px;margin:14px 0}
 .ins-trend{display:flex;align-items:flex-end;gap:6px;height:120px;padding-top:8px}
 .ins-bar-wrap{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;gap:5px}
 .ins-bar{width:100%;min-height:2px;border-radius:5px 5px 2px 2px;
