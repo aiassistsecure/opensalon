@@ -31,6 +31,7 @@ urlpatterns = [
     path("price-book/", views.price_book, name="pricebook"),
     path("clients/", views.clients, name="clients"),
     path("team/", views.team, name="team"),
+    path("roster/", views.roster_book, name="roster"),
     path(
         "products/",
         views.placeholder,

@@ -1,0 +1,91 @@
+{% extends "webui/base.html" %}
+{% block title %}Roster Book — {{ day|date:"l, F j" }}{% endblock %}
+{% block body_class %}page-roster page-light{% endblock %}
+{% block content %}
+<div class="day-head">
+  <div class="day-title-wrap">
+    <div class="day-title">Roster Book</div>
+    <div class="day-sub">{{ day|date:"l, F j, Y" }} · the perpetual controller — hours placed here rule the day book and online booking</div>
+  </div>
+  <div class="rb-weeknav">
+    <a class="rb-navbtn" href="?date={{ prev_week }}">‹ Week</a>
+    <a class="rb-navbtn" href="?date={{ today|date:'Y-m-d' }}">Today</a>
+    <a class="rb-navbtn" href="?date={{ next_week }}">Week ›</a>
+  </div>
+</div>
+<div class="rb-pills">
+  {% for d in week %}
+  <a class="rb-pill{% if d.current %} on{% endif %}" href="?date={{ d.date|date:'Y-m-d' }}">
+    <span class="rb-pill-d">{{ d.date|date:"D" }}</span>
+    <span class="rb-pill-n">{{ d.date|date:"j" }}</span>
+    {% if d.today %}<span class="rb-pill-t">today</span>{% endif %}
+  </a>
+  {% endfor %}
+</div>
+<p class="rb-law"><strong>The switch is the law:</strong> ON — the change is written to the perpetual roster, every week, forever. OFF — the change rules just this day. Walk any week ahead; the roster is already there.</p>
+<div class="rb-book">
+  <div class="rb-gutter">
+    {% for h in hours %}<div class="rb-hour" style="top:{{ h.top }}%">{{ h.label }}</div>{% endfor %}
+  </div>
+  {% for col in columns %}
+  <div class="rb-col">
+    <div class="rb-colhead">
+      <div class="cname">{{ col.member.display_name }}</div>
+      <div class="chead-meta">{{ col.member.staff_level.name|default:"" }}</div>
+    </div>
+    <div class="rb-body">
+      {% if col.is_off %}
+      <div class="rb-off">Off — this day only
+        <form method="post" class="rb-inline">{% csrf_token %}
+          <input type="hidden" name="action" value="clear">
+          <input type="hidden" name="member" value="{{ col.member.pk }}">
+          <input type="hidden" name="date" value="{{ day|date:'Y-m-d' }}">
+          <button class="rb-mini" type="submit">Undo</button>
+        </form>
+      </div>
+      {% endif %}
+      {% for b in col.blocks %}
+      <div class="rb-shift src-{{ b.source }}" style="top:{{ b.top }}%;height:{{ b.height }}%">
+        <div class="rb-shift-t">{{ b.label }}</div>
+        <div class="rb-shift-src">{% if b.source == 'weekly' %}Every week{% else %}This day only{% endif %}</div>
+        <form method="post" class="rb-flipoff">{% csrf_token %}
+          <input type="hidden" name="action" value="off">
+          <input type="hidden" name="member" value="{{ col.member.pk }}">
+          <input type="hidden" name="date" value="{{ day|date:'Y-m-d' }}">
+          {% if b.pattern_id %}<input type="hidden" name="pattern" value="{{ b.pattern_id }}">{% endif %}
+          <label class="rb-switch sm" title="On: every week. Off: just this day.">
+            <input type="checkbox" name="weekly" {% if b.source == 'weekly' %}checked{% endif %}><span></span>
+          </label>
+          <button class="rb-mini danger" type="submit">Flip off</button>
+        </form>
+        {% if b.source == 'instance' %}
+        <form method="post" class="rb-inline">{% csrf_token %}
+          <input type="hidden" name="action" value="clear">
+          <input type="hidden" name="member" value="{{ col.member.pk }}">
+          <input type="hidden" name="date" value="{{ day|date:'Y-m-d' }}">
+          <button class="rb-mini" type="submit">Undo instance</button>
+        </form>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    <form method="post" class="rb-place">{% csrf_token %}
+      <input type="hidden" name="action" value="place">
+      <input type="hidden" name="member" value="{{ col.member.pk }}">
+      <input type="hidden" name="date" value="{{ day|date:'Y-m-d' }}">
+      <div class="rb-place-times">
+        <input type="time" name="start" required>
+        <span>–</span>
+        <input type="time" name="end" required>
+      </div>
+      <label class="rb-switch" title="On: every week, forever. Off: just this day.">
+        <input type="checkbox" name="weekly" checked><span></span><em>Every week</em>
+      </label>
+      <button class="rb-place-btn" type="submit">Place hours</button>
+    </form>
+  </div>
+  {% empty %}
+  <p class="rb-law">No salon yet — import or create the salon first.</p>
+  {% endfor %}
+</div>
+{% endblock %}

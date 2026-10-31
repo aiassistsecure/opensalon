@@ -18,7 +18,7 @@ from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from bookings.models import Appointment
-from team.models import RosterPattern, StaffMember
+from team.models import RosterPattern, ShiftOverride, StaffMember
 
 
 @dataclass(frozen=True)
@@ -112,15 +112,27 @@ def available_slots(salon, day, service=None, *, online_only=False):
         staff_qs = staff_qs.filter(online_bookable=True)
     staff = list(staff_qs)
 
+    overrides = {
+        o.staff_member_id: o
+        for o in ShiftOverride.objects.filter(staff_member__in=staff, date=day)
+    }
     patterns = RosterPattern.objects.filter(
         staff_member__in=staff, weekday=day.weekday(), active=True,
     ).select_related("staff_member")
     windows = {}
     for pattern in patterns:
+        if pattern.staff_member_id in overrides:
+            continue  # the instance rules this date, not the pattern
         windows.setdefault(pattern.staff_member_id, []).append((
             datetime.combine(day, pattern.start_time, tzinfo=tz),
             datetime.combine(day, pattern.end_time, tzinfo=tz),
         ))
+    for member_id, override in overrides.items():
+        if not override.is_off:
+            windows.setdefault(member_id, []).append((
+                datetime.combine(day, override.start_time, tzinfo=tz),
+                datetime.combine(day, override.end_time, tzinfo=tz),
+            ))
     if not windows:
         return []
 

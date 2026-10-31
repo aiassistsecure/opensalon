@@ -36,7 +36,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.utils import timezone
 
-from team.models import AttendanceRecord, RosterPattern, StaffMember
+from team.models import AttendanceRecord, RosterPattern, ShiftOverride, StaffMember
 
 
 @dataclass(frozen=True)
@@ -119,6 +119,27 @@ def roster_availability(staff_member, day):
     day = _as_date(day, tz)
     intervals = ()
     if staff_member.active:
+        # The instance rules its date: a ShiftOverride replaces the
+        # perpetual pattern wholesale for this one date.
+        override = ShiftOverride.objects.filter(
+            staff_member=staff_member, date=day,
+        ).first()
+        if override is not None:
+            windows = [] if override.is_off else [
+                (
+                    datetime.combine(day, override.start_time, tzinfo=tz),
+                    datetime.combine(day, override.end_time, tzinfo=tz),
+                )
+            ]
+            intervals = tuple(
+                WorkingInterval(start=s, end=e) for s, e in _merge(windows)
+            )
+            return RosterAvailability(
+                staff_member=staff_member,
+                day=day,
+                online_bookable=staff_member.online_bookable,
+                intervals=intervals,
+            )
         patterns = RosterPattern.objects.filter(
             staff_member=staff_member, weekday=day.weekday(), active=True,
         )

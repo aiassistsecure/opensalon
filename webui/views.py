@@ -21,13 +21,15 @@ for complete when it is not.
 """
 
 import datetime
+from types import SimpleNamespace
 import json
 from decimal import Decimal, InvalidOperation
 
 from django.core.paginator import Paginator
 from django.db.models import Count, Max, Min, Q
 from django.http import JsonResponse
-from django.shortcuts import render
+from django.shortcuts import redirect, render
+from django.urls import reverse
 from django.utils import timezone
 from django.utils.text import slugify
 from django.views.decorators.http import require_POST
@@ -37,7 +39,7 @@ from bookings.daybook import blocks_for_day as feed_blocks_for_day
 from bookings.models import Appointment, AppointmentNote
 from clients.models import Client, ClientNote
 from saloncore.models import Salon, Service, ServiceCategory, ServicePrice, StaffLevel
-from team.models import RosterPattern, StaffMember
+from team.models import RosterPattern, StaffMember, ShiftOverride
 from team.roster_week import roster_week as build_roster_week
 
 # The day book window: 8:00 to 20:00 salon-local.
@@ -528,13 +530,25 @@ def _day_book_context(request, *, light=False, kit=None):
                 ],
             }
 
+        # The roster book's instance layer: an override rules its
+        # date in this book too (bands, minutes, openings follow).
+        day_overrides = {
+            o.staff_member_id: o
+            for o in ShiftOverride.objects.filter(staff_member__in=members, date=day)
+        }
         block_index = 0
         total_booked, total_roster, total_openings = 0.0, 0.0, 0
         revenue, unpriced = Decimal("0"), 0
         for member in members:
-            patterns = [
-                p for p in member.roster_patterns.all() if p.active and p.weekday == weekday
-            ]
+            ov = day_overrides.get(member.pk)
+            if ov is not None:
+                patterns = [] if ov.is_off else [
+                    SimpleNamespace(start_time=ov.start_time, end_time=ov.end_time)
+                ]
+            else:
+                patterns = [
+                    p for p in member.roster_patterns.all() if p.active and p.weekday == weekday
+                ]
             bands = []
             roster_minutes = 0.0
             for p in patterns:
@@ -1895,4 +1909,159 @@ def placeholder(request, nav_key, title, lane_note):
         request,
         "webui/placeholder.html",
         {"nav_key": nav_key, "title": title, "lane_note": lane_note},
+    )
+
+
+def roster_book(request):
+    """The Roster Book — the day book's perpetual controller.
+
+    A day book clone perceived differently: the blocks are HOURS,
+    not guests. The manager walks any week — patterns are perpetual,
+    they project onto every future week until flipped — and places
+    hours with a switch: ON writes the perpetual RosterPattern (every
+    week, forever); OFF writes a ShiftOverride that rules just that
+    one date. The day book and online booking read the same
+    resolution (override first, pattern otherwise), so what is
+    flipped here is what both books obey.
+    """
+    salon = Salon.objects.order_by("id").first()
+    tz = _tz(salon) if salon is not None else timezone.get_current_timezone()
+    today = timezone.now().astimezone(tz).date()
+
+    if request.method == "POST" and salon is not None:
+        try:
+            day = datetime.date.fromisoformat(request.POST.get("date", ""))
+        except ValueError:
+            day = today
+        member = StaffMember.objects.filter(
+            pk=request.POST.get("member"), salon=salon, active=True
+        ).first()
+        weekly = request.POST.get("weekly") == "on"
+        action = request.POST.get("action")
+        if member is not None and action == "place":
+            try:
+                start = datetime.datetime.strptime(
+                    request.POST.get("start", ""), "%H:%M"
+                ).time()
+                end = datetime.datetime.strptime(
+                    request.POST.get("end", ""), "%H:%M"
+                ).time()
+            except ValueError:
+                start = end = None
+            if start is not None and end > start:
+                if weekly:
+                    RosterPattern.objects.get_or_create(
+                        staff_member=member, weekday=day.weekday(),
+                        start_time=start, end_time=end,
+                    )
+                else:
+                    ShiftOverride.objects.update_or_create(
+                        staff_member=member, date=day,
+                        defaults={
+                            "is_off": False,
+                            "start_time": start,
+                            "end_time": end,
+                        },
+                    )
+        elif member is not None and action == "off":
+            if weekly:
+                RosterPattern.objects.filter(
+                    pk=request.POST.get("pattern"), staff_member=member
+                ).delete()
+            else:
+                ShiftOverride.objects.update_or_create(
+                    staff_member=member, date=day,
+                    defaults={
+                        "is_off": True, "start_time": None, "end_time": None
+                    },
+                )
+        elif member is not None and action == "clear":
+            ShiftOverride.objects.filter(
+                staff_member=member, date=day
+            ).delete()
+        return redirect(f"{reverse('webui:roster')}?date={day.isoformat()}")
+
+    try:
+        day = datetime.date.fromisoformat(request.GET.get("date", ""))
+    except ValueError:
+        day = today
+    monday = day - datetime.timedelta(days=day.weekday())
+    week = [monday + datetime.timedelta(days=i) for i in range(7)]
+    members = (
+        list(salon.staff_members.filter(active=True).order_by("display_name"))
+        if salon is not None else []
+    )
+    patterns = {}
+    for pat in RosterPattern.objects.filter(
+        staff_member__in=members, weekday=day.weekday(), active=True
+    ):
+        patterns.setdefault(pat.staff_member_id, []).append(pat)
+    overrides = {
+        o.staff_member_id: o
+        for o in ShiftOverride.objects.filter(staff_member__in=members, date=day)
+    }
+    day_start = datetime.datetime.combine(
+        day, datetime.time(DAY_START_HOUR), tzinfo=tz
+    )
+    day_end = datetime.datetime.combine(day, datetime.time(DAY_END_HOUR), tzinfo=tz)
+    hours = [
+        {
+            "label": _fmt_time(datetime.time(h)),
+            "top": _pct(
+                datetime.datetime.combine(day, datetime.time(h), tzinfo=tz),
+                day_start, day_end,
+            ),
+        }
+        for h in range(DAY_START_HOUR, DAY_END_HOUR)
+    ]
+
+    def block(start_t, end_t, source, pattern_id=None):
+        sdt = datetime.datetime.combine(day, start_t, tzinfo=tz)
+        edt = datetime.datetime.combine(day, end_t, tzinfo=tz)
+        top = _pct(sdt, day_start, day_end)
+        return {
+            "top": top,
+            "height": _pct(edt, day_start, day_end) - top,
+            "label": f"{_fmt_time(start_t)} – {_fmt_time(end_t)}",
+            "source": source,
+            "pattern_id": pattern_id,
+        }
+
+    columns = []
+    for member in members:
+        ov = overrides.get(member.pk)
+        blocks = []
+        if ov is not None:
+            if not ov.is_off:
+                blocks.append(block(ov.start_time, ov.end_time, "instance"))
+        else:
+            blocks = [
+                block(p.start_time, p.end_time, "weekly", p.pk)
+                for p in patterns.get(member.pk, [])
+            ]
+        columns.append(
+            {
+                "member": member,
+                "blocks": blocks,
+                "is_off": ov is not None and ov.is_off,
+                "has_override": ov is not None,
+            }
+        )
+    return render(
+        request,
+        "webui/roster_book.html",
+        {
+            "salon": salon,
+            "nav_key": "roster",
+            "day": day,
+            "today": today,
+            "week": [
+                {"date": d, "current": d == day, "today": d == today}
+                for d in week
+            ],
+            "prev_week": (day - datetime.timedelta(days=7)).isoformat(),
+            "next_week": (day + datetime.timedelta(days=7)).isoformat(),
+            "hours": hours,
+            "columns": columns,
+        },
     )
