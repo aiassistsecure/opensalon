@@ -95,6 +95,23 @@ class CreateOnlineBookingTests(OnlineBookingBase):
         self.assertEqual(appt.staff_member, self.online_staff)
         self.assertEqual(Appointment.objects.count(), 1)
 
+    def test_created_booking_origin_is_online(self):
+        appt = self._book()
+        self.assertEqual(appt.origin, Appointment.Origin.ONLINE)
+        self.assertEqual(appt.origin, "online")
+        appt.refresh_from_db()
+        self.assertEqual(appt.origin, "online")
+
+    def test_direct_creation_origin_stays_unknown(self):
+        # Appointments not created via online booking keep the
+        # honest default, even for the same staff member.
+        appt = create_appointment(
+            client=self.client, staff_member=self.online_staff,
+            service=self.service, start=at(MONDAY, 10),
+        )
+        appt.refresh_from_db()
+        self.assertEqual(appt.origin, "unknown")
+
     def test_toggle_off_staff_cannot_be_booked(self):
         with self.assertRaises(ValidationError):
             self._book(staff=self.offline_staff)
