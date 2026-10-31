@@ -37,7 +37,8 @@ from bookings.daybook import blocks_for_day as feed_blocks_for_day
 from bookings.models import Appointment, AppointmentNote
 from clients.models import Client, ClientNote
 from saloncore.models import Salon, ServiceCategory, ServicePrice, StaffLevel
-from team.models import StaffMember
+from team.models import RosterPattern, StaffMember
+from team.roster_week import roster_week as build_roster_week
 
 # The day book window: 8:00 to 20:00 salon-local.
 DAY_START_HOUR = 8
@@ -836,6 +837,104 @@ def clients(request):
         page = Paginator(qs, 30).get_page(request.GET.get("page"))
     context = {"nav_key": "clients", "page": page, "query": query, "total": total}
     return render(request, "webui/clients.html", context)
+
+
+def team(request):
+    """Team & Roster: the week matrix the day book measures against.
+
+    Patterns are the roster. The matrix renders the salon's real
+    RosterPattern rows for the current week (via the team app's
+    roster-week service); the editor below it adds and removes
+    patterns, and every day-book number that depends on the
+    roster — utilization, openings, on-duty columns — follows.
+    """
+    salon = Salon.objects.order_by("id").first()
+    message = ""
+    if request.method == "POST" and salon is not None:
+        action = request.POST.get("action")
+        if action == "add":
+            member = StaffMember.objects.filter(
+                pk=request.POST.get("member"), salon=salon, active=True
+            ).first()
+            try:
+                weekday = int(request.POST.get("weekday", ""))
+                start = datetime.datetime.strptime(
+                    request.POST.get("start", ""), "%H:%M"
+                ).time()
+                end = datetime.datetime.strptime(
+                    request.POST.get("end", ""), "%H:%M"
+                ).time()
+            except ValueError:
+                member = None
+            if member is not None and 0 <= weekday <= 6 and end > start:
+                RosterPattern.objects.get_or_create(
+                    staff_member=member,
+                    weekday=weekday,
+                    start_time=start,
+                    end_time=end,
+                )
+                message = "Pattern added — the day book now measures against it."
+            else:
+                message = "Check the pattern: pick a stylist, a day, and an end after the start."
+        elif action == "delete":
+            RosterPattern.objects.filter(
+                pk=request.POST.get("pattern"), staff_member__salon=salon
+            ).delete()
+            message = "Pattern removed."
+    rows, patterns, members = [], [], []
+    week_label = ""
+    if salon is not None:
+        tz = _tz(salon)
+        today = timezone.now().astimezone(tz).date()
+        monday = today - datetime.timedelta(days=today.weekday())
+        week = build_roster_week(salon, monday)
+        week_label = (
+            f"{_fmt_date_label(monday)} – {_fmt_date_label(monday + datetime.timedelta(days=6))}"
+        )
+        for entry in week.entries:
+            cells = []
+            for avail in entry.days:
+                label = ", ".join(
+                    f"{_fmt_time(iv.start.astimezone(tz).time())} – "
+                    f"{_fmt_time(iv.end.astimezone(tz).time())}"
+                    for iv in avail.intervals
+                )
+                cells.append(label)
+            rows.append(
+                {
+                    "member": entry.staff_member,
+                    "initials": _initials(entry.staff_member.display_name),
+                    "level_name": entry.staff_member.staff_level.name
+                    if entry.staff_member.staff_level_id
+                    else "",
+                    "cells": cells,
+                    "hours_label": _duration_label(entry.total_minutes)
+                    if entry.total_minutes
+                    else "—",
+                }
+            )
+        patterns = list(
+            RosterPattern.objects.filter(staff_member__salon=salon)
+            .select_related("staff_member")
+            .order_by("staff_member__display_name", "weekday", "start_time")
+        )
+        members = list(
+            StaffMember.objects.filter(salon=salon, active=True).order_by("display_name")
+        )
+    return render(
+        request,
+        "webui/roster.html",
+        {
+            "nav_key": "team",
+            "salon": salon,
+            "rows": rows,
+            "patterns": patterns,
+            "members": members,
+            "weekday_choices": RosterPattern.Weekday.choices,
+            "week_label": week_label,
+            "message": message,
+        },
+    )
 
 
 def placeholder(request, nav_key, title, lane_note):

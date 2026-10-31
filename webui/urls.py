@@ -20,16 +20,7 @@ urlpatterns = [
     path("daybook/move/", views.day_book_move, name="daybook_move"),
     path("price-book/", views.price_book, name="pricebook"),
     path("clients/", views.clients, name="clients"),
-    path(
-        "team/",
-        views.placeholder,
-        {
-            "nav_key": "team",
-            "title": "Team & Roster",
-            "lane_note": "Roster patterns and check-in/out arrive with the team lane.",
-        },
-        name="team",
-    ),
+    path("team/", views.team, name="team"),
     path(
         "products/",
         views.placeholder,
