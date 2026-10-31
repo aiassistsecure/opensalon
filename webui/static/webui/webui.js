@@ -1343,7 +1343,7 @@
   function renderBlock(entry) {
     var el = document.createElement("article");
     el.className = "appt-block cat-" + entry.cat + " status-" + entry.status +
-      (entry.is_new ? " is-new" : "") + (entry._born ? " b-born" : "");
+      (entry.is_new ? " is-new" : "") + (entry._born ? " b-born" : "") + (entry.provisional ? " b-prov" : "");
     /* The birth motion plays once: the flag is spent as the
        block is built, so later repaints stand still. */
     if (entry._born) entry._born = false;
@@ -1776,6 +1776,19 @@
      too old to send one — falls back to the pack sync. */
   document.addEventListener("os:booked", function (event) {
     var d = event.detail || {};
+    /* The node's word finalizes a provisional paint: the
+       desk-facts block comes out of the model wherever it
+       was painted, and the true entry below takes its
+       place — one block, never two. */
+    if (d.provisional) {
+      var plist = model.days[d.date];
+      if (plist) {
+        var pat = plist.findIndex(function (e) {
+          return e.id === d.provisional;
+        });
+        if (pat >= 0) plist.splice(pat, 1);
+      }
+    }
     if (!layoutEl || d.date !== currentDate) return;
     d.handled = true;
     var entries = d.entry ? modelDay() : null;
@@ -1796,6 +1809,49 @@
       setTimeout(function () { refreshRailData(d.id); }, 350);
     }
   });
+
+  /* Provisional paints: on a tab whose store is not live,
+     the booking modal paints a block from the desk's own
+     facts in the click's frame and lets its POST finalize
+     behind. The block joins the model like any other entry
+     (flagged provisional, born with the same motion); the
+     booked answer above swaps it for the node's entry, and
+     an unbook — the node refused — takes it back off and
+     says so on the book's notice line. */
+  document.addEventListener("os:provisional", function (event) {
+    var d = event.detail || {};
+    if (!d.entry || !d.date) return;
+    var list = model.days[d.date] || (model.days[d.date] = []);
+    d.entry._born = true;
+    list.push(d.entry);
+    list.sort(function (a, b) { return a.start_min - b.start_min; });
+    if (d.date === currentDate) repaintDay();
+  });
+
+  document.addEventListener("os:unbook", function (event) {
+    var d = event.detail || {};
+    var list = model.days[d.date];
+    if (list) {
+      var at = list.findIndex(function (e) { return e.id === d.ref; });
+      if (at >= 0) list.splice(at, 1);
+    }
+    if (d.date === currentDate) repaintDay();
+    showDbNotice(
+      d.message || "That booking did not save — it has been taken off the book."
+    );
+  });
+
+  var dbNoticeTimer = null;
+  function showDbNotice(message) {
+    var el = document.getElementById("dbNotice");
+    if (!el) return;
+    el.textContent = message;
+    el.classList.remove("hidden");
+    if (dbNoticeTimer) clearTimeout(dbNoticeTimer);
+    dbNoticeTimer = setTimeout(function () {
+      el.classList.add("hidden");
+    }, 7000);
+  }
 
   var shadowPending = {};
   var shadowTimer = null;
@@ -2447,40 +2503,42 @@
        stamp, and its entry replaces the doc whole at the
        rename. The POST below remains for pages and tabs
        without a store. */
+    /* The desk's own facts about the booking — who, what,
+       when — computed once. The store's birth and the
+       provisional paint below are built from this same doc:
+       the price and the visit chain are the node's to stamp,
+       and its entry replaces the doc whole when it lands. */
+    var tp = payload.time.split(":");
+    var startMin = (parseInt(tp[0], 10) || 0) * 60 + (parseInt(tp[1], 10) || 0);
+    var endMin = startMin + (pickedService.minutes || 60);
+    var fmtT = function (mins) {
+      var h = Math.floor(mins / 60), m = mins % 60;
+      var ap = h >= 12 ? "PM" : "AM", h12 = h % 12 || 12;
+      return m
+        ? h12 + ":" + String(m).padStart(2, "0") + " " + ap
+        : h12 + " " + ap;
+    };
+    var docFacts = {
+      client: pickedClient
+        ? pickedClient.name
+        : (payload.new_client.first_name + " " +
+           payload.new_client.last_name).trim(),
+      service: pickedService.name,
+      cat: (pickedService.category || "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "") || "misc",
+      is_new: !pickedClient,
+      start_min: startMin,
+      end_min: endMin,
+      amount: null,
+      price_label: "",
+      time_label: fmtT(startMin) + " – " + fmtT(endMin),
+    };
     if (window.OpenSalonShadow && window.OpenSalonShadow.ready &&
         document.querySelector(".book-layout")) {
-      var tp = payload.time.split(":");
-      var startMin = (parseInt(tp[0], 10) || 0) * 60 + (parseInt(tp[1], 10) || 0);
-      var endMin = startMin + (pickedService.minutes || 60);
-      var fmtT = function (mins) {
-        var h = Math.floor(mins / 60), m = mins % 60;
-        var ap = h >= 12 ? "PM" : "AM", h12 = h % 12 || 12;
-        return m
-          ? h12 + ":" + String(m).padStart(2, "0") + " " + ap
-          : h12 + " " + ap;
-      };
       var createEv = new CustomEvent("os:create", {
-        detail: {
-          payload: payload,
-          handled: false,
-          doc: {
-            client: pickedClient
-              ? pickedClient.name
-              : (payload.new_client.first_name + " " +
-                 payload.new_client.last_name).trim(),
-            service: pickedService.name,
-            cat: (pickedService.category || "")
-              .toLowerCase()
-              .replace(/[^a-z0-9]+/g, "-")
-              .replace(/^-+|-+$/g, "") || "misc",
-            is_new: !pickedClient,
-            start_min: startMin,
-            end_min: endMin,
-            amount: null,
-            price_label: "",
-            time_label: fmtT(startMin) + " – " + fmtT(endMin),
-          },
-        },
+        detail: { payload: payload, handled: false, doc: docFacts },
       });
       document.dispatchEvent(createEv);
       /* The dispatch is synchronous and the store's birth
@@ -2489,6 +2547,31 @@
          paint first, close second, never a moment where the
          booking exists nowhere. */
       if (createEv.detail.handled) { hide(); return; }
+    }
+    /* No live store in this tab — the paint STILL does not
+       wait. The founder's fallback law: mimic the data on
+       click. A provisional block is painted from the desk's
+       own facts in this same frame and the modal closes on
+       it; the POST below is now pure finalization. The
+       node's answer swaps the provisional for its true
+       entry; a refusal takes the block back off the book
+       and says so where the desk can see it. The dual store
+       speeds the book up — it never gates it. */
+    var provRef = null;
+    if (document.querySelector(".book-layout")) {
+      provRef = "prov_" + Date.now() + "_" +
+        Math.random().toString(36).slice(2, 8);
+      document.dispatchEvent(new CustomEvent("os:provisional", {
+        detail: {
+          ref: provRef,
+          date: payload.date,
+          entry: Object.assign({}, docFacts, {
+            id: provRef, staff_id: payload.staff_member_id,
+            status: "booked", visit: provRef, provisional: true,
+          }),
+        },
+      }));
+      hide();
     }
     var tokenEl = modal.querySelector('input[name="csrfmiddlewaretoken"]');
     fetch("/daybook/book/", {
@@ -2510,6 +2593,7 @@
           detail: {
             id: res.data.appointment_id, date: res.data.date,
             entry: res.data.entry || null, handled: false,
+            provisional: provRef,
           },
         });
         document.dispatchEvent(ev);
@@ -2519,9 +2603,28 @@
           window.location.href = "/?date=" + res.data.date;
         }
       } else {
-        fail((res.data && res.data.error) || "That booking did not save — try again.");
+        var message = (res.data && res.data.error) ||
+          "That booking did not save — try again.";
+        if (provRef) {
+          document.dispatchEvent(new CustomEvent("os:unbook", {
+            detail: { ref: provRef, date: payload.date, message: message },
+          }));
+        } else {
+          fail(message);
+        }
       }
-    }).catch(function () { fail("That booking did not save — try again."); });
+    }).catch(function () {
+      if (provRef) {
+        document.dispatchEvent(new CustomEvent("os:unbook", {
+          detail: {
+            ref: provRef, date: payload.date,
+            message: "That booking did not save — it has been taken off the book.",
+          },
+        }));
+      } else {
+        fail("That booking did not save — try again.");
+      }
+    });
   });
 
   openBtn.addEventListener("click", function () {
@@ -2844,6 +2947,48 @@
    Status lives on the server's AttendanceRecord event log; this
    only asks and shows. */
 (function () {
+  /* The dual store, made visible. The sidebar chip says
+     where this tab's book lives — the embedded store in
+     this tab, or the server — so nobody ever has to guess
+     (or open a console) which world a screen is in. Pages
+     without a store module are honestly in server mode;
+     the day book's shadow and the roster book's store each
+     declare themselves on the body when they boot. */
+  (function () {
+    var chipEl = document.getElementById("storeChip");
+    if (!chipEl) return;
+    var textEl = document.getElementById("storeChipText");
+    var hasStore = !!document.querySelector(
+      'script[type="module"][src*="shadow"], ' +
+      'script[type="module"][src*="roster-store"]'
+    );
+    function paintChip() {
+      var live = document.body.dataset.shadow === "live" ||
+        document.body.dataset.rosterStore === "live";
+      chipEl.classList.toggle("is-live", live);
+      chipEl.classList.toggle("is-server", !live);
+      if (textEl) {
+        textEl.textContent = live
+          ? "Local store live"
+          : hasStore ? "Local store…" : "Server mode";
+      }
+    }
+    document.addEventListener("os:shadow-ready", paintChip);
+    document.addEventListener("os:restored", paintChip);
+    paintChip();
+    if (hasStore) {
+      var tries = 0;
+      var iv = setInterval(function () {
+        paintChip();
+        tries += 1;
+        if (document.body.dataset.shadow ||
+            document.body.dataset.rosterStore || tries > 12) {
+          clearInterval(iv);
+        }
+      }, 600);
+    }
+  })();
+
   var card = document.getElementById("clockCard");
   var modal = document.getElementById("clockModal");
   if (!card || !modal) return;
