@@ -130,6 +130,10 @@
               esc(d.id) + '">' + esc(a.label) + "</button>";
           }).join("") + "</div>" +
           '<p class="rail-hint">Drag to move · Arrow keys nudge 5 min, ←/→ switch stylist · Ctrl+Z undoes a move.</p>'
+        : "") +
+      ((["booked", "confirmed", "arrived", "in_service"].indexOf(d.status) >= 0 && d.stack_price_label)
+        ? '<div class="rail-actions"><button type="button" class="btn-grad grow" data-checkout data-appt="' +
+          esc(d.id) + '">Checkout · ' + esc(d.stack_price_label) + "</button></div>"
         : "");
     if (railEl) railEl.setAttribute("data-current", d.id);
   }
@@ -653,6 +657,11 @@
         if (event.target.closest("[data-note-cancel]")) {
           var d = currentPayload();
           if (d) renderRailKeepingTab(d);
+          return;
+        }
+        var coBtn = event.target.closest("[data-checkout]");
+        if (coBtn) {
+          openCheckout(parseInt(coBtn.dataset.appt, 10));
           return;
         }
         var actionBtn = event.target.closest("[data-status-action]");
@@ -1412,6 +1421,186 @@
         "· Shadow journal live · " + n + " play" + (n === 1 ? "" : "s") + " recovered";
     }
   });
+
+  /* ---- checkout: settle the visit from its card ----
+     The card's stack is the bill's service lines; the till
+     adds retail from the shelf, takes a tender (cash, or the
+     salon's own terminal as an external tender), and the
+     server settles sale + stock + receipt in one law. On
+     settle, the book re-reads the truth like after any drain. */
+  var coState = { appt: null, tender: "cash", products: {}, settled: false };
+  var coTimer = null;
+
+  function coEl(id) { return document.getElementById(id); }
+
+  function coMoney(n) {
+    return "$" + (Math.round(n * 100) / 100).toLocaleString("en-US", { maximumFractionDigits: 2 });
+  }
+
+  function coTotal() {
+    var d = payloads[coState.appt];
+    var total = 0;
+    if (d && d.stack) {
+      d.stack.forEach(function (item) { total += parseFloat(item.price || "0") || 0; });
+    }
+    Object.keys(coState.products).forEach(function (id) {
+      var p = coState.products[id];
+      total += p.price * p.qty;
+    });
+    return total;
+  }
+
+  function coRender() {
+    var d = payloads[coState.appt];
+    if (!d) return;
+    coEl("coClient").textContent = d.client_name + " · " + d.stylist_name;
+    coEl("coLines").innerHTML = (d.stack || []).map(function (item) {
+      return '<div class="co-line"><span>' + esc(item.service) + "</span><b>" +
+        esc(item.price_label) + "</b></div>";
+    }).join("");
+    coEl("coProducts").innerHTML = Object.keys(coState.products).map(function (id) {
+      var p = coState.products[id];
+      return '<div class="co-line"><span>' + esc(p.name) +
+        ' <span class="co-qty">× ' + p.qty + "</span></span>" +
+        '<span class="co-line-r"><b>' + coMoney(p.price * p.qty) + "</b>" +
+        '<button type="button" class="co-step" data-co-dec="' + id + '" aria-label="One less">−</button>' +
+        '<button type="button" class="co-step" data-co-inc="' + id + '" aria-label="One more">+</button>' +
+        '<button type="button" class="co-step" data-co-del="' + id + '" aria-label="Remove">✕</button></span></div>';
+    }).join("");
+    coEl("coTotal").textContent = coMoney(coTotal());
+  }
+
+  function openCheckout(apptId) {
+    if (!coEl("checkoutModal")) return;
+    coState = { appt: apptId, tender: "cash", products: {}, settled: false };
+    coEl("coErr").classList.add("hidden");
+    coEl("coReceipt").classList.add("hidden");
+    coEl("coSearch").value = "";
+    coEl("coResults").classList.add("hidden");
+    var done = coEl("coComplete");
+    done.disabled = false;
+    done.textContent = "Complete sale";
+    coEl("coCancel").textContent = "Back";
+    document.querySelectorAll(".co-tender .seg-item").forEach(function (b) {
+      b.classList.toggle("active", b.dataset.tender === "cash");
+    });
+    coRender();
+    coEl("checkoutModal").classList.remove("hidden");
+  }
+
+  function closeCheckout() {
+    coEl("checkoutModal").classList.add("hidden");
+    if (coState.settled) {
+      coState.settled = false;
+      refreshRailData(coState.appt);
+      pollPack();
+    }
+  }
+
+  if (coEl("checkoutModal")) {
+    coEl("coClose").addEventListener("click", closeCheckout);
+    coEl("coCancel").addEventListener("click", closeCheckout);
+    document.querySelectorAll(".co-tender .seg-item").forEach(function (b) {
+      b.addEventListener("click", function () {
+        coState.tender = b.dataset.tender;
+        document.querySelectorAll(".co-tender .seg-item").forEach(function (x) {
+          x.classList.toggle("active", x === b);
+        });
+      });
+    });
+    coEl("coSearch").addEventListener("input", function () {
+      var q = coEl("coSearch").value.trim();
+      if (coTimer) clearTimeout(coTimer);
+      if (q.length < 2) { coEl("coResults").classList.add("hidden"); return; }
+      coTimer = setTimeout(function () {
+        var layout = document.querySelector(".book-layout");
+        fetch(layout.dataset.products + "?q=" + encodeURIComponent(q))
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            var box = coEl("coResults");
+            if (!data.products.length) {
+              box.innerHTML = '<p class="book-noresults">Nothing on the shelf matches.</p>';
+            } else {
+              box.innerHTML = data.products.map(function (p) {
+                return '<button type="button" class="book-result" data-id="' + p.id +
+                  '" data-name="' + esc(p.name) + '" data-price="' + esc(p.price) + '">' +
+                  esc(p.name) +
+                  '<span>' + esc(p.price_label) + " · " + p.stock + " on hand</span></button>";
+              }).join("");
+            }
+            box.classList.remove("hidden");
+          })
+          .catch(function () {});
+      }, 180);
+    });
+    coEl("coResults").addEventListener("click", function (event) {
+      var btn = event.target.closest(".book-result");
+      if (!btn) return;
+      var id = btn.dataset.id;
+      if (coState.products[id]) coState.products[id].qty += 1;
+      else coState.products[id] = { name: btn.dataset.name, price: parseFloat(btn.dataset.price) || 0, qty: 1 };
+      coEl("coResults").classList.add("hidden");
+      coEl("coSearch").value = "";
+      coRender();
+    });
+    coEl("coProducts").addEventListener("click", function (event) {
+      var inc = event.target.closest("[data-co-inc]");
+      var dec = event.target.closest("[data-co-dec]");
+      var del = event.target.closest("[data-co-del]");
+      if (inc) coState.products[inc.dataset.coInc].qty += 1;
+      else if (dec) {
+        var p = coState.products[dec.dataset.coDec];
+        p.qty -= 1;
+        if (p.qty <= 0) delete coState.products[dec.dataset.coDec];
+      } else if (del) delete coState.products[del.dataset.coDel];
+      else return;
+      coRender();
+    });
+    coEl("coComplete").addEventListener("click", function () {
+      var layout = document.querySelector(".book-layout");
+      var tokenEl = layout.querySelector('input[name="csrfmiddlewaretoken"]');
+      var products = Object.keys(coState.products).map(function (id) {
+        return { product_id: parseInt(id, 10), qty: coState.products[id].qty };
+      });
+      coEl("coErr").classList.add("hidden");
+      fetch(layout.dataset.checkout, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": tokenEl ? tokenEl.value : "",
+        },
+        body: JSON.stringify({
+          appointment_id: coState.appt,
+          method: coState.tender,
+          products: products,
+        }),
+      })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (!data.ok) {
+            var err = coEl("coErr");
+            err.textContent = data.error || "Checkout failed.";
+            err.classList.remove("hidden");
+            return;
+          }
+          coState.settled = true;
+          var done = coEl("coComplete");
+          done.disabled = true;
+          done.textContent = "Settled · Sale #" + data.sale_id + " · " + data.total_label;
+          coEl("coCancel").textContent = "Close";
+          if (data.receipt_text) {
+            var pre = coEl("coReceipt");
+            pre.textContent = data.receipt_text;
+            pre.classList.remove("hidden");
+          }
+        })
+        .catch(function () {
+          var err = coEl("coErr");
+          err.textContent = "Checkout could not reach the server.";
+          err.classList.remove("hidden");
+        });
+    });
+  }
   document.addEventListener("os:shadow-ready", function () {
     var shadowEl = document.getElementById("shadowState");
     if (shadowEl) shadowEl.textContent = "· Shadow journal live";

@@ -691,6 +691,35 @@ body.page-light .foot { color: #a2987d; }
   border-radius: 999px; padding: 1px 5px; margin-left: 5px;
   vertical-align: 1px; box-shadow: 0 1px 5px rgba(169, 124, 36, .5);
 }
+
+/* ---- checkout (the till in the day book) ---- */
+.co-client { font-weight: 700; font-size: 14px; margin-bottom: 8px; }
+.co-lines { margin-bottom: 10px; }
+.co-line {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 10px; padding: 5px 0; border-bottom: 1px dashed rgba(120, 100, 40, .18);
+  font-size: 13.5px;
+}
+.co-line-r { display: inline-flex; align-items: center; gap: 6px; }
+.co-qty { color: #8a6d1f; font-weight: 700; }
+.co-step {
+  border: 1px solid rgba(120, 100, 40, .35); background: #fffdf6;
+  border-radius: 8px; width: 24px; height: 24px; line-height: 1;
+  font-size: 13px; cursor: pointer; color: #5c4a12;
+}
+.co-step:hover { background: #f7ecd2; }
+.co-tender { display: inline-flex; }
+.co-total {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 15px; margin: 10px 0 4px; padding-top: 8px;
+  border-top: 2px solid rgba(120, 100, 40, .35);
+}
+.co-total b { font-size: 20px; font-variant-numeric: tabular-nums; }
+.co-receipt {
+  background: #fffdf4; border: 1px solid rgba(120, 100, 40, .25);
+  border-radius: 10px; padding: 10px 12px; font-size: 12px;
+  white-space: pre-wrap; margin: 10px 0 0; max-height: 220px; overflow: auto;
+}
 .page-light .b-time { color: color-mix(in srgb, var(--hue) 62%, #3c4656); }
 .page-light .b-client { color: #1d2530; }
 .page-light .b-service { color: #5f6b7a; }

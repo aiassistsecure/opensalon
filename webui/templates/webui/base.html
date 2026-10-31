@@ -65,6 +65,38 @@
   </div>
 </div>
 
+<div class="book-modal hidden" id="checkoutModal" role="dialog" aria-modal="true" aria-label="Checkout">
+  <div class="book-card">
+    <div class="book-card-head">
+      <h2>Checkout</h2>
+      <button type="button" class="rail-close" id="coClose" aria-label="Close">✕</button>
+    </div>
+    <div class="co-client" id="coClient"></div>
+    <div class="co-lines" id="coLines"></div>
+    <div class="book-field">
+      <label for="coSearch">Add a product</label>
+      <input type="search" id="coSearch" placeholder="Search the retail shelf or scan a barcode…" autocomplete="off">
+      <div class="book-results hidden" id="coResults"></div>
+    </div>
+    <div class="co-lines" id="coProducts"></div>
+    <div class="book-field">
+      <label>Tender</label>
+      <div class="seg co-tender" role="group" aria-label="Tender">
+        <button type="button" class="seg-item active" data-tender="cash">Cash</button>
+        <button type="button" class="seg-item" data-tender="external">Card · salon terminal</button>
+      </div>
+    </div>
+    <div class="co-total"><span>Total</span><b id="coTotal">$0</b></div>
+    <pre class="co-receipt hidden" id="coReceipt"></pre>
+    <p class="book-err hidden" id="coErr" role="alert"></p>
+    <div class="book-actions">
+      <button type="button" class="btn-ghost" id="coCancel">Back</button>
+      <button type="button" class="btn-grad grow" id="coComplete">Complete sale</button>
+    </div>
+    {% csrf_token %}
+  </div>
+</div>
+
 <div class="book-modal hidden" id="bookModal" role="dialog" aria-modal="true" aria-label="New appointment">
   <div class="book-card">
     <div class="book-card-head">
