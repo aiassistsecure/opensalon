@@ -532,6 +532,30 @@ class TemporalAdaptTests(SimpleTestCase):
             temporal.adapt_datetime_value(NAIVE_DT), "2026-10-30T09:30:00"
         )
 
+    def test_non_utc_aware_normalizes_to_utc(self):
+        # N-M13 (DYOR §9.1/§9.9): -05:00 bound must become UTC shape.
+        est = datetime.timezone(datetime.timedelta(hours=-5))
+        value = datetime.datetime(2026, 11, 2, 0, 0, tzinfo=est)
+        self.assertEqual(
+            temporal.adapt_datetime_value(value),
+            "2026-11-02T05:00:00+00:00",
+        )
+        wrapper = _wrapper()
+        self.assertEqual(
+            wrapper.ops.adapt_datetimefield_value(value),
+            "2026-11-02T05:00:00+00:00",
+        )
+
+    def test_utc_aware_unchanged_and_naive_unchanged(self):
+        # N-M13 (DYOR §9.1/§9.9): UTC stays identical; naive keeps no offset.
+        self.assertEqual(
+            temporal.adapt_datetime_value(AWARE_DT),
+            "2026-10-30T14:15:16.123456+00:00",
+        )
+        self.assertEqual(
+            temporal.adapt_datetime_value(NAIVE_DT), "2026-10-30T09:30:00"
+        )
+
     def test_date_and_time_adapt_to_iso_strings(self):
         wrapper = _wrapper()
         self.assertEqual(wrapper.ops.adapt_datefield_value(A_DATE), "2026-10-30")
@@ -692,6 +716,40 @@ class NedbTemporalRoundTripLiveTests(SimpleTestCase):
         self.assertGreaterEqual(row["created_at"], before)
         self.assertLessEqual(
             row["created_at"], dj_timezone.now() + datetime.timedelta(minutes=1)
+        )
+
+
+@unittest.skipUnless(
+    os.environ.get("OPENSALON_NEDB_LIVE_TEST") == "1",
+    "live nedbd datetime-UTC test: set OPENSALON_NEDB_LIVE_TEST=1",
+)
+class NedbDatetimeUtcLiveTests(SimpleTestCase):
+    """N-M13 (DYOR §9.1/§9.9): salon-tz window buckets correctly live."""
+
+    databases = {"default"}
+
+    def test_salon_tz_window_counts_previous_day(self):
+        from django.db import connection
+
+        self.assertEqual(connection.display_name, "NEDB (PostgreSQL pgwire)")
+        from bookings.models import Appointment
+        from bookings.status_counts import appointment_status_counts
+        from clients.models import Client
+        from saloncore.models import Salon, Service, ServiceCategory
+        from team.models import StaffMember
+
+        ny = Salon.objects.create(name="NM13 NY Salon", timezone="America/New_York")
+        staff = StaffMember.objects.create(salon=ny, display_name="NM13")
+        client = Client.objects.create(salon=ny, first_name="NM13", last_name="Client")
+        cat = ServiceCategory.objects.create(salon=ny, name="Hair")
+        svc = Service.objects.create(category=cat, name="Cut", service_minutes=45)
+        start = datetime.datetime(2026, 11, 2, 1, 30, tzinfo=datetime.timezone.utc)
+        Appointment.objects.create(
+            client=client, staff_member=staff, service=svc,
+            start=start, end=start + datetime.timedelta(minutes=45),
+        )
+        self.assertEqual(
+            appointment_status_counts(ny, datetime.date(2026, 11, 1)).total, 1
         )
 
 
