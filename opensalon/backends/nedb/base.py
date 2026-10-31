@@ -52,6 +52,12 @@ this backend is the drop + recreate above, which does isolate.
   ``operations.py`` returns no lock clause; no FOR UPDATE statement
   is ever sent to nedbd. The locking guarantee is not provided --
   exclusion belongs to NEDB's CAS batch / ``if_seq`` unit (9.4).
+
+* Decimal round-trip (N-M6e): NEDB stores Decimal parameters as JSON
+  numbers and returns them as floats, so ``operations.py`` registers
+  a per-field Decimal converter (``decimalfield.py``) -- read-path
+  only, following implications 1/9; the write path stays numeric
+  because decimal strings compare lexicographically on NEDB.
 """
 
 from django.db.backends.postgresql.base import (

@@ -1097,3 +1097,169 @@ class NedbGroupByLiveTests(SimpleTestCase):
         )
         rows = low_stock(salon)
         self.assertEqual([(r.sku, r.on_hand) for r in rows], [("GB-LIVE", 3)])
+
+
+# -- N-M6e: Decimal columns round-trip as Decimal, never float -------
+
+import decimal
+
+from django.db.models.expressions import Col
+
+from opensalon.backends.nedb import decimalfield
+
+
+def _decimal_expr():
+    """A mock non-Col expression whose output_field is Decimal(10,2)."""
+    from django.db import models
+
+    expr = mock.Mock()
+    expr.output_field = models.DecimalField(max_digits=10, decimal_places=2)
+    return expr
+
+
+def _decimal_col():
+    from checkout.models import SaleItem
+
+    field = SaleItem._meta.get_field("unit_price")
+    return Col("checkout_saleitem", field)
+
+
+class DecimalConverterRegistrationTests(SimpleTestCase):
+    def test_converter_registered_for_decimal_field_only(self):
+        from django.db import models
+
+        wrapper = _wrapper()
+        expr = _decimal_expr()
+        self.assertIn(
+            wrapper.ops.convert_decimalfield_value,
+            wrapper.ops.get_db_converters(expr),
+        )
+        for field in (models.FloatField(), models.CharField(max_length=5)):
+            other = mock.Mock()
+            other.output_field = field
+            with self.subTest(field=type(field).__name__):
+                self.assertNotIn(
+                    wrapper.ops.convert_decimalfield_value,
+                    wrapper.ops.get_db_converters(other),
+                )
+
+    def test_write_path_stays_numeric_never_string(self):
+        # adapt must NOT stringify: decimal strings compare/sort
+        # lexicographically on NEDB (decimalfield.py evidence).
+        wrapper = _wrapper()
+        value = decimal.Decimal("19.99")
+        self.assertIs(wrapper.ops.adapt_decimalfield_value(value), value)
+
+
+class DecimalConvertTests(SimpleTestCase):
+    def test_float_becomes_exact_decimal(self):
+        # The live signature: NEDB returns 85.00 / 19.99 as float.
+        self.assertEqual(
+            decimalfield.convert_decimal_value(85.0, _decimal_expr()),
+            decimal.Decimal("85.0"),
+        )
+        self.assertEqual(
+            decimalfield.convert_decimal_value(19.99, _decimal_expr()),
+            decimal.Decimal("19.99"),
+        )
+
+    def test_int_and_numeric_string_become_decimal(self):
+        self.assertEqual(
+            decimalfield.convert_decimal_value(85, _decimal_expr()),
+            decimal.Decimal(85),
+        )
+        self.assertEqual(
+            decimalfield.convert_decimal_value("85.00", _decimal_expr()),
+            decimal.Decimal("85.00"),
+        )
+
+    def test_decimal_and_none_pass_through(self):
+        value = decimal.Decimal("24.00")
+        self.assertIs(
+            decimalfield.convert_decimal_value(value, _decimal_expr()), value
+        )
+        self.assertIsNone(
+            decimalfield.convert_decimal_value(None, _decimal_expr())
+        )
+
+    def test_unconvertible_passes_through_unchanged(self):
+        self.assertEqual(
+            decimalfield.convert_decimal_value("not-a-number", _decimal_expr()),
+            "not-a-number",
+        )
+
+    def test_col_quantizes_to_field_scale(self):
+        col = _decimal_col()
+        for raw in (85.0, 85, "85.00", decimal.Decimal("85")):
+            with self.subTest(raw=raw):
+                converted = decimalfield.convert_decimal_value(raw, col)
+                self.assertEqual(str(converted), "85.00")
+        self.assertEqual(
+            str(decimalfield.convert_decimal_value(19.9, col)), "19.90"
+        )
+
+    def test_ops_converter_applies_decimalfield_conversion(self):
+        wrapper = _wrapper()
+        converted = wrapper.ops.convert_decimalfield_value(
+            85.0, _decimal_col(), mock.Mock()
+        )
+        self.assertIsInstance(converted, decimal.Decimal)
+        self.assertEqual(converted, decimal.Decimal("85.00"))
+
+
+@unittest.skipUnless(
+    os.environ.get("OPENSALON_NEDB_LIVE_TEST") == "1",
+    "live nedbd Decimal test: set OPENSALON_NEDB_LIVE_TEST=1 with "
+    "the default connection on the NEDB backend (nedbd running)",
+)
+class NedbDecimalLiveTests(SimpleTestCase):
+    """N-M6e acceptance against a real nedbd (guarded, never offline).
+
+    Before the fix this exact shape failed live with:
+    TypeError: unsupported operand type(s) for +: 'decimal.Decimal'
+    and 'float' (Sale.total summing float unit_price values).
+    """
+
+    databases = {"default"}
+
+    def test_sale_items_round_trip_as_decimal_and_total(self):
+        from django.db import connection
+
+        self.assertEqual(connection.display_name, "NEDB (PostgreSQL pgwire)")
+        from checkout.models import Sale, SaleItem
+        from saloncore.models import Salon
+
+        salon = Salon.objects.create(name="Decimal Probe Salon", timezone="UTC")
+        sale = Sale.objects.create(salon=salon)
+        SaleItem.objects.create(
+            sale=sale, kind="service", description="Haircut",
+            unit_price=decimal.Decimal("85.00"),
+        )
+        SaleItem.objects.create(
+            sale=sale, kind="product", description="Shampoo", quantity=2,
+            unit_price=decimal.Decimal("24.00"),
+        )
+        fresh = Sale.objects.get(pk=sale.pk)
+        items = list(fresh.items.all())
+        self.assertTrue(
+            all(isinstance(i.unit_price, decimal.Decimal) for i in items)
+        )
+        self.assertEqual(fresh.total, decimal.Decimal("133.00"))
+        values = list(
+            SaleItem.objects.filter(sale=sale).values_list(
+                "unit_price", flat=True
+            )
+        )
+        self.assertTrue(
+            all(isinstance(v, decimal.Decimal) for v in values)
+        )
+        # Numeric semantics survive: a magnitude filter across the
+        # lexicographic trap (9 < 50 < 85 < 100) still works.
+        SaleItem.objects.create(
+            sale=sale, kind="service", description="Trim",
+            unit_price=decimal.Decimal("9.00"),
+        )
+        big = SaleItem.objects.filter(
+            sale=sale, unit_price__gt=decimal.Decimal("50")
+        ).count()
+        self.assertEqual(big, 1)

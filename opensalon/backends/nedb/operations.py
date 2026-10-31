@@ -28,13 +28,22 @@ refuses by design (see ``EVIDENCE.md``). Here the hooks return ISO
 8601 strings (``temporal.py``), which NEDB stores as string scalars
 that compare chronologically, and ``get_db_converters`` registers the
 mirror-image parsers so values read back as real temporal objects.
+
+Decimal read path (N-M6e, DYOR implications 1 and 9): NEDB stores a
+Decimal parameter as a JSON number and pgwire returns it as a Python
+``float`` (live-suite signature: ``Decimal + float`` TypeError), so
+``get_db_converters`` registers ``decimalfield.py``'s converter for
+DecimalField expressions, restoring real ``Decimal`` values (with
+the field's scale for plain columns). The write path stays numeric
+on purpose: decimal strings would compare and sort lexicographically
+on NEDB -- see ``decimalfield.py`` for the measured evidence.
 """
 
 from django.db.backends.postgresql.operations import (
     DatabaseOperations as PostgresDatabaseOperations,
 )
 
-from . import identity, temporal
+from . import decimalfield, identity, temporal
 
 # Internal types whose stored values must come back as real ints
 # (DYOR 9.6 read path): pgwire may hand an integer PK back as a
@@ -142,12 +151,19 @@ class DatabaseOperations(PostgresDatabaseOperations):
             converters.append(self.convert_datefield_value)
         elif internal_type == "TimeField":
             converters.append(self.convert_timefield_value)
+        elif internal_type == "DecimalField":
+            converters.append(self.convert_decimalfield_value)
         return converters
 
     # -- identity read path: numeric strings back to ints (9.6) ------
 
     def convert_integerfield_value(self, value, expression, connection):
         return identity.convert_integer_value(value)
+
+    # -- decimal read path: stored numbers back to Decimal (N-M6e) ---
+
+    def convert_decimalfield_value(self, value, expression, connection):
+        return decimalfield.convert_decimal_value(value, expression)
 
     def convert_datetimefield_value(self, value, expression, connection):
         return temporal.convert_datetime_value(value, connection)
