@@ -4,7 +4,6 @@
   title="{{ block.client_name }} · {{ block.service_name }} · {{ block.time_label }}"
   aria-label="{{ block.client_name }}, {{ block.service_name }}, {{ block.time_label }}">
   <div class="b-top"><span class="b-time">{{ block.time_label }}</span>{% if block.is_new %}<span class="b-new">New</span>{% endif %}<span class="b-ico" aria-hidden="true"></span></div>
-  <div class="b-client">{{ block.client_name }}</div>
+  <div class="b-main"><div class="b-client">{{ block.client_name }}</div>{% if block.price_label %}<div class="b-price">{{ block.price_label }}</div>{% endif %}</div>
   <div class="b-services"><div class="b-service">{{ block.service_name }}</div></div>
-  {% if block.price_label %}<div class="b-price">{{ block.price_label }}</div>{% endif %}
 </article>

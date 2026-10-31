@@ -1002,7 +1002,10 @@
       if (!priceEl) {
         priceEl = document.createElement("div");
         priceEl.className = "b-price";
-        el.appendChild(priceEl);
+        /* The price lives on the name row (.b-main): in flow,
+           never drawn over the text it belongs to. */
+        var mainEl = el.querySelector(".b-main");
+        (mainEl || el).appendChild(priceEl);
       }
       priceEl.textContent = entry.price_label;
     } else if (priceEl) {
@@ -1028,7 +1031,7 @@
       '<div class="b-top"><span class="b-time"></span>' +
       '<span class="b-new" style="display:none">New</span>' +
       '<span class="b-ico" aria-hidden="true"></span></div>' +
-      '<div class="b-client"></div>' +
+      '<div class="b-main"><div class="b-client"></div></div>' +
       '<div class="b-services"><div class="b-service"></div></div>';
     bindBlock(el);
     bindDrag(el);
