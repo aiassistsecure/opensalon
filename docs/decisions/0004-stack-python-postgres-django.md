@@ -1,6 +1,13 @@
 # 0004 — Stack: Python + Django + Postgres
 
-Date: 2026-10-30. Status: decided.
+Date: 2026-10-30. Status: decided, with two corrections on the
+record. The database section is **superseded by
+[0005](0005-nedb-is-the-database.md)** — NEDB is the database.
+And the HTMX mention below did not survive the build: pages are
+server-rendered with vanilla JavaScript and no build step, and
+the day book runs on an embedded client store (see
+[0006](0006-the-book-lives-in-the-client.md)). The rest of this
+record stands as decided.
 
 - **Application:** one Python service. Python has the largest plausible
   contributor pool for a salon-adjacent open-source project after
