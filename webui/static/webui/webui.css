@@ -876,3 +876,5 @@ body.side-collapsed .switcher { justify-content: center; padding: 8px; }
 }
 .book-actions { display: flex; gap: 10px; align-items: center; }
 .book-actions .btn-ghost { color: #4c4636; border-color: #e0d5b8; background: #fff; }
+
+.shadow-state { font-size: 11px; font-weight: 600; color: #a2987d; letter-spacing: .02em; }

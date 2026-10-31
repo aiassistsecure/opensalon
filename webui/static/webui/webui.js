@@ -259,8 +259,12 @@
         appointment_id: parseInt(apptId, 10),
         status: status,
       }),
-    }).then(function () { refreshDay(apptId); })
-      .catch(function () { refreshDay(apptId); });
+    }).then(function () {
+      document.dispatchEvent(new CustomEvent("os:op", {
+        detail: { kind: "status", id: parseInt(apptId, 10), status: status },
+      }));
+      refreshDay(apptId);
+    }).catch(function () { refreshDay(apptId); });
   }
 
   /* Bind everything that lives inside the day-book layout. Runs
@@ -268,6 +272,11 @@
      swap replaces the layout node wholesale. */
   function bindBook() {
     sweepStrays();
+    var shadowEl = document.getElementById("shadowState");
+    if (shadowEl) {
+      shadowEl.textContent =
+        document.body.dataset.shadow === "live" ? "· Shadow journal live" : "";
+    }
     railEl = document.getElementById("detailRail");
     railBody = document.getElementById("railBody");
     payloads = {};
@@ -482,7 +491,11 @@
   var filtersActive = /[?&](cat|status)=[^&]/.test(window.location.search);
 
   function buildModel(pack) {
-    if (pack && pack.days) model = { days: pack.days, staff: pack.staff || [] };
+    if (pack && pack.days) {
+      model = { days: pack.days, staff: pack.staff || [] };
+      /* Feed the shadow store (embedded NEDB) the same pack. */
+      document.dispatchEvent(new CustomEvent("os:pack", { detail: pack }));
+    }
   }
   function modelDay() {
     return (model.days && model.days[currentDate]) || null;
@@ -580,18 +593,36 @@
     return true;
   }
 
-  function applyMove(id, staffId, startMin) {
+  function applyMove(id, staffId, startMin, via) {
     var entries = modelDay();
     if (!entries) return false;
     var found = null;
     entries.forEach(function (e) { if (e.id === id) found = e; });
     if (!found) return false;
+    var before = { staff_id: found.staff_id, start_min: found.start_min };
     var dur = found.end_min - found.start_min;
     found.staff_id = staffId;
     found.start_min = startMin;
     found.end_min = startMin + dur;
-    return repaintDay();
+    var painted = repaintDay();
+    if (painted) {
+      document.dispatchEvent(new CustomEvent("os:op", {
+        detail: {
+          kind: "move", id: id, via: via || "",
+          before: before, after: { staff_id: staffId, start_min: startMin },
+        },
+      }));
+    }
+    return painted;
   }
+
+  /* Undo: the shadow journal still holds the move's before
+     state — Ctrl+Z asks it for the restore and applies it like
+     any other move (which journals the undo as its own op). */
+  document.addEventListener("os:undo-move", function (event) {
+    var d = event.detail || {};
+    if (applyMove(d.id, d.staff_id, d.start_min, "undo")) queueShadow(d.id);
+  });
 
   var shadowPending = {};
   var shadowTimer = null;
@@ -635,6 +666,15 @@
     });
   }
 
+  document.addEventListener("keydown", function (event) {
+    if ((event.ctrlKey || event.metaKey) && !event.shiftKey &&
+        (event.key === "z" || event.key === "Z")) {
+      if (event.target.closest("input, textarea, select")) return;
+      event.preventDefault();
+      document.dispatchEvent(new CustomEvent("os:undo"));
+    }
+  });
+
   /* Arrow keys drive the selected block: up/down in 5-minute
      steps, left/right across stylists — reacting on keydown,
      auto-repeat included, one shadow-write per burst. */
@@ -677,6 +717,18 @@
      hand: the hand outranks the mirror. */
   var packVersion = null;
   var pollBusy = false;
+  document.addEventListener("os:shadow-ready", function () {
+    var shadowEl = document.getElementById("shadowState");
+    if (shadowEl) shadowEl.textContent = "· Shadow journal live";
+    /* The engine may boot after the first pack was dispatched;
+       re-feed it so the mirror is seeded either way. */
+    if (model.days && Object.keys(model.days).length) {
+      document.dispatchEvent(
+        new CustomEvent("os:pack", { detail: { days: model.days, version: packVersion || "reseeding" } })
+      );
+    }
+  });
+
   function pollPack() {
     if (pollBusy || document.hidden) return;
     if (document.querySelector(".appt-block.dragging")) return;

@@ -3,4 +3,6 @@
 {% block body_class %}page-daybook page-light{% endblock %}
 {% block content %}
 {% include "webui/_daybook_main.html" %}
+{% load static %}
+<script type="module" src="{% static 'webui/shadow.js' %}"></script>
 {% endblock %}

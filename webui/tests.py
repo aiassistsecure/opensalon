@@ -474,6 +474,23 @@ class WritePathTests(WebuiTestBase):
         self.assertEqual(data["services"][0]["minutes"], 60)
 
 
+class ShadowStoreTests(WebuiTestBase):
+    def test_daybook_loads_the_shadow_module(self):
+        response = self.client.get("/")
+        self.assertContains(response, "webui/shadow.js")
+        self.assertContains(response, 'id="shadowState"')
+
+    def test_shadow_assets_are_vendored(self):
+        from django.contrib.staticfiles import finders
+
+        for asset in (
+            "webui/shadow.js",
+            "webui/nedb/nedb_wasm.js",
+            "webui/nedb/nedb_wasm_bg.wasm",
+        ):
+            self.assertIsNotNone(finders.find(asset), asset)
+
+
 class PackTests(WebuiTestBase):
     def test_pack_carries_the_week_as_data(self):
         appt = WritePathTests._make_appt(self)
