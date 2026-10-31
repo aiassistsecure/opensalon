@@ -91,6 +91,31 @@ class Appointment(StrictConstraints):
         return f"{self.client} — {name or 'Unknown service'} at {self.start}"
 
 
+class Break(StrictConstraints):
+    """Time a stylist is blocked off inside the day: a lunch, a
+    breather, a school run. Not an appointment — no client, no
+    service, no money — but the day book draws it and the
+    availability math treats the span as busy all the same.
+    ``paid`` is the desk's own record of whether the time is on
+    the clock; it changes nothing about availability, only how
+    the block reads."""
+
+    staff_member = models.ForeignKey(
+        StaffMember, on_delete=models.CASCADE, related_name="breaks"
+    )
+    start = models.DateTimeField()
+    end = models.DateTimeField()
+    paid = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["start"]
+
+    def __str__(self):
+        return f"{self.staff_member} — break at {self.start}"
+
+
 class AppointmentNote(models.Model):
     """An appointment-only note.
 

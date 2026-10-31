@@ -1,4 +1,4 @@
-<div class="book-layout" data-date="{{ day|date:'Y-m-d' }}" data-fragment="{% url 'webui:daybook_fragment' %}" data-move="{% url 'webui:daybook_move' %}" data-status="{% url 'webui:daybook_status' %}" data-apply="{% url 'webui:daybook_apply' %}" data-price="{% url 'webui:daybook_price' %}" data-note="{% url 'webui:daybook_note' %}" data-checkout="{% url 'webui:daybook_checkout' %}" data-receipt-email="{% url 'webui:daybook_receipt_email' %}" data-products="{% url 'webui:daybook_products' %}">{% csrf_token %}
+<div class="book-layout" data-date="{{ day|date:'Y-m-d' }}" data-fragment="{% url 'webui:daybook_fragment' %}" data-move="{% url 'webui:daybook_move' %}" data-status="{% url 'webui:daybook_status' %}" data-apply="{% url 'webui:daybook_apply' %}" data-price="{% url 'webui:daybook_price' %}" data-note="{% url 'webui:daybook_note' %}" data-checkout="{% url 'webui:daybook_checkout' %}" data-receipt-email="{% url 'webui:daybook_receipt_email' %}" data-products="{% url 'webui:daybook_products' %}" data-break="{% url 'webui:daybook_break' %}" data-break-remove="{% url 'webui:daybook_break_remove' %}">{% csrf_token %}
   <div class="book-main">
     <section class="day-head">
       <div class="day-title-wrap">
@@ -69,6 +69,7 @@
           {% for col in staff_columns %}
           <div class="db-column{% if not col.on_duty %} offduty{% endif %}" id="col-{{ forloop.counter0 }}" data-member="{{ col.member.pk }}">
             {% for band in col.bands %}<div class="band" style="top:{{ band.top }}%;height:{{ band.height }}%"></div>{% endfor %}
+            {% for br in col.breaks %}{% include "webui/_break.html" %}{% endfor %}
             {% for block in col.blocks %}{% include "webui/_block.html" %}{% endfor %}
             {% if col.on_duty and not col.blocks %}<div class="open-label">Open for bookings</div>{% endif %}
           </div>
@@ -108,5 +109,46 @@
   </div>
 
   {% include "webui/_rail.html" %}
+</div>
+
+<div class="slotpop hidden" id="slotPop" role="dialog" aria-label="Open slot">
+  <div class="slotpop-head">
+    <div class="slotpop-title" id="slotPopTitle">Open slot</div>
+    <button type="button" class="slotpop-x" id="slotPopClose" aria-label="Close">✕</button>
+  </div>
+  <div class="slotpop-choices" id="slotPopChoices">
+    <button type="button" class="slotpop-choice" id="slotPopAppt"><b>New appointment</b><span>Book a guest into this time</span></button>
+    <button type="button" class="slotpop-choice" id="slotPopBreak"><b>Break</b><span>Block this time off the book</span></button>
+  </div>
+  <div class="slotpop-form hidden" id="slotPopForm">
+    <div class="slotpop-row"><span class="slotpop-k">Length</span>
+      <div class="slotpop-chips" id="slotPopChips">
+        <button type="button" data-min="15">15m</button>
+        <button type="button" data-min="30">30m</button>
+        <button type="button" data-min="45">45m</button>
+        <button type="button" data-min="60">1h</button>
+        <button type="button" data-min="90">1h 30</button>
+        <button type="button" data-min="120">2h</button>
+      </div>
+    </div>
+    <div class="slotpop-row"><span class="slotpop-k">On the clock</span>
+      <div class="slotpop-seg" id="slotPopPaid" role="group" aria-label="Paid or unpaid">
+        <button type="button" data-paid="0" class="on">Unpaid</button>
+        <button type="button" data-paid="1">Paid</button>
+      </div>
+    </div>
+    <div class="slotpop-actions">
+      <button type="button" class="btn-ghost" id="slotPopBack">Back</button>
+      <button type="button" class="btn-mint" id="slotPopAdd">Add break</button>
+    </div>
+    <div class="slotpop-err hidden" id="slotPopErr"></div>
+  </div>
+  <div class="slotpop-form hidden" id="slotPopInfo">
+    <p class="slotpop-fact" id="slotPopFact"></p>
+    <div class="slotpop-actions">
+      <button type="button" class="btn-ghost" id="slotPopKeep">Keep it</button>
+      <button type="button" class="btn-danger" id="slotPopRemove">Remove break</button>
+    </div>
+  </div>
 </div>
 {{ rail_data|json_script:"rail-data" }}

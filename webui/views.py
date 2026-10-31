@@ -36,7 +36,7 @@ from django.views.decorators.http import require_POST
 
 from bookings.availability import _tz
 from bookings.daybook import blocks_for_day as feed_blocks_for_day
-from bookings.models import Appointment, AppointmentNote
+from bookings.models import Appointment, AppointmentNote, Break
 from clients.models import Client, ClientNote
 from saloncore.models import Salon, Service, ServiceCategory, ServicePrice, StaffLevel
 from team.models import AttendanceRecord, RosterPattern, StaffMember, ShiftOverride
@@ -537,6 +537,14 @@ def _day_book_context(request, *, light=False, kit=None):
             for o in ShiftOverride.objects.filter(staff_member__in=members, date=day)
         }
         block_index = 0
+        # The day's breaks, grouped by stylist: drawn as their
+        # own blocks and counted as busy time in the openings
+        # math below — never as booked work.
+        day_breaks = {}
+        for br in Break.objects.filter(
+            staff_member__in=members, start__lt=day_end, end__gt=day_start
+        ):
+            day_breaks.setdefault(br.staff_member_id, []).append(br)
         total_booked, total_roster, total_openings = 0.0, 0.0, 0
         revenue, unpriced = Decimal("0"), 0
         for member in members:
@@ -613,16 +621,52 @@ def _day_book_context(request, *, light=False, kit=None):
                 if b["_end"] > day_start and b["_start"] < day_end
             ]
             member_spans[member.pk] = clipped
+            break_tiles = []
+            break_spans = []
+            for br in day_breaks.get(member.pk, []):
+                b_start = br.start.astimezone(tz)
+                b_end = br.end.astimezone(tz)
+                b_top = _pct(b_start, day_start, day_end)
+                break_tiles.append(
+                    {
+                        "break_id": br.pk,
+                        "top": b_top,
+                        "height": max(
+                            _pct(b_end, day_start, day_end) - b_top, 4.0
+                        ),
+                        "time_label": (
+                            f"{_fmt_time(b_start.time())} – "
+                            f"{_fmt_time(b_end.time())}"
+                        ),
+                        "paid": br.paid,
+                        "label": "Paid break" if br.paid else "Break",
+                        "start_minutes": int(
+                            (b_start - day_start).total_seconds() // 60
+                        )
+                        + DAY_START_HOUR * 60,
+                        "minutes": int(
+                            (b_end - b_start).total_seconds() // 60
+                        ),
+                    }
+                )
+                if b_end > day_start and b_start < day_end:
+                    break_spans.append(
+                        (max(b_start, day_start), min(b_end, day_end))
+                    )
             booked_minutes = _union_minutes(clipped)
             booked_pct = None
             if roster_minutes:
                 booked_pct = min(100, int(booked_minutes / roster_minutes * 100 + 0.5))
                 total_booked += booked_minutes
                 total_roster += roster_minutes
+                # Openings close around breaks as well as bookings:
+                # busy spans include both, booked minutes stay
+                # appointments only — a break is not work sold.
+                busy_spans = clipped + break_spans
                 for band in bands:
                     in_span = [
                         (max(s, band["_start"]), min(e, band["_end"]))
-                        for s, e in clipped
+                        for s, e in busy_spans
                         if e > band["_start"] and s < band["_end"]
                     ]
                     total_openings += _gap_count(in_span, band["_start"], band["_end"])
@@ -713,6 +757,7 @@ def _day_book_context(request, *, light=False, kit=None):
                     "bands": bands,
                     "shift_label": ", ".join(b["label"] for b in bands),
                     "blocks": tiles,
+                    "breaks": break_tiles,
                     "booked_pct": booked_pct,
                     "initials": _initials(member.display_name),
                     "width_factor": width_factor,
@@ -1577,6 +1622,87 @@ def day_book_book(request):
             "entry": _pack_entry_for(salon, appt, tz),
         }
     )
+
+
+@require_POST
+def day_book_break(request):
+    """Block off a span of one stylist's day as a break.
+
+    The desk pressed empty space and chose Break: this stylist,
+    starting at this time, for this many minutes, paid or unpaid.
+    The reply carries everything the book needs to paint the
+    break where it stands — the block exists on screen in the
+    same breath as the answer, like every write on this desk."""
+    try:
+        data = json.loads(request.body.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return JsonResponse({"ok": False, "error": "bad payload"}, status=400)
+    member = StaffMember.objects.filter(
+        pk=data.get("staff_member_id"), active=True
+    ).first()
+    if member is None:
+        return JsonResponse(
+            {"ok": False, "error": "unknown staff member"}, status=400
+        )
+    salon = member.salon
+    tz = _tz(salon)
+    try:
+        day = datetime.date.fromisoformat(str(data.get("date", "")))
+        hour, minute = (int(p) for p in str(data.get("time", "")).split(":"))
+        minutes = int(data.get("minutes"))
+    except (TypeError, ValueError):
+        return JsonResponse(
+            {"ok": False, "error": "bad date, time or length"}, status=400
+        )
+    if minutes < 5 or minutes > 720:
+        return JsonResponse(
+            {"ok": False, "error": "a break runs 5 minutes to 12 hours"},
+            status=400,
+        )
+    start = datetime.datetime.combine(
+        day, datetime.time(hour, minute), tzinfo=tz
+    )
+    br = Break.objects.create(
+        staff_member=member,
+        start=start,
+        end=start + datetime.timedelta(minutes=minutes),
+        paid=bool(data.get("paid")),
+    )
+    return JsonResponse(
+        {
+            "ok": True,
+            "break": {
+                "id": br.pk,
+                "staff_id": member.pk,
+                "date": day.isoformat(),
+                "start_min": hour * 60 + minute,
+                "minutes": minutes,
+                "paid": br.paid,
+                "label": "Paid break" if br.paid else "Break",
+                "time_label": (
+                    f"{_fmt_time(start.time())} – "
+                    f"{_fmt_time(br.end.astimezone(tz).time())}"
+                ),
+            },
+        }
+    )
+
+
+@require_POST
+def day_book_break_remove(request):
+    """Take a break back off the book."""
+    try:
+        data = json.loads(request.body.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return JsonResponse({"ok": False, "error": "bad payload"}, status=400)
+    br = Break.objects.filter(pk=data.get("break_id")).first()
+    if br is None:
+        return JsonResponse({"ok": False, "error": "unknown break"}, status=400)
+    salon = _first_salon()
+    if salon is not None and br.staff_member.salon_id != salon.pk:
+        return JsonResponse({"ok": False, "error": "unknown break"}, status=400)
+    br.delete()
+    return JsonResponse({"ok": True})
 
 
 def _visit_keys(tiles, client_ids):
