@@ -1674,7 +1674,9 @@
     if (!found) {
       entries.push(Object.assign({}, doc));
       entries.sort(function (a, b) {
-        return a.start_min - b.start_min || a.id - b.id;
+        var byId = (typeof a.id === "number" && typeof b.id === "number")
+          ? a.id - b.id : 0;
+        return a.start_min - b.start_min || byId;
       });
     }
   });
@@ -1684,6 +1686,31 @@
     var entries = model.days[d.day];
     if (!entries) return;
     model.days[d.day] = entries.filter(function (e) { return e.id !== d.id; });
+  });
+
+  /* A store-born booking takes its real name: the model swaps
+     the provisional entry for the node's true entry under the
+     real id, the paint follows, and a card open on the birth
+     re-opens on the named appointment with its payload
+     chaining in. */
+  document.addEventListener("os:rename", function (event) {
+    var d = event.detail || {};
+    var entries = model.days[d.day];
+    if (!entries || !d.entry) return;
+    var wasSelected = !!(
+      selected && String(selected.dataset.appt) === String(d.from)
+    );
+    for (var i = 0; i < entries.length; i++) {
+      if (entries[i].id === d.from) {
+        entries[i] = Object.assign({}, d.entry, { day: d.day });
+        break;
+      }
+    }
+    if (currentDate === d.day) repaintDay();
+    if (wasSelected) {
+      delete payloads[d.from];
+      choose(d.to);
+    }
   });
 
   /* Store law: a clean drain changes nothing on screen — the
@@ -2394,6 +2421,55 @@
     }
     if (!pickedService) { fail("Pick a service — search and tap one."); return; }
     if (!payload.date || !payload.time) { fail("Pick a date and a start time."); return; }
+    /* The founder's law, on the last write that still waited:
+       a booking is a store play first. On the day book with
+       the store live, the block is born in the embedded NEDB
+       in this same frame — no HTTP in the click path — and
+       the create drains to the node behind, whose answer
+       renames the doc to its real id. The provisional doc
+       carries only what the desk itself knows (who, what,
+       when); the price and the visit chain are the node's to
+       stamp, and its entry replaces the doc whole at the
+       rename. The POST below remains for pages and tabs
+       without a store. */
+    if (window.OpenSalonShadow && window.OpenSalonShadow.ready &&
+        document.querySelector(".book-layout")) {
+      var tp = payload.time.split(":");
+      var startMin = (parseInt(tp[0], 10) || 0) * 60 + (parseInt(tp[1], 10) || 0);
+      var endMin = startMin + (pickedService.minutes || 60);
+      var fmtT = function (mins) {
+        var h = Math.floor(mins / 60), m = mins % 60;
+        var ap = h >= 12 ? "PM" : "AM", h12 = h % 12 || 12;
+        return m
+          ? h12 + ":" + String(m).padStart(2, "0") + " " + ap
+          : h12 + " " + ap;
+      };
+      var createEv = new CustomEvent("os:create", {
+        detail: {
+          payload: payload,
+          handled: false,
+          doc: {
+            client: pickedClient
+              ? pickedClient.name
+              : (payload.new_client.first_name + " " +
+                 payload.new_client.last_name).trim(),
+            service: pickedService.name,
+            cat: (pickedService.category || "")
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, "-")
+              .replace(/^-+|-+$/g, "") || "misc",
+            is_new: !pickedClient,
+            start_min: startMin,
+            end_min: endMin,
+            amount: null,
+            price_label: "",
+            time_label: fmtT(startMin) + " – " + fmtT(endMin),
+          },
+        },
+      });
+      document.dispatchEvent(createEv);
+      if (createEv.detail.handled) { hide(); return; }
+    }
     var tokenEl = modal.querySelector('input[name="csrfmiddlewaretoken"]');
     fetch("/daybook/book/", {
       method: "POST",

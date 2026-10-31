@@ -1101,6 +1101,25 @@ def day_book_apply(request):
         result = {"i": index, "ok": False}
         try:
             kind = str(op["kind"])
+            if kind == "create":
+                # A birth, not a play on an existing row: the
+                # store created the doc under a temporary ref
+                # and the drain carries the booking itself. The
+                # answer names the real id and carries the true
+                # pack entry, so the store renames its doc and
+                # every later play rides on the real id.
+                error, created, _day = _do_create(op)
+                if error:
+                    result["error"] = error
+                else:
+                    salon = created.staff_member.salon
+                    result["ok"] = True
+                    result["id"] = created.pk
+                    result["entry"] = _pack_entry_for(
+                        salon, created, _tz(salon)
+                    )
+                results.append(result)
+                continue
             appt = Appointment.objects.select_related("staff_member").filter(
                 pk=int(op["id"])
             ).first()
@@ -1549,34 +1568,67 @@ def day_book_client_search(request):
     )
 
 
-@require_POST
-def day_book_book(request):
-    """Create a booking from the desk.
+def _create_twin(member, service, start, client, first, last, phone):
+    """The replay guard for store-born bookings.
 
-    One service, one stylist, one client — an existing client by
-    id, or a new client created from the name/phone the desk
-    typed. The end is the start plus the service's own minutes;
-    the name snapshot is stored verbatim, like an import's. The
-    book allows overlaps (lanes render them), so no conflict can
-    reject a booking the desk wants to make.
-    """
+    A create play's ack can die with its tab; the durable queue
+    then re-sends a birth the node already delivered. An
+    appointment for the same stylist, service and start,
+    created moments ago for the same client (or for a client
+    created moments ago with the same name and phone), IS that
+    birth — the drain is answered with the original, never a
+    twin. The note ops' replay guard, carried to creates."""
+    recent = timezone.now() - datetime.timedelta(minutes=15)
+    qs = Appointment.objects.filter(
+        staff_member=member, service=service, start=start,
+        created_at__gte=recent,
+    )
+    if client is not None:
+        return qs.filter(client=client).first()
+    twin_client = Client.objects.filter(
+        salon=member.salon, first_name=first, last_name=last,
+        phone=phone, created_at__gte=recent,
+    ).first()
+    if twin_client is None:
+        return None
+    return qs.filter(client=twin_client).first()
+
+
+def _do_create(payload):
+    """The desk's booking, created once — shared by the book
+    endpoint and the store's drain, so a booking is born under
+    one law whichever door it arrives by.
+
+    One service, one stylist, one client — an existing client
+    by id, or a new client created from the name/phone the
+    desk typed. The end is the start plus the service's own
+    minutes; the name snapshot is stored verbatim, like an
+    import's. The book allows overlaps (lanes render them),
+    so no conflict can reject a booking the desk wants.
+
+    Returns (error, appointment, day); error is None on a
+    birth. A payload carrying a store `ref` is replay-guarded:
+    a twin born moments ago answers instead of a duplicate."""
     try:
-        payload = json.loads(request.body.decode("utf-8"))
         member_id = int(payload["staff_member_id"])
         service_id = int(payload["service_id"])
         day = datetime.date.fromisoformat(str(payload["date"]))
-        start_time = datetime.datetime.strptime(str(payload["time"]), "%H:%M").time()
-    except (ValueError, KeyError, TypeError, UnicodeDecodeError):
-        return JsonResponse({"ok": False, "error": "bad payload"}, status=400)
+        start_time = datetime.datetime.strptime(
+            str(payload["time"]), "%H:%M"
+        ).time()
+    except (ValueError, KeyError, TypeError):
+        return "bad payload", None, None
     member = StaffMember.objects.select_related("salon").filter(
         pk=member_id, active=True
     ).first()
     if member is None:
-        return JsonResponse({"ok": False, "error": "no such stylist"}, status=404)
+        return "no such stylist", None, None
     salon = member.salon
-    service = Service.objects.filter(pk=service_id, category__salon=salon).first()
+    service = Service.objects.filter(
+        pk=service_id, category__salon=salon
+    ).first()
     if service is None:
-        return JsonResponse({"ok": False, "error": "no such service"}, status=404)
+        return "no such service", None, None
     client = None
     if payload.get("client_id"):
         try:
@@ -1585,21 +1637,24 @@ def day_book_book(request):
             ).first()
         except (TypeError, ValueError):
             client = None
+    new_client = payload.get("new_client") or {}
+    first = str(new_client.get("first_name", "")).strip()
+    last = str(new_client.get("last_name", "")).strip()
+    phone = str(new_client.get("phone", "")).strip()
+    if client is None and not first and not last:
+        return "pick a client or enter a new client's name", None, None
+    tz = _tz(salon)
+    start = datetime.datetime.combine(day, start_time, tzinfo=tz)
+    if payload.get("ref"):
+        twin = _create_twin(
+            member, service, start, client, first, last, phone
+        )
+        if twin is not None:
+            return None, twin, day
     if client is None:
-        new_client = payload.get("new_client") or {}
-        first = str(new_client.get("first_name", "")).strip()
-        last = str(new_client.get("last_name", "")).strip()
-        phone = str(new_client.get("phone", "")).strip()
-        if not first and not last:
-            return JsonResponse(
-                {"ok": False, "error": "pick a client or enter a new client's name"},
-                status=400,
-            )
         client = Client.objects.create(
             salon=salon, first_name=first, last_name=last, phone=phone
         )
-    tz = _tz(salon)
-    start = datetime.datetime.combine(day, start_time, tzinfo=tz)
     minutes = service.service_minutes or 60
     appt = Appointment.objects.create(
         client=client,
@@ -1610,6 +1665,29 @@ def day_book_book(request):
         end=start + datetime.timedelta(minutes=minutes),
         status=Appointment.Status.BOOKED,
     )
+    return None, appt, day
+
+
+@require_POST
+def day_book_book(request):
+    """Create a booking from the desk — the direct door.
+
+    The day book itself no longer books through here when its
+    embedded store is live: the booking is a store play first
+    and drains through the apply endpoint's create kind. This
+    door remains for pages and tabs without a store, under the
+    same creation core."""
+    try:
+        payload = json.loads(request.body.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return JsonResponse({"ok": False, "error": "bad payload"}, status=400)
+    error, appt, day = _do_create(payload)
+    if error:
+        status = (
+            404 if error in ("no such stylist", "no such service") else 400
+        )
+        return JsonResponse({"ok": False, "error": error}, status=status)
+    salon = appt.staff_member.salon
     return JsonResponse(
         {
             "ok": True,
@@ -1619,7 +1697,7 @@ def day_book_book(request):
             # the reply, so the client's embedded store adopts it
             # as a doc at once — the book never re-fetches a pack
             # to learn what it just created.
-            "entry": _pack_entry_for(salon, appt, tz),
+            "entry": _pack_entry_for(salon, appt, _tz(salon)),
         }
     )
 
