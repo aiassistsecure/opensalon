@@ -25,6 +25,11 @@ increasing within a process, and unique across tables (one counter
 for every table -- per-table sequences do not exist on a schemaless
 store, and ``MAX(id)`` is unusable as a seed: NEDB returns the
 lexicographic maximum, which for legacy rows is an ``r...`` string).
+Millisecond ids exceed the 32-bit range Django declares for
+``AutoField`` PKs (auth/contenttypes/admin models), so
+``operations.py`` reports a 64-bit range for auto fields (N-M6f);
+without it, Django's lookup overflow check compiles PK filters and
+updates for those models to ``EmptyResultSet`` (0 rows affected).
 
 Known limits, stated plainly:
 

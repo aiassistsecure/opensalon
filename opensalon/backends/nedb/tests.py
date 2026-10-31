@@ -1263,3 +1263,117 @@ class NedbDecimalLiveTests(SimpleTestCase):
             sale=sale, unit_price__gt=decimal.Decimal("50")
         ).count()
         self.assertEqual(big, 1)
+
+
+# -- N-M6f: auto-field PK ranges (DYOR 9.1/9.6) -----------------------
+#
+# The client allocator assigns millisecond-scale PKs (~1.79e12) to
+# every table, but Django's built-in apps declare 32-bit AutoField
+# PKs. With the stock PostgreSQL range, IntegerFieldOverflow turned
+# a PK filter/update into EmptyResultSet before any SQL was sent:
+# the UPDATE reported 0 rows and save(update_fields=[...]) raised
+# "Save with update_fields did not affect any rows" (live-suite
+# signature via update_last_login). NEDB stores _id as a string --
+# there is no 32-bit column -- so auto-field ranges are 64-bit here.
+
+BIG_CLIENT_PK = 1793418576690  # allocator-scale id, > 2**31
+_BIG_RANGE = (-9223372036854775808, 9223372036854775807)
+
+
+def _user_pk_query():
+    from django.contrib.auth import get_user_model
+
+    return get_user_model().objects.filter(pk=BIG_CLIENT_PK)
+
+
+class AutoFieldRangeTests(SimpleTestCase):
+    def test_auto_field_ranges_are_64_bit(self):
+        wrapper = _wrapper()
+        for internal_type in ("AutoField", "SmallAutoField", "BigAutoField"):
+            with self.subTest(internal_type=internal_type):
+                self.assertEqual(
+                    wrapper.ops.integer_field_range(internal_type),
+                    _BIG_RANGE,
+                )
+
+    def test_non_auto_integer_ranges_unchanged(self):
+        wrapper = _wrapper()
+        self.assertEqual(
+            wrapper.ops.integer_field_range("IntegerField"),
+            (-2147483648, 2147483647),
+        )
+        self.assertEqual(
+            wrapper.ops.integer_field_range("PositiveIntegerField"),
+            (0, 2147483647),
+        )
+        self.assertEqual(
+            wrapper.ops.integer_field_range("SmallIntegerField"),
+            (-32768, 32767),
+        )
+
+    def test_pk_filter_for_autofield_model_compiles(self):
+        # Pre-fix this as_sql() raised EmptyResultSet (the lookup
+        # overflow check), so the row was invisible to the ORM.
+        wrapper = _wrapper()
+        sql, params = (
+            _user_pk_query().query.get_compiler(connection=wrapper).as_sql()
+        )
+        self.assertIn('"auth_user"."id" = %s', sql)
+        self.assertEqual(params, (BIG_CLIENT_PK,))
+
+    def test_pk_update_for_autofield_model_compiles(self):
+        # The exact failing shape: UPDATE ... WHERE id = <big pk>,
+        # whose compiler swallowed EmptyResultSet as rowcount 0.
+        from django.db.models.sql.subqueries import UpdateQuery
+
+        from django.contrib.auth import get_user_model
+
+        wrapper = _wrapper()
+        update = UpdateQuery(get_user_model())
+        update.add_update_values({"username": "probe"})
+        update.where = _user_pk_query().query.where
+        sql, params = update.get_compiler(connection=wrapper).as_sql()
+        self.assertTrue(sql.startswith('UPDATE "auth_user" SET'))
+        self.assertIn('"auth_user"."id" = %s', sql)
+        self.assertIn(BIG_CLIENT_PK, params)
+
+
+@unittest.skipUnless(
+    os.environ.get("OPENSALON_NEDB_LIVE_TEST") == "1",
+    "live nedbd update_fields test: set OPENSALON_NEDB_LIVE_TEST=1 "
+    "with the default connection on the NEDB backend (nedbd running)",
+)
+class NedbUpdateFieldsLiveTests(SimpleTestCase):
+    """N-M6f acceptance against a real nedbd (guarded, never offline).
+
+    Before the fix this exact shape failed live with:
+    DatabaseError: Save with update_fields did not affect any rows
+    (auth's update_last_login receiver, via force_login).
+    """
+
+    databases = {"default"}
+
+    def test_user_update_fields_last_login_round_trip(self):
+        from django.db import connection
+
+        self.assertEqual(connection.display_name, "NEDB (PostgreSQL pgwire)")
+        from django.contrib.auth import get_user_model
+        from django.utils import timezone as dj_tz
+
+        user = get_user_model().objects.create_superuser(
+            username="updatefieldsprobe",
+            email="updatefields@example.com",
+            password="probe-password",
+        )
+        # The allocator's ids are the precondition of the bug.
+        self.assertGreater(user.pk, 2147483647)
+        user.last_login = dj_tz.now()
+        user.save(update_fields=["last_login"])  # must not raise
+        fresh = get_user_model().objects.get(pk=user.pk)
+        self.assertEqual(fresh.last_login, user.last_login)
+        self.assertEqual(
+            get_user_model().objects.filter(pk=user.pk).update(
+                username="updatefieldsrenamed"
+            ),
+            1,
+        )

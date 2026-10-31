@@ -37,6 +37,24 @@ DecimalField expressions, restoring real ``Decimal`` values (with
 the field's scale for plain columns). The write path stays numeric
 on purpose: decimal strings would compare and sort lexicographically
 on NEDB -- see ``decimalfield.py`` for the measured evidence.
+
+Auto-field ranges (N-M6f, DYOR implications 1 and 6): the insert
+compiler assigns client-generated PKs at millisecond scale
+(~1.79e12, ``identity.py``) to *every* table, but Django's built-in
+apps (auth, contenttypes, admin) declare 32-bit ``AutoField`` PKs.
+Django's lookup layer compares an integer RHS against
+``ops.integer_field_range()`` and raises ``EmptyResultSet`` on
+overflow (``IntegerFieldOverflow``), so a ``filter(pk=...)`` /
+``UPDATE ... WHERE id = ...`` for such a row compiles to nothing,
+the update reports 0 rows, and ``save(update_fields=...)`` raises
+"Save with update_fields did not affect any rows" -- the live-suite
+signature, via ``update_last_login`` on ``force_login``. On NEDB
+there is no 32-bit serial column for that range to describe: the
+store is schemaless and ``_id`` is a string, and the assigned ids
+round-trip exactly (probe evidence 2026-10-30). So below,
+``integer_field_range`` reports the signed 64-bit range for the
+auto field types only; every other integer field keeps its stock
+range and validation.
 """
 
 from django.db.backends.postgresql.operations import (
@@ -75,9 +93,30 @@ def _is_integer_field(field):
     )
 
 
+# NEDB stores auto-field PKs as string ``_id`` values with no
+# integer width (DYOR 9.6); the range Django must plan against for
+# them is the signed 64-bit range the client allocator draws from.
+_AUTO_FIELD_RANGE = (-9223372036854775808, 9223372036854775807)
+_AUTO_INTERNAL_TYPES = frozenset(
+    {"AutoField", "BigAutoField", "SmallAutoField"}
+)
+
+
 class DatabaseOperations(PostgresDatabaseOperations):
     # NEDB compilers: client-assigned PKs, no UNNEST (compiler.py).
     compiler_module = "opensalon.backends.nedb.compiler"
+
+    def integer_field_range(self, internal_type):
+        # N-M6f: without this, Django's IntegerFieldOverflow turns a
+        # lookup/update on a client-assigned PK (> 2**31, on an
+        # AutoField-PK model from a built-in app) into EmptyResultSet
+        # before any SQL is sent, and the UPDATE reports 0 rows.
+        # Django's SQLite backend widens its ranges the same way for
+        # a store that enforces no integer width. Non-auto integer
+        # fields keep their stock ranges (module docstring).
+        if internal_type in _AUTO_INTERNAL_TYPES:
+            return _AUTO_FIELD_RANGE
+        return super().integer_field_range(internal_type)
     # -- savepoints: no SQL exists on this backend (DYOR 9.4) --------
     # NEDB refuses SAVEPOINT / RELEASE / ROLLBACK TO at execution, and
     # features.uses_savepoints is False, so Django never asks for this
