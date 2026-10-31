@@ -1892,4 +1892,147 @@
   document.addEventListener("keydown", function (event) {
     if (event.key === "Escape" && !modal.classList.contains("hidden")) hide();
   });
+
+  /* ---- roster book: the grid is the editor ----
+     Drag on a column's empty space to lay hours down; drag a
+     block to move it. Both post the book's own actions (place /
+     move) as plain forms — the server stays the one law. New
+     hours take the scope of the column's Every-week switch; a
+     moved block keeps its own scope. Times snap to 15 minutes;
+     a plain click loads a two-hour suggestion into the column's
+     place form instead of posting anything. */
+  var rbBook = document.querySelector(".rb-book");
+  if (rbBook) {
+    var RB_START = 8 * 60, RB_SPAN = 12 * 60;
+    function rbSnap(mins) {
+      return Math.max(RB_START, Math.min(RB_START + RB_SPAN, Math.round(mins / 15) * 15));
+    }
+    function rbMinutes(body, clientY) {
+      var r = body.getBoundingClientRect();
+      return RB_START + ((clientY - r.top) / r.height) * RB_SPAN;
+    }
+    function rbHHMM(mins) {
+      return String(Math.floor(mins / 60)).padStart(2, "0") + ":" + String(mins % 60).padStart(2, "0");
+    }
+    function rbLabel(mins) {
+      var h = Math.floor(mins / 60), m = mins % 60;
+      var ap = h >= 12 ? "PM" : "AM", h12 = h % 12 || 12;
+      return m ? h12 + ":" + String(m).padStart(2, "0") + " " + ap : h12 + " " + ap;
+    }
+    function rbHeadForm(member) {
+      return rbBook.querySelector(
+        '.rb-colhead-cell[data-member="' + member + '"] form.rb-place'
+      );
+    }
+    function rbPost(fields, csrfForm) {
+      var form = document.createElement("form");
+      form.method = "post";
+      form.action = window.location.pathname;
+      var token = csrfForm
+        ? csrfForm.querySelector('input[name="csrfmiddlewaretoken"]')
+        : rbBook.querySelector('input[name="csrfmiddlewaretoken"]');
+      if (token) {
+        var t = document.createElement("input");
+        t.type = "hidden";
+        t.name = "csrfmiddlewaretoken";
+        t.value = token.value;
+        form.appendChild(t);
+      }
+      Object.keys(fields).forEach(function (name) {
+        if (fields[name] === "" || fields[name] == null) return;
+        var input = document.createElement("input");
+        input.type = "hidden";
+        input.name = name;
+        input.value = fields[name];
+        form.appendChild(input);
+      });
+      document.body.appendChild(form);
+      form.submit();
+    }
+
+    rbBook.querySelectorAll(".rb-body").forEach(function (body) {
+      body.addEventListener("pointerdown", function (ev) {
+        if (ev.target.closest("form, button, .rb-shift, .rb-off")) return;
+        ev.preventDefault();
+        var startMin = rbSnap(rbMinutes(body, ev.clientY));
+        var cur = startMin;
+        var ghost = document.createElement("div");
+        ghost.className = "rb-ghost";
+        body.appendChild(ghost);
+        function draw() {
+          var a = Math.min(startMin, cur), b = Math.max(startMin, cur);
+          ghost.style.top = ((a - RB_START) / RB_SPAN * 100) + "%";
+          ghost.style.height = Math.max((b - a) / RB_SPAN * 100, 2) + "%";
+          ghost.textContent = rbLabel(a) + " – " + rbLabel(b);
+          return [a, b];
+        }
+        draw();
+        function move(e2) { cur = rbSnap(rbMinutes(body, e2.clientY)); draw(); }
+        function up() {
+          window.removeEventListener("pointermove", move);
+          window.removeEventListener("pointerup", up);
+          var range = draw();
+          ghost.remove();
+          var member = body.dataset.member;
+          var headForm = rbHeadForm(member);
+          if (range[1] - range[0] >= 30) {
+            var sw = headForm
+              ? headForm.querySelector("[data-weekly-switch]")
+              : null;
+            rbPost({
+              action: "place", member: member, date: rbBook.dataset.date,
+              start: rbHHMM(range[0]), end: rbHHMM(range[1]),
+              weekly: sw && sw.checked ? "on" : "",
+            }, headForm);
+          } else if (headForm) {
+            headForm.querySelector('input[name="start"]').value = rbHHMM(range[0]);
+            headForm.querySelector('input[name="end"]').value =
+              rbHHMM(Math.min(range[0] + 120, RB_START + RB_SPAN));
+            headForm.classList.add("rb-flash");
+            setTimeout(function () { headForm.classList.remove("rb-flash"); }, 1200);
+          }
+        }
+        window.addEventListener("pointermove", move);
+        window.addEventListener("pointerup", up);
+      });
+    });
+
+    rbBook.querySelectorAll(".rb-shift").forEach(function (block) {
+      block.addEventListener("pointerdown", function (ev) {
+        if (ev.target.closest("form, button, label, input")) return;
+        ev.preventDefault();
+        var body = block.closest(".rb-body");
+        var sp = block.dataset.start.split(":"), ep = block.dataset.end.split(":");
+        var startMin = (+sp[0]) * 60 + (+sp[1]);
+        var dur = ((+ep[0]) * 60 + (+ep[1])) - startMin;
+        var grabOffset = rbMinutes(body, ev.clientY) - startMin;
+        var origTop = block.style.top;
+        var cur = startMin;
+        block.classList.add("rb-moving");
+        function move(e2) {
+          cur = rbSnap(rbMinutes(body, e2.clientY) - grabOffset);
+          cur = Math.max(RB_START, Math.min(RB_START + RB_SPAN - dur, cur));
+          block.style.top = ((cur - RB_START) / RB_SPAN * 100) + "%";
+        }
+        function up() {
+          window.removeEventListener("pointermove", move);
+          window.removeEventListener("pointerup", up);
+          block.classList.remove("rb-moving");
+          if (cur === startMin) { block.style.top = origTop; return; }
+          var fields = {
+            action: "move", member: body.dataset.member,
+            date: rbBook.dataset.date,
+            start: rbHHMM(cur), end: rbHHMM(cur + dur),
+          };
+          if (block.dataset.source === "weekly") {
+            fields.weekly = "on";
+            fields.pattern = block.dataset.pattern;
+          }
+          rbPost(fields, rbHeadForm(body.dataset.member));
+        }
+        window.addEventListener("pointermove", move);
+        window.addEventListener("pointerup", up);
+      });
+    });
+  }
 })();

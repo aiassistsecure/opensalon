@@ -3,7 +3,8 @@
 The book renders the pattern onto ANY future week (perpetual).
 Placing hours with the switch ON writes the pattern — visible this
 week, next week, forever. Switch OFF writes a ShiftOverride that
-rules just that date. Flip off behaves the same way.
+rules just that date. Removing hours behaves the same way, and
+dragging a block (the move action) keeps the block's own scope.
 """
 import datetime
 
@@ -63,7 +64,7 @@ class RosterBookTests(TestCase):
         ).exists())
         html = self.get(SAT).content.decode()
         self.assertIn("10 AM – 2 PM", html)
-        self.assertIn("This day only", html)
+        self.assertIn("This day", html)
         self.assertNotIn("9 AM – 5 PM", html)
         next_html = self.get(NEXT_SAT).content.decode()
         self.assertIn("9 AM – 5 PM", next_html)
@@ -111,3 +112,38 @@ class RosterBookTests(TestCase):
         # No column at all: neither rostered (off instance) nor booked.
         self.assertIsNone(shift_label(SAT))
         self.assertEqual(shift_label(NEXT_SAT), "9 AM – 5 PM")
+
+    def test_the_page_speaks_plainly(self):
+        html = self.get(SAT).content.decode()
+        self.assertIn("This book repeats every week", html)
+        self.assertIn("Remove", html)
+        self.assertIn("DD", html)  # the avatar carries her initials
+        self.assertNotIn("Flip off", html)
+        self.assertNotIn("perpetual controller", html)
+        self.assertNotIn("The switch is the law", html)
+
+    def test_move_weekly_block_rewrites_the_pattern(self):
+        self.client.post(self.url, {
+            "action": "move", "member": self.member.pk,
+            "date": SAT.isoformat(), "pattern": self.pattern.pk,
+            "start": "10:00", "end": "18:00", "weekly": "on",
+        })
+        self.pattern.refresh_from_db()
+        self.assertEqual(self.pattern.start_time, datetime.time(10, 0))
+        self.assertEqual(self.pattern.end_time, datetime.time(18, 0))
+        self.assertIn("10 AM – 6 PM", self.get(FAR_SAT).content.decode())
+
+    def test_move_instance_block_updates_only_the_override(self):
+        ShiftOverride.objects.create(
+            staff_member=self.member, date=SAT, is_off=False,
+            start_time=datetime.time(10, 0), end_time=datetime.time(14, 0),
+        )
+        self.client.post(self.url, {
+            "action": "move", "member": self.member.pk,
+            "date": SAT.isoformat(), "start": "11:00", "end": "15:00",
+        })
+        ov = ShiftOverride.objects.get(staff_member=self.member, date=SAT)
+        self.assertEqual(ov.start_time, datetime.time(11, 0))
+        self.assertEqual(ov.end_time, datetime.time(15, 0))
+        self.pattern.refresh_from_db()
+        self.assertEqual(self.pattern.start_time, datetime.time(9, 0))

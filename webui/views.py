@@ -1754,9 +1754,24 @@ def day_book_pack(request):
     )
 
 
+def _level_rank(level):
+    """Price-book column order: Base first, then the named ladder,
+    then unassigned price sets, then any raw id a repair has not
+    named yet — the page reads like the salon talks."""
+    name = level.name or ""
+    if name == "Base":
+        return (0, "")
+    if name.startswith("Unassigned"):
+        return (2, name)
+    if " " not in name and len(name) >= 16:
+        return (3, name)
+    return (1, name.lower())
+
+
 def price_book(request):
     salon = Salon.objects.order_by("id").first()
     levels = list(StaffLevel.objects.filter(salon=salon, active=True)) if salon else []
+    levels.sort(key=_level_rank)
     categories = []
     if salon is not None:
         cats = (
@@ -1964,6 +1979,33 @@ def roster_book(request):
                             "end_time": end,
                         },
                     )
+        elif member is not None and action == "move":
+            try:
+                start = datetime.datetime.strptime(
+                    request.POST.get("start", ""), "%H:%M"
+                ).time()
+                end = datetime.datetime.strptime(
+                    request.POST.get("end", ""), "%H:%M"
+                ).time()
+            except ValueError:
+                start = end = None
+            if start is not None and end > start:
+                if weekly:
+                    pat = RosterPattern.objects.filter(
+                        pk=request.POST.get("pattern"), staff_member=member
+                    ).first()
+                    if pat is not None:
+                        pat.start_time, pat.end_time = start, end
+                        pat.save(update_fields=["start_time", "end_time"])
+                else:
+                    ShiftOverride.objects.update_or_create(
+                        staff_member=member, date=day,
+                        defaults={
+                            "is_off": False,
+                            "start_time": start,
+                            "end_time": end,
+                        },
+                    )
         elif member is not None and action == "off":
             if weekly:
                 RosterPattern.objects.filter(
@@ -2026,26 +2068,50 @@ def roster_book(request):
             "label": f"{_fmt_time(start_t)} – {_fmt_time(end_t)}",
             "source": source,
             "pattern_id": pattern_id,
+            "start": start_t.strftime("%H:%M"),
+            "end": end_t.strftime("%H:%M"),
         }
 
+    avatar_pairs = [
+        ("5eead4", "34d399"), ("c4b5fd", "f0abfc"), ("93c5fd", "818cf8"),
+        ("fda4af", "fbbf24"), ("6ee7b7", "2dd4bf"), ("a5b4fc", "38bdf8"),
+    ]
     columns = []
-    for member in members:
+    for idx, member in enumerate(members):
         ov = overrides.get(member.pk)
-        blocks = []
+        windows = []
         if ov is not None:
             if not ov.is_off:
-                blocks.append(block(ov.start_time, ov.end_time, "instance"))
+                windows.append((ov.start_time, ov.end_time, "instance", None))
         else:
-            blocks = [
-                block(p.start_time, p.end_time, "weekly", p.pk)
+            windows = [
+                (p.start_time, p.end_time, "weekly", p.pk)
                 for p in patterns.get(member.pk, [])
             ]
+        total_minutes = sum(
+            int(
+                (
+                    datetime.datetime.combine(day, e)
+                    - datetime.datetime.combine(day, s)
+                ).total_seconds()
+            )
+            // 60
+            for s, e, _src, _pid in windows
+        )
+        av1, av2 = avatar_pairs[idx % len(avatar_pairs)]
         columns.append(
             {
                 "member": member,
-                "blocks": blocks,
+                "blocks": [
+                    block(s, e, src, pid) for s, e, src, pid in windows
+                ],
                 "is_off": ov is not None and ov.is_off,
                 "has_override": ov is not None,
+                "initials": _initials(member.display_name),
+                "av_style": f"--av1:#{av1};--av2:#{av2}",
+                "hours_label": _duration_label(total_minutes)
+                if total_minutes
+                else "",
             }
         )
     return render(
