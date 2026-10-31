@@ -32,16 +32,7 @@ urlpatterns = [
     path("clients/", views.clients, name="clients"),
     path("team/", views.team, name="team"),
     path("roster/", views.roster_book, name="roster"),
-    path(
-        "products/",
-        views.placeholder,
-        {
-            "nav_key": "products",
-            "title": "Products",
-            "lane_note": "Retail products and barcode stocktake arrive with the catalog lane.",
-        },
-        name="products",
-    ),
+    path("products/", views.products_page, name="products"),
     path(
         "insights/",
         views.placeholder,

@@ -1152,3 +1152,24 @@ button:focus-visible, a:focus-visible, select:focus-visible {
 .pos-sale-client{font-weight:600;flex:1}
 .pos-sale-tender{color:#6c6455}
 .pos-sale-total{min-width:70px;text-align:right}
+
+/* The Shelf — products, derived stock, receiving, adjustments. */
+.shelf-search{display:flex;gap:8px;margin:14px 0}
+.shelf-search input{flex:1;padding:10px 14px;border:1px solid #ddd5c2;border-radius:999px;font:inherit;font-size:.95rem;background:#fff}
+.shelf{border:1px solid #e7e1d2;border-radius:14px;background:#fff;overflow:hidden}
+.shelf-row{display:flex;align-items:center;gap:14px;padding:10px 16px;border-bottom:1px solid #f0ebdd;flex-wrap:wrap}
+.shelf-row:last-child{border-bottom:0}
+.shelf-main{flex:1;min-width:200px}
+.shelf-name{font-weight:600;font-size:.95rem}
+.shelf-sub{color:#9a927e;font-size:.8rem}
+.shelf-flag{font-size:.66rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;
+  padding:2px 7px;border-radius:999px;vertical-align:2px}
+.shelf-flag.f-out{background:#f7e3dd;color:#9c3d2e}
+.shelf-flag.f-low{background:#fdf3d3;color:#a97c1f}
+.shelf-price{font-weight:600;min-width:64px;text-align:right}
+.shelf-stock{text-align:center;min-width:58px}
+.shelf-stock b{display:block;font-size:1.05rem}
+.shelf-stock span{font-size:.68rem;color:#9a927e;text-transform:uppercase;letter-spacing:.05em}
+.shelf-act{display:flex;gap:6px;align-items:center}
+.shelf-qty{width:56px;padding:5px 7px;border:1px solid #ddd5c2;border-radius:8px;font:inherit;font-size:.85rem}
+.shelf-reason{width:110px;padding:5px 7px;border:1px solid #ddd5c2;border-radius:8px;font:inherit;font-size:.85rem}

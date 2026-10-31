@@ -2153,3 +2153,92 @@ def pos(request):
             "cashups": cashups,
         },
     )
+
+
+def products_page(request):
+    """The Shelf — the salon's products, stock, and receiving.
+
+    Reads the catalog lane's own law: search_products to find,
+    stock derived from the movement log (one aggregate, never a
+    stored counter), adjust_stock for corrections (its negative
+    guard is the law). Receiving appends a RECEIVE movement — the
+    same movement the importer and the till write. The search box
+    is autofocused: a keyboard-wedge scanner types into it like a
+    keyboard, so scan-to-find works with no special hardware path.
+    """
+    from django.db.models import Sum
+
+    from catalog.adjust import adjust_stock
+    from catalog.models import Product, StockMovement
+    from catalog.search import search_products
+
+    salon = Salon.objects.order_by("id").first()
+    if request.method == "POST" and salon is not None:
+        product = Product.objects.filter(
+            pk=request.POST.get("product"), salon=salon
+        ).first()
+        if product is not None:
+            action = request.POST.get("action")
+            if action == "receive":
+                try:
+                    qty = int(request.POST.get("qty", "1"))
+                except ValueError:
+                    qty = 0
+                if qty > 0:
+                    StockMovement.objects.create(
+                        product=product,
+                        kind=StockMovement.Kind.RECEIVE,
+                        quantity_delta=qty,
+                        note="Received at the shelf",
+                    )
+            elif action == "adjust":
+                try:
+                    delta = int(request.POST.get("delta", "0"))
+                except ValueError:
+                    delta = 0
+                reason = request.POST.get("reason", "").strip()
+                if delta != 0 and reason:
+                    try:
+                        adjust_stock(product, delta, reason)
+                    except ValueError:
+                        pass  # the guard refused (would go negative)
+        return redirect("webui:products")
+
+    query = request.GET.get("q", "").strip()
+    rows, total = [], 0
+    if salon is not None:
+        found = (
+            search_products(salon, query)
+            if query
+            else Product.objects.filter(salon=salon, active=True).order_by("name")
+        )
+        found = list(found)
+        total = len(found)
+        page = found[:100]
+        stock = {
+            row["product_id"]: row["s"]
+            for row in StockMovement.objects.filter(product__in=page)
+            .values("product_id")
+            .annotate(s=Sum("quantity_delta"))
+        }
+        for product in page:
+            qty = stock.get(product.pk, 0)
+            rows.append(
+                {
+                    "product": product,
+                    "stock": qty,
+                    "flag": "Out" if qty <= 0 else ("Low" if qty <= 2 else ""),
+                }
+            )
+    return render(
+        request,
+        "webui/products.html",
+        {
+            "salon": salon,
+            "nav_key": "products",
+            "query": query,
+            "rows": rows,
+            "total": total,
+            "shown": len(rows),
+        },
+    )
