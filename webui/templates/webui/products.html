@@ -1,0 +1,47 @@
+{% extends "webui/base.html" %}
+{% block title %}Products — the shelf{% endblock %}
+{% block body_class %}page-products page-light{% endblock %}
+{% block content %}
+<div class="day-head">
+  <div class="day-title-wrap">
+    <div class="day-title">Products</div>
+    <div class="day-sub">{{ total }} products on the shelf · stock is counted from the movement log, never a stored number</div>
+  </div>
+</div>
+<form method="get" class="shelf-search">
+  <input type="search" name="q" value="{{ query }}" autofocus
+         placeholder="Search the shelf — or scan a barcode…" aria-label="Search products">
+  <button type="submit" class="rb-navbtn">Search</button>
+  {% if query %}<a class="rb-navbtn" href="{% url 'webui:products' %}">Clear</a>{% endif %}
+</form>
+{% if total > shown %}<p class="rb-law">Showing the first {{ shown }} of {{ total }} — search to narrow the shelf.</p>{% endif %}
+<div class="shelf">
+  {% for row in rows %}
+  <div class="shelf-row">
+    <div class="shelf-main">
+      <div class="shelf-name">{{ row.product.name }}{% if row.flag %} <span class="shelf-flag f-{{ row.flag|lower }}">{{ row.flag }}</span>{% endif %}</div>
+      <div class="shelf-sub">
+        {% if row.product.brand_name %}{{ row.product.brand_name }} · {% endif %}{{ row.product.product_type|default:"" }}{% if row.product.barcode %} · {{ row.product.barcode }}{% endif %}
+      </div>
+    </div>
+    <div class="shelf-price">${{ row.product.price }}</div>
+    <div class="shelf-stock"><b>{{ row.stock }}</b><span>in stock</span></div>
+    <form method="post" class="shelf-act">{% csrf_token %}
+      <input type="hidden" name="action" value="receive">
+      <input type="hidden" name="product" value="{{ row.product.pk }}">
+      <input type="number" name="qty" value="1" min="1" class="shelf-qty" aria-label="Quantity to receive">
+      <button type="submit" class="rb-mini">Receive</button>
+    </form>
+    <form method="post" class="shelf-act">{% csrf_token %}
+      <input type="hidden" name="action" value="adjust">
+      <input type="hidden" name="product" value="{{ row.product.pk }}">
+      <input type="number" name="delta" placeholder="±" class="shelf-qty" aria-label="Adjustment delta" required>
+      <input type="text" name="reason" placeholder="Reason" class="shelf-reason" aria-label="Adjustment reason" required>
+      <button type="submit" class="rb-mini">Adjust</button>
+    </form>
+  </div>
+  {% empty %}
+  <p class="pos-empty">Nothing on the shelf matches{% if query %} “{{ query }}”{% endif %}.</p>
+  {% endfor %}
+</div>
+{% endblock %}
