@@ -56,14 +56,6 @@ urlpatterns = [
         views.automations_send,
         name="automations_send",
     ),
-    path(
-        "settings/",
-        views.placeholder,
-        {
-            "nav_key": "settings",
-            "title": "Settings",
-            "lane_note": "Salon settings arrive with a later lane.",
-        },
-        name="settings",
-    ),
+    path("settings/", views.settings_page, name="settings"),
+    path("settings/save/", views.settings_save, name="settings_save"),
 ]
