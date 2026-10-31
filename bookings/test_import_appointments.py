@@ -142,6 +142,27 @@ class ImportAppointmentsTests(TestCase):
         self.assertIn('"unchanged": 3', out)
         self.assertEqual(Appointment.objects.count(), 3)
 
+    def test_duplicate_id_in_one_file_folds_into_one_row(self):
+        payload = [
+            {"appointmentId": "appt-dup", "clientId": "cli-1",
+             "staffId": "stf-1", "serviceId": "svc-1",
+             "appointmentDate": "2026-10-03",
+             "startTime": "09:00:00.000", "endTime": "09:45:00.000",
+             "state": "BOOKED", "deleted": False},
+            {"appointmentId": "appt-dup", "clientId": "cli-1",
+             "staffId": "stf-1", "serviceId": "svc-1",
+             "appointmentDate": "2026-10-03",
+             "startTime": "09:00:00.000", "endTime": "09:45:00.000",
+             "state": "PAID", "deleted": False},
+        ]
+        out = self.run_import(payload=payload)
+        self.assertIn('"created": 1', out)
+        self.assertIn('"updated": 1', out)
+        self.assertEqual(Appointment.objects.count(), 1)
+        self.assertEqual(
+            Appointment.objects.get(external_id="appt-dup").status,
+            Appointment.Status.COMPLETED)
+
     def test_unresolved_service_with_name_imports_as_snapshot(self):
         payload = [{"appointmentId": "appt-snap", "clientId": "cli-1",
                     "staffId": "stf-1", "serviceId": "svc-missing",

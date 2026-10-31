@@ -100,6 +100,28 @@ class ImportClientsTests(TestCase):
         self.assertIn('"unchanged": 2', out)
         self.assertEqual(Client.objects.count(), 2)
 
+    def test_duplicate_id_in_one_file_folds_into_one_row(self):
+        payload = [
+            {"clientId": "cli-dup", "firstName": "First",
+             "lastName": "Version", "mobile": "555-0200"},
+            {"clientId": "cli-dup", "firstName": "Second",
+             "lastName": "Version", "mobile": "555-0200"},
+        ]
+        out = self.run_import(payload=payload)
+        self.assertIn('"created": 1', out)
+        self.assertIn('"updated": 1', out)
+        self.assertEqual(Client.objects.count(), 1)
+        self.assertEqual(
+            Client.objects.get(external_id="cli-dup").first_name, "Second")
+
+    def test_identical_duplicate_in_one_file_is_unchanged(self):
+        row = {"clientId": "cli-dup", "firstName": "Same",
+               "lastName": "Version", "mobile": "555-0200"}
+        out = self.run_import(payload=[row, dict(row)])
+        self.assertIn('"created": 1', out)
+        self.assertIn('"unchanged": 1', out)
+        self.assertEqual(Client.objects.count(), 1)
+
     def test_same_external_id_in_another_salon_is_separate(self):
         self.run_import()
         self.run_import(salon="Other Salon")
