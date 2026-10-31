@@ -1442,7 +1442,8 @@ def day_book_book_options(request):
 
 
 def day_book_client_search(request):
-    """Find a client for the booking form: name tokens or phone."""
+    """Find a client for the booking form: first, last, first + last,
+    phone, or email — the ways the desk actually looks someone up."""
     salon = _first_salon()
     q = (request.GET.get("q") or "").strip()
     if salon is None or len(q) < 2:
@@ -1451,8 +1452,29 @@ def day_book_client_search(request):
     digits = "".join(ch for ch in q if ch.isdigit())
     cond = Q()
     for token in q.split():
-        cond |= Q(first_name__icontains=token) | Q(last_name__icontains=token)
+        cond |= (
+            Q(first_name__icontains=token)
+            | Q(last_name__icontains=token)
+            | Q(email__icontains=token)
+        )
     rows = list(qs.filter(cond).order_by("first_name", "last_name")[:8])
+    exact = []
+    tokens = q.split()
+    if len(tokens) >= 2:
+        # "First Last" typed in full names ONE person. Rows matching
+        # EVERY token are fetched separately and ranked first, so a
+        # common surname can't push the exact person past the cap.
+        exact_qs = qs
+        for token in tokens:
+            exact_qs = exact_qs.filter(
+                Q(first_name__icontains=token)
+                | Q(last_name__icontains=token)
+                | Q(email__icontains=token)
+            )
+        exact = list(exact_qs.order_by("first_name", "last_name")[:8])
+        if exact:
+            exact_pks = {c.pk for c in exact}
+            rows = (exact + [c for c in rows if c.pk not in exact_pks])[:8]
     if len(digits) >= 3:
         # Stored phones carry punctuation ("407-555-0100"), so a
         # digit query can never substring-match them directly:
@@ -1466,7 +1488,8 @@ def day_book_client_search(request):
             if digits in phone_digits and c.pk not in seen:
                 rows.append(c)
                 seen.add(c.pk)
-        rows.sort(key=lambda c: (c.first_name, c.last_name))
+        if not exact:
+            rows.sort(key=lambda c: (c.first_name, c.last_name))
     return JsonResponse(
         {
             "clients": [
@@ -1836,12 +1859,38 @@ def clients(request):
             .order_by("last_name", "first_name")
         )
         if query:
-            qs = qs.filter(
-                Q(first_name__icontains=query)
-                | Q(last_name__icontains=query)
-                | Q(email__icontains=query)
-                | Q(phone__icontains=query)
-            )
+            # Every token must land somewhere: "Dawn Davalos" is
+            # first AND last — no single field holds both. A token
+            # may hit first name, last name, email, or phone.
+            for token in query.split():
+                qs = qs.filter(
+                    Q(first_name__icontains=token)
+                    | Q(last_name__icontains=token)
+                    | Q(email__icontains=token)
+                    | Q(phone__icontains=token)
+                )
+            digits = "".join(ch for ch in query if ch.isdigit())
+            if len(digits) >= 3:
+                # Stored phones carry punctuation ("407-555-0100"),
+                # so a digit query compares digit-to-digit over a
+                # narrowed candidate set — the booking search's rule.
+                phone_pks = [
+                    c.pk
+                    for c in Client.objects.filter(
+                        salon=salon, phone__icontains=digits[:3]
+                    )[:500]
+                    if digits
+                    in "".join(ch for ch in (c.phone or "") if ch.isdigit())
+                ]
+                if phone_pks:
+                    matched = {c.pk for c in qs} | set(phone_pks)
+                    qs = (
+                        Client.objects.filter(
+                            salon=salon, active=True, pk__in=matched
+                        )
+                        .annotate(note_count=Count("notes"))
+                        .order_by("last_name", "first_name")
+                    )
         total = qs.count()
         page = Paginator(qs, 30).get_page(request.GET.get("page"))
     context = {"nav_key": "clients", "page": page, "query": query, "total": total}

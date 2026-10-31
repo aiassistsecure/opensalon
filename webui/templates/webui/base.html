@@ -118,7 +118,7 @@
     </div>
     <div class="book-field">
       <label for="bkSearch">Client</label>
-      <input type="search" id="bkSearch" placeholder="Search name or phone…" autocomplete="off">
+      <input type="search" id="bkSearch" placeholder="Search first, last, phone or email…" autocomplete="off">
       <div class="book-results hidden" id="bkResults"></div>
       <div class="book-picked hidden" id="bkPicked"></div>
       <button type="button" class="book-newclient" id="bkNewToggle">+ New client instead</button>
@@ -128,9 +128,14 @@
         <input type="tel" id="bkPhone" placeholder="Phone" autocomplete="off">
       </div>
     </div>
+    <div class="book-field">
+      <label for="bkServiceSearch">Service</label>
+      <input type="search" id="bkServiceSearch" placeholder="Search services…" autocomplete="off">
+      <div class="book-results hidden" id="bkServiceResults"></div>
+      <div class="book-picked hidden" id="bkServicePicked"></div>
+    </div>
     <div class="book-grid">
       <div class="book-field"><label for="bkMember">Stylist</label><select id="bkMember"></select></div>
-      <div class="book-field"><label for="bkService">Service</label><select id="bkService"></select></div>
       <div class="book-field"><label for="bkDate">Date</label><input type="date" id="bkDate"></div>
       <div class="book-field"><label for="bkTime">Start</label><input type="time" id="bkTime" step="300"></div>
     </div>
