@@ -238,3 +238,30 @@ class PlaceholderTests(WebuiTestBase):
         ):
             response = self.client.get(reverse(name))
             self.assertEqual(response.status_code, 200)
+
+
+class PortableFormatTests(TestCase):
+    """The label helpers must not use glibc-only strftime flags.
+
+    Regression for the pilot install's first page load on Windows
+    (2026-10-31): "%-I" / "%-d" raised ValueError there. These
+    assertions pin the exact label shapes the UI renders.
+    """
+
+    def test_fmt_time_labels(self):
+        from webui.views import _fmt_time
+
+        self.assertEqual(_fmt_time(datetime.time(9, 0)), "9 AM")
+        self.assertEqual(_fmt_time(datetime.time(9, 30)), "9:30 AM")
+        self.assertEqual(_fmt_time(datetime.time(12, 0)), "12 PM")
+        self.assertEqual(_fmt_time(datetime.time(0, 0)), "12 AM")
+        self.assertEqual(_fmt_time(datetime.time(13, 5)), "1:05 PM")
+        self.assertEqual(_fmt_time(datetime.time(23, 59)), "11:59 PM")
+
+    def test_fmt_date_labels(self):
+        from webui.views import _fmt_date_label
+
+        day = datetime.date(2026, 10, 3)  # a Saturday
+        self.assertEqual(_fmt_date_label(day), "Sat, Oct 3")
+        self.assertEqual(_fmt_date_label(day, with_year=True),
+                         "Sat, Oct 3, 2026")
