@@ -654,6 +654,16 @@ class NedbTemporalRoundTripLiveTests(SimpleTestCase):
     Guarded: only runs in a dedicated live invocation, never in the
     SQLite suite. Salon has auto_now_add/auto_now DateTimeFields, the
     exact shape NEDB refused before this adaptation (EVIDENCE.md).
+
+    N-M6g: this test previously asserted
+    ``type(connection).__module__ == "opensalon.backends.nedb.base"``,
+    which can never pass -- ``django.db.connection`` is a
+    ``django.utils.connection.ConnectionProxy``, so its type's module
+    is always ``django.utils.connection`` regardless of the backend
+    in use. The temporal round-trip underneath was sound (probe:
+    stored ISO strings read back as aware datetimes in range). Like
+    every other live test in this file, assert on the proxied
+    backend's ``display_name`` instead.
     """
 
     databases = {"default"}
@@ -661,9 +671,8 @@ class NedbTemporalRoundTripLiveTests(SimpleTestCase):
     def test_salon_datetime_round_trip(self):
         from django.db import connection
 
-        self.assertEqual(
-            type(connection).__module__, "opensalon.backends.nedb.base"
-        )
+        # connection is a proxy object; check the backend it wraps.
+        self.assertEqual(connection.display_name, "NEDB (PostgreSQL pgwire)")
         from saloncore.models import Salon
 
         before = dj_timezone.now()
