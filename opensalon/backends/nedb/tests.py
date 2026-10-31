@@ -2170,3 +2170,144 @@ class NedbDateTransformLiveTests(SimpleTestCase):
             )
         )
         self.assertEqual(rows, [late])
+
+
+# -- N-M8f: HAVING re-expression as derived-table WHERE (DYOR 9.1) ---
+#
+# Live probe (nedb-having-probe-2026-10-31.md): a HAVING clause that
+# filters out the FIRST group makes nedbd-v2 12.15.16 emit every
+# surviving row as a zero-column row, which Django's apply_converters
+# dies on (IndexError). The NEDB SELECT compiler therefore compiles
+# the grouped annotate query without HAVING as a derived table and
+# applies the HAVING condition as an outer WHERE on the annotation
+# columns -- the equivalent the evaluator answers correctly.
+
+import datetime as _dt_f
+
+_HAVING_NOW = _dt_f.datetime(2026, 11, 2, 12, 0, tzinfo=_dt_f.timezone.utc)
+
+
+def _inactive_shape_sql(**qs_kwargs):
+    """Compile the clients.inactive annotate+filter shape offline."""
+    from django.db.models import Max, Q
+
+    from bookings.models import Appointment
+    from clients.models import Client
+
+    wrapper = _wrapper()
+    # Compile against the never-connected NEDB wrapper directly.
+    query = (
+        Client.objects.filter(salon_id=1)
+        .annotate(
+            _last_visit=Max(
+                "appointments__start",
+                filter=Q(appointments__start__lte=_HAVING_NOW)
+                & ~Q(appointments__status=Appointment.Status.CANCELLED),
+            )
+        )
+        .filter(
+            Q(_last_visit__isnull=True)
+            | Q(_last_visit__lt=_HAVING_NOW - _dt_f.timedelta(days=90))
+        )
+    )
+    if qs_kwargs.get("sliced"):
+        query = query[:5]
+    if qs_kwargs.get("distinct"):
+        query = query.distinct()
+    compiler = query.query.get_compiler(connection=wrapper)
+    return compiler.as_sql()
+
+
+class HavingWrapCompilerTests(SimpleTestCase):
+    def test_annotation_filter_compiles_without_having(self):
+        sql, params = _inactive_shape_sql()
+        self.assertNotIn("HAVING", sql)
+        self.assertIn('FROM (SELECT', sql)
+        self.assertIn('AS "nedb_having_sub"', sql)
+        self.assertIn('"nedb_having_sub"."_last_visit"', sql)
+        # The annotation keeps its CASE WHEN form (N-M8d) inside.
+        self.assertIn("MAX(CASE WHEN", sql)
+
+    def test_outer_where_params_follow_inner_params(self):
+        sql, params = _inactive_shape_sql()
+        # Inner: annotation filter (now, cancelled) + salon id;
+        # outer: the cutoff, adapted to an ISO string by the
+        # temporal write path (operations.py), never a cast.
+        self.assertEqual(len(params), 4)
+        self.assertEqual(params[-1], "2026-08-04T12:00:00+00:00")
+        self.assertNotIn("::", sql)
+
+    def test_meta_ordering_moves_to_outer_query(self):
+        sql, _params = _inactive_shape_sql()
+        outer = sql.rsplit(")", 1)[-1]
+        self.assertIn('ORDER BY "nedb_having_sub"."last_name" ASC', outer)
+
+    def test_sliced_query_keeps_stock_having(self):
+        sql, _params = _inactive_shape_sql(sliced=True)
+        self.assertIn("HAVING", sql)
+        self.assertNotIn("nedb_having_sub", sql)
+
+    def test_distinct_query_keeps_stock_having(self):
+        sql, _params = _inactive_shape_sql(distinct=True)
+        self.assertIn("HAVING", sql)
+        self.assertNotIn("nedb_having_sub", sql)
+
+    def test_wrapper_loads_nedb_select_compiler(self):
+        from opensalon.backends.nedb.compiler import (
+            SQLCompiler as NedbSQLCompiler,
+        )
+
+        wrapper = _wrapper()
+        self.assertIs(
+            wrapper.ops.compiler("SQLCompiler"), NedbSQLCompiler
+        )
+
+
+@unittest.skipUnless(
+    os.environ.get("OPENSALON_NEDB_LIVE_TEST") == "1",
+    "live nedbd HAVING test: set OPENSALON_NEDB_LIVE_TEST=1 with "
+    "the default connection on the NEDB backend (nedbd running)",
+)
+class NedbHavingLiveTests(SimpleTestCase):
+    """N-M8f acceptance against a real nedbd (guarded, never offline).
+
+    The first-created client is the recent one, so HAVING filters
+    out the first group -- the exact shape that returned
+    zero-column rows before the compiler re-expression.
+    """
+
+    databases = {"default"}
+
+    def test_inactive_clients_first_group_filtered_out(self):
+        from django.db import connection
+
+        self.assertEqual(connection.display_name, "NEDB (PostgreSQL pgwire)")
+        from clients.inactive import inactive_clients
+        from clients.models import Client
+        from saloncore.models import Salon, Service, ServiceCategory
+        from team.models import StaffMember
+        from bookings.models import Appointment
+
+        salon = Salon.objects.create(name="Having Probe Salon", timezone="UTC")
+        staff = StaffMember.objects.create(
+            salon=salon, display_name="Having Stylist"
+        )
+        category = ServiceCategory.objects.create(salon=salon, name="Hair")
+        service = Service.objects.create(
+            category=category, name="Haircut", service_minutes=45
+        )
+        recent = Client.objects.create(
+            salon=salon, first_name="Recent", last_name="Aaa"
+        )
+        stale = Client.objects.create(
+            salon=salon, first_name="Stale", last_name="Zzz"
+        )
+        for client, offset in ((recent, -89), (stale, -91)):
+            start = _HAVING_NOW + _dt_f.timedelta(days=offset)
+            Appointment.objects.create(
+                client=client, staff_member=staff, service=service,
+                start=start, end=start + _dt_f.timedelta(minutes=45),
+            )
+        rows = inactive_clients(salon=salon, now=_HAVING_NOW)
+        self.assertEqual([row.client_id for row in rows], [stale.pk])
+        self.assertEqual(rows[0].days_since_last_visit, 91)
