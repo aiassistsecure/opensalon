@@ -39,6 +39,30 @@ not rely on it for mutual exclusion or row locking on this backend;
 where exclusion matters, use NEDB's native atomicity unit, the CAS
 batch / ``if_seq`` transaction (DYOR sections 1 and 9.4).
 
+Filtered aggregates (N-M8d, DYOR 9.1/9.9):
+``supports_aggregate_filter_clause = False``. The JOIN census on
+nedbd-v2 12.15.16 (evidence file cited in the PR) found plain JOINs
+are NOT the failing signature: INNER/LEFT joins from
+``select_related``, filter-across-relation, and unfiltered
+annotate-across-relation all pass through NEDB's SQL evaluator.
+What fails verbatim -- ``JOIN is not supported -- NQL is
+single-collection`` -- is a statement carrying an aggregate
+``FILTER (WHERE ...)`` clause over a join: the statement leaves the
+SQL evaluator for the single-collection NQL path, which refuses
+the join (all 19 live-suite JOIN errors are this shape: 17x
+``clients.inactive``'s filtered ``Max`` over the reverse
+appointments relation, plus the same clause in bookings search's
+date variant is a separate ``__date`` surface, not fixed here).
+Declaring False is the execution/semantics-layer fix (DYOR 9.1):
+Django's own aggregate compiler then expresses the identical
+semantics as ``AGG(CASE WHEN <filter> THEN <expr> END)`` over the
+same join -- its documented fallback for backends without the
+FILTER clause -- which the SQL evaluator accepts (verified live:
+the exact ``inactive_clients`` query and filtered Max/Sum over
+reverse relations return correct values). This is a capability
+declaration, not SQL text rewriting: Django builds a different
+expression tree, and this backend rewrites no statement text.
+
 GROUP BY (N-M6d, DYOR 9.1): ``allows_group_by_selected_pks = False``.
 PostgreSQL collapses GROUP BY to the selected PKs, relying on
 functional dependency (a grouped PK determines the row's other
@@ -88,6 +112,16 @@ class DatabaseFeatures(PostgresDatabaseFeatures):
     has_select_for_update_skip_locked = False
     has_select_for_update_of = False
     has_select_for_no_key_update = False
+
+    # Filtered aggregates: NEDB's pgwire routes a statement with an
+    # aggregate FILTER (WHERE ...) clause off its SQL evaluator onto
+    # the single-collection NQL path, which refuses any JOIN in it
+    # (N-M8d census, DYOR 9.1/9.9). False makes Django compile the
+    # filter as CASE WHEN inside the aggregate instead -- identical
+    # semantics, and the evaluator accepts it over joins (see module
+    # docstring). Plain (unfiltered) JOIN shapes need no guard: the
+    # evaluator answers them directly (DYOR section 3, measured).
+    supports_aggregate_filter_clause = False
 
     # GROUP BY: NEDB has no PK functional-dependency reduction
     # (N-M6d, DYOR 9.1) -- see module docstring. False makes the
