@@ -1,21 +1,41 @@
 {% extends "webui/base.html" %}
-{% block title %}Insights — the numbers{% endblock %}
+{% block title %}Insights — reports{% endblock %}
 {% block body_class %}page-insights page-light{% endblock %}
 {% block content %}
 <div class="day-head">
   <div class="day-title-wrap">
     <div class="day-title">Insights</div>
-    <div class="day-sub">The salon's numbers, straight from the records — nothing estimated, nothing invented</div>
+    <div class="day-sub">Reports for accounting and auditing — every figure straight from the records, kept date wise</div>
   </div>
 </div>
 {% if salon %}
+<div class="rep-range" role="navigation" aria-label="Report range">
+  {% for key, label in presets %}
+  {% if key != "custom" %}
+  <a class="rep-preset{% if preset == key %} active{% endif %}" href="?preset={{ key }}">{{ label }}</a>
+  {% endif %}
+  {% endfor %}
+  <form class="rep-custom" method="get">
+    <input type="hidden" name="preset" value="custom">
+    <input type="date" name="start" value="{{ range_start|date:'Y-m-d' }}" aria-label="Range start">
+    <span class="rep-to">to</span>
+    <input type="date" name="end" value="{{ range_end|date:'Y-m-d' }}" aria-label="Range end">
+    <button type="submit" class="btn-ghost">Apply range</button>
+  </form>
+  <span class="rep-active">{{ range_start|date:"M j, Y" }} — {{ range_end|date:"M j, Y" }}</span>
+</div>
+
 <div class="pos-grid">
   <section class="pos-card">
-    <h2 class="pos-h">Last 7 days — {{ split.start_date|date:"M j" }} to {{ split.end_date|date:"M j" }}</h2>
-    <div class="pos-tender"><span>Services</span><b>{{ split_service }}</b></div>
-    <div class="pos-tender"><span>Retail</span><b>{{ split_retail }}</b></div>
-    <div class="pos-tender pos-total"><span>Total</span><b>{{ split_total }}</b></div>
-    <p class="ins-note">Series isn't a figure yet — the till records services and retail, and this page won't invent a third kind.</p>
+    <h2 class="pos-h">Overview — the range</h2>
+    <div class="pos-tender"><span>Services</span><b>{{ total_service_label }}</b></div>
+    <div class="pos-tender"><span>Retail</span><b>{{ total_retail_label }}</b></div>
+    <div class="pos-tender"><span>Gross</span><b>{{ total_gross_label }}</b></div>
+    <div class="pos-tender"><span>Refunds ({{ refund_count }})</span><b>−{{ total_refunds_label }}</b></div>
+    <div class="pos-tender pos-total"><span>Net</span><b>{{ total_net_label }}</b></div>
+    <div class="pos-tender"><span>Sales</span><b>{{ totals.count }}</b></div>
+    <div class="pos-tender"><span>Average ticket</span><b>{{ avg_ticket_label }}</b></div>
+    <p class="ins-note">Series isn't a figure — the till records services and retail, and these reports won't invent a third kind.</p>
   </section>
 
   <section class="pos-card">
@@ -29,36 +49,108 @@
 </div>
 
 <section class="pos-card pos-sales">
-  <h2 class="pos-h">Revenue trend — 14 days</h2>
-  <div class="ins-trend">
-    {% for t in trend %}
-    <div class="ins-bar-wrap" title="{{ t.day.date|date:'M j' }} — ${{ t.day.total }}">
-      <div class="ins-bar" style="height:{{ t.pct }}%"></div>
-      <span class="ins-bar-d">{{ t.day.date|date:"j" }}</span>
-    </div>
+  <h2 class="pos-h">Ledger by day <a class="rep-dl" href="{% url 'webui:insights_export' 'ledger' %}?preset={{ preset }}&amp;start={{ range_start|date:'Y-m-d' }}&amp;end={{ range_end|date:'Y-m-d' }}">Download CSV</a></h2>
+  <table class="rep-table">
+    <thead><tr><th>Date</th><th class="n">Sales</th><th class="n">Services</th><th class="n">Retail</th><th class="n">Gross</th><th class="n">Refunds</th><th class="n">Net</th></tr></thead>
+    <tbody>
+    {% for row in ledger %}
+      <tr><td>{{ row.day|date:"D, M j" }}</td><td class="n">{{ row.count }}</td><td class="n">{{ row.service_label }}</td><td class="n">{{ row.retail_label }}</td><td class="n">{{ row.gross_label }}</td><td class="n">{{ row.refunds_label }}</td><td class="n">{{ row.net_label }}</td></tr>
+    {% empty %}
+      <tr><td colspan="7" class="pos-empty">No days in this range.</td></tr>
     {% endfor %}
-  </div>
+    </tbody>
+    <tfoot><tr><td>Total</td><td class="n">{{ totals.count }}</td><td class="n">{{ total_service_label }}</td><td class="n">{{ total_retail_label }}</td><td class="n">{{ total_gross_label }}</td><td class="n">{{ total_refunds_label }}</td><td class="n">{{ total_net_label }}</td></tr></tfoot>
+  </table>
 </section>
 
 <div class="pos-grid">
   <section class="pos-card">
-    <h2 class="pos-h">Busiest days — last 28 days</h2>
-    {% for b in busiest %}
-    <div class="pos-tender"><span>{{ b.weekday_name }}</span><span>{{ b.count }} appt{{ b.count|pluralize }} · {{ b.revenue_label }}</span></div>
+    <h2 class="pos-h">Tenders <a class="rep-dl" href="{% url 'webui:insights_export' 'tenders' %}?preset={{ preset }}&amp;start={{ range_start|date:'Y-m-d' }}&amp;end={{ range_end|date:'Y-m-d' }}">Download CSV</a></h2>
+    {% for row in tender_rows %}
+    <div class="pos-tender"><span>{{ row.label }}</span><b>{{ row.label_amount }}</b></div>
     {% empty %}
-    <p class="pos-empty">No appointments in the window yet.</p>
+    <p class="pos-empty">No payments in this range.</p>
     {% endfor %}
+    <div class="pos-tender pos-total"><span>Total · {{ tender_count }} payment{{ tender_count|pluralize }}</span><b>{{ tender_total_label }}</b></div>
   </section>
 
   <section class="pos-card">
-    <h2 class="pos-h">By stylist — last 7 days</h2>
+    <h2 class="pos-h">By stylist <a class="rep-dl" href="{% url 'webui:insights_export' 'staff' %}?preset={{ preset }}&amp;start={{ range_start|date:'Y-m-d' }}&amp;end={{ range_end|date:'Y-m-d' }}">Download CSV</a></h2>
     {% for row in staff_rows %}
     <div class="pos-tender"><span>{{ row.display_name }}</span><b>{{ row.total_label }}</b></div>
     {% empty %}
-    <p class="pos-empty">No completed sales in the window yet.</p>
+    <p class="pos-empty">No completed sales in this range.</p>
     {% endfor %}
   </section>
 </div>
+
+<div class="pos-grid">
+  <section class="pos-card">
+    <h2 class="pos-h">Cashups <a class="rep-dl" href="{% url 'webui:insights_export' 'cashups' %}?preset={{ preset }}&amp;start={{ range_start|date:'Y-m-d' }}&amp;end={{ range_end|date:'Y-m-d' }}">Download CSV</a></h2>
+    <table class="rep-table">
+      <thead><tr><th>Closed</th><th>Period</th><th class="n">Total</th><th class="n">Variance</th></tr></thead>
+      <tbody>
+      {% for row in cashup_rows %}
+        <tr><td>{{ row.when|date:"M j, g:i A" }}</td><td>{{ row.period_start|date:"M j, g:i A" }} — {{ row.period_end|date:"M j, g:i A" }}</td><td class="n">{{ row.total_label }}</td><td class="n">{{ row.variance_label }}</td></tr>
+      {% empty %}
+        <tr><td colspan="4" class="pos-empty">No cashups closed in this range.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <p class="ins-note">{{ cashup_count }} cashup{{ cashup_count|pluralize }} in range · {{ cashup_total_label }} closed. A cashup is a snapshot, never a lock.</p>
+  </section>
+
+  <section class="pos-card">
+    <h2 class="pos-h">Busiest days — the range</h2>
+    {% for b in busiest %}
+    <div class="pos-tender"><span>{{ b.weekday_name }}</span><span>{{ b.count }} appt{{ b.count|pluralize }} · {{ b.revenue_label }}</span></div>
+    {% empty %}
+    <p class="pos-empty">No appointments in this range yet.</p>
+    {% endfor %}
+  </section>
+</div>
+
+<div class="pos-grid">
+  <section class="pos-card">
+    <h2 class="pos-h">Audit — price changes <a class="rep-dl" href="{% url 'webui:insights_export' 'prices' %}?preset={{ preset }}&amp;start={{ range_start|date:'Y-m-d' }}&amp;end={{ range_end|date:'Y-m-d' }}">Download CSV</a></h2>
+    <table class="rep-table">
+      <thead><tr><th>When</th><th>Service</th><th>Level</th><th class="n">Old</th><th class="n">New</th><th>By</th></tr></thead>
+      <tbody>
+      {% for change in price_changes %}
+        <tr><td>{{ change.changed_at|date:"M j, g:i A" }}</td><td>{{ change.service_price.service }}</td><td>{{ change.service_price.staff_level }}</td><td class="n">{% if change.old_amount != None %}${{ change.old_amount }}{% else %}—{% endif %}</td><td class="n">${{ change.new_amount }}</td><td>{{ change.changed_by|default:"—" }}</td></tr>
+      {% empty %}
+        <tr><td colspan="6" class="pos-empty">No price changes in this range. The record is append-only — nothing here can be edited after the fact.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="pos-card">
+    <h2 class="pos-h">Audit — reminders sent</h2>
+    <div class="pos-tender"><span>Email</span><b>{{ send_counts.email|default:0 }}</b></div>
+    <div class="pos-tender"><span>SMS</span><b>{{ send_counts.sms|default:0 }}</b></div>
+    {% for s in send_rows %}
+    <div class="pos-tender"><span>{{ s.sent_at|date:"M j, g:i A" }} · {{ s.get_channel_display }}</span><span>{{ s.client }}</span></div>
+    {% empty %}
+    <p class="pos-empty">No reminders sent in this range. Only successful sends are logged — a skip sends nothing and records nothing.</p>
+    {% endfor %}
+  </section>
+</div>
+
+<section class="pos-card pos-sales">
+  <h2 class="pos-h">Sales register <a class="rep-dl" href="{% url 'webui:insights_export' 'register' %}?preset={{ preset }}&amp;start={{ range_start|date:'Y-m-d' }}&amp;end={{ range_end|date:'Y-m-d' }}">Download CSV</a></h2>
+  <table class="rep-table">
+    <thead><tr><th>Sale</th><th>When</th><th>Client</th><th>Status</th><th class="n">Items</th><th class="n">Total</th><th>Tenders</th></tr></thead>
+    <tbody>
+    {% for sale in register %}
+      <tr><td>#{{ sale.pk }}</td><td>{{ sale.completed_at|default:sale.created_at|date:"M j, g:i A" }}</td><td>{{ sale.client|default:"—" }}</td><td>{{ sale.get_status_display }}</td><td class="n">{{ sale.items.count }}</td><td class="n">${{ sale.total }}</td><td>{% for p in sale.payments.all %}{{ p.get_method_display }} ${{ p.amount }}{% if not forloop.last %}; {% endif %}{% endfor %}</td></tr>
+    {% empty %}
+      <tr><td colspan="7" class="pos-empty">No sales in this range.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="ins-note">Showing the latest {{ register|length }} of {{ register_count }} sales in range — the CSV carries the full register. Voided sales never appear here; they stay on the record at the till.</p>
+</section>
 {% else %}
 <p class="rb-law">No salon yet — import or create the salon first.</p>
 {% endif %}

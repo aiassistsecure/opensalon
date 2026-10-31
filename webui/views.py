@@ -3000,48 +3000,281 @@ def products_page(request):
     )
 
 
-def insights_page(request):
-    """Insights — the salon's numbers, read from the insights lane.
+REPORT_PRESETS = [
+    ("today", "Today"),
+    ("7d", "Last 7 days"),
+    ("30d", "Last 30 days"),
+    ("month", "This month"),
+    ("lastmonth", "Last month"),
+    ("custom", "Custom range"),
+]
 
-    Every figure comes from the insights app's own services, the
-    same law the exports print: last_7_days_revenue_split (Service /
-    Retail — there is deliberately no Series figure: the till's item
-    kinds are service and product, and the page will not invent a
-    third), future_appointments_value priced live from the price
-    book, busiest_days over the trailing 28 days, the 14-day revenue
-    trend, and revenue_by_staff for the same 7-day window.
+
+def _report_range(request, today):
+    """Resolve the reports' date range from the query string.
+
+    Presets anchor on the salon's today; ``custom`` reads
+    ``start``/``end`` ISO dates and falls back to the last 30
+    days when they don't parse. The range is whole local days,
+    inclusive at both ends, and capped at a year so a typo can't
+    ask the till for a decade.
     """
-    from insights.services import (
-        busiest_days,
-        future_appointments_value,
-        last_7_days_revenue_split,
-    )
-    from insights.staff_revenue import revenue_by_staff
-    from insights.trend import daily_revenue_trend
+    preset = request.GET.get("preset", "30d")
+    if preset not in dict(REPORT_PRESETS):
+        preset = "30d"
+    if preset == "today":
+        start = end = today
+    elif preset == "7d":
+        start, end = today - datetime.timedelta(days=6), today
+    elif preset == "month":
+        start = today.replace(day=1)
+        end = today
+    elif preset == "lastmonth":
+        end = today.replace(day=1) - datetime.timedelta(days=1)
+        start = end.replace(day=1)
+    elif preset == "custom":
+        try:
+            start = datetime.date.fromisoformat(request.GET.get("start", ""))
+            end = datetime.date.fromisoformat(request.GET.get("end", ""))
+        except ValueError:
+            start, end = today - datetime.timedelta(days=29), today
+    else:  # 30d
+        start, end = today - datetime.timedelta(days=29), today
+    if end < start:
+        start, end = end, start
+    if (end - start).days > 365:
+        start = end - datetime.timedelta(days=365)
+    return start, end, preset
 
+
+def _insights_report(salon, start, end):
+    """Every figure on the Insights page for one date range.
+
+    The accounting reads the checkout lane's own services — the
+    same numbers the exports print, never a second arithmetic:
+    the date-wise ledger sums ``daily_sales_summary`` day by day
+    with ``refund_totals`` laid over it; tenders come from
+    ``totals_by_tender``; staff from ``revenue_by_staff``;
+    cashups from ``cashup_history``. The audit sections read the
+    append-only records themselves: ``PriceChange`` rows and the
+    ``ReminderSend`` log. One builder feeds the page and the CSV
+    downloads, so the two can never disagree.
+    """
+    from checkout.cashup_history import cashup_history
+    from checkout.models import Payment, Sale
+    from checkout.refund_report import refund_totals
+    from checkout.summary import daily_sales_summary
+    from checkout.tender_totals import tender_totals
+    from insights.services import busiest_days, future_appointments_value
+    from insights.staff_revenue import revenue_by_staff
+    from messaging.models import ReminderSend
+    from saloncore.models import PriceChange
+
+    tz = _tz(salon)
+    refunds = refund_totals(salon, start, end)
+    ledger = []
+    day = start
+    while day <= end:
+        summary = daily_sales_summary(salon, day)
+        refunded = refunds.by_day.get(day)
+        refund_amount = refunded.total if refunded else Decimal("0")
+        ledger.append(
+            {
+                "day": day,
+                "count": summary.sales_count,
+                "service": summary.service_total,
+                "retail": summary.retail_total,
+                "gross": summary.gross_total,
+                "refunds": refund_amount,
+                "net": summary.gross_total - refund_amount,
+            }
+        )
+        day += datetime.timedelta(days=1)
+    totals = {
+        "count": sum(r["count"] for r in ledger),
+        "service": sum((r["service"] for r in ledger), Decimal("0")),
+        "retail": sum((r["retail"] for r in ledger), Decimal("0")),
+        "gross": sum((r["gross"] for r in ledger), Decimal("0")),
+        "refunds": sum((r["refunds"] for r in ledger), Decimal("0")),
+        "net": sum((r["net"] for r in ledger), Decimal("0")),
+    }
+    totals["avg_ticket"] = (
+        totals["gross"] / totals["count"] if totals["count"] else Decimal("0")
+    )
+
+    tenders = tender_totals(start, end, salon)
+    method_labels = dict(Payment.Method.choices)
+    tender_rows = [
+        {
+            "method": method,
+            "label": method_labels.get(method, method),
+            "amount": amount,
+        }
+        for method, amount in sorted(tenders.by_method.items())
+    ]
+
+    staff_rows = [
+        {"display_name": r.display_name, "total": r.total}
+        for r in revenue_by_staff(salon, start, end)
+    ]
+
+    history = cashup_history(salon, start, end)
+    cashup_rows = [
+        {
+            "when": entry.cashup.created_at,
+            "period_start": entry.cashup.period_start,
+            "period_end": entry.cashup.period_end,
+            "total": entry.total,
+            "variance": entry.variance,
+        }
+        for entry in history.entries
+    ]
+
+    day_start = datetime.datetime.combine(start, datetime.time.min, tzinfo=tz)
+    day_end = datetime.datetime.combine(
+        end + datetime.timedelta(days=1), datetime.time.min, tzinfo=tz
+    )
+    price_changes = list(
+        PriceChange.objects.filter(
+            service_price__service__category__salon=salon,
+            changed_at__gte=day_start,
+            changed_at__lt=day_end,
+        )
+        .select_related(
+            "service_price__service", "service_price__staff_level"
+        )
+        .order_by("-changed_at", "-id")[:100]
+    )
+    sends = ReminderSend.objects.filter(
+        appointment__staff_member__salon=salon,
+        sent_at__gte=day_start,
+        sent_at__lt=day_end,
+    )
+    send_counts = {
+        row["channel"]: row["n"]
+        for row in sends.values("channel").annotate(n=Count("id"))
+    }
+    send_rows = list(
+        sends.select_related("client", "appointment")
+        .order_by("-sent_at", "-id")[:20]
+    )
+
+    register = list(
+        Sale.objects.filter(salon=salon)
+        .exclude(status=Sale.Status.VOIDED)
+        .filter(
+            Q(completed_at__gte=day_start, completed_at__lt=day_end)
+            | Q(
+                completed_at__isnull=True,
+                created_at__gte=day_start,
+                created_at__lt=day_end,
+            )
+        )
+        .select_related("client")
+        .prefetch_related("items", "payments")
+        .order_by("-id")
+    )
+
+    future = future_appointments_value(salon)
+    busiest = sorted(
+        busiest_days(salon, start, end),
+        key=lambda b: (-b.count, b.weekday),
+    )
+    return {
+        "ledger": ledger,
+        "totals": totals,
+        "refund_count": refunds.refund_count,
+        "tender_rows": tender_rows,
+        "tender_total": tenders.total,
+        "tender_count": tenders.count,
+        "staff_rows": staff_rows,
+        "cashup_rows": cashup_rows,
+        "cashup_summary": history.summary,
+        "price_changes": price_changes,
+        "send_counts": send_counts,
+        "send_rows": send_rows,
+        "register": register,
+        "future": future,
+        "busiest": busiest,
+    }
+
+
+def insights_page(request):
+    """Insights — the salon's reports, date-wise.
+
+    The founder's shape: professional insights AND reports, for
+    auditing everything and accounting everything, kept date
+    wise. One range drives the whole page: the accounting
+    ledger by day, tenders, staff revenue, cashups, and the
+    audit trails (price changes, reminder sends, the sales
+    register) all read the same window, and each section's CSV
+    download prints exactly what the section shows.
+    """
     salon = Salon.objects.order_by("id").first()
     ctx = {"salon": salon, "nav_key": "insights"}
     if salon is not None:
         tz = _tz(salon)
         today = timezone.now().astimezone(tz).date()
-        split = last_7_days_revenue_split(salon, today=today)
-        future = future_appointments_value(salon)
-        busiest = sorted(
-            busiest_days(salon, today - datetime.timedelta(days=27), today),
-            key=lambda b: (-b.count, b.weekday),
-        )
-        trend = daily_revenue_trend(salon, days=14, end_date=today)
-        peak = max((d.total for d in trend), default=Decimal("0"))
-        staff_rows = revenue_by_staff(salon, split.start_date, split.end_date)
+        start, end, preset = _report_range(request, today)
+        report = _insights_report(salon, start, end)
+        future = report["future"]
         ctx.update(
             {
                 "today": today,
-                "split": split,
-                "split_service": _money_label(split.service),
-                "split_retail": _money_label(split.retail),
-                "split_total": _money_label(split.total),
-                "future": future,
+                "range_start": start,
+                "range_end": end,
+                "preset": preset,
+                "presets": REPORT_PRESETS,
+                "ledger": [
+                    dict(
+                        row,
+                        service_label=_money_label(row["service"]),
+                        retail_label=_money_label(row["retail"]),
+                        gross_label=_money_label(row["gross"]),
+                        refunds_label=_money_label(row["refunds"]),
+                        net_label=_money_label(row["net"]),
+                    )
+                    for row in reversed(report["ledger"])
+                ],
+                "totals": report["totals"],
+                "total_service_label": _money_label(report["totals"]["service"]),
+                "total_retail_label": _money_label(report["totals"]["retail"]),
+                "total_gross_label": _money_label(report["totals"]["gross"]),
+                "total_refunds_label": _money_label(report["totals"]["refunds"]),
+                "total_net_label": _money_label(report["totals"]["net"]),
+                "avg_ticket_label": _money_label(report["totals"]["avg_ticket"]),
+                "refund_count": report["refund_count"],
+                "tender_rows": [
+                    dict(row, label_amount=_money_label(row["amount"]))
+                    for row in report["tender_rows"]
+                ],
+                "tender_total_label": _money_label(report["tender_total"]),
+                "tender_count": report["tender_count"],
+                "staff_rows": [
+                    dict(row, total_label=_money_label(row["total"]))
+                    for row in report["staff_rows"]
+                ],
+                "cashup_rows": [
+                    dict(
+                        row,
+                        total_label=_money_label(row["total"]),
+                        variance_label=(
+                            _money_label(row["variance"])
+                            if row["variance"] is not None
+                            else "—"
+                        ),
+                    )
+                    for row in report["cashup_rows"]
+                ],
+                "cashup_count": report["cashup_summary"].count,
+                "cashup_total_label": _money_label(report["cashup_summary"].total),
+                "price_changes": report["price_changes"],
+                "send_counts": report["send_counts"],
+                "send_rows": report["send_rows"],
+                "register": report["register"][:50],
+                "register_count": len(report["register"]),
                 "future_total_label": _money_label(future.total),
+                "future": future,
                 "future_days": [
                     {"day": d.day, "count": d.count,
                      "label": _money_label(d.value)}
@@ -3053,25 +3286,98 @@ def insights_page(request):
                         "count": b.count,
                         "revenue_label": _money_label(b.revenue),
                     }
-                    for b in busiest
-                ],
-                "trend": [
-                    {
-                        "day": d,
-                        "pct": (
-                            float(d.total / peak * 100) if peak > 0 else 0.0
-                        ),
-                    }
-                    for d in trend
-                ],
-                "staff_rows": [
-                    {"display_name": r.display_name,
-                     "total_label": _money_label(r.total)}
-                    for r in staff_rows
+                    for b in report["busiest"]
                 ],
             }
         )
     return render(request, "webui/insights.html", ctx)
+
+
+def insights_export(request, kind):
+    """CSV twin of one Insights section, same range, same rows.
+
+    The downloads read through the very builder the page uses,
+    so a report handed to an accountant is the page's own
+    numbers in a spreadsheet's shape — never a second query
+    that could drift from what the desk saw.
+    """
+    import csv
+    import io
+
+    from django.http import HttpResponse
+
+    salon = Salon.objects.order_by("id").first()
+    if salon is None:
+        return redirect("webui:insights")
+    tz = _tz(salon)
+    today = timezone.now().astimezone(tz).date()
+    start, end, _preset = _report_range(request, today)
+    report = _insights_report(salon, start, end)
+    stamp = f"{start.isoformat()}_{end.isoformat()}"
+
+    def money(value):
+        return f"{value:.2f}" if value is not None else ""
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    if kind == "ledger":
+        writer.writerow(["date", "sales", "services", "retail", "gross", "refunds", "net"])
+        for row in report["ledger"]:
+            writer.writerow([
+                row["day"].isoformat(), row["count"], money(row["service"]),
+                money(row["retail"]), money(row["gross"]),
+                money(row["refunds"]), money(row["net"]),
+            ])
+    elif kind == "tenders":
+        writer.writerow(["tender", "amount"])
+        for row in report["tender_rows"]:
+            writer.writerow([row["label"], money(row["amount"])])
+    elif kind == "staff":
+        writer.writerow(["staff", "revenue"])
+        for row in report["staff_rows"]:
+            writer.writerow([row["display_name"], money(row["total"])])
+    elif kind == "register":
+        writer.writerow(["sale", "when", "client", "status", "items", "total", "tenders"])
+        for sale in report["register"]:
+            when = sale.completed_at or sale.created_at
+            writer.writerow([
+                sale.pk,
+                when.astimezone(tz).strftime("%Y-%m-%d %H:%M") if when else "",
+                str(sale.client) if sale.client_id else "",
+                sale.status,
+                sale.items.count(),
+                money(sale.total),
+                ";".join(
+                    f"{p.get_method_display()} {money(p.amount)}"
+                    for p in sale.payments.all()
+                ),
+            ])
+    elif kind == "prices":
+        writer.writerow(["when", "service", "level", "old", "new", "changed_by", "note"])
+        for change in report["price_changes"]:
+            price = change.service_price
+            writer.writerow([
+                change.changed_at.astimezone(tz).strftime("%Y-%m-%d %H:%M"),
+                str(price.service), str(price.staff_level),
+                money(change.old_amount), money(change.new_amount),
+                change.changed_by, change.note,
+            ])
+    elif kind == "cashups":
+        writer.writerow(["closed_at", "period_start", "period_end", "total", "variance"])
+        for row in report["cashup_rows"]:
+            writer.writerow([
+                row["when"].astimezone(tz).strftime("%Y-%m-%d %H:%M"),
+                row["period_start"].astimezone(tz).strftime("%Y-%m-%d %H:%M"),
+                row["period_end"].astimezone(tz).strftime("%Y-%m-%d %H:%M"),
+                money(row["total"]), money(row["variance"]),
+            ])
+    else:
+        return redirect("webui:insights")
+    response = HttpResponse(buffer.getvalue(), content_type="text/csv")
+    response["Content-Disposition"] = (
+        f'attachment; filename="opensalon-{kind}-{stamp}.csv"'
+    )
+    return response
 
 
 def day_book_receipt_email(request):
