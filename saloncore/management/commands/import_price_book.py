@@ -3,6 +3,23 @@
 Usage:
     python manage.py import_price_book services.json [--salon NAME]
         [--staff staff.json] [--base-level NAME]
+    python manage.py import_price_book price-book.csv [--salon NAME]
+
+Two input shapes are accepted, detected by file extension and by
+content (a ``.csv`` path, or a file whose first line is the
+price-book CSV header). The JSON shape below is the original one
+and is unchanged. The CSV shape is the ``export_price_book``
+output — the canonical round-trip: a salon can export its price
+book and re-import that exact file. CSV rows are grouped by
+service (one row per service/level price, plus one price-less row
+for an unpriced service); ``service_name`` / ``category_name`` /
+``description`` / ``external_id`` / the three minutes fields /
+``service_active`` map back onto the service, and ``amount`` /
+``is_from`` / ``price_active`` / ``staff_level_name`` map back
+onto the price at that level. Source-system row ids in the CSV
+(``salon_id``, ``service_id``, ``staff_level_id`` …) are ignored:
+identity is ``external_id`` when present, else (category, name),
+and levels are keyed by name within the target salon.
 
 The input shape is the services export of the salon's previous system:
 a JSON list of service objects with ``name``, ``categoryName``,
@@ -57,6 +74,7 @@ here. ``transaction.atomic`` is kept only as defence-in-depth on
 backends that do support transactions.
 """
 
+import csv
 import json
 from decimal import Decimal, InvalidOperation
 
@@ -90,6 +108,147 @@ def _load_json(path, what):
         raise CommandError(f"Cannot read {what} file {path}: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise CommandError(f"{what} file {path} is not valid JSON: {exc}") from exc
+
+
+#: Header columns an export_price_book CSV must carry to be
+#: recognised as the round-trip shape.
+_CSV_REQUIRED_FIELDS = {"service_name", "category_name", "amount"}
+
+_TRUE_WORDS = {"true", "1", "yes", "t", "y"}
+_FALSE_WORDS = {"false", "0", "no", "f", "n", ""}
+
+
+def _is_csv_import(path):
+    """Whether ``path`` holds the export_price_book CSV shape.
+
+    True for a ``.csv`` extension, or when the first line is the
+    price-book CSV header (content sniff, so an extensionless
+    export still round-trips). JSON inputs start with ``{``/``[``
+    and never match.
+    """
+    if str(path).lower().endswith(".csv"):
+        return True
+    try:
+        with open(path, encoding="utf-8-sig") as fh:
+            first_line = fh.readline()
+    except OSError:
+        return False  # _load_json raises the proper read error.
+    return "service_name" in first_line and "," in first_line
+
+
+def _load_csv_rows(path):
+    try:
+        with open(path, encoding="utf-8-sig", newline="") as fh:
+            reader = csv.DictReader(fh)
+            if reader.fieldnames is None:
+                raise CommandError(
+                    f"services file {path} is not valid CSV: "
+                    f"missing header row.")
+            missing = _CSV_REQUIRED_FIELDS - {
+                (name or "").strip() for name in reader.fieldnames}
+            if missing:
+                raise CommandError(
+                    f"services file {path} is not a price-book CSV: "
+                    f"missing columns {sorted(missing)}.")
+            return list(reader)
+    except OSError as exc:
+        raise CommandError(f"Cannot read services file {path}: {exc}") from exc
+    except csv.Error as exc:
+        raise CommandError(
+            f"services file {path} is not valid CSV: {exc}") from exc
+
+
+def _parse_bool(value, index, field):
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    if text in _TRUE_WORDS:
+        return True
+    if text in _FALSE_WORDS:
+        return False
+    raise CommandError(f"Row {index}: {field} {value!r} is not a boolean.")
+
+
+def _parse_csv_minutes(row, index, field):
+    raw = row.get(field)
+    try:
+        return int(str(raw).strip() or 0)
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise CommandError(
+            f"Row {index}: {field} {raw!r} is not a valid number "
+            f"of minutes.") from exc
+
+
+def _normalise_csv_rows(rows):
+    """Phase 1 for the CSV shape: group rows into service plans.
+
+    Returns ``(plans, skipped_services)`` in the same plan shape
+    :func:`_normalise_row` produces (plus ``finishing_minutes``
+    and per-price ``is_from``/``price_active``). Conflicting
+    service fields or prices within one service raise
+    CommandError before anything is written.
+    """
+    plans, by_key, skipped = [], {}, 0
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict) or not (row.get("service_name") or "").strip():
+            skipped += 1
+            continue
+        service_fields = {
+            "name": row["service_name"].strip(),
+            "cat_name": (row.get("category_name") or "").strip()
+                        or "Uncategorized",
+            "external_id": str(row.get("external_id") or "").strip()[:64],
+            "description": row.get("description") or "",
+            "service_minutes": _parse_csv_minutes(
+                row, index, "service_minutes"),
+            "processing_minutes": _parse_csv_minutes(
+                row, index, "processing_minutes"),
+            "finishing_minutes": _parse_csv_minutes(
+                row, index, "finishing_minutes"),
+            "active": _parse_bool(row.get("service_active"), index,
+                                  "service_active"),
+        }
+        key = (service_fields["external_id"] or
+               (service_fields["cat_name"], service_fields["name"]))
+        plan = by_key.get(key)
+        if plan is None:
+            plan = {**service_fields, "base_amount": None,
+                    "level_prices": [], "user_prices_count": 0}
+            by_key[key] = plan
+            plans.append(plan)
+        elif any(plan[field] != value
+                 for field, value in service_fields.items()):
+            raise CommandError(
+                f"Row {index}: conflicting service fields for "
+                f"{service_fields['name']!r} in the CSV import.")
+
+        level_name = (row.get("staff_level_name") or "").strip()
+        amount_raw = (row.get("amount") or "").strip()
+        if not level_name and not amount_raw:
+            continue  # The one price-less row of an unpriced service.
+        if not level_name or not amount_raw:
+            raise CommandError(
+                f"Row {index}: staff_level_name and amount must "
+                f"appear together.")
+        amount = _decimal(amount_raw)
+        if amount is None:
+            raise CommandError(
+                f"Row {index}: amount {amount_raw!r} is not a "
+                f"valid price.")
+        price = {"level_name": level_name, "amount": amount,
+                 "is_from": _parse_bool(row.get("is_from"), index,
+                                        "is_from"),
+                 "price_active": _parse_bool(row.get("price_active"),
+                                             index, "price_active")}
+        prior = next((p for p in plan["level_prices"]
+                      if p["level_name"] == level_name), None)
+        if prior is not None and prior != price:
+            raise CommandError(
+                f"Row {index}: conflicting prices for level "
+                f"{level_name!r} on {service_fields['name']!r}.")
+        if prior is None:
+            plan["level_prices"].append(price)
+    return plans, skipped
 
 
 def _parse_minutes(row, index, field):
@@ -178,7 +337,8 @@ def _normalise_row(row, index, category_names, user_category):
             _resolve_level_name(entry_id, category_names, user_category,
                                 index)
             if entry_id else None)
-        level_prices.append({"level_name": level_name, "amount": amount})
+        level_prices.append({"level_name": level_name, "amount": amount,
+                             "is_from": None, "price_active": None})
 
     try:
         user_prices_count = len(row.get("userPrices") or [])
@@ -195,6 +355,9 @@ def _normalise_row(row, index, category_names, user_category):
                        or row.get("description") or "",
         "service_minutes": _parse_minutes(row, index, "duration"),
         "processing_minutes": _parse_minutes(row, index, "gapTime"),
+        # The JSON shape carries no finishing segment: None means
+        # phase 2 leaves the stored value (model default on create).
+        "finishing_minutes": None,
         "active": not row.get("archived", False),
         "base_amount": _decimal(row.get("price")),
         "level_prices": level_prices,
@@ -203,10 +366,10 @@ def _normalise_row(row, index, category_names, user_category):
 
 
 class Command(BaseCommand):
-    help = "Import service categories, services, staff levels and prices from a JSON export."
+    help = "Import service categories, services, staff levels and prices from a JSON or price-book CSV export."
 
     def add_arguments(self, parser):
-        parser.add_argument("path", help="Path to the services JSON export.")
+        parser.add_argument("path", help="Path to the services JSON export, or an export_price_book CSV.")
         parser.add_argument("--salon", default="My Salon",
                             help="Salon name to import into (created if missing).")
         parser.add_argument("--staff", default=None,
@@ -216,36 +379,44 @@ class Command(BaseCommand):
                             help="Staff level name the base price attaches to.")
 
     def handle(self, *args, **options):
-        data = _load_json(options["path"], "services")
-        if isinstance(data, dict):
-            data = data.get("services", [])
-        if not isinstance(data, list):
-            raise CommandError("Services file must be a JSON list of services.")
-
-        category_names, user_category = {}, {}
-        if options["staff"]:
-            staff = _load_json(options["staff"], "staff")
-            for row in staff if isinstance(staff, list) else []:
-                if not isinstance(row, dict):
-                    continue
-                cid, name = row.get("staffCategoryId"), row.get("staffCategoryName")
-                if cid and name:
-                    category_names[cid] = name
-                uid = row.get("userId") or row.get("staffId")
-                if uid and name:
-                    user_category[uid] = name
-
         # Phase 1: validate + normalise the whole file, pre-resolving
         # the level plan. Nothing has been written yet; any failure
         # here raises CommandError and changes nothing on any backend.
-        plans = [
-            _normalise_row(row, index, category_names, user_category)
-            for index, row in enumerate(data)
-        ]
+        pre_skipped = 0
+        if _is_csv_import(options["path"]):
+            plans, pre_skipped = _normalise_csv_rows(
+                _load_csv_rows(options["path"]))
+        else:
+            data = _load_json(options["path"], "services")
+            if isinstance(data, dict):
+                data = data.get("services", [])
+            if not isinstance(data, list):
+                raise CommandError(
+                    "Services file must be a JSON list of services.")
+
+            category_names, user_category = {}, {}
+            if options["staff"]:
+                staff = _load_json(options["staff"], "staff")
+                for row in staff if isinstance(staff, list) else []:
+                    if not isinstance(row, dict):
+                        continue
+                    cid, name = (row.get("staffCategoryId"),
+                                 row.get("staffCategoryName"))
+                    if cid and name:
+                        category_names[cid] = name
+                    uid = row.get("userId") or row.get("staffId")
+                    if uid and name:
+                        user_category[uid] = name
+
+            plans = [
+                _normalise_row(row, index, category_names, user_category)
+                for index, row in enumerate(data)
+            ]
 
         stats = dict.fromkeys(
             ["services", "categories", "levels", "prices",
              "skipped_services", "skipped_individual_prices"], 0)
+        stats["skipped_services"] = pre_skipped
 
         # Phase 2: write the pre-validated plans. atomic() is kept
         # only as defence-in-depth (see module docstring).
@@ -263,12 +434,18 @@ class Command(BaseCommand):
                 stats["levels"] += int(created)
                 return level
 
-            def set_price(service, level, amount):
+            def set_price(service, level, amount, is_from=None,
+                          price_active=None):
+                defaults = {"amount": amount,
+                            "active": True if price_active is None
+                            else price_active}
+                if is_from is not None:
+                    defaults["is_from"] = is_from
                 old = ServicePrice.objects.filter(
                     service=service, staff_level=level).first()
                 price, created = ServicePrice.objects.update_or_create(
                     service=service, staff_level=level,
-                    defaults={"amount": amount, "active": True})
+                    defaults=defaults)
                 stats["prices"] += int(created)
                 if old and not created and old.amount != amount:
                     PriceChange.objects.create(
@@ -292,6 +469,8 @@ class Command(BaseCommand):
                     "processing_minutes": plan["processing_minutes"],
                     "active": plan["active"],
                 }
+                if plan.get("finishing_minutes") is not None:
+                    defaults["finishing_minutes"] = plan["finishing_minutes"]
                 if external_id:
                     # Attach the id to a row first imported without one,
                     # so the external_id lookup below finds and updates
@@ -328,7 +507,9 @@ class Command(BaseCommand):
                         stats["skipped_individual_prices"] += 1
                         continue
                     set_price(service, level_for(level_price["level_name"]),
-                              level_price["amount"])
+                              level_price["amount"],
+                              is_from=level_price.get("is_from"),
+                              price_active=level_price.get("price_active"))
                 # Per-person prices are not level prices; count and skip.
                 stats["skipped_individual_prices"] += plan["user_prices_count"]
 
