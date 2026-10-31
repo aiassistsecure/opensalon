@@ -1401,6 +1401,17 @@
      hand: the hand outranks the mirror. */
   var packVersion = null;
   var pollBusy = false;
+  document.addEventListener("os:recovered", function (event) {
+    /* The durable queue brought plays back from a closed tab;
+       say so where the desk can see it, next to the journal's
+       own state line. */
+    var shadowEl = document.getElementById("shadowState");
+    var n = (event.detail || {}).count || 0;
+    if (shadowEl && n) {
+      shadowEl.textContent =
+        "· Shadow journal live · " + n + " play" + (n === 1 ? "" : "s") + " recovered";
+    }
+  });
   document.addEventListener("os:shadow-ready", function () {
     var shadowEl = document.getElementById("shadowState");
     if (shadowEl) shadowEl.textContent = "· Shadow journal live";

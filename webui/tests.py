@@ -766,6 +766,22 @@ class CardEditTests(WritePathTests):
         )
         self.assertFalse(entry()["is_new"])
 
+    def test_note_add_replay_does_not_duplicate(self):
+        """The durable queue may re-send an add whose ack died
+        with the tab: an identical note on the same target is
+        that add, applied once — never a twin."""
+        appt = self._make_appt()
+        body = {"appointment_id": appt.pk, "scope": "appt", "body": "replay me"}
+        self._post("webui:daybook_note", body)
+        self._post("webui:daybook_note", body)
+        self.assertEqual(
+            AppointmentNote.objects.filter(appointment=appt, body="replay me").count(),
+            1,
+        )
+        other = {"appointment_id": appt.pk, "scope": "appt", "body": "a different note"}
+        self._post("webui:daybook_note", other)
+        self.assertEqual(AppointmentNote.objects.filter(appointment=appt).count(), 2)
+
     def test_note_rejects_empty_and_unknown_scope(self):
         appt = self._make_appt()
         for payload in (
