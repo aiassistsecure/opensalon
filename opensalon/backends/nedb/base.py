@@ -77,6 +77,19 @@ this backend is the drop + recreate above, which does isolate.
   while plain JOIN shapes pass the evaluator unguarded (census in
   the evidence file cited in the PR).
 
+* Server-side cursors (N-M10, implications 1 and 9): SQL-level
+  cursors DECLARE/FETCH are refused by NEDB by design (DYOR
+  section 5, pgwire.rs refusal table), but the stock PostgreSQL
+  wrapper's ``chunked_cursor()`` returns a named psycopg
+  ``ServerSideCursor`` -- which psycopg implements by sending
+  DECLARE -- so every ``QuerySet.iterator()`` call died live
+  (census signature 1: 24 errors, messaging history/totals worst;
+  probe: nedb-declare-probe-2026-10-31.md). The override below
+  returns a plain unnamed client-side cursor instead: the
+  compiler still honours ``iterator(chunk_size)`` via
+  ``fetchmany()`` on that cursor, with identical results; only
+  the fetch strategy changes, at the semantics layer (9.1).
+
 * Relation materialization (N-M8c, implication 3): a catalogued
   collection that has never been written does not exist as a
   relation for NEDB's write path (DELETE/UPDATE) or JOIN
@@ -131,6 +144,19 @@ class DatabaseWrapper(PostgresDatabaseWrapper):
         # version additionally probes the server version on first use.
         # A NEDB connection needs neither: no session state is set here.
         pass
+
+    # -- server-side cursors: never declared on NEDB (N-M10) ---------
+
+    def chunked_cursor(self):
+        # No-op name-wise on purpose: the PostgreSQL override returns
+        # a named ServerSideCursor, and psycopg sends DECLARE for it,
+        # which NEDB refuses by design (DYOR section 5). A plain
+        # unnamed cursor is client-side in psycopg: execute buffers
+        # the result and fetchmany() serves iterator() chunks from
+        # it, so chunked reads keep working with no DECLARE ever
+        # sent. This restores the base backend's default behaviour
+        # (BaseDatabaseWrapper.chunked_cursor returns cursor()).
+        return self.cursor()
 
     # -- savepoints: never sent to NEDB (DYOR 9.4, N-M3e) -------------
 
