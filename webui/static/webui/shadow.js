@@ -1,30 +1,33 @@
-/* OpenSalon client shadow store — embedded NEDB (nedb-wasm).
+/* OpenSalon embedded store — NEDB (nedb-wasm) as the app itself.
  *
- * The founder's architecture: nedbd over HTTP is the salon's
- * durable truth; the tab carries an embedded NEDB as a mirror —
- * "shadow writes into the client embedded store for in-memory
- * expansion". This module is that store:
+ * The founder's two-stage design:
  *
- *   - Every client pack seeds the week's appointments into the
- *     in-memory engine (collection `appointments`).
- *   - Every local operation (a move, a status change) is
- *     journaled as a NEDB write (collection `ops`) in the same
- *     hash chain — the desk's edits carry provenance in the tab,
- *     and `verify()` can re-walk the chain at any moment.
- *   - Undo reads the journal: the last move's `before` state is
- *     still in the chain, so Ctrl+Z restores it exactly.
+ *   Stage 1 (here): the embedded NEDB in the tab IS the app.
+ *   Page load is the recovery — the pack hydrates the store —
+ *   and from then on every user action records here first: the
+ *   appointment doc is rewritten in the store's hash chain (the
+ *   DAG of in-memory plays), the screen repaints from it, and
+ *   the op lands in the `outbox` collection. Nothing in the
+ *   click path waits on HTTP.
  *
- * The engine is in-memory only (durable browser storage is
- * upstream Phase 2 in NEDB), which is safe here by design: a
- * mirror may be volatile when it can always re-mirror from the
- * server. If the wasm cannot load — old browser, blocked asset —
- * this module simply never becomes ready, and the day book
- * behaves exactly as it does without a shadow. The book never
- * depends on the shadow.
+ *   Stage 2 (http nedbv2 behind the Django server): persistence
+ *   only. The outbox drains to it in bulk batches
+ *   (POST /daybook/apply/) on its own schedule — it proves and
+ *   keeps, it never gates the UI. A drained op is marked acked
+ *   in the chain; a rejected op is marked failed with the
+ *   server's reason, and the client re-reads the truth.
  *
- * Seam: plain CustomEvents on document. webui.js stays
- * wasm-agnostic; it dispatches os:pack / os:op / os:undo and
- * listens for os:undo-move / os:shadow-ready.
+ * The store is in-memory (durable browser storage is upstream
+ * NEDB Phase 2): a closed tab loses an undrained tail — the
+ * drain debounce is 250 ms, so the exposure is a fraction of a
+ * second of desk work, stated plainly rather than hidden. If
+ * the wasm cannot load at all, this module never becomes ready
+ * and the day book runs its server path exactly as before: the
+ * book never depends on the shadow.
+ *
+ * Seam: CustomEvents on document (os:pack in, os:op in,
+ * os:record / os:drain / os:undo-move / os:shadow-ready out),
+ * plus window.OpenSalonShadow for state queries.
  */
 const engineUrl = new URL("nedb/nedb_wasm.js", import.meta.url);
 
@@ -32,9 +35,16 @@ let db = null;
 let ready = false;
 let seededVersion = "";
 const undoStack = [];
+const queuedIds = [];
+let drainTimer = null;
+let draining = false;
 
 function emit(name, detail) {
   document.dispatchEvent(new CustomEvent(name, { detail: detail || {} }));
+}
+
+function opKey() {
+  return "op_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
 }
 
 async function boot() {
@@ -50,6 +60,8 @@ async function boot() {
   }
 }
 
+/* ---- stage 1: recovery + local plays ---- */
+
 function seed(pack) {
   if (!ready || !pack || !pack.days || pack.version === seededVersion) return;
   seededVersion = pack.version;
@@ -64,27 +76,49 @@ function seed(pack) {
   });
 }
 
-function journal(op) {
+function enqueue(op) {
+  const key = opKey();
+  db.put(
+    "outbox",
+    key,
+    JSON.stringify(Object.assign({ state: "queued", at: Date.now() }, op))
+  );
+  queuedIds.push(key);
+  scheduleDrain(250);
+}
+
+function applyLocal(op) {
   if (!ready || !op || !op.id) return;
+  const raw = db.get("appointments", String(op.id));
   if (op.kind === "move") {
-    // Keep the mirrored appointment current with the gesture.
-    const raw = db.get("appointments", String(op.id));
     if (raw) {
       const doc = JSON.parse(raw);
+      const dur = doc.end_min - doc.start_min;
       doc.staff_id = op.after.staff_id;
       doc.start_min = op.after.start_min;
-      doc.end_min = op.after.start_min + (doc.end_min - doc.start_min);
+      doc.end_min = op.after.start_min + dur;
       db.put("appointments", String(op.id), JSON.stringify(doc));
+      emit("os:record", doc);
     }
-    if (!op.via) {
-      undoStack.push(op);
+    if (!op.via) undoStack.push(op);
+    enqueue({
+      kind: "move",
+      id: op.id,
+      staff_member_id: op.after.staff_id,
+      start_minutes: op.after.start_min,
+    });
+  } else if (op.kind === "status") {
+    if (raw) {
+      const doc = JSON.parse(raw);
+      doc.status = op.status;
+      db.put("appointments", String(op.id), JSON.stringify(doc));
+      emit("os:record", doc);
     }
+    enqueue({ kind: "status", id: op.id, status: op.status });
   }
-  db.put(
-    "ops",
-    "op_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8),
-    JSON.stringify(Object.assign({ at: Date.now() }, op))
-  );
+  /* Every op is journaled whether it drains or not — the
+     chain is the provenance of the desk's plays. */
+  db.put("ops", opKey(), JSON.stringify(Object.assign({ at: Date.now() }, op)));
 }
 
 function undo() {
@@ -98,14 +132,76 @@ function undo() {
   });
 }
 
+/* ---- stage 2: the drain (bulk, on its own schedule) ---- */
+
+function scheduleDrain(ms) {
+  if (drainTimer) clearTimeout(drainTimer);
+  drainTimer = setTimeout(drain, ms);
+}
+
+async function drain() {
+  if (draining || !ready || !queuedIds.length) return;
+  const layout = document.querySelector(".book-layout");
+  if (!layout || !layout.dataset.apply) return;
+  const tokenEl = layout.querySelector('input[name="csrfmiddlewaretoken"]');
+  const batch = queuedIds.slice(0, 100);
+  const ops = batch.map(function (key) {
+    const rec = JSON.parse(db.get("outbox", key));
+    const op = { kind: rec.kind, id: rec.id };
+    if (rec.kind === "move") {
+      op.staff_member_id = rec.staff_member_id;
+      op.start_minutes = rec.start_minutes;
+    }
+    if (rec.kind === "status") op.status = rec.status;
+    return op;
+  });
+  draining = true;
+  try {
+    const resp = await fetch(layout.dataset.apply, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRFToken": tokenEl ? tokenEl.value : "",
+      },
+      body: JSON.stringify({ ops: ops }),
+    });
+    const data = await resp.json();
+    const failed = [];
+    (data.results || []).forEach(function (r, i) {
+      const key = batch[i];
+      const rec = JSON.parse(db.get("outbox", key));
+      rec.state = r.ok ? "acked" : "failed";
+      if (!r.ok) {
+        rec.error = r.error || "rejected";
+        failed.push({ id: rec.id, error: rec.error });
+      }
+      db.put("outbox", key, JSON.stringify(rec));
+      const at = queuedIds.indexOf(key);
+      if (at >= 0) queuedIds.splice(at, 1);
+    });
+    emit("os:drain", { acked: batch.length - failed.length, failed: failed });
+    if (queuedIds.length) scheduleDrain(400);
+  } catch (err) {
+    /* The network is down or the server is away: the queue
+       waits and retries — the app state never does. */
+    scheduleDrain(3000);
+  } finally {
+    draining = false;
+  }
+}
+setInterval(function () {
+  if (queuedIds.length) scheduleDrain(600);
+}, 5000);
+
 document.addEventListener("os:pack", function (event) { seed(event.detail); });
-document.addEventListener("os:op", function (event) { journal(event.detail); });
+document.addEventListener("os:op", function (event) { applyLocal(event.detail); });
 document.addEventListener("os:undo", function () { undo(); });
 
 window.OpenSalonShadow = {
   get ready() { return ready; },
   verify: function () { return ready ? db.verify() : false; },
   seq: function () { return ready ? db.seq() : 0; },
+  pending: function () { return queuedIds.length; },
   undoDepth: function () { return undoStack.length; },
 };
 

@@ -831,7 +831,14 @@ def day_book_move(request):
     member = StaffMember.objects.filter(pk=member_id, salon=salon, active=True).first()
     if member is None:
         return JsonResponse({"ok": False, "error": "no such stylist"}, status=404)
-    tz = _tz(salon)
+    snapped = _do_move(anchor, member, start_minutes, _tz(salon))
+    return JsonResponse({"ok": True, "moved": 1, "start_minutes": snapped})
+
+
+def _do_move(anchor, member, start_minutes, tz):
+    """The move itself, shared by the single-op endpoint and the
+    batch drain: snap to 5 minutes, clamp inside the day, keep
+    the duration, save. Returns the snapped start minute."""
     local_day = anchor.start.astimezone(tz).date()
     duration_minutes = (anchor.end - anchor.start).total_seconds() / 60
     snapped = int(round(start_minutes / 5.0)) * 5
@@ -844,7 +851,77 @@ def day_book_move(request):
     anchor.end += delta
     anchor.staff_member = member
     anchor.save(update_fields=["start", "end", "staff_member"])
-    return JsonResponse({"ok": True, "moved": 1, "start_minutes": snapped})
+    return snapped
+
+
+def _do_status(appt, target):
+    """The status transition itself, shared by the single-op
+    endpoint and the batch drain. The transition table is the
+    only law: returns an error string, or None after saving."""
+    allowed = {s for s, _label, _p in _STATUS_ACTIONS.get(appt.status, [])}
+    if target not in allowed:
+        return f"cannot move {appt.status} to {target}"
+    appt.status = target
+    appt.save(update_fields=["status"])
+    return None
+
+
+@require_POST
+def day_book_apply(request):
+    """The drain: a batch of ops from a client's embedded store.
+
+    The founder's two-stage design — the tab's in-memory NEDB
+    holds the app and plays instantly; this endpoint is the
+    persistence stage the op queue drains into, in bulk. Each op
+    is applied under exactly the single-op rules (same snap, same
+    transition table) and reported individually: one bad op never
+    poisons the batch, and the client learns per-op truth so it
+    can converge — acked ops are provenance, failed ops are
+    re-read from the server's book.
+    """
+    try:
+        payload = json.loads(request.body.decode("utf-8"))
+        ops = payload["ops"]
+        if not isinstance(ops, list) or len(ops) > 100:
+            raise ValueError("ops must be a list of at most 100")
+    except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+        return JsonResponse({"ok": False, "error": "bad payload"}, status=400)
+    results = []
+    for index, op in enumerate(ops):
+        result = {"i": index, "ok": False}
+        try:
+            kind = str(op["kind"])
+            appt = Appointment.objects.select_related("staff_member").filter(
+                pk=int(op["id"])
+            ).first()
+            if appt is None:
+                result["error"] = "no such appointment"
+            elif kind == "move":
+                salon = appt.staff_member.salon
+                member = StaffMember.objects.filter(
+                    pk=int(op["staff_member_id"]), salon=salon, active=True
+                ).first()
+                if member is None:
+                    result["error"] = "no such stylist"
+                else:
+                    result["start_minutes"] = _do_move(
+                        appt, member, int(op["start_minutes"]), _tz(salon)
+                    )
+                    result["ok"] = True
+            elif kind == "status":
+                error = _do_status(appt, str(op["status"]))
+                if error:
+                    result["error"] = error
+                else:
+                    result["ok"] = True
+            else:
+                result["error"] = f"unknown op kind {kind}"
+        except (ValueError, KeyError, TypeError) as exc:
+            result["error"] = f"bad op: {exc}"
+        results.append(result)
+    return JsonResponse(
+        {"ok": all(r["ok"] for r in results), "results": results}
+    )
 
 
 @require_POST
@@ -866,14 +943,9 @@ def day_book_status(request):
     appt = Appointment.objects.filter(pk=appt_id).first()
     if appt is None:
         return JsonResponse({"ok": False, "error": "no such appointment"}, status=404)
-    allowed = {s for s, _label, _p in _STATUS_ACTIONS.get(appt.status, [])}
-    if target not in allowed:
-        return JsonResponse(
-            {"ok": False, "error": f"cannot move {appt.status} to {target}"},
-            status=400,
-        )
-    appt.status = target
-    appt.save(update_fields=["status"])
+    error = _do_status(appt, target)
+    if error:
+        return JsonResponse({"ok": False, "error": error}, status=400)
     return JsonResponse(
         {"ok": True, "status": target, "status_label": _STATUS_LABELS.get(target, target)}
     )

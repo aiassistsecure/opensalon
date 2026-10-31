@@ -1,6 +1,8 @@
 import datetime
+import json
 from decimal import Decimal
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 from django.test import TestCase
 from django.urls import reverse
@@ -521,6 +523,70 @@ class WritePathTests(WebuiTestBase):
         data = response.json()
         self.assertEqual([m["name"] for m in data["members"]], ["Maribel Gonzalez"])
         self.assertEqual(data["services"][0]["minutes"], 60)
+
+
+class ApplyBatchTests(WritePathTests):
+    """The drain endpoint: batches from the embedded store."""
+
+    def _apply(self, ops):
+        return self.client.post(
+            reverse("webui:daybook_apply"),
+            data=json.dumps({"ops": ops}),
+            content_type="application/json",
+        )
+
+    def test_batch_applies_moves_and_statuses(self):
+        appt = self._make_appt()
+        response = self._apply(
+            [
+                {"kind": "status", "id": appt.pk, "status": "arrived"},
+                {
+                    "kind": "move",
+                    "id": appt.pk,
+                    "staff_member_id": self.member.pk,
+                    "start_minutes": 663,
+                },
+            ]
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["ok"])
+        self.assertEqual([r["ok"] for r in data["results"]], [True, True])
+        appt.refresh_from_db()
+        self.assertEqual(appt.status, "arrived")
+        # 663 snaps to 665 (11:05) — the batch obeys the same law,
+        # and the move preserves the appointment's duration.
+        self.assertEqual(data["results"][1]["start_minutes"], 665)
+        self.assertEqual((appt.end - appt.start).total_seconds(), 60 * 60)
+
+    def test_one_bad_op_never_poisons_the_batch(self):
+        appt = self._make_appt()
+        response = self._apply(
+            [
+                {"kind": "status", "id": appt.pk, "status": "completed"},
+                {"kind": "status", "id": appt.pk, "status": "arrived"},
+                {"kind": "status", "id": 999999, "status": "arrived"},
+                {"kind": "teleport", "id": appt.pk},
+            ]
+        )
+        data = response.json()
+        self.assertFalse(data["ok"])
+        self.assertEqual(
+            [r["ok"] for r in data["results"]], [False, True, False, False]
+        )
+        self.assertIn("cannot move", data["results"][0]["error"])
+        appt.refresh_from_db()
+        self.assertEqual(appt.status, "arrived")
+
+    def test_batch_cap_and_shape(self):
+        response = self._apply([{"kind": "status", "id": 1, "status": "arrived"}] * 101)
+        self.assertEqual(response.status_code, 400)
+        response = self.client.post(
+            reverse("webui:daybook_apply"),
+            data=json.dumps({"nope": []}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
 
 
 class ShadowStoreTests(WebuiTestBase):
