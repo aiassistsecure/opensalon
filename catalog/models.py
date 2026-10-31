@@ -27,9 +27,29 @@ class Product(models.Model):
     barcode = models.CharField(max_length=64, blank=True, db_index=True)
     price = models.DecimalField(max_digits=10, decimal_places=2)
     active = models.BooleanField(default=True)
+    # Source-system identity and verbatim shape (DYOR section 9):
+    # the source record's own id, its brand/category/type labels
+    # exactly as the source spells them, its cost, and the whole
+    # source document preserved in ``payload`` so nothing the
+    # source knew is lost in the mapping.
+    external_id = models.CharField(max_length=64, blank=True)
+    brand_name = models.CharField(max_length=120, blank=True)
+    category_name = models.CharField(max_length=120, blank=True)
+    product_type = models.CharField(max_length=32, blank=True)
+    cost_price = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True
+    )
+    payload = models.JSONField(default=dict, blank=True)
 
     class Meta:
         ordering = ["name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["external_id"],
+                condition=models.Q(external_id__gt=""),
+                name="uniq_product_external_id",
+            )
+        ]
 
     def __str__(self):
         return self.name
