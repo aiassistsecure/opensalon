@@ -1386,3 +1386,141 @@ class NedbUpdateFieldsLiveTests(SimpleTestCase):
             ),
             1,
         )
+
+
+# -- N-M8a: JSON values travel as plain text, never a ::jsonb cast ---
+#
+# DYOR 9.7 (cast/expression VALUES refused by design) + 9.9 (nested
+# data stored verbatim). Stock PostgreSQL adapt_json_value returns
+# psycopg's Jsonb; under Django's client-side binding its text
+# dumper renders '{...}'::jsonb, the live-suite signature #1 (~40
+# errors, mostly checkout tender_totals / receipt JSON writes).
+
+import json as _json
+
+from django.core.serializers.json import DjangoJSONEncoder
+
+from opensalon.backends.nedb import jsonfield
+
+
+class JsonAdaptTests(SimpleTestCase):
+    def test_dict_adapts_to_plain_json_text_not_jsonb(self):
+        wrapper = _wrapper()
+        adapted = wrapper.ops.adapt_json_value({"cash": "85.00"}, None)
+        self.assertIsInstance(adapted, str)
+        self.assertEqual(adapted, '{"cash": "85.00"}')
+        self.assertNotIn("::jsonb", adapted)
+
+    def test_list_adapts_to_plain_json_text(self):
+        wrapper = _wrapper()
+        adapted = wrapper.ops.adapt_json_value([{"a": 1}], None)
+        self.assertEqual(adapted, '[{"a": 1}]')
+
+    def test_field_encoder_is_honoured(self):
+        wrapper = _wrapper()
+        adapted = wrapper.ops.adapt_json_value(
+            {"amount": decimal.Decimal("85.00")}, DjangoJSONEncoder
+        )
+        self.assertEqual(adapted, '{"amount": "85.00"}')
+
+    def test_none_stays_none_never_json_null_text(self):
+        wrapper = _wrapper()
+        self.assertIsNone(wrapper.ops.adapt_json_value(None, None))
+
+    def test_expression_passes_through_untouched(self):
+        expr = mock.Mock(name="expression")
+        expr.resolve_expression = lambda *a, **k: expr
+        wrapper = _wrapper()
+        self.assertIs(wrapper.ops.adapt_json_value(expr, None), expr)
+
+    def test_jsonfield_module_matches_ops_hook(self):
+        self.assertEqual(
+            jsonfield.adapt_json_value({"x": [1, 2]}, None),
+            _json.dumps({"x": [1, 2]}),
+        )
+
+
+class JsonInsertCompilerTests(SimpleTestCase):
+    def test_cashup_insert_param_is_text_and_sql_has_no_cast(self):
+        # The exact live-suite shape: a Cashup insert whose
+        # tender_totals param must be a plain string, so the
+        # client-side-bound SQL contains no ::jsonb cast.
+        from checkout.models import Cashup
+        from saloncore.models import Salon
+
+        salon = Salon(id=4242, name="JSON Salon", timezone="UTC")
+        obj = Cashup(
+            salon=salon,
+            period_start=AWARE_DT,
+            period_end=AWARE_DT,
+            tender_totals={"cash": "85.00"},
+            note="",
+        )
+        fields = [
+            f for f in Cashup._meta.local_concrete_fields
+            if f is not Cashup._meta.pk
+        ]
+        sql, params = _insert_sql([obj], fields, returning=True)[0]
+        self.assertNotIn("::jsonb", sql)
+        json_params = [p for p in params if isinstance(p, str) and "cash" in p]
+        self.assertEqual(json_params, ['{"cash": "85.00"}'])
+        self.assertFalse(
+            any(type(p).__name__ in ("Jsonb", "Json") for p in params)
+        )
+
+
+@unittest.skipUnless(
+    os.environ.get("OPENSALON_NEDB_LIVE_TEST") == "1",
+    "live nedbd JSON test: set OPENSALON_NEDB_LIVE_TEST=1 with "
+    "the default connection on the NEDB backend (nedbd running)",
+)
+class NedbJsonLiveTests(SimpleTestCase):
+    """N-M8a acceptance against a real nedbd (guarded, never offline).
+
+    Before the fix this exact shape failed live with:
+    NotSupportedError: cannot use "'{\"cash\": \"85.00\"}'::jsonb"
+    as a value -- this endpoint accepts string literals, numbers,
+    TRUE/FALSE and NULL.
+    """
+
+    databases = {"default"}
+
+    def test_json_dict_and_list_round_trip_on_live_nedb(self):
+        from django.db import connection
+
+        self.assertEqual(connection.display_name, "NEDB (PostgreSQL pgwire)")
+        from checkout.models import Cashup, Receipt, Sale
+        from saloncore.models import Salon
+
+        salon = Salon.objects.create(name="JSON Probe Salon", timezone="UTC")
+        cashup = Cashup.objects.create(
+            salon=salon,
+            period_start=AWARE_DT,
+            period_end=AWARE_DT,
+            tender_totals={"cash": "85.00", "card": "24.00"},
+            note="",
+        )
+        fresh = Cashup.objects.get(pk=cashup.pk)
+        self.assertIsInstance(fresh.tender_totals, dict)
+        self.assertEqual(
+            fresh.tender_totals, {"cash": "85.00", "card": "24.00"}
+        )
+        # Update path carries a JSON value the same way.
+        fresh.tender_totals = {"cash": "90.00"}
+        fresh.save(update_fields=["tender_totals"])
+        self.assertEqual(
+            Cashup.objects.get(pk=cashup.pk).tender_totals,
+            {"cash": "90.00"},
+        )
+        # List-shaped JSON fields (Receipt) round-trip too.
+        sale = Sale.objects.create(salon=salon)
+        lines = [{"description": "Haircut", "quantity": 1,
+                  "unit_price": "85.00", "line_total": "85.00"}]
+        tender = [{"method": "cash", "amount": "85.00", "status": "paid"}]
+        Receipt.objects.create(
+            sale=sale, salon_name="JSON Probe Salon", lines=lines,
+            tender=tender,
+        )
+        receipt = Receipt.objects.get(sale=sale)
+        self.assertEqual(receipt.lines, lines)
+        self.assertEqual(receipt.tender, tender)

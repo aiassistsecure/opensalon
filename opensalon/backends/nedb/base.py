@@ -53,6 +53,15 @@ this backend is the drop + recreate above, which does isolate.
   is ever sent to nedbd. The locking guarantee is not provided --
   exclusion belongs to NEDB's CAS batch / ``if_seq`` unit (9.4).
 
+* JSON write path (N-M8a): ``operations.py`` overrides
+  ``adapt_json_value`` so JSONField values travel as plain JSON
+  text, never psycopg's ``Jsonb`` wrapper -- under Django's
+  client-side binding the Jsonb text dumper emits a
+  ``'...'::jsonb`` cast literal, and cast VALUES are refused by
+  NEDB by design (DYOR 9.7). NEDB stores the JSON text verbatim
+  (DYOR 9.9) and ``JSONField.from_db_value`` parses it on read;
+  details in ``jsonfield.py``.
+
 * Decimal round-trip (N-M6e): NEDB stores Decimal parameters as JSON
   numbers and returns them as floats, so ``operations.py`` registers
   a per-field Decimal converter (``decimalfield.py``) -- read-path
