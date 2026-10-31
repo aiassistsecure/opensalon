@@ -36,6 +36,11 @@ class StaffMember(StrictConstraints):
     )
     online_bookable = models.BooleanField(default=True)
     active = models.BooleanField(default=True)
+    # Time-clock PIN, set by the manager (often birthdate-derived:
+    # day + year). Blank means no PIN — the member cannot use the
+    # clock until one is set. Non-blank PINs are unique per salon
+    # (constraint below), so a PIN always names exactly one person.
+    pin = models.CharField(max_length=8, blank=True, default="")
 
     class Meta:
         ordering = ["display_name"]
@@ -44,7 +49,12 @@ class StaffMember(StrictConstraints):
                 fields=["salon", "external_id"],
                 condition=models.Q(external_id__gt=""),
                 name="uniq_staff_external_id_per_salon",
-            )
+            ),
+            models.UniqueConstraint(
+                fields=["salon", "pin"],
+                condition=models.Q(pin__gt=""),
+                name="uniq_staff_pin_per_salon",
+            ),
         ]
 
     def __str__(self):

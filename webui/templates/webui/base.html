@@ -43,6 +43,13 @@
       </div>
       <span class="switcher-chev">⌄</span>
     </div>
+    <button type="button" class="clock-card" id="clockCard" data-tz="{{ salon_tz }}" aria-label="Time clock — tap to clock in or out">
+      <span class="clock-ic" aria-hidden="true">◷</span>
+      <span class="clock-meta">
+        <span class="clock-time" id="clockTime">--:--</span>
+        <span class="clock-sub">Time clock</span>
+      </span>
+    </button>
   </aside>
 
   <div class="main">
@@ -131,6 +138,55 @@
     <div class="book-actions">
       <button type="button" class="btn-ghost" id="bookCancel">Cancel</button>
       <button type="button" class="btn-grad grow" id="bookSave">Book appointment</button>
+    </div>
+    {% csrf_token %}
+  </div>
+</div>
+
+<div class="book-modal hidden" id="clockModal" role="dialog" aria-modal="true" aria-label="Time clock"
+     data-status-url="{% url 'webui:clock_status' %}" data-toggle-url="{% url 'webui:clock_toggle' %}">
+  <div class="book-card clock-panel">
+    <div class="book-card-head">
+      <h2>Time clock</h2>
+      <button type="button" class="rail-close" id="clockClose" aria-label="Close">✕</button>
+    </div>
+    <div id="clockPinStage">
+      <label class="clock-pin-label" for="clockPin">Enter your PIN</label>
+      <input type="password" id="clockPin" class="clock-pin-input" inputmode="numeric"
+             autocomplete="off" maxlength="8" aria-describedby="clockErr">
+      <div class="pin-pad" id="clockPad" aria-hidden="false">
+        <button type="button" data-digit="1">1</button>
+        <button type="button" data-digit="2">2</button>
+        <button type="button" data-digit="3">3</button>
+        <button type="button" data-digit="4">4</button>
+        <button type="button" data-digit="5">5</button>
+        <button type="button" data-digit="6">6</button>
+        <button type="button" data-digit="7">7</button>
+        <button type="button" data-digit="8">8</button>
+        <button type="button" data-digit="9">9</button>
+        <button type="button" data-act="clear">C</button>
+        <button type="button" data-digit="0">0</button>
+        <button type="button" data-act="back" aria-label="Delete last digit">⌫</button>
+      </div>
+      <p class="book-err hidden" id="clockErr" role="alert"></p>
+      <div class="book-actions">
+        <button type="button" class="btn-ghost" id="clockCancel">Cancel</button>
+        <button type="button" class="btn-grad grow" id="clockEnter">Enter</button>
+      </div>
+    </div>
+    <div id="clockStatusStage" class="hidden">
+      <div class="clock-who">
+        <span class="clock-avatar" id="clockAvatar">--</span>
+        <div>
+          <div class="clock-name" id="clockName"></div>
+          <div class="clock-status-line" id="clockStatusLine"></div>
+        </div>
+      </div>
+      <p class="book-err hidden" id="clockErr2" role="alert"></p>
+      <div class="book-actions">
+        <button type="button" class="btn-ghost" id="clockBack">Not you?</button>
+        <button type="button" class="btn-grad grow" id="clockAction">Clock in</button>
+      </div>
     </div>
     {% csrf_token %}
   </div>
