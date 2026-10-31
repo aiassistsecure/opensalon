@@ -2419,3 +2419,190 @@ class NedbDeclareCursorLiveTests(_TestCase10):
         totals = send_totals(self.salon, self.first, self.last)
         self.assertEqual(totals.total, 2)
         self.assertEqual(totals.by_channel, {"email": 1, "sms": 1})
+
+
+# -- N-M11: GROUP BY expressions expand to determined columns -------
+#
+# DYOR 9.1/9.9; probe nedb-groupby2-probe-2026-10-31.md, census
+# signature 2. NEDB's evaluator checks GROUP BY at constituent-column
+# level: SaleSearch's Concat(client__first_name, " ", last_name)
+# annotation fails live whether GROUP BY carries its select ordinal
+# or the full expression; grouping by the constituent columns (which
+# the grouped client_id FK determines) is measured correct.
+
+def _sale_search_sql():
+    """Compile the SaleSearch name+total shape offline (NEDB wrapper)."""
+    from decimal import Decimal as _Dec
+
+    from django.db.models import F, Q, Sum, Value
+    from django.db.models.functions import Coalesce, Concat
+
+    from checkout.models import Sale
+
+    wrapper = _wrapper()
+    qs = (
+        Sale.objects.filter(salon_id=1)
+        .exclude(status="voided")
+        .annotate(
+            _full_name=Concat(
+                F("client__first_name"), Value(" "),
+                F("client__last_name"),
+            )
+        )
+        .filter(
+            Q(client__first_name__icontains="ana")
+            | Q(_full_name__icontains="ana")
+        )
+        .annotate(
+            search_total=Coalesce(
+                Sum(F("items__unit_price") * F("items__quantity")),
+                _Dec("0.00"),
+            )
+        )
+        .order_by("-created_at", "-id")
+    )
+    sql, _params = qs.query.get_compiler(connection=wrapper).as_sql()
+    return sql
+
+
+def _group_by_of(sql):
+    return sql.split("GROUP BY", 1)[1].split(" ORDER BY", 1)[0]
+
+
+class GroupByExpressionExpansionTests(SimpleTestCase):
+    def test_concat_annotation_groups_by_constituent_client_columns(self):
+        group_by = _group_by_of(_sale_search_sql())
+        self.assertIn('"clients_client"."first_name"', group_by)
+        self.assertIn('"clients_client"."last_name"', group_by)
+        # The select ordinal for _full_name (position 9) is gone.
+        self.assertNotIn(", 9", group_by)
+
+    def test_reverse_relation_expression_is_not_expanded(self):
+        # items is a reverse FK (one-to-many): its rows are NOT
+        # determined by the grouped keys, so expansion would not be
+        # provably equivalent -- stock grouping (ordinal) must stay.
+        from decimal import Decimal as _Dec
+
+        from django.db.models import F, Sum, Value
+        from django.db.models.functions import Coalesce, Concat
+
+        from checkout.models import Sale
+
+        wrapper = _wrapper()
+        qs = Sale.objects.filter(salon_id=1).annotate(
+            _x=Concat(F("items__description"), Value("!"))
+        ).annotate(
+            search_total=Coalesce(
+                Sum(F("items__unit_price") * F("items__quantity")),
+                _Dec("0.00"),
+            )
+        )
+        sql, _params = qs.query.get_compiler(connection=wrapper).as_sql()
+        group_by = _group_by_of(sql)
+        self.assertNotIn('"checkout_saleitem"."description"', group_by)
+        self.assertIn(", 9", group_by)
+
+    def test_undetermined_fk_expression_is_not_expanded(self):
+        # values("status") grouping: neither the Sale PK nor the
+        # client_id FK is a group key, so client columns are not
+        # determined and the Concat keeps its stock ordinal grouping.
+        from django.db.models import Count, F, Value
+        from django.db.models.functions import Concat
+
+        from checkout.models import Sale
+
+        wrapper = _wrapper()
+        qs = Sale.objects.values("status").annotate(
+            _full_name=Concat(
+                F("client__first_name"), Value(" "),
+                F("client__last_name"),
+            )
+        ).annotate(n=Count("id"))
+        sql, _params = qs.query.get_compiler(connection=wrapper).as_sql()
+        group_by = _group_by_of(sql)
+        self.assertNotIn('"clients_client"."first_name"', group_by)
+        self.assertEqual(group_by.strip(), "1, 2")
+
+
+class HavingWrapOuterProjectionTests(SimpleTestCase):
+    def test_wrap_names_outer_columns_in_inner_order(self):
+        # N-M11 addendum: with a min_total-style filter the query goes
+        # through the N-M8f HAVING wrap; NEDB reorders SELECT * on a
+        # derived table, so the wrap must project _full_name before
+        # search_total explicitly, in the inner select's order.
+        from decimal import Decimal as _Dec
+
+        from django.db.models import F, Sum, Value
+        from django.db.models.functions import Coalesce, Concat
+
+        from checkout.models import Sale
+
+        wrapper = _wrapper()
+        qs = (
+            Sale.objects.filter(salon_id=1)
+            .annotate(
+                _full_name=Concat(
+                    F("client__first_name"), Value(" "),
+                    F("client__last_name"),
+                )
+            )
+            .annotate(
+                search_total=Coalesce(
+                    Sum(F("items__unit_price") * F("items__quantity")),
+                    _Dec("0.00"),
+                )
+            )
+            .filter(search_total__gte=_Dec("50.00"))
+            .order_by("-created_at", "-id")
+        )
+        sql, _params = qs.query.get_compiler(connection=wrapper).as_sql()
+        self.assertTrue(
+            sql.startswith('SELECT "nedb_having_sub"."id", ')
+        )
+        self.assertNotIn("SELECT * FROM", sql)
+        outer = sql.split(" FROM (", 1)[0]
+        self.assertLess(
+            outer.index('"_full_name"'), outer.index('"search_total"')
+        )
+
+
+@unittest.skipUnless(
+    os.environ.get("OPENSALON_NEDB_LIVE_TEST") == "1",
+    "live nedbd GROUP BY expression test: set OPENSALON_NEDB_LIVE_TEST=1 "
+    "with the default connection on the NEDB backend (nedbd running)",
+)
+class NedbGroupByExpressionLiveTests(SimpleTestCase):
+    """N-M11 acceptance against a real nedbd (guarded, never offline).
+
+    Before the fix every name search failed live with: column
+    "clients_client.first_name" must appear in the GROUP BY clause
+    or be used in an aggregate function (census signature 2, x4).
+    """
+
+    databases = {"default"}
+
+    def test_sale_search_by_name_passes_on_live_nedb(self):
+        from django.db import connection
+
+        self.assertEqual(connection.display_name, "NEDB (PostgreSQL pgwire)")
+        from checkout.models import Sale, SaleItem
+        from checkout.search import search_sales
+        from clients.models import Client
+        from saloncore.models import Salon
+
+        salon = Salon.objects.create(name="GroupBy2 Probe Salon", timezone="UTC")
+        ana = Client.objects.create(
+            salon=salon, first_name="Ana", last_name="Lopez"
+        )
+        sale = Sale.objects.create(salon=salon, client=ana)
+        SaleItem.objects.create(
+            sale=sale, kind="service", description="Haircut",
+            unit_price=decimal.Decimal("85.00"),
+        )
+        by_last = search_sales(salon, client_name="lopez")
+        self.assertEqual([s.pk for s in by_last], [sale.pk])
+        self.assertEqual(by_last[0].search_total, decimal.Decimal("85.00"))
+        # Full-name fragment exercises the Concat annotation itself.
+        by_full = search_sales(salon, client_name="ana lo")
+        self.assertEqual([s.pk for s in by_full], [sale.pk])
+        self.assertEqual(search_sales(salon, client_name="zzz"), [])
