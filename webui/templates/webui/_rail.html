@@ -72,6 +72,17 @@
       {% for note in rail.client_notes %}<div class="note-box">{{ note }}</div>{% empty %}<p class="rail-empty">No client record notes.</p>{% endfor %}
     </div>
 
+    {% if rail.toggles %}
+    <div class="rail-toggles">
+      {% for t in rail.toggles %}
+      <div class="rtoggle-row">
+        <span class="rtoggle-label">{{ t.label }}</span>
+        <button type="button" class="tswitch t-{{ t.key }}{% if t.on %} on{% endif %}" role="switch" aria-checked="{{ t.on|yesno:'true,false' }}" {% if not t.enabled %}disabled{% endif %} data-status-action="{{ t.target }}" data-appt="{{ rail.id }}" aria-label="Toggle {{ t.label|lower }}"></button>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
     {% if rail.actions %}
     <div class="rail-actions">
       {% for action in rail.actions %}

@@ -399,15 +399,64 @@ class WritePathTests(WebuiTestBase):
         )
         self.assertEqual(response.status_code, 404)
 
-    def test_rail_payload_offers_check_in(self):
+    def test_rail_payload_offers_check_in_as_a_toggle(self):
         self._make_appt()
         response = self.client.get(reverse("webui:daybook"), {"date": "2026-11-02"})
+        toggles = [
+            t
+            for payload in response.context["rail_data"].values()
+            for t in payload["toggles"]
+        ]
+        checkin = next(t for t in toggles if t["key"] == "checkin")
+        self.assertFalse(checkin["on"])
+        self.assertTrue(checkin["enabled"])
+        self.assertEqual(checkin["target"], "arrived")
+        noshow = next(t for t in toggles if t["key"] == "noshow")
+        self.assertFalse(noshow["on"])
+        self.assertEqual(noshow["target"], "no_show")
+        # The button row no longer duplicates the toggles.
         labels = [
             a["label"]
             for payload in response.context["rail_data"].values()
             for a in payload["actions"]
         ]
-        self.assertIn("Check In", labels)
+        self.assertNotIn("Check In", labels)
+        self.assertNotIn("No-show", labels)
+
+    def test_check_in_toggle_reverses(self):
+        appt = self._make_appt()
+        for target, expected in (
+            ("arrived", "arrived"),
+            ("booked", "booked"),
+            ("arrived", "arrived"),
+        ):
+            response = self._post(
+                "webui:daybook_status",
+                {"appointment_id": appt.pk, "status": target},
+            )
+            self.assertEqual(response.status_code, 200)
+            appt.refresh_from_db()
+            self.assertEqual(appt.status, expected)
+
+    def test_no_show_toggle_reverses_but_cannot_start_service(self):
+        appt = self._make_appt()
+        response = self._post(
+            "webui:daybook_status",
+            {"appointment_id": appt.pk, "status": "no_show"},
+        )
+        self.assertEqual(response.status_code, 200)
+        response = self._post(
+            "webui:daybook_status",
+            {"appointment_id": appt.pk, "status": "in_service"},
+        )
+        self.assertEqual(response.status_code, 400)
+        response = self._post(
+            "webui:daybook_status",
+            {"appointment_id": appt.pk, "status": "booked"},
+        )
+        self.assertEqual(response.status_code, 200)
+        appt.refresh_from_db()
+        self.assertEqual(appt.status, "booked")
 
     def test_book_for_existing_client_uses_service_minutes(self):
         response = self._post(
@@ -508,6 +557,16 @@ class PackTests(WebuiTestBase):
         self.assertEqual(entry["end_min"], 660)
         self.assertEqual(entry["amount"], "85.00")
         self.assertEqual([s["name"] for s in data["staff"]], ["Maribel Gonzalez"])
+        # Pack v2: the visit key, the rendered labels, and the
+        # anchor day's ribbon/intel/agenda ride along so the
+        # client can reconcile in place without a page rebuild.
+        self.assertEqual(entry["visit"], entry["id"])
+        self.assertEqual(entry["price_label"], "$85")
+        self.assertIn("10 AM", entry["time_label"])
+        self.assertEqual(data["anchor"]["ribbon"]["appointments"], 1)
+        self.assertEqual(data["anchor"]["ribbon"]["revenue_label"], "$85")
+        self.assertEqual(len(data["anchor"]["agenda"]), 1)
+        self.assertEqual(data["anchor"]["columns"][0]["visits_count"], 1)
 
     def test_pack_stamp_short_circuits_until_the_world_moves(self):
         WritePathTests._make_appt(self)
