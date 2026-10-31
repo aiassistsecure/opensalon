@@ -7,6 +7,7 @@ import io
 import json
 import os
 import tempfile
+from datetime import datetime, timezone as dt_timezone
 from zoneinfo import ZoneInfo
 
 from django.core.management import CommandError, call_command
@@ -167,3 +168,68 @@ class ImportAppointmentsTests(TestCase):
     def test_missing_file_raises_command_error(self):
         with self.assertRaises(CommandError):
             call_command("import_appointments", "/nonexistent/x.json")
+
+    # TZ-M2: wall times are salon-local, stored as correct UTC instant.
+
+    def test_wall_time_stored_as_exact_utc_instant_edt(self):
+        # 2026-10-03 is EDT (UTC-4) in America/New_York.
+        self.run_import(payload=FIXTURE[:1])
+        appt = Appointment.objects.get(external_id="appt-1")
+        self.assertEqual(appt.start, datetime(
+            2026, 10, 3, 13, 0, tzinfo=dt_timezone.utc))
+        self.assertEqual(appt.end, datetime(
+            2026, 10, 3, 13, 45, tzinfo=dt_timezone.utc))
+        local = appt.start.astimezone(ZoneInfo("America/New_York"))
+        self.assertEqual((local.hour, local.minute), (9, 0))
+
+    def test_wall_time_stored_as_exact_utc_instant_est(self):
+        # 2026-01-15 is EST (UTC-5) in America/New_York.
+        payload = [{"appointmentId": "appt-winter", "clientId": "cli-1",
+                    "staffId": "stf-1", "serviceId": "svc-1",
+                    "appointmentDate": "2026-01-15",
+                    "startTime": "09:00:00", "endTime": "09:45:00",
+                    "state": "BOOKED", "deleted": False}]
+        self.run_import(payload=payload)
+        appt = Appointment.objects.get(external_id="appt-winter")
+        self.assertEqual(appt.start, datetime(
+            2026, 1, 15, 14, 0, tzinfo=dt_timezone.utc))
+        self.assertEqual(appt.end, datetime(
+            2026, 1, 15, 14, 45, tzinfo=dt_timezone.utc))
+
+    def test_utc_salon_behaviour_unchanged(self):
+        self.salon.timezone = "UTC"
+        self.salon.save(update_fields=["timezone"])
+        self.run_import(payload=FIXTURE[:1])
+        appt = Appointment.objects.get(external_id="appt-1")
+        self.assertEqual(appt.start, datetime(
+            2026, 10, 3, 9, 0, tzinfo=dt_timezone.utc))
+        self.assertEqual(appt.end, datetime(
+            2026, 10, 3, 9, 45, tzinfo=dt_timezone.utc))
+
+    def test_timezone_option_sets_existing_salon_timezone(self):
+        self.salon.timezone = "UTC"
+        self.salon.save(update_fields=["timezone"])
+        self.run_import(payload=FIXTURE[:1], timezone="America/New_York")
+        self.salon.refresh_from_db()
+        self.assertEqual(self.salon.timezone, "America/New_York")
+        appt = Appointment.objects.get(external_id="appt-1")
+        self.assertEqual(appt.start, datetime(
+            2026, 10, 3, 13, 0, tzinfo=dt_timezone.utc))
+
+    def test_timezone_option_creates_new_salon_with_timezone(self):
+        out = io.StringIO()
+        call_command("import_appointments", _write(FIXTURE[:1]),
+                     salon="Synthetic Salon", timezone="America/New_York",
+                     stdout=out)
+        salon = Salon.objects.get(name="Synthetic Salon")
+        self.assertEqual(salon.timezone, "America/New_York")
+        # No clients/staff scoped to the new salon: nothing imported.
+        self.assertEqual(Appointment.objects.count(), 0)
+        self.assertIn('"created": 0', out.getvalue())
+
+    def test_timezone_option_invalid_raises_and_leaves_salon(self):
+        with self.assertRaises(CommandError):
+            self.run_import(payload=FIXTURE[:1], timezone="Not/AZone")
+        self.salon.refresh_from_db()
+        self.assertEqual(self.salon.timezone, "America/New_York")
+        self.assertEqual(Appointment.objects.count(), 0)
