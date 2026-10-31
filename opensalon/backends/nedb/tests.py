@@ -1844,3 +1844,167 @@ class NedbRelationMaterializationLiveTests(SimpleTestCase):
         sale.delete()
         # Scoped to this sale: other live classes share the database.
         self.assertEqual(Sale.objects.filter(pk=sale.pk).count(), 0)
+
+
+# -- N-M8d: filtered aggregates over joins (DYOR 9.1/9.9) -------------
+#
+# Census on nedbd-v2 12.15.16 (evidence file cited in the PR): plain
+# JOIN shapes pass NEDB's SQL evaluator -- INNER/LEFT, select_related
+# (incl. chains), filter-across forward/reverse/two-hop, unfiltered
+# annotate Sum/Count/Max across a reverse relation. The one shape
+# refused verbatim with "JOIN is not supported -- NQL is
+# single-collection" is an aggregate FILTER (WHERE ...) clause over
+# a join (all 19 live-suite JOIN errors; 17 are clients.inactive's
+# filtered Max over appointments). The guard is a capability
+# declaration: supports_aggregate_filter_clause = False makes
+# Django compile the filter as CASE WHEN inside the aggregate --
+# its own fallback expression tree, no SQL text rewritten here.
+
+from django.db.models import Max as _Max, Q as _Q
+
+
+def _filtered_max_sql():
+    """Compile the clients.inactive annotate shape offline."""
+    from clients.models import Client
+
+    wrapper = _wrapper()
+    qs = Client.objects.annotate(
+        _last_visit=_Max(
+            "appointments__start",
+            filter=_Q(appointments__start__lte=AWARE_DT)
+            & ~_Q(appointments__status="cancelled"),
+        )
+    )
+    sql, _params = qs.query.get_compiler(connection=wrapper).as_sql()
+    return sql
+
+
+class AggregateFilterClauseFeatureTests(SimpleTestCase):
+    def test_supports_aggregate_filter_clause_is_false(self):
+        wrapper = _wrapper()
+        self.assertIs(wrapper.features_class, DatabaseFeatures)
+        self.assertFalse(wrapper.features.supports_aggregate_filter_clause)
+
+    def test_filtered_aggregate_compiles_as_case_when_over_join(self):
+        sql = _filtered_max_sql()
+        self.assertIn("LEFT OUTER JOIN", sql)
+        self.assertIn("MAX(CASE WHEN", sql)
+        self.assertNotIn("FILTER (WHERE", sql)
+
+    def test_unfiltered_aggregate_keeps_plain_join_shape(self):
+        # The guard must not disturb shapes the evaluator already
+        # answers: an unfiltered annotate still compiles to a plain
+        # aggregate over the same LEFT JOIN, with no CASE rewrite.
+        from clients.models import Client
+
+        wrapper = _wrapper()
+        qs = Client.objects.annotate(_last_visit=_Max("appointments__start"))
+        sql, _params = qs.query.get_compiler(connection=wrapper).as_sql()
+        self.assertIn("LEFT OUTER JOIN", sql)
+        self.assertIn('MAX("bookings_appointment"."start")', sql)
+        self.assertNotIn("CASE WHEN", sql)
+
+
+@unittest.skipUnless(
+    os.environ.get("OPENSALON_NEDB_LIVE_TEST") == "1",
+    "live nedbd JOIN/filtered-aggregate test: set "
+    "OPENSALON_NEDB_LIVE_TEST=1 with the default connection on the "
+    "NEDB backend (nedbd running)",
+)
+class NedbFilteredAggregateJoinLiveTests(SimpleTestCase):
+    """N-M8d acceptance against a real nedbd (guarded, never offline).
+
+    Before the fix both shapes failed live with:
+    NotSupportedError: JOIN is not supported -- NQL is
+    single-collection; join in your client or model the relation
+    with LINK/TRAVERSE.
+    """
+
+    databases = {"default"}
+
+    def test_filtered_max_over_reverse_relation_on_live_nedb(self):
+        from django.db import connection
+
+        self.assertEqual(connection.display_name, "NEDB (PostgreSQL pgwire)")
+        import datetime as _dt
+
+        from django.db.models import Max, Q
+        from django.utils import timezone as dj_tz
+
+        from bookings.models import Appointment
+        from clients.models import Client
+        from saloncore.models import Salon, Service, ServiceCategory
+        from team.models import StaffMember
+
+        now = dj_tz.now()
+        salon = Salon.objects.create(name="Join Probe Salon", timezone="UTC")
+        category = ServiceCategory.objects.create(salon=salon, name="Hair")
+        service = Service.objects.create(
+            category=category, name="Cut", service_minutes=60
+        )
+        staff = StaffMember.objects.create(
+            salon=salon, display_name="Join Stylist"
+        )
+        visited = Client.objects.create(
+            salon=salon, first_name="Visited", last_name="Probe"
+        )
+        Appointment.objects.create(
+            client=visited, staff_member=staff, service=service,
+            start=now - _dt.timedelta(days=10),
+            end=now - _dt.timedelta(days=10) + _dt.timedelta(hours=1),
+            status=Appointment.Status.COMPLETED,
+        )
+        # A later CANCELLED appointment must not become the last visit.
+        Appointment.objects.create(
+            client=visited, staff_member=staff, service=service,
+            start=now - _dt.timedelta(days=1),
+            end=now - _dt.timedelta(days=1) + _dt.timedelta(hours=1),
+            status=Appointment.Status.CANCELLED,
+        )
+        row = Client.objects.filter(pk=visited.pk).annotate(
+            _last_visit=Max(
+                "appointments__start",
+                filter=Q(appointments__start__lte=now)
+                & ~Q(appointments__status=Appointment.Status.CANCELLED),
+            )
+        ).get()
+        self.assertEqual(row._last_visit.date(), (now - _dt.timedelta(days=10)).date())
+
+    def test_inactive_clients_report_on_live_nedb(self):
+        from django.db import connection
+
+        self.assertEqual(connection.display_name, "NEDB (PostgreSQL pgwire)")
+        import datetime as _dt
+
+        from django.utils import timezone as dj_tz
+
+        from bookings.models import Appointment
+        from clients.inactive import inactive_clients
+        from clients.models import Client
+        from saloncore.models import Salon, Service, ServiceCategory
+        from team.models import StaffMember
+
+        now = dj_tz.now()
+        salon = Salon.objects.create(name="Inactive Probe Salon", timezone="UTC")
+        category = ServiceCategory.objects.create(salon=salon, name="Hair")
+        service = Service.objects.create(
+            category=category, name="Cut", service_minutes=60
+        )
+        staff = StaffMember.objects.create(
+            salon=salon, display_name="Inactive Stylist"
+        )
+        never = Client.objects.create(
+            salon=salon, first_name="Never", last_name="Probe"
+        )
+        recent = Client.objects.create(
+            salon=salon, first_name="Recent", last_name="Probe"
+        )
+        Appointment.objects.create(
+            client=recent, staff_member=staff, service=service,
+            start=now - _dt.timedelta(days=10),
+            end=now - _dt.timedelta(days=10) + _dt.timedelta(hours=1),
+            status=Appointment.Status.COMPLETED,
+        )
+        rows = inactive_clients(salon=salon, now=now)
+        self.assertEqual([r.client_id for r in rows], [never.pk])
+        self.assertIsNone(rows[0].last_appointment)

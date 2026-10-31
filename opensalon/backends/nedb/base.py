@@ -68,6 +68,15 @@ this backend is the drop + recreate above, which does isolate.
   only, following implications 1/9; the write path stays numeric
   because decimal strings compare lexicographically on NEDB.
 
+* Filtered aggregates over joins (N-M8d, implications 1 and 9):
+  ``features.py`` declares ``supports_aggregate_filter_clause =
+  False``, so Django compiles ``AGG(...) FILTER (WHERE ...)`` as
+  ``AGG(CASE WHEN ... END)`` over the same join instead -- the
+  FILTER-clause statement is routed by NEDB off its SQL evaluator
+  onto the single-collection NQL path, which refuses the join,
+  while plain JOIN shapes pass the evaluator unguarded (census in
+  the evidence file cited in the PR).
+
 * Relation materialization (N-M8c, implication 3): a catalogued
   collection that has never been written does not exist as a
   relation for NEDB's write path (DELETE/UPDATE) or JOIN
