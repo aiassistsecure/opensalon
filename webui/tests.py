@@ -58,12 +58,16 @@ class DayBookTests(WebuiTestBase):
     def test_staff_column_and_roster_shift_render(self):
         response = self.client.get(reverse("webui:daybook"), {"date": "2026-11-02"})
         self.assertContains(response, "Maribel Gonzalez")
-        self.assertContains(response, "0% utilized")
+        self.assertContains(response, "Level 6")
+        self.assertContains(response, "0 visits")
         self.assertContains(response, "No appointments on the book")
 
-    def test_no_roster_day_marks_member_not_rostered(self):
+    def test_unrostered_unbooked_member_has_no_column(self):
+        # The working book: a stylist who is neither rostered nor
+        # booked on the day gets no column at all.
         response = self.client.get(reverse("webui:daybook"), {"date": "2026-11-03"})
-        self.assertContains(response, "Not rostered")
+        self.assertEqual(response.context["staff_columns"], [])
+        self.assertNotContains(response, "Maribel Gonzalez")
 
     def _appointment(self, start_hour=10, end_hour=11, status="confirmed"):
         return Appointment.objects.create(
@@ -99,11 +103,12 @@ class DayBookTests(WebuiTestBase):
     def test_overview_and_intel_bar_compute_from_records(self):
         self._appointment(start_hour=10, end_hour=12)  # 120 of 480 rostered min
         response = self.client.get(reverse("webui:daybook"), {"date": "2026-11-02"})
-        self.assertContains(response, "25% utilized")
+        self.assertContains(response, "25%")
         self.assertContains(response, "Projected Revenue")
         self.assertContains(response, "$85")
         self.assertContains(response, "Daybook Intelligence")
-        self.assertContains(response, "Open Time Slots")
+        self.assertContains(response, "Top Book Today")
+        self.assertContains(response, "Next Opening")
 
     def test_status_filter_narrows_the_book(self):
         self._appointment(status="confirmed")
@@ -112,6 +117,52 @@ class DayBookTests(WebuiTestBase):
         )
         # The rail still describes the day; the grid itself is empty.
         self.assertNotContains(response, "appt-block")
+
+    def test_visit_stack_merges_into_one_tile(self):
+        self._appointment(start_hour=10, end_hour=11)
+        self._appointment(start_hour=11, end_hour=12)
+        response = self.client.get(reverse("webui:daybook"), {"date": "2026-11-02"})
+        column = response.context["staff_columns"][0]
+        self.assertEqual(len(column["blocks"]), 1)
+        tile = column["blocks"][0]
+        self.assertEqual(len(tile["services"]), 2)
+        self.assertEqual(tile["price_label"], "$170")
+        self.assertEqual(tile["time_label"], "10 AM – 12 PM")
+        self.assertEqual(len(response.context["agenda"]), 1)
+        self.assertEqual(response.context["overview"]["visits"], 1)
+        self.assertEqual(response.context["overview"]["appointments"], 2)
+
+    def test_base_price_fallback_when_level_has_no_row(self):
+        base = StaffLevel.objects.create(name="Base", salon=self.salon)
+        other_service = Service.objects.create(
+            name="Gloss Treatment", category=self.category, service_minutes=30
+        )
+        ServicePrice.objects.create(
+            service=other_service, staff_level=base, amount=Decimal("45.00")
+        )
+        Appointment.objects.create(
+            client=self.person,
+            staff_member=self.member,
+            service=other_service,
+            start=timezone.make_aware(datetime.datetime(2026, 11, 2, 10, 0)),
+            end=timezone.make_aware(datetime.datetime(2026, 11, 2, 10, 30)),
+            status="confirmed",
+        )
+        response = self.client.get(reverse("webui:daybook"), {"date": "2026-11-02"})
+        tile = response.context["staff_columns"][0]["blocks"][0]
+        self.assertEqual(tile["price_label"], "$45")
+        self.assertEqual(response.context["overview"]["revenue"], Decimal("45.00"))
+        self.assertEqual(response.context["overview"]["unpriced"], 0)
+
+    def test_agenda_is_chronological_across_stylists(self):
+        self._appointment(start_hour=14, end_hour=15)
+        self._appointment(start_hour=9, end_hour=10)
+        response = self.client.get(reverse("webui:daybook"), {"date": "2026-11-02"})
+        agenda = response.context["agenda"]
+        self.assertEqual(len(agenda), 2)
+        self.assertTrue(agenda[0]["time_label"].startswith("9 AM"))
+        self.assertTrue(agenda[1]["time_label"].startswith("2 PM"))
+        self.assertContains(response, "acard")
 
     def test_snapshot_appointment_renders_under_recorded_name(self):
         # An appointment whose service is absent from the price book
@@ -146,9 +197,9 @@ class DayBookTests(WebuiTestBase):
 
 
 class PrecisionTests(WebuiTestBase):
-    def _appt(self, start, end):
+    def _appt(self, start, end, client=None):
         return Appointment.objects.create(
-            client=self.person,
+            client=client or self.person,
             staff_member=self.member,
             service=self.service,
             start=timezone.make_aware(start),
@@ -182,8 +233,16 @@ class PrecisionTests(WebuiTestBase):
         first = self._appt(
             datetime.datetime(2026, 11, 2, 10, 0), datetime.datetime(2026, 11, 2, 10, 45)
         )
+        # A second CLIENT double-booked into the same chair: two
+        # distinct visits overlap, so the lane machinery — not the
+        # visit merge — owns this case.
+        other = Client.objects.create(
+            salon=self.salon, first_name="Robin", last_name="Voss"
+        )
         second = self._appt(
-            datetime.datetime(2026, 11, 2, 10, 15), datetime.datetime(2026, 11, 2, 11, 0)
+            datetime.datetime(2026, 11, 2, 10, 15),
+            datetime.datetime(2026, 11, 2, 11, 0),
+            client=other,
         )
         short = self._appt(
             datetime.datetime(2026, 11, 2, 12, 0), datetime.datetime(2026, 11, 2, 12, 20)

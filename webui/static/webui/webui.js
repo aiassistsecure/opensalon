@@ -105,7 +105,7 @@
     }
   }
 
-  document.querySelectorAll(".appt-block").forEach(function (block) {
+  document.querySelectorAll(".appt-block, .acard").forEach(function (block) {
     block.addEventListener("mouseenter", function () {
       if (window.innerWidth > 760) renderRail(payloads[block.dataset.appt]);
     });
