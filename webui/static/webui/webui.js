@@ -1343,7 +1343,10 @@
   function renderBlock(entry) {
     var el = document.createElement("article");
     el.className = "appt-block cat-" + entry.cat + " status-" + entry.status +
-      (entry.is_new ? " is-new" : "");
+      (entry.is_new ? " is-new" : "") + (entry._born ? " b-born" : "");
+    /* The birth motion plays once: the flag is spent as the
+       block is built, so later repaints stand still. */
+    if (entry._born) entry._born = false;
     el.setAttribute("tabindex", "0");
     el.setAttribute("role", "button");
     el.dataset.appt = String(entry.id);
@@ -1672,12 +1675,24 @@
       }
     });
     if (!found) {
-      entries.push(Object.assign({}, doc));
+      var inserted = Object.assign({}, doc);
+      entries.push(inserted);
       entries.sort(function (a, b) {
         var byId = (typeof a.id === "number" && typeof b.id === "number")
           ? a.id - b.id : 0;
         return a.start_min - b.start_min || byId;
       });
+      /* The founder's order, kept literally: a booking born
+         in THIS tab paints before anything else moves — the
+         modal dispatches the create, this repaint runs inside
+         that same dispatch, and only then does the modal
+         close. The block is never not on the board. A doc
+         born elsewhere (an adoption, a foreign desk) joins
+         quietly; the next scheduled repaint shows it. */
+      if (doc.local && doc.day === currentDate) {
+        inserted._born = true;
+        repaintDay();
+      }
     }
   });
 
@@ -2468,6 +2483,11 @@
         },
       });
       document.dispatchEvent(createEv);
+      /* The dispatch is synchronous and the store's birth
+         repaints inside it — by this line the block already
+         stands on the board. Only now does the modal close:
+         paint first, close second, never a moment where the
+         booking exists nowhere. */
       if (createEv.detail.handled) { hide(); return; }
     }
     var tokenEl = modal.querySelector('input[name="csrfmiddlewaretoken"]');

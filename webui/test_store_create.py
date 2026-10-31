@@ -156,3 +156,26 @@ class StoreCreateSourceTests(TestCase):
             'document.addEventListener("os:rename"',
         ]:
             self.assertIn(pin, src)
+
+    def test_the_paint_precedes_the_close(self):
+        """The founder's order, pinned: a local birth repaints
+        inside the create dispatch — before the modal's hide —
+        and the newborn block carries its one-shot motion."""
+        shadow = (STATIC / "shadow.js").read_text()
+        self.assertIn("local: true", shadow)
+        src = (STATIC / "webui.js").read_text()
+        for pin in [
+            "if (doc.local && doc.day === currentDate)",
+            "inserted._born = true;",
+            "repaintDay();",
+            'entry._born ? " b-born" : ""',
+        ]:
+            self.assertIn(pin, src)
+        # The repaint sits in the record handler, which the
+        # synchronous dispatch reaches before hide() can run.
+        dispatch_at = src.index("document.dispatchEvent(createEv);")
+        hide_at = src.index("hide(); return;", dispatch_at)
+        self.assertLess(dispatch_at, hide_at)
+        css = (STATIC / "webui.css").read_text()
+        self.assertIn(".appt-block.b-born", css)
+        self.assertIn("@keyframes os-born", css)

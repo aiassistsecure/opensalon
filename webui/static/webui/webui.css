@@ -347,6 +347,15 @@ button { font-family: inherit; }
 }
 
 /* ---------- appointment blocks: luminous glass, coded by category ---------- */
+/* A block born in this tab lands with a settle: it scales in
+   under a brief gold ring — the board reacting to the birth
+   the eye just caused. One play only (the flag is spent as
+   the block is built); repaints stand still. */
+.appt-block.b-born { animation: os-born .5s cubic-bezier(.2, .9, .3, 1.15); }
+@keyframes os-born {
+  0% { transform: scale(.9); box-shadow: 0 0 0 3px rgba(217, 164, 65, .55); }
+  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(217, 164, 65, 0); }
+}
 .appt-block {
   --hue: #94a3c8;
   position: absolute; z-index: 3; overflow: hidden; cursor: pointer;
