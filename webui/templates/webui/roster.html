@@ -1,0 +1,80 @@
+{% extends "webui/base.html" %}
+{% block title %}Team &amp; Roster{% endblock %}
+{% block body_class %}page-light page-roster{% endblock %}
+{% block content %}
+<div class="roster-head">
+  <h1 class="day-title">Team &amp; Roster</h1>
+  <p class="day-sub">Week of {{ week_label }} · the roster is what the day book measures utilization and openings against</p>
+</div>
+
+{% if message %}<p class="roster-msg" role="status">{{ message }}</p>{% endif %}
+
+<section class="roster-card">
+  <div class="roster-scroll">
+    <table class="roster-table">
+      <thead>
+        <tr>
+          <th scope="col">Stylist</th>
+          <th scope="col">Mon</th><th scope="col">Tue</th><th scope="col">Wed</th>
+          <th scope="col">Thu</th><th scope="col">Fri</th><th scope="col">Sat</th>
+          <th scope="col">Sun</th><th scope="col">Week</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <th scope="row">
+            <span class="roster-who"><span class="avatar sm" aria-hidden="true">{{ row.initials }}</span>
+            <span><span class="roster-name">{{ row.member.display_name }}</span>
+            {% if row.level_name %}<span class="roster-level">{{ row.level_name }}</span>{% endif %}</span></span>
+          </th>
+          {% for cell in row.cells %}
+          <td>{% if cell %}<span class="roster-band">{{ cell }}</span>{% else %}<span class="roster-off">Off</span>{% endif %}</td>
+          {% endfor %}
+          <td class="roster-hours">{{ row.hours_label }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="9" class="roster-empty">No team yet — import staff first, then the roster appears here.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="roster-card">
+  <h2 class="roster-h">Patterns</h2>
+  {% for pattern in patterns %}
+  <div class="roster-pattern">
+    <span class="roster-p-who">{{ pattern.staff_member.display_name }}</span>
+    <span class="roster-p-band">{{ pattern.get_weekday_display }} · {{ pattern.start_time|time:"g:i A" }} – {{ pattern.end_time|time:"g:i A" }}</span>
+    <form method="post" class="roster-del">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="delete">
+      <input type="hidden" name="pattern" value="{{ pattern.pk }}">
+      <button type="submit" class="roster-del-btn" aria-label="Remove pattern">✕</button>
+    </form>
+  </div>
+  {% empty %}
+  <p class="roster-empty">No patterns yet. Add one below, or run <code>import_roster_derived</code> to derive a starting roster from the salon's own booking history.</p>
+  {% endfor %}
+
+  <form method="post" class="roster-add">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="add">
+    <label>Stylist
+      <select name="member" class="fsel" required>
+        {% for member in members %}<option value="{{ member.pk }}">{{ member.display_name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Day
+      <select name="weekday" class="fsel" required>
+        {% for value, label in weekday_choices %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>From <input type="time" name="start" class="fsel" required></label>
+    <label>To <input type="time" name="end" class="fsel" required></label>
+    <button type="submit" class="btn-dark">Add pattern</button>
+  </form>
+  <p class="roster-note">Bands derived from booking history are a starting point, not the truth — a light Tuesday reads as a short band. Correct any band here and the day book follows the roster.</p>
+</section>
+{% endblock %}

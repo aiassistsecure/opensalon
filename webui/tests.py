@@ -343,6 +343,38 @@ class PrecisionTests(WebuiTestBase):
         self.assertContains(response, "micro")
 
 
+class RosterPageTests(WebuiTestBase):
+    def test_roster_page_renders_the_week_matrix(self):
+        response = self.client.get(reverse("webui:team"))
+        self.assertContains(response, "Team &amp; Roster")
+        self.assertContains(response, "Maribel Gonzalez")
+        # The setUp Monday pattern (9 AM - 5 PM) shows in the matrix.
+        self.assertContains(response, "9 AM – 5 PM")
+        self.assertContains(response, "Patterns")
+
+    def test_roster_add_and_delete_pattern(self):
+        response = self.client.post(
+            reverse("webui:team"),
+            {
+                "action": "add",
+                "member": self.member.pk,
+                "weekday": 2,
+                "start": "10:00",
+                "end": "14:00",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        pattern = RosterPattern.objects.get(
+            staff_member=self.member, weekday=2
+        )
+        self.assertEqual(pattern.start_time, datetime.time(10, 0))
+        self.client.post(
+            reverse("webui:team"),
+            {"action": "delete", "pattern": pattern.pk},
+        )
+        self.assertFalse(RosterPattern.objects.filter(pk=pattern.pk).exists())
+
+
 class PriceBookTests(WebuiTestBase):
     def test_real_prices_render_grouped_by_category(self):
         response = self.client.get(reverse("webui:pricebook"))
