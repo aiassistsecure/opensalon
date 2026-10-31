@@ -34,9 +34,9 @@
  * on the shadow.
  *
  * Seam: CustomEvents on document (os:pack / os:adopt / os:op /
- * os:put in, os:record / os:vanish / os:drain / os:undo-move /
- * os:shadow-ready / os:recovered out), plus
- * window.OpenSalonShadow for state queries.
+ * os:put / os:create in, os:record / os:vanish / os:rename /
+ * os:drain / os:undo-move / os:shadow-ready / os:recovered
+ * out), plus window.OpenSalonShadow for state queries.
  *
  * The chain, as the founder states it: fetches answer from
  * this store first, then chain to the HTTP node — the node's
@@ -230,6 +230,13 @@ function adopt(days) {
     });
     const known = dayIndex[iso] || {};
     Object.keys(known).forEach(function (id) {
+      if (id.indexOf("tmp_") === 0) {
+        /* A store-born booking the node has not named yet is
+           not the node's to vanish — its create is still in
+           the queue, and its own ack will settle it. */
+        keep[id] = true;
+        return;
+      }
       if (!keep[id]) {
         try { db.delete("appointments", String(id)); } catch (err) {}
         delete known[id];
@@ -315,6 +322,44 @@ function applyLocal(op) {
   db.put("ops", opKey(), JSON.stringify(Object.assign({ at: Date.now() }, op)));
 }
 
+/* Temporary birth names and the real ids the node answers
+   with: a store-born doc lives under its ref until its create
+   drains, and every play chained onto it rides under the ref
+   too — the drain substitutes the real id once it is known,
+   and holds a batch that would outrun the birth. */
+const renames = {};
+
+/* A booking is born here, in the same frame as the gesture —
+   the last write that still waited on the node. The doc is
+   the desk's own facts (who, what, when) under a temporary
+   ref; the create play queues behind it and drains like any
+   other, and the node's answer renames the doc to its real
+   id and replaces it with the true pack entry. The click
+   path holds no HTTP: if the drain later fails, the node
+   refused the birth and the doc vanishes then. */
+function createLocal(detail) {
+  if (!ready || !detail || !detail.payload || !detail.doc) return;
+  const p = detail.payload;
+  const ref = "tmp_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+  const doc = Object.assign({}, detail.doc, {
+    id: ref, day: p.date, staff_id: p.staff_member_id,
+    status: "booked", visit: ref,
+  });
+  db.put("appointments", ref, JSON.stringify(doc));
+  indexDoc(p.date, ref);
+  emit("os:record", doc);
+  const op = {
+    kind: "create", ref: ref,
+    staff_member_id: p.staff_member_id, service_id: p.service_id,
+    date: p.date, time: p.time,
+  };
+  if (p.client_id != null) op.client_id = p.client_id;
+  if (p.new_client) op.new_client = p.new_client;
+  enqueue(op);
+  db.put("ops", opKey(), JSON.stringify(Object.assign({ at: Date.now() }, op)));
+  detail.handled = true;
+}
+
 function undo() {
   if (!ready) return;
   const op = undoStack.pop();
@@ -338,10 +383,31 @@ async function drain(keepalive) {
   const layout = document.querySelector(".book-layout");
   if (!layout || !layout.dataset.apply) return;
   const tokenEl = layout.querySelector('input[name="csrfmiddlewaretoken"]');
-  const batch = queuedIds.slice(0, 100);
-  const ops = batch.map(function (key) {
+  const batch = [];
+  const ops = [];
+  for (let qi = 0; qi < queuedIds.length && batch.length < 100; qi++) {
+    const key = queuedIds[qi];
     const rec = JSON.parse(db.get("outbox", key));
     const op = { kind: rec.kind, id: rec.id };
+    if (rec.kind === "create") {
+      /* The birth itself rides: ref, booking, client. */
+      delete op.id;
+      op.ref = rec.ref;
+      op.staff_member_id = rec.staff_member_id;
+      op.service_id = rec.service_id;
+      op.date = rec.date;
+      op.time = rec.time;
+      if (rec.client_id != null) op.client_id = rec.client_id;
+      if (rec.new_client) op.new_client = rec.new_client;
+    } else if (typeof rec.id === "string" && rec.id.indexOf("tmp_") === 0) {
+      /* A play on a booking the node has not named yet: with
+         the name known it rides under the real id; without
+         it, the batch stops here — the birth ahead of it in
+         this same queue will name it, and the next round
+         carries this play with the name filled in. */
+      if (renames[rec.id] == null) break;
+      op.id = renames[rec.id];
+    }
     if (rec.kind === "move") {
       op.staff_member_id = rec.staff_member_id;
       op.start_minutes = rec.start_minutes;
@@ -353,8 +419,10 @@ async function drain(keepalive) {
       op.note_id = rec.note_id;
       op.body = rec.body;
     }
-    return op;
-  });
+    batch.push(key);
+    ops.push(op);
+  }
+  if (!batch.length) { scheduleDrain(600); return; }
   draining = true;
   try {
     const resp = await fetch(layout.dataset.apply, {
@@ -375,6 +443,40 @@ async function drain(keepalive) {
       if (!r.ok) {
         rec.error = r.error || "rejected";
         failed.push({ id: rec.id, error: rec.error });
+      }
+      if (rec.kind === "create") {
+        if (r.ok && r.id) {
+          /* The node names the birth: the doc takes the real
+             id and the node's true entry, and plays chained
+             onto the ref resolve through the rename from
+             here on. */
+          renames[rec.ref] = r.id;
+          const wasLocal = !!db.get("appointments", String(rec.ref));
+          const entry = r.entry
+            ? Object.assign({ day: rec.date }, r.entry)
+            : null;
+          try { db.delete("appointments", String(rec.ref)); } catch (err) {}
+          if (dayIndex[rec.date]) delete dayIndex[rec.date][rec.ref];
+          if (entry) {
+            db.put("appointments", String(r.id), JSON.stringify(entry));
+            indexDoc(rec.date, r.id);
+            if (wasLocal) {
+              emit("os:rename", {
+                from: rec.ref, to: r.id, day: rec.date, entry: entry,
+              });
+            } else {
+              /* Recovered in a fresh tab: the doc was never
+                 local — the node's entry simply joins. */
+              emit("os:record", entry);
+            }
+          }
+        } else {
+          /* The birth was refused: the provisional doc was
+             never true — take it off the book. */
+          try { db.delete("appointments", String(rec.ref)); } catch (err) {}
+          if (dayIndex[rec.date]) delete dayIndex[rec.date][rec.ref];
+          emit("os:vanish", { day: rec.date, id: rec.ref });
+        }
       }
       db.put("outbox", key, JSON.stringify(rec));
       /* The server has spoken — acked or failed, this op's
@@ -409,6 +511,7 @@ document.addEventListener("os:adopt", function (event) {
   adopt(event.detail && event.detail.days);
 });
 document.addEventListener("os:op", function (event) { applyLocal(event.detail); });
+document.addEventListener("os:create", function (event) { createLocal(event.detail); });
 document.addEventListener("os:undo", function () { undo(); });
 
 /* A doc born elsewhere enters the store: a booking the desk
