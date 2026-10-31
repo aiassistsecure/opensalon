@@ -2664,3 +2664,182 @@ class NedbGroupByExpressionLiveTests(SimpleTestCase):
         by_full = search_sales(salon, client_name="ana lo")
         self.assertEqual([s.pk for s in by_full], [sale.pk])
         self.assertEqual(search_sales(salon, client_name="zzz"), [])
+
+
+# -- N-M14: DISTINCT guard + Trunc composite (DYOR 5, 9.1, 9.9) -------
+# Probe: nedb-distinct-probe-2026-10-31.md; census signature 6.
+# Plain-column DISTINCT compiles as GROUP BY; expression/sliced
+# shapes keep stock. Trunc compiles to the EXTRACT composite.
+
+import datetime as _dt14
+
+
+def _distinct_sql(qs):
+    wrapper = _wrapper()
+    sql, params = qs.query.get_compiler(connection=wrapper).as_sql()
+    return sql, params
+
+
+class DistinctGroupByCompilerTests(SimpleTestCase):
+    def test_plain_distinct_compiles_as_group_by_with_ordering(self):
+        from clients.models import Client
+
+        sql, _params = _distinct_sql(Client.objects.distinct())
+        self.assertNotIn("DISTINCT", sql)
+        self.assertIn("GROUP BY", sql)
+        self.assertIn('"clients_client"."id"', sql.split("GROUP BY", 1)[1])
+        # Meta ordering survives the grouped compile (explicit form).
+        self.assertIn(
+            'ORDER BY "clients_client"."last_name" ASC', sql
+        )
+
+    def test_values_distinct_groups_by_projection_and_ordering(self):
+        from clients.models import Client
+
+        sql, _params = _distinct_sql(
+            Client.objects.distinct().values_list("salon_id", flat=True)
+        )
+        self.assertNotIn("DISTINCT", sql)
+        self.assertIn("GROUP BY 1", sql)
+        self.assertIn('"clients_client"."last_name"', sql)
+
+    def test_expression_distinct_keeps_stock(self):
+        from django.db.models.functions import Upper
+
+        from clients.models import Client
+
+        sql, _params = _distinct_sql(
+            Client.objects.distinct()
+            .annotate(u=Upper("first_name"))
+            .values_list("u", flat=True)
+        )
+        self.assertIn("DISTINCT", sql)
+        self.assertNotIn("GROUP BY", sql)
+
+    def test_sliced_distinct_keeps_stock(self):
+        from clients.models import Client
+
+        sql, _params = _distinct_sql(Client.objects.distinct()[:5])
+        self.assertIn("DISTINCT", sql)
+        self.assertNotIn("GROUP BY", sql)
+
+    def test_query_state_restored_after_group_by_compile(self):
+        from clients.models import Client
+
+        qs = Client.objects.distinct()
+        _distinct_sql(qs)
+        self.assertTrue(qs.query.distinct)
+        self.assertIsNone(qs.query.group_by)
+        self.assertEqual(qs.query.order_by, ())
+
+
+class TruncCompositeTests(SimpleTestCase):
+    def test_date_trunc_sql_is_extract_composite(self):
+        wrapper = _wrapper()
+        sql, params = wrapper.ops.date_trunc_sql(
+            "year", '"clients_clientnote"."created_at"', (), "UTC"
+        )
+        self.assertNotIn("DATE_TRUNC", sql)
+        self.assertNotIn("AT TIME ZONE", sql)
+        self.assertIn("EXTRACT(YEAR FROM", sql)
+        self.assertEqual(params, ())
+
+    def test_datetime_trunc_sql_appends_zeroed_time(self):
+        wrapper = _wrapper()
+        sql, _params = wrapper.ops.datetime_trunc_sql(
+            "month", '"t"."created_at"', (), "UTC"
+        )
+        self.assertIn("'T00:00:00+00:00'", sql)
+        self.assertIn("EXTRACT(MONTH FROM", sql)
+
+    def test_trunc_fallbacks_keep_stock_shape(self):
+        wrapper = _wrapper()
+        # Non-UTC tzname: no silent UTC buckets.
+        sql, _params = wrapper.ops.date_trunc_sql(
+            "year", '"t"."created_at"', (), "America/New_York"
+        )
+        self.assertIn("DATE_TRUNC", sql)
+        # Unsupported kind (week needs date arithmetic).
+        sql, _params = wrapper.ops.date_trunc_sql(
+            "week", '"t"."created_at"', (), "UTC"
+        )
+        self.assertIn("DATE_TRUNC", sql)
+        # Parameterised LHS: composite would duplicate placeholders.
+        sql, params = wrapper.ops.date_trunc_sql(
+            "year", "some_expr(%s)", (7,), "UTC"
+        )
+        self.assertIn("DATE_TRUNC", sql)
+        self.assertEqual(params[0], "year")
+
+    def test_dates_shapes_compile_without_date_trunc(self):
+        from clients.models import ClientNote
+
+        for qs in (
+            ClientNote.objects.all().dates("created_at", "year"),
+            ClientNote.objects.all().datetimes("created_at", "year"),
+        ):
+            sql, _params = _distinct_sql(qs)
+            self.assertNotIn("DATE_TRUNC", sql)
+            self.assertNotIn("AT TIME ZONE", sql)
+            self.assertIn("DISTINCT", sql)  # stock distinct, composite
+            self.assertIn("EXTRACT(YEAR FROM", sql)
+
+
+@unittest.skipUnless(
+    os.environ.get("OPENSALON_NEDB_LIVE_TEST") == "1",
+    "live nedbd DISTINCT test: set OPENSALON_NEDB_LIVE_TEST=1 with "
+    "the default connection on the NEDB backend (nedbd running)",
+)
+class NedbDistinctLiveTests(SimpleTestCase):
+    """N-M14 acceptance against a real nedbd (guarded, never offline).
+
+    Before the fix the clients admin note changelist failed live
+    with: DISTINCT is not supported -- GROUP BY <col> gives the
+    distinct values with counts (census signature 6).
+    """
+
+    databases = {"default"}
+
+    def test_distinct_shapes_and_date_hierarchy_on_live_nedb(self):
+        from django.db import connection
+
+        self.assertEqual(connection.display_name, "NEDB (PostgreSQL pgwire)")
+        from clients.models import Client, ClientNote
+        from saloncore.models import Salon
+
+        salon = Salon.objects.create(name="Distinct Probe Salon", timezone="UTC")
+        amy = Client.objects.create(
+            salon=salon, first_name="Amy", last_name="Probe"
+        )
+        bob = Client.objects.create(
+            salon=salon, first_name="Bob", last_name="Probe"
+        )
+        for client, when in (
+            (amy, _dt14.datetime(2026, 1, 5, 10, tzinfo=_dt14.timezone.utc)),
+            (amy, _dt14.datetime(2026, 3, 5, 10, tzinfo=_dt14.timezone.utc)),
+            (bob, _dt14.datetime(2027, 1, 6, 10, tzinfo=_dt14.timezone.utc)),
+        ):
+            note = ClientNote.objects.create(
+                client=client, body="probe", author_name="Probe"
+            )
+            ClientNote.objects.filter(pk=note.pk).update(created_at=when)
+        # Plain-column DISTINCT (GROUP BY re-expression). Scoped
+        # by salon: the shared live test DB holds other live tests'
+        # rows (SimpleTestCase isolation is the HTTP flush between
+        # TestCases, not between these probes).
+        rows = list(Client.objects.filter(salon=salon).distinct())
+        self.assertEqual({r.pk for r in rows}, {amy.pk, bob.pk})
+        salon_ids = list(
+            ClientNote.objects.filter(client__salon=salon)
+            .distinct()
+            .values_list("client__salon__pk", flat=True)
+        )
+        self.assertEqual(set(salon_ids), {salon.pk})
+        # Date hierarchy shapes (Trunc composite under DISTINCT).
+        notes = ClientNote.objects.filter(client__salon=salon)
+        years = list(notes.dates("created_at", "year"))
+        self.assertEqual(
+            years, [_dt14.date(2026, 1, 1), _dt14.date(2027, 1, 1)]
+        )
+        dt_years = list(notes.datetimes("created_at", "year"))
+        self.assertEqual([d.year for d in dt_years], [2026, 2027])

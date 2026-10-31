@@ -35,6 +35,13 @@ PostgreSQL's ``(sql AT TIME ZONE %s)::date`` -- the timezone clause
 routes statements off NEDB's SQL evaluator and its casts are
 transparent; details in ``temporal.date_part_sql``.
 
+Trunc (N-M14, DYOR implication 1): ``date_trunc_sql`` /
+``datetime_trunc_sql`` return the same EXTRACT composite family
+instead of ``DATE_TRUNC(... AT TIME ZONE ...)`` -- DATE_TRUNC is
+refused by name and the tz clause is the route off the evaluator
+behind the DISTINCT refusal (census signature 6); details in
+``temporal.trunc_sql``.
+
 Decimal read path (N-M6e, DYOR implications 1 and 9): NEDB stores a
 Decimal parameter as a JSON number and pgwire returns it as a Python
 ``float`` (live-suite signature: ``Decimal + float`` TypeError), so
@@ -228,6 +235,48 @@ class DatabaseOperations(PostgresDatabaseOperations):
             # wrong rows from a mismatched parameter count.
             return super().datetime_cast_date_sql(sql, params, tzname)
         return temporal.date_part_sql(sql), params
+
+    # -- trunc: no DATE_TRUNC, no AT TIME ZONE (N-M14) ---------------
+    # date_trunc_sql / datetime_trunc_sql are Django's designated
+    # per-backend hooks for Trunc() (DYOR 9.1, same family as the
+    # N-M8e date cast above). Stock PostgreSQL emits
+    # "DATE_TRUNC(%s, sql AT TIME ZONE %s)": DATE_TRUNC is refused
+    # by name on nedbd-v2 12.15.16 and AT TIME ZONE routes the
+    # statement off the SQL evaluator, where DISTINCT is refused
+    # by name -- the stacked refusal behind the clients admin
+    # changelist failure (date_hierarchy -> dates()/datetimes();
+    # probe nedb-distinct-probe-2026-10-31.md, census signature 6).
+    # Here the hooks return temporal.trunc_sql's padded EXTRACT
+    # composite for the kinds it composes exactly. Guards mirror
+    # the date cast: a parameterised LHS or a non-UTC tzname keeps
+    # the stock shape (refused, as before) rather than duplicating
+    # placeholders or silently returning UTC buckets for a
+    # timezone conversion this backend does not perform; stored
+    # values are UTC ISO strings (temporal.py), so a UTC trunc is
+    # the stored-fields trunc.
+
+    def _trunc_sql(self, lookup_type, sql, params, tzname, *, with_time):
+        if params or tzname not in (None, "UTC"):
+            return None
+        return temporal.trunc_sql(lookup_type, sql, with_time=with_time)
+
+    def date_trunc_sql(self, lookup_type, sql, params, tzname=None):
+        composite = self._trunc_sql(
+            lookup_type, sql, params, tzname, with_time=False
+        )
+        if composite is None:
+            return super().date_trunc_sql(lookup_type, sql, params, tzname)
+        return composite, params
+
+    def datetime_trunc_sql(self, lookup_type, sql, params, tzname=None):
+        composite = self._trunc_sql(
+            lookup_type, sql, params, tzname, with_time=True
+        )
+        if composite is None:
+            return super().datetime_trunc_sql(
+                lookup_type, sql, params, tzname
+            )
+        return composite, params
 
     # -- temporal read path: stored strings back to objects ----------
 

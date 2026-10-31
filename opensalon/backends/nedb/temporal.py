@@ -117,6 +117,81 @@ def date_part_sql(sql):
     )
 
 
+def _extract(part, sql):
+    return f"EXTRACT({part} FROM {sql})"
+
+
+def _padded(part, sql):
+    expr = _extract(part, sql)
+    return f"CASE WHEN {expr} < 10 THEN '0' ELSE '' END || {expr}"
+
+
+def _date_trunc_core(lookup_type, sql):
+    """Unparenthesised YYYY-MM-DD core for a trunc kind, or None.
+
+    Kinds that cannot be composed from EXTRACT parts over the
+    stored ISO string (week, which needs cross-boundary date
+    arithmetic; second and finer, whose EXTRACT value carries the
+    stored fraction on NEDB) return None so the caller keeps the
+    stock shape.
+    """
+    year = _extract("YEAR", sql)
+    month = _extract("MONTH", sql)
+    if lookup_type == "year":
+        return f"{year} || '-01-01'"
+    if lookup_type == "quarter":
+        quarter_month = (
+            f"CASE WHEN {month} <= 3 THEN '01' "
+            f"WHEN {month} <= 6 THEN '04' "
+            f"WHEN {month} <= 9 THEN '07' ELSE '10' END"
+        )
+        return f"{year} || '-' || {quarter_month} || '-01'"
+    if lookup_type == "month":
+        return f"{year} || '-' || {_padded('MONTH', sql)} || '-01'"
+    if lookup_type == "day":
+        return (
+            f"{year} || '-' || {_padded('MONTH', sql)}"
+            f" || '-' || {_padded('DAY', sql)}"
+        )
+    return None
+
+
+def trunc_sql(lookup_type, sql, *, with_time):
+    """Trunc expression for ``sql`` that NEDB's evaluator answers.
+
+    N-M14 (DYOR implication 1; probe:
+    nedb-distinct-probe-2026-10-31.md). Stock PostgreSQL's trunc
+    hooks emit ``DATE_TRUNC(%s, sql AT TIME ZONE %s)``; on
+    nedbd-v2 12.15.16 ``DATE_TRUNC`` is refused by name and the
+    ``AT TIME ZONE`` clause routes the statement off the SQL
+    evaluator entirely (the route behind the DISTINCT refusal in
+    the clients admin changelist, whose date hierarchy is
+    Django's only Trunc caller here). EXTRACT parts composed
+    with zero-padding -- the :func:`date_part_sql` family
+    (N-M8e) -- are answered correctly over the stored UTC ISO
+    strings, in SELECT and under DISTINCT. ``with_time`` appends
+    the zeroed time fields so the DateTimeField read converter
+    parses the result back (UTC offset, the stored shape).
+    Unsupported kinds return None (caller keeps stock).
+    """
+    if lookup_type in ("hour", "minute"):
+        if not with_time:
+            return None
+        core = _date_trunc_core("day", sql)
+        if lookup_type == "hour":
+            return f"({core} || 'T' || {_padded('HOUR', sql)} || ':00:00+00:00')"
+        return (
+            f"({core} || 'T' || {_padded('HOUR', sql)}"
+            f" || ':' || {_padded('MINUTE', sql)} || ':00:00+00:00')"
+        )
+    core = _date_trunc_core(lookup_type, sql)
+    if core is None:
+        return None
+    if not with_time:
+        return f"({core})"
+    return f"({core} || 'T00:00:00+00:00')"
+
+
 def convert_datetime_value(value, connection):
     """Stored string -> datetime; real datetimes pass through."""
     if value is None or isinstance(value, datetime.datetime):
