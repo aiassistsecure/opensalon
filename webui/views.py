@@ -1754,29 +1754,78 @@ def _tile_entry(tile, tz, visit_of):
 
 
 def _pack_entry_for(salon, appt, tz):
-    """The pack entry for ONE appointment, lifted from the day
-    book's own context builder so it can never disagree with the
-    pack about a block, a price, or a visit."""
+    """The pack entry for ONE appointment, built from the row
+    itself — never from a whole day context.
+
+    The booking POST's reply rides on this entry. The first
+    version rebuilt the entire day through the context builder
+    to describe one block; on the pilot's NEDB that context is
+    seconds of queries, and the desk waited all of them inside
+    the POST — the ten-second appointment, again, wearing a
+    different coat. Every field here is one of the row's own
+    lookups: the shared price map for the amount, one existence
+    check for the first-visit flag, and the visit rule run
+    over the only appointments that can chain with this one
+    (same client, same stylist, same day). The store-law test
+    pins the result key-for-key against the pack's own entry
+    for the same appointment, so the two can never drift."""
     day = appt.start.astimezone(tz).date()
-    ctx = _day_book_context(
-        SimpleNamespace(GET={"date": day.isoformat()}), light=True
+    day_start = datetime.datetime.combine(day, datetime.time.min, tzinfo=tz)
+    prices, base_level_id = _price_lookup(salon)
+    amount = _amount_for(appt, prices, base_level_id)
+    client = appt.client
+    client_name = (
+        client.display_name
+        if hasattr(client, "display_name")
+        else f"{client.first_name} {client.last_name}".strip()
     )
-    tiles = []
-    for col in ctx["staff_columns"]:
-        for tile in col["blocks"]:
-            tile["_staff_id"] = col["member"].pk
-            tiles.append(tile)
-    tiles.sort(key=lambda t: (t["_start"], t["appointment_id"]))
-    client_ids = dict(
+    is_new = not Appointment.objects.filter(
+        client_id=appt.client_id, start__lt=day_start
+    ).exists()
+    siblings = list(
         Appointment.objects.filter(
-            pk__in=[t["appointment_id"] for t in tiles]
-        ).values_list("pk", "client_id")
+            client_id=appt.client_id,
+            staff_member_id=appt.staff_member_id,
+            start__gte=day_start,
+            start__lt=day_start + datetime.timedelta(days=1),
+        )
+        .exclude(status=Appointment.Status.CANCELLED)
+        .order_by("start", "pk")
     )
-    visit_of = _visit_keys(tiles, client_ids)
-    for tile in tiles:
-        if tile["appointment_id"] == appt.pk:
-            return _tile_entry(tile, tz, visit_of)
-    return None
+    mini_tiles = [
+        {
+            "appointment_id": a.pk,
+            "_staff_id": a.staff_member_id,
+            "_start": a.start,
+            "_end": a.end,
+        }
+        for a in siblings
+    ]
+    visit_of = _visit_keys(mini_tiles, {a.pk: a.client_id for a in siblings})
+    start = appt.start.astimezone(tz)
+    end = appt.end.astimezone(tz)
+    category_name = (
+        appt.service.category.name
+        if appt.service is not None and appt.service.category_id
+        else ""
+    )
+    return {
+        "id": appt.pk,
+        "staff_id": appt.staff_member_id,
+        "client": client_name,
+        "service": appt.service.name if appt.service else appt.service_name,
+        "cat": slugify(category_name) or "misc",
+        "is_new": is_new,
+        "start_min": start.hour * 60 + start.minute,
+        "end_min": end.hour * 60 + end.minute,
+        "status": appt.status,
+        "amount": str(amount) if amount is not None else None,
+        "price_label": _price_label(amount) if amount is not None else "",
+        "time_label": (
+            f"{_fmt_time(start.time())} – {_fmt_time(end.time())}"
+        ),
+        "visit": visit_of.get(appt.pk, appt.pk),
+    }
 
 
 def day_book_pack(request):

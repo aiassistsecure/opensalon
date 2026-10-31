@@ -1608,24 +1608,28 @@
   });
 
   /* A booking made from the modal while the day book is open
-     lands in place — through the store: the server's reply
-     carried the new appointment's pack entry, the embedded
-     store adopts it as a doc, and the model takes the block
-     from there. No pack fetch: the POST was the persistence,
-     and the book learns nothing about itself from HTTP that
-     it did not just write. The ribbon still refreshes in the
-     background on the drain's debounce. Only a tab whose
-     store never woke falls back to the pack sync. */
+     lands in place: the server's reply carried the new
+     appointment's pack entry, and the block paints from that
+     entry in the same breath as the reply — the POST was the
+     persistence, and no fetch of any kind stands between the
+     answer and the block. When the embedded store is live it
+     also adopts the entry as a doc, so every later play on
+     the block applies store-first like any other; when it is
+     not, the model still takes the block from the entry (the
+     pack sync converges the store's absence on its own
+     schedule). Only a reply with no entry at all — a server
+     too old to send one — falls back to the pack sync. */
   document.addEventListener("os:booked", function (event) {
     var d = event.detail || {};
     if (!layoutEl || d.date !== currentDate) return;
     d.handled = true;
-    var storeLive = window.OpenSalonShadow && window.OpenSalonShadow.ready;
-    if (storeLive && d.entry) {
+    var entries = d.entry ? modelDay() : null;
+    if (d.entry && entries) {
       var doc = Object.assign({ day: d.date }, d.entry);
-      document.dispatchEvent(new CustomEvent("os:put", { detail: doc }));
-      var entries = modelDay();
-      if (entries && !entries.some(function (e) { return e.id === doc.id; })) {
+      if (window.OpenSalonShadow && window.OpenSalonShadow.ready) {
+        document.dispatchEvent(new CustomEvent("os:put", { detail: doc }));
+      }
+      if (!entries.some(function (e) { return e.id === doc.id; })) {
         entries.push(doc);
         entries.sort(function (a, b) { return a.start_min - b.start_min; });
       }

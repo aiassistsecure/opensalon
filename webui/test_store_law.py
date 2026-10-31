@@ -4,8 +4,10 @@ The founder's two-stage design, daybook slice (2026-10-31): the
 embedded NEDB is the state machine; a booking's reply carries the
 new appointment's pack entry home so the store adopts it as a doc
 with no pack re-fetch. The entry must be the pack's own entry —
-built by the day book's context builder, it cannot disagree with
-the pack about a block, a price, or a visit.
+same block, same price, same visit — and it must be built from
+the appointment row itself: the first version rebuilt the whole
+day through the context builder inside the POST, and on the
+pilot's NEDB that was the ten-second appointment all over again.
 """
 import datetime
 import json
@@ -111,6 +113,70 @@ class StoreLawTests(TestCase):
         ]
         self.assertEqual(len(packed), 1)
         self.assertEqual(packed[0], data["entry"])
+
+    def test_entry_chains_its_visit_like_the_pack(self):
+        tz = timezone.get_default_timezone()
+        first = Appointment.objects.create(
+            client=self.person, staff_member=self.member,
+            service=self.service,
+            start=datetime.datetime(2026, 11, 2, 9, 0, tzinfo=tz),
+            end=datetime.datetime(2026, 11, 2, 10, 0, tzinfo=tz),
+            status=Appointment.Status.COMPLETED,
+        )
+        # Ten minutes after the first ends: inside VISIT_GAP, so
+        # the pack chains the two into one visit — the reply's
+        # entry must name the same visit, built from the row.
+        data = self.book(time="10:10")
+        self.assertEqual(data["entry"]["visit"], first.pk)
+        pack = self.client.get(
+            reverse("webui:daybook_pack"), {"date": "2026-11-02"}
+        ).json()
+        packed = [
+            e for e in pack["days"]["2026-11-02"]
+            if e["id"] == data["appointment_id"]
+        ]
+        self.assertEqual(packed[0], data["entry"])
+
+    def test_entry_build_never_rebuilds_the_day(self):
+        # A busy day on the book: a dozen other guests. Building
+        # one appointment's entry must stay a handful of queries
+        # about THAT appointment — if it ever routes through the
+        # day context again, the count explodes with the day.
+        tz = timezone.get_default_timezone()
+        for i in range(12):
+            guest = SalonClient.objects.create(
+                salon=self.salon, first_name=f"Guest{i}", last_name="Day",
+            )
+            Appointment.objects.create(
+                client=guest, staff_member=self.member,
+                service=self.service,
+                start=datetime.datetime(2026, 11, 2, 9, 0, tzinfo=tz)
+                + datetime.timedelta(days=1, minutes=30 * i),
+                end=datetime.datetime(2026, 11, 2, 9, 30, tzinfo=tz)
+                + datetime.timedelta(days=1, minutes=30 * i),
+                status=Appointment.Status.BOOKED,
+            )
+        appt = Appointment.objects.create(
+            client=self.person, staff_member=self.member,
+            service=self.service,
+            start=datetime.datetime(2026, 11, 3, 12, 0, tzinfo=tz),
+            end=datetime.datetime(2026, 11, 3, 13, 0, tzinfo=tz),
+            status=Appointment.Status.BOOKED,
+        )
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        from bookings.availability import _tz
+        from webui.views import _pack_entry_for
+
+        with CaptureQueriesContext(connection) as captured:
+            entry = _pack_entry_for(self.salon, appt, _tz(self.salon))
+        self.assertIsNotNone(entry)
+        self.assertLessEqual(
+            len(captured), 12,
+            f"entry build ran {len(captured)} queries — the day "
+            "context is back in the booking's path",
+        )
 
     def test_new_client_booking_entry_marks_the_guest_new(self):
         data = self.book(
