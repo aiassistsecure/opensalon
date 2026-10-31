@@ -243,6 +243,10 @@ async function restorePreserved() {
   });
   const entries = await idbAll("journal");
   entries.forEach(function (rec) {
+    if (rec.key === "chain:last") {
+      try { lastChain = JSON.parse(rec.chain); } catch (err) {}
+      return;
+    }
     if (!rec.op) return;
     db.put("ops", rec.key, rec.op);
     out.journal += 1;
@@ -457,6 +461,12 @@ function applyLocal(op) {
    and holds a batch that would outrun the birth. */
 const renames = {};
 
+/* The write-through's chain receipts: the last chain stamp
+   (engine seq + head hash) the node echoed back whole. Kept
+   in the preserved journal, so a fresh tab knows where the
+   chain last stood attested. */
+let lastChain = null;
+
 /* A booking is born here, in the same frame as the gesture —
    the last write that still waited on the node. The doc is
    the desk's own facts (who, what, when) under a temporary
@@ -575,6 +585,13 @@ async function drain(keepalive) {
     scheduleDrain(900);
     return;
   }
+  /* The batch carries the journal chain's stamp — the
+     engine's sequence and head hash as they stand with
+     these plays journaled — so the write-through to the
+     backend nedb-engine is chain-attested end to end: the
+     node echoes the stamp, and what returns different is
+     a broken word. */
+  const chainStamp = { seq: db.seq(), head: db.head() };
   draining = true;
   try {
     const resp = await fetch(layout.dataset.apply, {
@@ -583,7 +600,7 @@ async function drain(keepalive) {
         "Content-Type": "application/json",
         "X-CSRFToken": tokenEl ? tokenEl.value : "",
       },
-      body: JSON.stringify({ ops: ops }),
+      body: JSON.stringify({ ops: ops, chain: chainStamp }),
       keepalive: !!keepalive,
     });
     const data = await resp.json();
@@ -643,7 +660,24 @@ async function drain(keepalive) {
       const at = queuedIds.indexOf(key);
       if (at >= 0) queuedIds.splice(at, 1);
     });
-    emit("os:drain", { acked: batch.length - failed.length, failed: failed });
+    /* The node's receipt: the stamp echoed back whole is
+       the write-through attested; the last attested stamp
+       joins the preserved journal. An older node echoes
+       nothing — received, not attested, and the drain's
+       per-op word still rules. */
+    const chainOk = !!(data.chain_ok && data.chain &&
+      data.chain.seq === chainStamp.seq &&
+      data.chain.head === chainStamp.head);
+    if (chainOk) {
+      lastChain = chainStamp;
+      idbPutIn("journal", "chain:last", {
+        chain: JSON.stringify(chainStamp),
+      });
+    }
+    emit("os:drain", {
+      acked: batch.length - failed.length, failed: failed,
+      chain: { seq: chainStamp.seq, head: chainStamp.head, ok: chainOk },
+    });
     if (queuedIds.length) scheduleDrain(400);
   } catch (err) {
     /* The network is down or the server is away: the queue
@@ -689,6 +723,11 @@ window.OpenSalonShadow = {
   verify: function () { return ready ? db.verify() : false; },
   seq: function () { return ready ? db.seq() : 0; },
   pending: function () { return queuedIds.length; },
+  chain: function () {
+    return ready
+      ? { seq: db.seq(), head: db.head(), acked: lastChain }
+      : null;
+  },
   undoDepth: function () { return undoStack.length; },
 };
 

@@ -1093,6 +1093,31 @@ def _do_note(appt, op):
     return None
 
 
+def _chain_echo(data):
+    """The drain's chain stamp, echoed back: the client
+    store's journal chain — its engine's sequence and head
+    hash — as it stood when the batch was built. The node
+    attests receipt: ``chain_ok`` says the stamp arrived
+    whole and well-formed. Continuity across drains is the
+    client's chain to prove; this echo is its receipt, and
+    a stamp that returns different is a broken word, treated
+    like any other. A drain from an older client carries no
+    stamp and gets ``(None, False)`` — received, not
+    attested."""
+    chain = data.get("chain") if isinstance(data, dict) else None
+    if not isinstance(chain, dict):
+        return None, False
+    seq, head = chain.get("seq"), chain.get("head")
+    ok = (
+        isinstance(seq, int)
+        and not isinstance(seq, bool)
+        and seq >= 0
+        and isinstance(head, str)
+        and bool(head)
+    )
+    return ({"seq": seq, "head": head} if ok else None), ok
+
+
 @require_POST
 def day_book_apply(request):
     """The drain: a batch of ops from a client's embedded store.
@@ -1178,7 +1203,12 @@ def day_book_apply(request):
             result["error"] = f"bad op: {exc}"
         results.append(result)
     return JsonResponse(
-        {"ok": all(r["ok"] for r in results), "results": results}
+        {
+            "ok": all(r["ok"] for r in results),
+            "results": results,
+            "chain": _chain_echo(payload)[0],
+            "chain_ok": _chain_echo(payload)[1],
+        }
     )
 
 
@@ -2780,8 +2810,13 @@ def roster_apply(request):
     ops = data.get("ops")
     if not isinstance(ops, list):
         return JsonResponse({"ok": False, "error": "bad payload"}, status=400)
+    chain, chain_ok = _chain_echo(data)
     return JsonResponse(
-        {"results": [_rb_apply_one(salon, op) for op in ops]}
+        {
+            "results": [_rb_apply_one(salon, op) for op in ops],
+            "chain": chain,
+            "chain_ok": chain_ok,
+        }
     )
 
 
