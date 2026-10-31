@@ -112,13 +112,19 @@ def _day_bounds(salon, day):
     return day, start, start + timedelta(days=1)
 
 
-def blocks_for_day(salon, day):
+def blocks_for_day(salon, day, appointments=None):
     """Per-staff columns of appointment blocks for ``salon`` on ``day``.
 
     Args:
         salon: ``saloncore.Salon`` instance.
         day: a ``datetime.date`` (a datetime is reduced to its date
             in the salon timezone, as in ``available_slots``).
+        appointments: optionally, the day's already-fetched
+            appointment rows (same filter and joins this function
+            would run). Callers that already hold the rows pass
+            them in: on a scan-priced store every avoided pass
+            over the appointments table is real time returned to
+            the desk.
 
     Returns:
         list of ``StaffDayColumn`` for every active staff member of
@@ -129,15 +135,16 @@ def blocks_for_day(salon, day):
     """
     _, day_start, day_end = _day_bounds(salon, day)
     staff = list(StaffMember.objects.filter(salon=salon, active=True))
-    appointments = (
-        Appointment.objects.filter(
-            staff_member__in=staff,
-            start__lt=day_end, end__gt=day_start,
+    if appointments is None:
+        appointments = (
+            Appointment.objects.filter(
+                staff_member__in=staff,
+                start__lt=day_end, end__gt=day_start,
+            )
+            .exclude(status=Appointment.Status.CANCELLED)
+            .select_related("client", "staff_member", "service", "service__category")
+            .order_by("start")
         )
-        .exclude(status=Appointment.Status.CANCELLED)
-        .select_related("client", "staff_member", "service", "service__category")
-        .order_by("start")
-    )
     by_staff = {member.pk: [] for member in staff}
     for appt in appointments:
         by_staff[appt.staff_member_id].append(AppointmentBlock(
