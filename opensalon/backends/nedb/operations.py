@@ -9,6 +9,11 @@ from ``set_time_zone_sql()``, so that method is neutralized here. The
 wrapper in ``base.py`` additionally never calls it: both layers are
 kept so no future caller can reintroduce the statement by accident.
 
+Flush (N-M3h, DYOR implication 5): TRUNCATE is refused by design, so
+``sql_flush`` builds no statements at all and ``execute_sql_flush``
+replaces the flush with the creation layer's drop + recreate of the
+whole database over the nedbd HTTP API.
+
 Temporal adaptation (N-M3f, DYOR implications 1 and 9): the stock
 PostgreSQL ``adapt_*field_value`` hooks return datetime/date/time
 objects untouched, and psycopg then renders them as
@@ -72,6 +77,21 @@ class DatabaseOperations(PostgresDatabaseOperations):
 
     def savepoint_rollback_sql(self, sid):
         return None
+
+    # -- flush: never TRUNCATE (DYOR 9.5, N-M3h) ----------------------
+    # NEDB is append-only and refuses TRUNCATE by design, so there is
+    # no flush SQL on this backend: sql_flush returns no statements,
+    # and execute_sql_flush performs the semantic equivalent -- drop
+    # + recreate the current database over HTTP (creation.py).
+
+    def sql_flush(self, style, tables, *, reset_sequences=False, allow_cascade=False):
+        return []
+
+    def execute_sql_flush(self, sql_list):
+        # sql_list is intentionally ignored (it is always [] here);
+        # the flush is a database-level reset, not row deletion.
+        name = self.connection.settings_dict["NAME"]
+        self.connection.creation.reset_database(name)
 
     def set_time_zone_sql(self):
         # Neutralized: NEDB refuses set_config() on pgwire, and the
