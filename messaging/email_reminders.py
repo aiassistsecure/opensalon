@@ -31,6 +31,7 @@ from django.utils import timezone
 
 from bookings.models import Appointment
 
+from .models import ReminderSend
 from .reminders import ReminderResult, reminder_text
 
 REMINDABLE_STATUSES = (Appointment.Status.BOOKED, Appointment.Status.CONFIRMED)
@@ -125,10 +126,11 @@ def send_due_email_reminders(now=None, within=DEFAULT_WINDOW, appointments=None)
         sent_count = connection.send_messages(messages) or 0
     else:
         sent_count = 0
-    for index, _appointment in enumerate(pending):
+    for index, appointment in enumerate(pending):
         if index < sent_count:
             summary.results.append(ReminderResult("email", "sent"))
             summary.sent += 1
+            ReminderSend.record(appointment, channel="email")
         else:
             summary.results.append(
                 ReminderResult("email", "skipped", reason="send_failed")
