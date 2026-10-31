@@ -16,10 +16,17 @@ Mapping (one source of truth — this command is the only writer here):
 - Client / staff / service are resolved by the generic
   ``external_id`` fields (``Client`` scoped to the salon,
   ``StaffMember`` scoped to the salon, ``Service`` via its category's
-  salon). A record whose client, staff or service id does not resolve
-  is skipped and counted under ``unresolved_client`` /
-  ``unresolved_staff`` / ``unresolved_service`` — never imported with
-  a guessed or stand-in link.
+  salon). A record whose client or staff id does not resolve is
+  skipped and counted under ``unresolved_client`` /
+  ``unresolved_staff`` — never imported with a guessed link.
+- A record whose service id does not resolve is counted under
+  ``unresolved_service``. If the record carries a verbatim
+  ``serviceName`` and client+staff resolve, it is still imported
+  with ``service=None`` and that name snapshotted on
+  ``Appointment.service_name`` (also counted under
+  ``imported_with_service_snapshot``), so it renders in the day
+  book. If it carries no ``serviceName`` either, it is skipped.
+  Resolved records snapshot their service name the same way.
 - ``appointmentDate`` + ``startTime`` / ``endTime`` combine into the
   appointment's real start/end datetimes, interpreted in the salon's
   timezone and stored aware. If end is not after start it is taken
@@ -119,7 +126,8 @@ class Command(BaseCommand):
         records = _load_records(options["path"])
         stats = dict.fromkeys(
             ["created", "updated", "skipped", "unresolved_client",
-             "unresolved_staff", "unresolved_service"], 0)
+             "unresolved_staff", "unresolved_service",
+             "imported_with_service_snapshot"], 0)
         dates = []
         with transaction.atomic():
             salon, _ = Salon.objects.get_or_create(name=options["salon"])
@@ -159,14 +167,20 @@ class Command(BaseCommand):
                     stats["unresolved_staff"] += 1
                     continue
                 service = services.get(str(row.get("serviceId") or ""))
+                snapshot = str(row.get("serviceName") or "").strip()[:200]
                 if service is None:
                     stats["unresolved_service"] += 1
-                    continue
+                    if not snapshot:
+                        continue
+                    stats["imported_with_service_snapshot"] += 1
+                else:
+                    snapshot = snapshot or service.name[:200]
                 _, created = Appointment.objects.update_or_create(
                     external_id=external_id,
                     defaults={
                         "client": client, "staff_member": member,
-                        "service": service, "start": start, "end": end,
+                        "service": service, "service_name": snapshot,
+                        "start": start, "end": end,
                         "status": STATE_MAP.get(
                             str(row.get("state") or "").upper(),
                             Appointment.Status.BOOKED),
@@ -180,7 +194,9 @@ class Command(BaseCommand):
             "Imported appointments for {salon}: {created} created, "
             "{updated} updated, {skipped} skipped, {unresolved_client} "
             "unresolved client, {unresolved_staff} unresolved staff, "
-            "{unresolved_service} unresolved service.".format(
+            "{unresolved_service} unresolved service "
+            "({imported_with_service_snapshot} of those imported with "
+            "a service-name snapshot).".format(
                 salon=options["salon"], **stats))
         # Machine-readable line for validation runs (counts only).
         self.stdout.write("IMPORT_SUMMARY " + json.dumps(
