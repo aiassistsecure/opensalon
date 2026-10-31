@@ -1804,6 +1804,8 @@
     });
   }
   var pickedClient = null;
+  var pickedService = null;
+  var servicesCache = [];
   var optionsLoaded = false;
   var searchTimer = null;
 
@@ -1848,10 +1850,8 @@
         $("bkMember").innerHTML = data.members.map(function (m) {
           return '<option value="' + m.id + '">' + esc(m.name) + "</option>";
         }).join("");
-        $("bkService").innerHTML = data.services.map(function (s) {
-          return '<option value="' + s.id + '">' + esc(s.name) +
-            (s.minutes ? " · " + s.minutes + "m" : "") + "</option>";
-        }).join("");
+        servicesCache = data.services || [];
+        if ($("bkServiceSearch").value.trim()) renderServiceResults();
         if (data.today && !$("bkDate").value) $("bkDate").value = data.today;
         applyPrefill();
       })
@@ -1869,6 +1869,9 @@
       $("bkResults").classList.add("hidden");
       $("bkNew").classList.add("hidden");
       $("bkUnpick").addEventListener("click", function () { setPicked(null); });
+      /* The flow folds forward: client chosen, the service
+         search is the next step — put the cursor there. */
+      if (!pickedService) $("bkServiceSearch").focus();
     } else {
       box.classList.add("hidden");
       box.innerHTML = "";
@@ -1910,6 +1913,67 @@
     $("bkNew").classList.toggle("hidden");
   });
 
+  /* Services are searched, not scrolled: the menu is already on
+     the box (the options payload), so matching is local and
+     instant — every token must land in the name or the category. */
+  function setPickedService(service) {
+    pickedService = service;
+    var box = $("bkServicePicked");
+    if (service) {
+      box.innerHTML = "<span>" + esc(service.name) +
+        (service.minutes ? " · " + service.minutes + "m" : "") +
+        '</span><button type="button" id="bkServiceUnpick" aria-label="Clear service">✕</button>';
+      box.classList.remove("hidden");
+      $("bkServiceResults").classList.add("hidden");
+      $("bkServiceUnpick").addEventListener("click", function () {
+        setPickedService(null);
+        $("bkServiceSearch").focus();
+      });
+    } else {
+      box.classList.add("hidden");
+      box.innerHTML = "";
+    }
+  }
+
+  function renderServiceResults() {
+    var box = $("bkServiceResults");
+    var q = $("bkServiceSearch").value.trim().toLowerCase();
+    if (!q) { box.classList.add("hidden"); return; }
+    var tokens = q.split(/\s+/);
+    var hits = servicesCache.filter(function (s) {
+      var hay = (s.name + " " + (s.category || "")).toLowerCase();
+      return tokens.every(function (t) { return hay.indexOf(t) !== -1; });
+    }).slice(0, 10);
+    if (!hits.length) {
+      box.innerHTML = '<p class="book-noresults">No service matches that — the full menu lives in the price book.</p>';
+    } else {
+      box.innerHTML = hits.map(function (s) {
+        return '<button type="button" class="book-result" data-id="' + s.id + '">' +
+          esc(s.name) + "<span>" + esc(s.category || "") +
+          (s.minutes ? " · " + s.minutes + "m" : "") + "</span></button>";
+      }).join("");
+    }
+    box.classList.remove("hidden");
+  }
+
+  $("bkServiceSearch").addEventListener("input", function () {
+    setPickedService(null);
+    renderServiceResults();
+  });
+  $("bkServiceSearch").addEventListener("focus", renderServiceResults);
+  $("bkServiceResults").addEventListener("click", function (event) {
+    var btn = event.target.closest(".book-result");
+    if (!btn) return;
+    var id = parseInt(btn.dataset.id, 10);
+    for (var i = 0; i < servicesCache.length; i++) {
+      if (servicesCache[i].id === id) {
+        setPickedService(servicesCache[i]);
+        $("bkServiceSearch").value = servicesCache[i].name;
+        break;
+      }
+    }
+  });
+
   function fail(message) {
     var err = $("bkErr");
     err.textContent = message;
@@ -1920,7 +1984,7 @@
     $("bkErr").classList.add("hidden");
     var payload = {
       staff_member_id: parseInt($("bkMember").value, 10),
-      service_id: parseInt($("bkService").value, 10),
+      service_id: pickedService ? pickedService.id : NaN,
       date: $("bkDate").value,
       time: $("bkTime").value,
     };
@@ -1940,6 +2004,7 @@
       fail("Pick a client from the search, or add a new client.");
       return;
     }
+    if (!pickedService) { fail("Pick a service — search and tap one."); return; }
     if (!payload.date || !payload.time) { fail("Pick a date and a start time."); return; }
     var tokenEl = modal.querySelector('input[name="csrfmiddlewaretoken"]');
     fetch("/daybook/book/", {
