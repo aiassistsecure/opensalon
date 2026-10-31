@@ -53,7 +53,47 @@ class ImportStaffTests(TestCase):
             StaffMember.objects.get(external_id="stf-3").display_name,
             "Fallback Name")
 
-    def test_levels_and_flags_left_untouched_on_update(self):
+    def test_category_links_to_existing_price_book_level(self):
+        salon = Salon.objects.create(name="My Salon")
+        level = StaffLevel.objects.create(salon=salon, name="Artist Level 1")
+        out = self.run_import()
+        self.assertIn('"levels_linked": 2', out)
+        member = StaffMember.objects.get(external_id="stf-1")
+        self.assertEqual(member.staff_level, level)
+        self.assertEqual(
+            StaffLevel.objects.filter(salon=salon, name="Artist Level 1").count(), 1)
+        self.assertEqual(
+            StaffMember.objects.get(external_id="stf-2").staff_level.name,
+            "Artist Level 2")
+        self.assertIsNone(
+            StaffMember.objects.get(external_id="stf-3").staff_level)
+
+    def test_reimport_updates_level_and_online_bookable(self):
+        self.run_import()
+        member = StaffMember.objects.get(external_id="stf-1")
+        self.assertEqual(member.staff_level.name, "Artist Level 1")
+        changed = json.loads(json.dumps(FIXTURE))
+        changed[0]["staffCategoryName"] = "Artist Level 2"
+        changed[0]["hideFromOnlineBookings"] = True
+        self.run_import(payload=changed)
+        member.refresh_from_db()
+        self.assertEqual(member.staff_level.name, "Artist Level 2")
+        self.assertFalse(member.online_bookable)
+
+    def test_hide_from_online_bookings_maps_inverted(self):
+        payload = [
+            {"staffId": "stf-h", "firstName": "Hidden",
+             "hideFromOnlineBookings": True},
+            {"staffId": "stf-v", "firstName": "Visible",
+             "hideFromOnlineBookings": False},
+        ]
+        self.run_import(payload=payload)
+        self.assertFalse(
+            StaffMember.objects.get(external_id="stf-h").online_bookable)
+        self.assertTrue(
+            StaffMember.objects.get(external_id="stf-v").online_bookable)
+
+    def test_missing_category_and_hide_flag_leave_fields_untouched(self):
         self.run_import()
         salon = Salon.objects.get(name="My Salon")
         level = StaffLevel.objects.create(salon=salon, name="Level 9")
@@ -63,6 +103,7 @@ class ImportStaffTests(TestCase):
         member.save()
         changed = json.loads(json.dumps(FIXTURE))
         changed[0]["firstName"] = "Renamed"
+        del changed[0]["staffCategoryName"]  # missing: must NOT clear level
         self.run_import(payload=changed)
         member.refresh_from_db()
         self.assertEqual(member.display_name, "Renamed Stylist")

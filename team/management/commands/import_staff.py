@@ -19,12 +19,19 @@ Mapping (one source of truth — this command is the only writer here):
   unresolvable. Records without a stable id, or without any name,
   are skipped and counted — never imported with a guessed key or a
   stand-in name.
-- Levels and roles are left untouched: ``staff_level``,
-  ``online_bookable`` and ``active`` are not in the update defaults,
-  so an import never clears or invents them. On creation they take
-  the model's own defaults; the source's category name is not mapped
-  to a StaffLevel here because a category label is not proof of a
-  level assignment in OpenSalon's price book.
+- Staff level <- ``staffCategoryName``: the level link the price
+  book resolves through. The name is matched (``get_or_create``,
+  scoped to the salon) against ``StaffLevel`` — the same names the
+  price-book import creates from staff categories — and set on
+  ``StaffMember.staff_level`` on both create and update, so a
+  fresh import prices correctly instead of leaving every member
+  unlevelled/unpriced. A row with no category name leaves
+  ``staff_level`` untouched: a missing category never clears an
+  existing level.
+- Online bookable <- ``hideFromOnlineBookings`` when that key is
+  present: ``online_bookable = not hideFromOnlineBookings``, on
+  both create and update. A row without the key leaves the flag
+  untouched. ``active`` is never in the update defaults.
 
 Idempotent: rows are written with ``update_or_create`` keyed by
 (salon, external_id), so re-running updates in place and never
@@ -37,7 +44,7 @@ import json
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
-from saloncore.models import Salon
+from saloncore.models import Salon, StaffLevel
 from team.models import StaffMember
 
 
@@ -79,7 +86,8 @@ class Command(BaseCommand):
         if not isinstance(data, list):
             raise CommandError("Staff file must be a JSON list of staff.")
 
-        stats = dict.fromkeys(["created", "updated", "skipped"], 0)
+        stats = dict.fromkeys(
+            ["created", "updated", "skipped", "levels_linked"], 0)
         with transaction.atomic():
             salon, _ = Salon.objects.get_or_create(name=options["salon"])
             for row in data:
@@ -91,9 +99,19 @@ class Command(BaseCommand):
                 if not external_id or not display_name:
                     stats["skipped"] += 1
                     continue
+                defaults = {"display_name": display_name}
+                category = _text(row, "staffCategoryName", 120)
+                if category:
+                    level, _ = StaffLevel.objects.get_or_create(
+                        salon=salon, name=category)
+                    defaults["staff_level"] = level
+                    stats["levels_linked"] += 1
+                if row.get("hideFromOnlineBookings") is not None:
+                    defaults["online_bookable"] = not bool(
+                        row["hideFromOnlineBookings"])
                 _, created = StaffMember.objects.update_or_create(
                     salon=salon, external_id=external_id,
-                    defaults={"display_name": display_name})
+                    defaults=defaults)
                 stats["created" if created else "updated"] += 1
 
         self.stdout.write(
