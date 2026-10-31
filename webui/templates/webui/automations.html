@@ -1,0 +1,80 @@
+{% extends "webui/base.html" %}
+{% block title %}Automations — reminders{% endblock %}
+{% block body_class %}page-automations page-light{% endblock %}
+{% block content %}
+<div class="day-head">
+  <div class="day-title-wrap">
+    <div class="day-title">Automations</div>
+    <div class="day-sub">Appointment reminders — the messaging backend, live on this page</div>
+  </div>
+</div>
+{% if salon %}
+{% if sent_notice %}
+<p class="auto-notice">Reminder run finished — {{ sent_notice.sent }} sent, {{ sent_notice.skipped }} skipped. Skips are the eligibility law doing its job, not failures.</p>
+{% endif %}
+<div class="pos-grid">
+  <section class="pos-card">
+    <h2 class="pos-h">How reminders work</h2>
+    <div class="pos-tender"><span>Window</span><b>Next 48 hours</b></div>
+    <div class="pos-tender"><span>Appointments</span><b>Booked &amp; confirmed</b></div>
+    <div class="pos-tender"><span>Email needs</span><b>Address + email opt-in</b></div>
+    <div class="pos-tender"><span>SMS needs</span><b>Phone + SMS opt-in</b></div>
+    <p class="ins-note">The two channels judge independently — a guest can be reachable on one and not the other, and the reason always shows. Only a send that actually goes out is written to the log; a skip records nothing.</p>
+  </section>
+
+  <section class="pos-card">
+    <h2 class="pos-h">Channels on this box</h2>
+    <div class="pos-tender"><span>Email from</span><b>{{ email_from }}</b></div>
+    <div class="pos-tender"><span>Email backend</span><b>{{ email_backend }}</b></div>
+    <div class="pos-tender"><span>Mail host</span><b>{% if email_host_set %}Configured{% else %}Not set — email can't leave yet{% endif %}</b></div>
+    <div class="pos-tender"><span>SMS adapter</span><b>{{ sms_adapter }}</b></div>
+    {% if sms_console %}
+    <p class="ins-note">The console adapter logs and sends nothing — SMS reminders are rehearsed, not delivered, until a real adapter is configured in the deployment settings. No vendor is named in core; the adapter is the seam.</p>
+    {% endif %}
+  </section>
+</div>
+
+<section class="pos-card pos-sales">
+  <h2 class="pos-h">Due in the next 48 hours — {{ due_count }} appointment{{ due_count|pluralize }}</h2>
+  <p class="ins-note">{{ email_ready }} reachable by email · {{ sms_ready }} reachable by SMS</p>
+  <table class="rep-table">
+    <thead><tr><th>When</th><th>Guest</th><th>Service</th><th>Stylist</th><th>Email</th><th>SMS</th></tr></thead>
+    <tbody>
+    {% for d in due %}
+      <tr>
+        <td>{{ d.appointment.start|date:"D, M j · g:i A" }}</td>
+        <td>{{ d.appointment.client }}</td>
+        <td>{{ d.appointment.service }}</td>
+        <td>{{ d.appointment.staff_member }}</td>
+        <td>{% if d.email.eligible %}<span class="auto-chip ok">Eligible</span>{% else %}<span class="auto-chip no">{{ d.email.reason }}</span>{% endif %}</td>
+        <td>{% if d.sms.eligible %}<span class="auto-chip ok">Eligible</span>{% else %}<span class="auto-chip no">{{ d.sms.reason }}</span>{% endif %}</td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="6" class="pos-empty">Nothing due in the window — the book is quiet for the next two days.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <form method="post" action="{% url 'webui:automations_send' %}" class="auto-send">
+    {% csrf_token %}
+    <button type="submit" class="btn-primary">Send due reminders now</button>
+    <span class="ins-note">Sends exactly the list above — eligible channels only.</span>
+  </form>
+</section>
+
+<section class="pos-card pos-sales">
+  <h2 class="pos-h">Recently sent</h2>
+  <table class="rep-table">
+    <thead><tr><th>Sent</th><th>Channel</th><th>Guest</th><th>Appointment</th></tr></thead>
+    <tbody>
+    {% for s in recent_sends %}
+      <tr><td>{{ s.sent_at|date:"M j, g:i A" }}</td><td>{{ s.get_channel_display }}</td><td>{{ s.client }}</td><td>{{ s.appointment }}</td></tr>
+    {% empty %}
+      <tr><td colspan="4" class="pos-empty">No reminders sent yet. When one goes out, it lands here — this log is the audit trail.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% else %}
+<p class="rb-law">No salon yet — import or create the salon first.</p>
+{% endif %}
+{% endblock %}

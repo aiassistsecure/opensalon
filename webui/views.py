@@ -2482,6 +2482,112 @@ def placeholder(request, nav_key, title, lane_note):
     )
 
 
+def _due_window():
+    """The automations horizon: now through the next 48 hours."""
+    now = timezone.now()
+    return now, now + datetime.timedelta(hours=48)
+
+
+def _salon_due(salon, start, end):
+    """This salon's due listing — the messaging lane's own
+    eligibility law, filtered to the salon the desk is looking
+    at (appointments reach their salon through their stylist)."""
+    from messaging.due import due_reminders
+
+    return [
+        due
+        for due in due_reminders(start, end)
+        if due.appointment.staff_member.salon_id == salon.pk
+    ]
+
+
+def automations_page(request):
+    """Automations — appointment reminders, wired to the real
+    messaging backend.
+
+    The policy is the messaging lane's law, shown as it is:
+    reminders consider booked/confirmed appointments in the
+    next 48 hours; email needs an address and the client's
+    email opt-in, SMS needs a phone and the SMS opt-in, and the
+    two channels judge independently. Email leaves through the
+    salon's own mail settings; SMS goes through whichever
+    adapter the deployment configured (the default console
+    adapter logs and sends nothing — the page says so when
+    that's what's live). Nothing here is a second rulebook:
+    the due list is `due_reminders` itself, the send button is
+    `send_due_reminders_between` itself, and the history is
+    the `ReminderSend` log — rows exist only for sends that
+    actually dispatched.
+    """
+    from django.conf import settings as dj_settings
+
+    from messaging.adapters import get_sms_adapter
+    from messaging.models import ReminderSend
+
+    salon = Salon.objects.order_by("id").first()
+    ctx = {"salon": salon, "nav_key": "automations"}
+    if salon is not None:
+        start, end = _due_window()
+        due = _salon_due(salon, start, end)
+        adapter = get_sms_adapter()
+        email_backend = dj_settings.EMAIL_BACKEND.rsplit(".", 1)[-1]
+        ctx.update(
+            {
+                "due": due,
+                "due_count": len(due),
+                "email_ready": sum(1 for d in due if d.email.eligible),
+                "sms_ready": sum(1 for d in due if d.sms.eligible),
+                "window_start": start,
+                "window_end": end,
+                "email_backend": email_backend,
+                "email_from": dj_settings.DEFAULT_FROM_EMAIL,
+                "email_host_set": bool(getattr(dj_settings, "EMAIL_HOST", "")),
+                "sms_adapter": type(adapter).__name__,
+                "sms_console": type(adapter).__name__ == "ConsoleSmsAdapter",
+                "recent_sends": list(
+                    ReminderSend.objects.filter(
+                        appointment__staff_member__salon=salon
+                    )
+                    .select_related("client", "appointment")
+                    .order_by("-sent_at", "-id")[:20]
+                ),
+            }
+        )
+        try:
+            ctx["sent_notice"] = {
+                "sent": int(request.GET.get("sent", "")),
+                "skipped": int(request.GET.get("skipped", "")),
+            }
+        except ValueError:
+            ctx["sent_notice"] = None
+    return render(request, "webui/automations.html", ctx)
+
+
+@require_POST
+def automations_send(request):
+    """Send the due reminders now — the button is the backend.
+
+    The run is scoped to exactly the listing the page shows
+    (the precomputed salon due list is handed to
+    `send_due_reminders_between`), then the page reloads with
+    the dispatch's own counts: sent and skipped, nothing
+    dressed up.
+    """
+    from messaging.send_due import send_due_reminders_between
+
+    salon = Salon.objects.order_by("id").first()
+    if salon is None:
+        return redirect("webui:automations")
+    start, end = _due_window()
+    summary = send_due_reminders_between(
+        start, end, due=_salon_due(salon, start, end)
+    )
+    return redirect(
+        f"{reverse('webui:automations')}"
+        f"?sent={summary.dispatch.sent}&skipped={summary.dispatch.skipped}"
+    )
+
+
 def _rb_place(member, day, weekly, start, end):
     """One place play under the switch law: ON writes the
     perpetual pattern, OFF rules just this date. A weekly

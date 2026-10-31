@@ -50,15 +50,11 @@ urlpatterns = [
         name="insights_export",
     ),
     path("pos/", views.pos, name="pos"),
+    path("automations/", views.automations_page, name="automations"),
     path(
-        "automations/",
-        views.placeholder,
-        {
-            "nav_key": "automations",
-            "title": "Automations",
-            "lane_note": "Reminders and campaigns arrive with the messaging lane.",
-        },
-        name="automations",
+        "automations/send/",
+        views.automations_send,
+        name="automations_send",
     ),
     path(
         "settings/",
