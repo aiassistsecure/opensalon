@@ -1,5 +1,79 @@
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import IntegrityError, models
+
+
+class StrictConstraints(models.Model):
+    """App-layer enforcement of the model's declared ``Meta.constraints``.
+
+    NEDB is schemaless: its migrations create no database-level unique
+    or check constraints, so a declared constraint exists only in the
+    models — and the models are the declared catalog, with no second
+    copy in the database adapter (NEDB strictness probe, 2026-10-31,
+    §5; NEDB DYOR §9.3: "NEDB stays schemaless; the strictness lives
+    here"; §9.4 on atomicity). Django already evaluates that catalog
+    in Python via ``validate_constraints()`` (probe §3), but the ORM
+    write path never calls it — ``save()`` bypasses ``full_clean()``.
+    This mixin closes that gap on the write path, following the
+    in-repo model-layer precedent of ``PriceChange.save()``.
+
+    ``save()`` behaviour (probe §5):
+    - If the model declares no ``Meta.constraints``, save normally.
+    - Otherwise call ``self.validate_constraints()`` before writing,
+      skipping any constraint that cannot be judged from this save:
+      a constraint whose fields are not all in ``update_fields``
+      (when ``update_fields`` is given) or whose fields include a
+      deferred (not-yet-loaded) field is skipped, via the ``exclude``
+      argument Django's constraint validation already honours.
+    - A ``ValidationError`` from constraint validation is converted
+      to ``IntegrityError`` (probe §6): that is the error callers and
+      tests already expect from a constraint violation — it is what
+      a database-level constraint raises on enforcing backends, so
+      the error surface is identical on every backend.
+
+    ``bulk_create()``/queryset ``update()`` bypass ``save()``; guarding
+    those paths is a separate slice, not this mixin.
+    """
+
+    class Meta:
+        abstract = True
+
+    def save(self, *args, **kwargs):
+        if any(constraints for _cls, constraints in self.get_constraints()):
+            exclude = self._strict_constraints_exclude(kwargs.get("update_fields"))
+            try:
+                self.validate_constraints(exclude=exclude or None)
+            except ValidationError as exc:
+                raise IntegrityError("; ".join(exc.messages)) from exc
+        super().save(*args, **kwargs)
+
+    def _strict_constraints_exclude(self, update_fields):
+        """Field names ``validate_constraints()`` must not judge now.
+
+        With ``update_fields``, every field not being saved is
+        excluded, so a constraint is judged only when all of its
+        fields are part of this save. Deferred fields are excluded
+        for the same reason: their in-memory value is not loaded.
+        """
+        exclude = {field.name for field in self._meta.local_fields}
+        exclude |= {field.attname for field in self._meta.local_fields}
+        if update_fields is not None:
+            saved = set(update_fields)
+            exclude -= saved
+            # update_fields may name a FK by field name or attname.
+            for field in self._meta.local_fields:
+                if field.name in saved or field.attname in saved:
+                    exclude.discard(field.name)
+                    exclude.discard(field.attname)
+        else:
+            exclude = set()
+        deferred = self.get_deferred_fields()
+        exclude |= deferred
+        exclude |= {
+            field.name
+            for field in self._meta.local_fields
+            if field.attname in deferred
+        }
+        return exclude
 
 
 class Salon(models.Model):
@@ -39,7 +113,7 @@ class ServiceCategory(models.Model):
         return self.name
 
 
-class Service(models.Model):
+class Service(StrictConstraints):
     """A bookable service offered by a salon.
 
     Duration is split into three segments: hands-on service time,
@@ -97,7 +171,7 @@ class StaffLevel(models.Model):
         return self.name
 
 
-class ServicePrice(models.Model):
+class ServicePrice(StrictConstraints):
     """The price of one service at one staff level.
 
     Plain salon-entered data: an amount and an optional "from" flag
