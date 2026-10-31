@@ -156,7 +156,8 @@ class Command(BaseCommand):
                     f"Unknown timezone {tz_name!r}: {exc}") from exc
         records = _load_records(options["path"])
         stats = dict.fromkeys(
-            ["created", "updated", "skipped", "unresolved_client",
+            ["created", "updated", "skipped", "unchanged",
+             "unresolved_client",
              "unresolved_staff", "unresolved_service",
              "imported_with_service_snapshot"], 0)
         dates = []
@@ -183,6 +184,16 @@ class Command(BaseCommand):
             services = {s.external_id: s for s in
                         Service.objects.filter(category__salon=salon)
                         .exclude(external_id="")}
+            # Resumable re-runs: preload existing appointments once, so
+            # rows that already match are skipped at memory speed
+            # instead of paying a select+update per row.
+            existing = {
+                row["external_id"]: row
+                for row in Appointment.objects.exclude(external_id="")
+                .values("external_id", "client_id", "staff_member_id",
+                        "service_id", "service_name", "start", "end",
+                        "status")
+            }
             total = len(records)
             seen = 0
             for row in records:
@@ -220,24 +231,47 @@ class Command(BaseCommand):
                     stats["imported_with_service_snapshot"] += 1
                 else:
                     snapshot = snapshot or service.name[:200]
+                status = STATE_MAP.get(
+                    str(row.get("state") or "").upper(),
+                    Appointment.Status.BOOKED)
+                current = existing.get(external_id)
+                if current is not None and (
+                        current["client_id"] == client.id
+                        and current["staff_member_id"] == member.id
+                        and current["service_id"] == (
+                            service.id if service is not None else None)
+                        and current["service_name"] == snapshot
+                        and current["start"] == start
+                        and current["end"] == end
+                        and current["status"] == status):
+                    stats["unchanged"] += 1
+                    dates.append(row.get("appointmentDate"))
+                    continue
                 _, created = Appointment.objects.update_or_create(
                     external_id=external_id,
                     defaults={
                         "client": client, "staff_member": member,
                         "service": service, "service_name": snapshot,
                         "start": start, "end": end,
-                        "status": STATE_MAP.get(
-                            str(row.get("state") or "").upper(),
-                            Appointment.Status.BOOKED),
+                        "status": status,
                     })
                 stats["created" if created else "updated"] += 1
+                existing[external_id] = {
+                    "external_id": external_id, "client_id": client.id,
+                    "staff_member_id": member.id,
+                    "service_id": (
+                        service.id if service is not None else None),
+                    "service_name": snapshot, "start": start, "end": end,
+                    "status": status,
+                }
                 dates.append(row.get("appointmentDate"))
         stats["total"] = len(records)
         if dates:
             stats["date_min"], stats["date_max"] = min(dates), max(dates)
         self.stdout.write(
             "Imported appointments for {salon}: {created} created, "
-            "{updated} updated, {skipped} skipped, {unresolved_client} "
+            "{updated} updated, {unchanged} unchanged, "
+            "{skipped} skipped, {unresolved_client} "
             "unresolved client, {unresolved_staff} unresolved staff, "
             "{unresolved_service} unresolved service "
             "({imported_with_service_snapshot} of those imported with "
