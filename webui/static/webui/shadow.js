@@ -343,7 +343,7 @@ function createLocal(detail) {
   const ref = "tmp_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
   const doc = Object.assign({}, detail.doc, {
     id: ref, day: p.date, staff_id: p.staff_member_id,
-    status: "booked", visit: ref,
+    status: "booked", visit: ref, local: true,
   });
   db.put("appointments", ref, JSON.stringify(doc));
   indexDoc(p.date, ref);
