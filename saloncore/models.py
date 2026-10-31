@@ -1,5 +1,202 @@
+import copy
+
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, models
+from django.db.models import Q
+
+
+def _strict_validate(obj):
+    """``validate_constraints()`` with the save()-path error surface."""
+    try:
+        obj.validate_constraints()
+    except ValidationError as exc:
+        raise IntegrityError("; ".join(exc.messages)) from exc
+
+
+_LOOKUPS = {
+    "exact", "iexact", "gt", "gte", "lt", "lte", "in", "isnull",
+    "contains", "icontains",
+}
+
+
+def _strict_lookup(obj, key, expected):
+    """Evaluate one simple field lookup against an in-memory instance."""
+    parts = key.split("__")
+    lookup = parts[-1] if len(parts) > 1 and parts[-1] in _LOOKUPS else "exact"
+    if lookup != "exact":
+        parts = parts[:-1]
+    if len(parts) != 1:  # Related/spanning lookup: cannot judge in memory.
+        return True
+    try:
+        field = obj._meta.get_field(parts[0])
+        actual = getattr(obj, field.attname)
+    except Exception:
+        return True  # Unjudgeable: stay conservative, do not skip the check.
+    if isinstance(actual, models.Model):
+        actual = actual.pk
+    if isinstance(expected, models.Model):
+        expected = expected.pk
+    try:
+        if lookup == "exact":
+            return actual == expected
+        if lookup == "iexact":
+            return str(actual).lower() == str(expected).lower()
+        if lookup == "gt":
+            return actual is not None and actual > expected
+        if lookup == "gte":
+            return actual is not None and actual >= expected
+        if lookup == "lt":
+            return actual is not None and actual < expected
+        if lookup == "lte":
+            return actual is not None and actual <= expected
+        if lookup == "in":
+            return actual in expected
+        if lookup == "isnull":
+            return (actual is None) == bool(expected)
+        if lookup == "contains":
+            return expected in actual
+        if lookup == "icontains":
+            return str(expected).lower() in str(actual).lower()
+    except TypeError:
+        return True
+    return True
+
+
+def _strict_condition_applies(condition, obj):
+    """Whether a UniqueConstraint's ``condition`` Q holds for ``obj``."""
+    if condition is None:
+        return True
+    if not isinstance(condition, Q):
+        return True
+    results = []
+    for child in condition.children:
+        if isinstance(child, Q):
+            results.append(_strict_condition_applies(child, obj))
+        else:
+            results.append(_strict_lookup(obj, child[0], child[1]))
+    if not results:
+        return True
+    combined = all(results) if condition.connector == Q.AND else any(results)
+    return not combined if condition.negated else combined
+
+
+def _strict_check_batch_unique(objs):
+    """Reject duplicate UniqueConstraint keys *within* a batch.
+
+    ``validate_constraints()`` only compares each instance against
+    rows already in the database, so two not-yet-written instances
+    carrying the same unique key would both pass it. This pairwise
+    check closes that hole, honouring each constraint's condition.
+    """
+    if not objs:
+        return
+    model = objs[0]._meta.model
+    for constraint in model._meta.constraints:
+        if not isinstance(constraint, models.UniqueConstraint):
+            continue
+        fields = [model._meta.get_field(name) for name in constraint.fields]
+        seen = {}
+        for obj in objs:
+            if not _strict_condition_applies(constraint.condition, obj):
+                continue
+            key = tuple(getattr(obj, field.attname) for field in fields)
+            key = tuple(v.pk if isinstance(v, models.Model) else v for v in key)
+            prior = seen.get(key)
+            # Same object twice is one row; two unsaved (pk None)
+            # instances are two rows even though both pks are None.
+            if (prior is not None and prior is not obj
+                    and not (prior.pk is not None and prior.pk == obj.pk)):
+                raise IntegrityError(
+                    f"StrictConstraints: duplicate {constraint.name} key "
+                    f"{key} within the same batch."
+                )
+            seen.setdefault(key, obj)
+
+
+class StrictConstraintsQuerySet(models.QuerySet):
+    """Bulk-write guard for :class:`StrictConstraints` models (N-M18).
+
+    NEDB DYOR §9.3: the declared schema catalog lives in the app
+    layer — "NEDB stays schemaless; the strictness lives here."
+    §9.4: savepoints are refused on NEDB, so every guard below
+    validates the *whole* operation before issuing any write; a
+    rejected batch/update therefore writes nothing, instead of
+    relying on a transaction rollback to hide a partial write.
+
+    - ``bulk_create()``: each instance is run through
+      ``validate_constraints()`` (vs the database) plus an
+      intra-batch unique-key check, before ``super()`` is called.
+      ``ignore_conflicts=True`` / ``update_conflicts=True`` are
+      explicit caller requests for database conflict handling and
+      skip this guard — a KNOWN BYPASS on NEDB, whose schemaless
+      store enforces no conflicts to ignore or update on.
+    - ``bulk_update()``: same per-instance + intra-batch validation.
+    - ``update()``: writes that touch no constrained field pass
+      through untouched. Writes touching a constrained field are
+      validated by materialising each affected row, applying the
+      new values to a copy, and validating the copies (against the
+      database and against each other). An expression value (e.g.
+      ``F()``) on a constrained field cannot be judged in memory,
+      so it is refused with ``IntegrityError`` rather than allowed
+      to bypass the catalog.
+    - Remaining known bypasses: raw SQL / cursor writes and any
+      write made outside this ORM queryset never see the catalog.
+    All guard failures raise ``IntegrityError`` — the same error
+    surface as ``StrictConstraints.save()`` and as a database-level
+    constraint on an enforcing backend.
+    """
+
+    def bulk_create(self, objs, batch_size=None, ignore_conflicts=False,
+                    update_conflicts=False, update_fields=None,
+                    unique_fields=None):
+        objs = list(objs)
+        if objs and not ignore_conflicts and not update_conflicts:
+            for obj in objs:
+                _strict_validate(obj)
+            _strict_check_batch_unique(objs)
+        return super().bulk_create(
+            objs, batch_size=batch_size, ignore_conflicts=ignore_conflicts,
+            update_conflicts=update_conflicts, update_fields=update_fields,
+            unique_fields=unique_fields,
+        )
+
+    def bulk_update(self, objs, fields, batch_size=None):
+        objs = list(objs)
+        if objs:
+            for obj in objs:
+                _strict_validate(obj)
+            _strict_check_batch_unique(objs)
+        return super().bulk_update(objs, fields, batch_size=batch_size)
+
+    def update(self, **kwargs):
+        constrained = {}
+        for constraint in self.model._meta.constraints:
+            for name in getattr(constraint, "fields", ()):
+                field = self.model._meta.get_field(name)
+                constrained[name] = field
+                constrained[field.attname] = field
+        if not any(key in constrained for key in kwargs):
+            return super().update(**kwargs)
+        for key, value in kwargs.items():
+            if key in constrained and hasattr(value, "resolve_expression"):
+                raise IntegrityError(
+                    f"StrictConstraints: refusing queryset update() with "
+                    f"an expression value for constrained field {key!r}; "
+                    f"it cannot be validated against the declared catalog."
+                )
+        rows = list(self)
+        if not rows:
+            return super().update(**kwargs)
+        candidates = []
+        for row in rows:
+            candidate = copy.copy(row)
+            for key, value in kwargs.items():
+                setattr(candidate, key, value)
+            candidates.append(candidate)
+        _strict_check_batch_unique(candidates)
+        for candidate in candidates:
+            _strict_validate(candidate)
+        return super().update(**kwargs)
 
 
 class StrictConstraints(models.Model):
@@ -30,9 +227,13 @@ class StrictConstraints(models.Model):
       a database-level constraint raises on enforcing backends, so
       the error surface is identical on every backend.
 
-    ``bulk_create()``/queryset ``update()`` bypass ``save()``; guarding
-    those paths is a separate slice, not this mixin.
+    ``bulk_create()``/queryset ``update()`` bypass ``save()``; those
+    paths are guarded separately by :class:`StrictConstraintsQuerySet`
+    (N-M18, attached via ``objects`` below; see its docstring for the
+    design and the remaining known bypasses).
     """
+
+    objects = StrictConstraintsQuerySet.as_manager()
 
     class Meta:
         abstract = True
