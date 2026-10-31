@@ -310,7 +310,13 @@ async function drain() {
         "Content-Type": "application/json",
         "X-CSRFToken": tokenEl ? tokenEl.value : "",
       },
-      body: JSON.stringify({ ops: ops }),
+      body: JSON.stringify({
+        ops: ops,
+        /* The roster chain's stamp rides like the day
+           book's: the node echoes it, and the echo is the
+           write-through's receipt. */
+        chain: { seq: db.seq(), head: db.head() },
+      }),
     });
     const data = await resp.json();
     const failed = [];
