@@ -19,7 +19,10 @@ from saloncore.models import (
     Service,
     ServicePrice,
 )
-from saloncore.price_book_export import export_price_book_csv
+from saloncore.price_book_export import (
+    export_price_book,
+    export_price_book_csv,
+)
 
 FIXTURE = [
     {
@@ -115,6 +118,42 @@ class PriceBookRoundTripTests(TestCase):
                      stdout=io.StringIO())
         self.assertEqual(
             _snapshot(Salon.objects.get(name="Copy Salon")), expected)
+
+    def test_round_trip_preserves_trailing_space_in_service_name(self):
+        # Regression (RT-RESID): 3 of 97 real service names carry a
+        # trailing space; the CSV import path stripped it, so those
+        # names differed after an export -> import round-trip. Names
+        # must round-trip byte-for-byte.
+        fixture = [
+            {
+                "serviceId": "svc-gloss", "name": "Gloss Treatment ",
+                "categoryName": "Hair", "duration": 45, "gapTime": 0,
+                "price": 60.0, "archived": False, "userPrices": [],
+                "staffCategories": {"prices": []},
+            },
+            {
+                "serviceId": "svc-trim", "name": "Bang Trim",
+                "categoryName": "Hair", "duration": 15, "gapTime": 0,
+                "price": 10.0, "archived": False, "userPrices": [],
+                "staffCategories": {"prices": []},
+            },
+        ]
+        call_command("import_price_book", _write(fixture),
+                     salon="Source Salon", stdout=io.StringIO())
+        source = Salon.objects.get(name="Source Salon")
+        # The export layer is not the loss: the name leaves verbatim.
+        exported_names = {r["service_name"]
+                          for r in export_price_book(source)}
+        self.assertIn("Gloss Treatment ", exported_names)
+        expected = _snapshot(source)
+        csv_path = _write(export_price_book_csv(source), suffix=".csv")
+        call_command("import_price_book", csv_path,
+                     salon="Copy Salon", stdout=io.StringIO())
+        copy_salon = Salon.objects.get(name="Copy Salon")
+        self.assertEqual(_snapshot(copy_salon), expected)
+        copied_names = set(Service.objects.filter(
+            category__salon=copy_salon).values_list("name", flat=True))
+        self.assertEqual(copied_names, {"Gloss Treatment ", "Bang Trim"})
 
     def test_round_trip_preserves_from_inactive_and_finishing(self):
         source = self.seed_and_export()
