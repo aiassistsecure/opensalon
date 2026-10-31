@@ -290,14 +290,7 @@ def _day_book_context(request):
             .prefetch_related("roster_patterns")
         )
         feed = {c.staff_member_id: c for c in feed_blocks_for_day(salon, day)}
-        prices = {
-            (p.service_id, p.staff_level_id): p.amount
-            for p in ServicePrice.objects.filter(
-                active=True, service__category__salon=salon
-            )
-        }
-        base_level = StaffLevel.objects.filter(salon=salon, name="Base").first()
-        base_level_id = base_level.pk if base_level is not None else None
+        prices, base_level_id = _price_lookup(salon)
         day_appts = list(
             Appointment.objects.filter(
                 staff_member__in=members, start__lt=day_end, end__gt=day_start
@@ -309,12 +302,7 @@ def _day_book_context(request):
         appt_by_id = {a.pk: a for a in day_appts}
 
         def amount_for(appt):
-            amount = prices.get((appt.service_id, appt.staff_member.staff_level_id))
-            if amount is None and base_level_id is not None:
-                # No row at the stylist's own level: price at the
-                # service's Base (menu) row rather than not at all.
-                amount = prices.get((appt.service_id, base_level_id))
-            return amount
+            return _amount_for(appt, prices, base_level_id)
 
         # ---- visits: same client + stylist, chained by VISIT_GAP ----
         visits = {}
@@ -846,6 +834,31 @@ def day_book_status(request):
     )
 
 
+def _price_lookup(salon):
+    """Every active price row for the salon, plus the Base level.
+
+    One lookup shared by the day book and the client pack, so a
+    price can never mean two things in two renderers.
+    """
+    prices = {
+        (p.service_id, p.staff_level_id): p.amount
+        for p in ServicePrice.objects.filter(
+            active=True, service__category__salon=salon
+        )
+    }
+    base_level = StaffLevel.objects.filter(salon=salon, name="Base").first()
+    return prices, (base_level.pk if base_level is not None else None)
+
+
+def _amount_for(appt, prices, base_level_id):
+    amount = prices.get((appt.service_id, appt.staff_member.staff_level_id))
+    if amount is None and base_level_id is not None:
+        # No row at the stylist's own level: price at the service's
+        # Base (menu) row rather than not at all.
+        amount = prices.get((appt.service_id, base_level_id))
+    return amount
+
+
 def _first_salon():
     return Salon.objects.order_by("id").first()
 
@@ -984,6 +997,96 @@ def day_book_book(request):
         status=Appointment.Status.BOOKED,
     )
     return JsonResponse({"ok": True, "appointment_id": appt.pk, "date": day.isoformat()})
+
+
+def day_book_pack(request):
+    """The hot range as ONE packed asset for the client.
+
+    The founder's shape: the client holds the week in memory and
+    reacts eagerly — to touch, to keys, to other desks — without
+    asking the server per gesture. So the range travels as a
+    single pack (appointments as data, minutes-from-midnight in
+    salon time, prices resolved through the same lookup the day
+    book renders with), versioned by a stamp. A poll carrying the
+    current stamp gets a one-line "unchanged" answer; anything
+    else gets the fresh pack. The pack is a mirror: it can always
+    be thrown away and re-fetched, because nedbv2 behind the
+    server stays the only durable truth.
+    """
+    salon = _first_salon()
+    if salon is None:
+        return JsonResponse({"pack": 1, "version": "", "days": {}, "staff": []})
+    tz = _tz(salon)
+    try:
+        anchor = datetime.date.fromisoformat(request.GET.get("date", ""))
+    except ValueError:
+        anchor = timezone.now().astimezone(tz).date()
+    monday = anchor - datetime.timedelta(days=anchor.weekday())
+    week = [monday + datetime.timedelta(days=i) for i in range(7)]
+    range_start = datetime.datetime.combine(week[0], datetime.time.min, tzinfo=tz)
+    range_end = datetime.datetime.combine(
+        week[-1] + datetime.timedelta(days=1), datetime.time.min, tzinfo=tz
+    )
+    in_range = Appointment.objects.filter(
+        staff_member__salon=salon, start__lt=range_end, end__gt=range_start
+    ).exclude(status=Appointment.Status.CANCELLED)
+    latest = (
+        Appointment.objects.filter(staff_member__salon=salon)
+        .order_by("-updated_at")
+        .values_list("updated_at", flat=True)
+        .first()
+    )
+    version = f"{in_range.count()}:{(latest.isoformat() if latest else '')}"
+    if request.GET.get("stamp") and request.GET.get("stamp") == version:
+        return JsonResponse({"changed": False, "version": version})
+    prices, base_level_id = _price_lookup(salon)
+    days = {day.isoformat(): [] for day in week}
+    rows = in_range.select_related(
+        "client", "staff_member", "service", "service__category"
+    ).order_by("start")
+    for appt in rows:
+        local_start = appt.start.astimezone(tz)
+        iso = local_start.date().isoformat()
+        if iso not in days:
+            continue
+        local_end = appt.end.astimezone(tz)
+        amount = _amount_for(appt, prices, base_level_id)
+        days[iso].append(
+            {
+                "id": appt.pk,
+                "staff_id": appt.staff_member_id,
+                "client": f"{appt.client.first_name} {appt.client.last_name}".strip(),
+                "service": appt.service.name if appt.service else appt.service_name,
+                "cat": slugify(appt.service.category.name)
+                if appt.service and appt.service.category_id
+                else "misc",
+                "start_min": local_start.hour * 60 + local_start.minute,
+                "end_min": local_end.hour * 60 + local_end.minute,
+                "status": appt.status,
+                "amount": str(amount) if amount is not None else None,
+            }
+        )
+    staff = [
+        {
+            "id": m.pk,
+            "name": m.display_name,
+            "initials": _initials(m.display_name),
+            "level": m.staff_level.name if m.staff_level_id else "",
+        }
+        for m in StaffMember.objects.filter(salon=salon, active=True)
+        .select_related("staff_level")
+        .order_by("display_name")
+    ]
+    return JsonResponse(
+        {
+            "pack": 1,
+            "changed": True,
+            "version": version,
+            "week_of": monday.isoformat(),
+            "days": days,
+            "staff": staff,
+        }
+    )
 
 
 def price_book(request):

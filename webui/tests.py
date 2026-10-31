@@ -474,6 +474,43 @@ class WritePathTests(WebuiTestBase):
         self.assertEqual(data["services"][0]["minutes"], 60)
 
 
+class PackTests(WebuiTestBase):
+    def test_pack_carries_the_week_as_data(self):
+        appt = WritePathTests._make_appt(self)
+        response = self.client.get(reverse("webui:daybook_pack"), {"date": "2026-11-02"})
+        data = response.json()
+        self.assertTrue(data["changed"])
+        self.assertEqual(data["week_of"], "2026-11-02")
+        entries = data["days"]["2026-11-02"]
+        self.assertEqual(len(entries), 1)
+        entry = entries[0]
+        self.assertEqual(entry["id"], appt.pk)
+        self.assertEqual(entry["client"], "Jaime Orta")
+        self.assertEqual(entry["service"], "Women's Haircut")
+        self.assertEqual(entry["start_min"], 600)
+        self.assertEqual(entry["end_min"], 660)
+        self.assertEqual(entry["amount"], "85.00")
+        self.assertEqual([s["name"] for s in data["staff"]], ["Maribel Gonzalez"])
+
+    def test_pack_stamp_short_circuits_until_the_world_moves(self):
+        WritePathTests._make_appt(self)
+        first = self.client.get(
+            reverse("webui:daybook_pack"), {"date": "2026-11-02"}
+        ).json()
+        same = self.client.get(
+            reverse("webui:daybook_pack"),
+            {"date": "2026-11-02", "stamp": first["version"]},
+        ).json()
+        self.assertFalse(same["changed"])
+        WritePathTests._make_appt(self, start_hour=12, end_hour=13)
+        moved = self.client.get(
+            reverse("webui:daybook_pack"),
+            {"date": "2026-11-02", "stamp": first["version"]},
+        ).json()
+        self.assertTrue(moved["changed"])
+        self.assertNotEqual(moved["version"], first["version"])
+
+
 class RosterPageTests(WebuiTestBase):
     def test_roster_page_renders_the_week_matrix(self):
         response = self.client.get(reverse("webui:team"))
