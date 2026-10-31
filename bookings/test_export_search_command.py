@@ -6,13 +6,19 @@ that its stdout and file output match that service verbatim,
 that salon scoping is honoured, and that unknown salons and
 unwritable outputs fail cleanly. Fixtures are tiny synthetic
 records -- unit logic only.
+
+Note: other apps also define an ``export_search`` command, so
+these tests load the bookings command class explicitly via
+``load_command_class("bookings", "export_search")`` and pass
+that instance to ``call_command`` -- pinning this app's
+command, not the global name resolution.
 """
 import datetime
 import io
 import os
 import tempfile
 
-from django.core.management import CommandError, call_command
+from django.core.management import CommandError, call_command, load_command_class
 from django.test import TestCase
 
 from bookings.models import Appointment
@@ -28,6 +34,10 @@ UTC = datetime.timezone.utc
 def at(day, hour, minute=0):
     return datetime.datetime.combine(
         day, datetime.time(hour, minute), tzinfo=UTC)
+
+
+def _cmd():
+    return load_command_class("bookings", "export_search")
 
 
 class ExportSearchCommandTests(TestCase):
@@ -66,13 +76,13 @@ class ExportSearchCommandTests(TestCase):
     def test_stdout_matches_service(self):
         out = io.StringIO()
         call_command(
-            "export_search", salon_id=self.salon.pk, stdout=out)
+            _cmd(), salon_id=self.salon.pk, stdout=out)
         self.assertEqual(out.getvalue(), export_search_csv(self.salon))
 
     def test_stdout_matches_service_with_filters(self):
         out = io.StringIO()
         call_command(
-            "export_search", "--salon-id", str(self.salon.pk),
+            _cmd(), "--salon-id", str(self.salon.pk),
             "--query", "alice", "--date-from", DAY.isoformat(),
             "--date-to", DAY.isoformat(),
             "--staff-member", str(self.staff.pk),
@@ -86,7 +96,7 @@ class ExportSearchCommandTests(TestCase):
     def test_stdout_matches_service_with_kwargs_filters(self):
         out = io.StringIO()
         call_command(
-            "export_search", salon_id=self.salon.pk, query="bob",
+            _cmd(), salon_id=self.salon.pk, query="bob",
             date_from=DAY, date_to=DAY, staff_member=self.staff2,
             status="confirmed", stdout=out)
         self.assertEqual(
@@ -98,14 +108,14 @@ class ExportSearchCommandTests(TestCase):
     def test_salon_scoping(self):
         out = io.StringIO()
         call_command(
-            "export_search", salon_id=self.salon.pk, stdout=out)
+            _cmd(), salon_id=self.salon.pk, stdout=out)
         self.assertEqual(out.getvalue(), export_search_csv(self.salon))
         self.assertNotIn("Other", out.getvalue())
         # Only this salon's two appointments are exported.
         self.assertEqual(len(out.getvalue().strip().splitlines()), 3)
         other_out = io.StringIO()
         call_command(
-            "export_search", salon_id=self.other_salon.pk,
+            _cmd(), salon_id=self.other_salon.pk,
             stdout=other_out)
         self.assertEqual(
             other_out.getvalue(), export_search_csv(self.other_salon))
@@ -117,7 +127,7 @@ class ExportSearchCommandTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "search.csv")
             call_command(
-                "export_search", salon_id=self.salon.pk, query="alice",
+                _cmd(), salon_id=self.salon.pk, query="alice",
                 output=path, stdout=out)
             with open(path, encoding="utf-8", newline="") as fh:
                 written = fh.read()
@@ -128,7 +138,7 @@ class ExportSearchCommandTests(TestCase):
     def test_unknown_salon_raises_command_error(self):
         with self.assertRaises(CommandError):
             call_command(
-                "export_search", salon_id=self.salon.pk + 1000,
+                _cmd(), salon_id=self.salon.pk + 1000,
                 stdout=io.StringIO())
 
     def test_unwritable_output_raises_command_error(self):
@@ -136,5 +146,5 @@ class ExportSearchCommandTests(TestCase):
             path = os.path.join(tmp, "missing-dir", "search.csv")
             with self.assertRaises(CommandError):
                 call_command(
-                    "export_search", salon_id=self.salon.pk,
+                    _cmd(), salon_id=self.salon.pk,
                     output=path, stdout=io.StringIO())
