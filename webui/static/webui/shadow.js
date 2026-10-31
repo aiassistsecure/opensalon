@@ -17,26 +17,33 @@
  *   in the chain; a rejected op is marked failed with the
  *   server's reason, and the client re-reads the truth.
  *
- * The wasm store is the session's chain; the QUEUE is what
- * outlives the tab. Every queued op is mirrored to IndexedDB
- * the moment it is journaled and struck off only when the
- * server has spoken (acked or failed). At boot the mirror is
- * restored into the outbox and drains on the normal schedule
- * — page load is the recovery for the queue exactly as for
- * the pack, and a pagehide tries one last keepalive drain on
- * the way out. State ops replay exactly; an add-note whose
- * ack died with the tab is recognised server-side by its
- * identical body on the same target and not written twice.
- * If IndexedDB is unavailable the mirror quietly no-ops and
- * the queue is session-bound. If the wasm cannot load at
- * all, this module never becomes ready and the day book runs
- * its server path exactly as before: the book never depends
- * on the shadow.
+ * The store's chain is PRESERVED in the app, as the founder's
+ * design states: not only the queue but the journal itself
+ * and the docs it folds to are mirrored into the app's own
+ * durable memory (IndexedDB under this module) the moment
+ * they are written, and struck off only when they are
+ * superseded or the server has spoken. At boot the preserved
+ * chain is restored into the store BEFORE the node's word
+ * arrives — the app answers from its own database first, and
+ * the pack reconciles behind it (the chain law at boot, as
+ * everywhere). HTTP recovery is what remains for a store that
+ * was never preserved; it is the fallback, not the mechanism.
+ * Docs outside the book's working window (a fortnight either
+ * side of today) are pruned at restore. A pagehide tries one
+ * last keepalive drain on the way out. State ops replay
+ * exactly; an add-note whose ack died with the tab is
+ * recognised server-side by its identical body on the same
+ * target and not written twice. If IndexedDB is unavailable
+ * the mirrors quietly no-op and the store is session-bound.
+ * If the wasm cannot load at all, this module never becomes
+ * ready and the day book runs its server path exactly as
+ * before: the book never depends on the shadow.
  *
  * Seam: CustomEvents on document (os:pack / os:adopt / os:op /
  * os:put / os:create in, os:record / os:vanish / os:rename /
- * os:drain / os:undo-move / os:shadow-ready / os:recovered
- * out), plus window.OpenSalonShadow for state queries.
+ * os:drain / os:undo-move / os:shadow-ready / os:restored /
+ * os:recovered out), plus window.OpenSalonShadow for state
+ * queries.
  *
  * The chain, as the founder states it: fetches answer from
  * this store first, then chain to the HTTP node — the node's
@@ -70,10 +77,23 @@ async function boot() {
     const mod = await import(engineUrl.href);
     await mod.default();
     db = new mod.NedbWasm();
+    /* The preserved chain comes home first: docs and journal
+       restored from the app's own durable memory before the
+       store declares itself, so the first answer this tab
+       gives is its own. Births that outlived their tab are
+       spoken for at once — a block the desk made is on the
+       book when the book opens, not when the node replies. */
+    const restored = await restorePreserved();
     ready = true;
     document.body.dataset.shadow = "live";
-    emit("os:shadow-ready", { verify: db.verify() });
+    emit("os:shadow-ready", { verify: db.verify(), restored: restored });
     recoverQueue();
+    restored.births.forEach(function (doc) { emit("os:record", doc); });
+    if (restored.docs || restored.journal) {
+      emit("os:restored", {
+        docs: restored.docs, journal: restored.journal,
+      });
+    }
   } catch (err) {
     document.body.dataset.shadow = "unavailable";
   }
@@ -87,9 +107,16 @@ function idbOpen() {
   if (idbPromise) return idbPromise;
   idbPromise = new Promise(function (resolve) {
     try {
-      const req = indexedDB.open("opensalon-shadow", 1);
+      const req = indexedDB.open("opensalon-shadow", 2);
       req.onupgradeneeded = function () {
-        req.result.createObjectStore("outbox", { keyPath: "key" });
+        const handle = req.result;
+        /* v1 held the queue alone; v2 preserves the whole
+           chain — the docs and the journal beside the outbox. */
+        ["outbox", "docs", "journal"].forEach(function (name) {
+          if (!handle.objectStoreNames.contains(name)) {
+            handle.createObjectStore(name, { keyPath: "key" });
+          }
+        });
       };
       req.onsuccess = function () { resolve(req.result); };
       req.onerror = function () { resolve(null); };
@@ -100,45 +127,47 @@ function idbOpen() {
   return idbPromise;
 }
 
-async function idbPut(key, rec) {
+async function idbPutIn(store, key, rec) {
   const handle = await idbOpen();
   if (!handle) return;
   try {
     handle
-      .transaction("outbox", "readwrite")
-      .objectStore("outbox")
+      .transaction(store, "readwrite")
+      .objectStore(store)
       .put(Object.assign({ key: key }, rec));
   } catch (err) {
-    /* Durability is layered under the session queue, never
+    /* Durability is layered under the living store, never
        load-bearing: a failed mirror write loses nothing the
-       in-memory queue still holds. */
+       store itself still holds. */
   }
 }
 
-async function idbDelete(key) {
+async function idbDeleteIn(store, key) {
   const handle = await idbOpen();
   if (!handle) return;
   try {
     handle
-      .transaction("outbox", "readwrite")
-      .objectStore("outbox")
+      .transaction(store, "readwrite")
+      .objectStore(store)
       .delete(key);
   } catch (err) {
-    /* A record that survives its ack is pruned on a later
-       boot's recovery pass if it is no longer queued there;
-       a still-queued one is exactly what recovery wants. */
+    /* A record that survives its moment is pruned on a later
+       boot's recovery pass if it is no longer wanted there. */
   }
 }
 
-async function idbQueued() {
+function idbPut(key, rec) { return idbPutIn("outbox", key, rec); }
+function idbDelete(key) { return idbDeleteIn("outbox", key); }
+
+async function idbAll(store) {
   const handle = await idbOpen();
   if (!handle) return [];
   return new Promise(function (resolve) {
     try {
       const out = [];
       const req = handle
-        .transaction("outbox", "readonly")
-        .objectStore("outbox")
+        .transaction(store, "readonly")
+        .objectStore(store)
         .openCursor();
       req.onsuccess = function () {
         const cursor = req.result;
@@ -154,6 +183,71 @@ async function idbQueued() {
       resolve([]);
     }
   });
+}
+
+function idbQueued() { return idbAll("outbox"); }
+
+/* ---- preservation: the chain, kept in the app ---- */
+
+/* Every doc write goes through here, so the preserved copy
+   can never drift from the living one: the mirror is struck
+   in the same breath as the store write. */
+function putDoc(id, doc) {
+  const json = JSON.stringify(doc);
+  db.put("appointments", String(id), json);
+  idbPutIn("docs", String(id), { doc: json });
+}
+
+function delDoc(id) {
+  try { db.delete("appointments", String(id)); } catch (err) {}
+  idbDeleteIn("docs", String(id));
+}
+
+/* The journal is append-only: entries are written once and
+   never struck — the chain is the provenance, kept whole. */
+function journal(op) {
+  const key = opKey();
+  const json = JSON.stringify(Object.assign({ at: Date.now() }, op));
+  db.put("ops", key, json);
+  idbPutIn("journal", key, { op: json });
+}
+
+/* Boot's first act: the preserved docs and journal come home
+   into the fresh engine. Docs outside the book's working
+   window (a fortnight either side of today) are pruned from
+   both stores — the book keeps what it works with, not an
+   archive. Unacked births are collected so boot can speak
+   for them the moment the store is ready. */
+async function restorePreserved() {
+  const out = { docs: 0, journal: 0, births: [] };
+  const today = new Date();
+  function isoDays(delta) {
+    const d = new Date(today.getTime() + delta * 86400000);
+    return d.toISOString().slice(0, 10);
+  }
+  const lo = isoDays(-14), hi = isoDays(14);
+  const docs = await idbAll("docs");
+  docs.forEach(function (rec) {
+    if (!rec.doc) return;
+    let doc = null;
+    try { doc = JSON.parse(rec.doc); } catch (err) { return; }
+    if (!doc || !doc.day) return;
+    if (doc.day < lo || doc.day > hi) {
+      idbDeleteIn("docs", rec.key);
+      return;
+    }
+    db.put("appointments", String(doc.id), rec.doc);
+    indexDoc(doc.day, doc.id);
+    out.docs += 1;
+    if (String(doc.id).indexOf("tmp_") === 0) out.births.push(doc);
+  });
+  const entries = await idbAll("journal");
+  entries.forEach(function (rec) {
+    if (!rec.op) return;
+    db.put("ops", rec.key, rec.op);
+    out.journal += 1;
+  });
+  return out;
 }
 
 async function recoverQueue() {
@@ -187,11 +281,7 @@ function seed(pack) {
   seededVersion = pack.version;
   Object.keys(pack.days).forEach(function (iso) {
     pack.days[iso].forEach(function (entry) {
-      db.put(
-        "appointments",
-        String(entry.id),
-        JSON.stringify(Object.assign({ day: iso }, entry))
-      );
+      putDoc(entry.id, Object.assign({ day: iso }, entry));
       indexDoc(iso, entry.id);
     });
   });
@@ -223,7 +313,7 @@ function adopt(days) {
     const keep = {};
     (days[iso] || []).forEach(function (entry) {
       const doc = Object.assign({ day: iso }, entry);
-      db.put("appointments", String(entry.id), JSON.stringify(doc));
+      putDoc(entry.id, doc);
       indexDoc(iso, entry.id);
       keep[entry.id] = true;
       emit("os:record", doc);
@@ -238,7 +328,7 @@ function adopt(days) {
         return;
       }
       if (!keep[id]) {
-        try { db.delete("appointments", String(id)); } catch (err) {}
+        delDoc(id);
         delete known[id];
         emit("os:vanish", { day: iso, id: parseInt(id, 10) });
       }
@@ -265,7 +355,7 @@ function applyLocal(op) {
       doc.staff_id = op.after.staff_id;
       doc.start_min = op.after.start_min;
       doc.end_min = op.after.start_min + dur;
-      db.put("appointments", String(op.id), JSON.stringify(doc));
+      putDoc(op.id, doc);
       emit("os:record", doc);
     }
     if (!op.via) undoStack.push(op);
@@ -279,7 +369,7 @@ function applyLocal(op) {
     if (raw) {
       const doc = JSON.parse(raw);
       doc.status = op.status;
-      db.put("appointments", String(op.id), JSON.stringify(doc));
+      putDoc(op.id, doc);
       emit("os:record", doc);
     }
     enqueue({ kind: "status", id: op.id, status: op.status });
@@ -301,7 +391,7 @@ function applyLocal(op) {
             : "$" + v.toFixed(2);
       }
       doc.price_overridden = op.price !== "" && op.price != null;
-      db.put("appointments", String(op.id), JSON.stringify(doc));
+      putDoc(op.id, doc);
       emit("os:record", doc);
     }
     enqueue({ kind: "price", id: op.id, price: op.price == null ? "" : String(op.price) });
@@ -319,7 +409,7 @@ function applyLocal(op) {
   }
   /* Every op is journaled whether it drains or not — the
      chain is the provenance of the desk's plays. */
-  db.put("ops", opKey(), JSON.stringify(Object.assign({ at: Date.now() }, op)));
+  journal(op);
 }
 
 /* Temporary birth names and the real ids the node answers
@@ -345,7 +435,7 @@ function createLocal(detail) {
     id: ref, day: p.date, staff_id: p.staff_member_id,
     status: "booked", visit: ref, local: true,
   });
-  db.put("appointments", ref, JSON.stringify(doc));
+  putDoc(ref, doc);
   indexDoc(p.date, ref);
   emit("os:record", doc);
   const op = {
@@ -356,7 +446,7 @@ function createLocal(detail) {
   if (p.client_id != null) op.client_id = p.client_id;
   if (p.new_client) op.new_client = p.new_client;
   enqueue(op);
-  db.put("ops", opKey(), JSON.stringify(Object.assign({ at: Date.now() }, op)));
+  journal(op);
   detail.handled = true;
 }
 
@@ -455,10 +545,10 @@ async function drain(keepalive) {
           const entry = r.entry
             ? Object.assign({ day: rec.date }, r.entry)
             : null;
-          try { db.delete("appointments", String(rec.ref)); } catch (err) {}
+          delDoc(rec.ref);
           if (dayIndex[rec.date]) delete dayIndex[rec.date][rec.ref];
           if (entry) {
-            db.put("appointments", String(r.id), JSON.stringify(entry));
+            putDoc(r.id, entry);
             indexDoc(rec.date, r.id);
             if (wasLocal) {
               emit("os:rename", {
@@ -473,7 +563,7 @@ async function drain(keepalive) {
         } else {
           /* The birth was refused: the provisional doc was
              never true — take it off the book. */
-          try { db.delete("appointments", String(rec.ref)); } catch (err) {}
+          delDoc(rec.ref);
           if (dayIndex[rec.date]) delete dayIndex[rec.date][rec.ref];
           emit("os:vanish", { day: rec.date, id: rec.ref });
         }
@@ -522,7 +612,7 @@ document.addEventListener("os:undo", function () { undo(); });
 document.addEventListener("os:put", function (event) {
   const entry = event.detail;
   if (!ready || !entry || !entry.id || !entry.day) return;
-  db.put("appointments", String(entry.id), JSON.stringify(entry));
+  putDoc(entry.id, entry);
   indexDoc(entry.day, entry.id);
 });
 
