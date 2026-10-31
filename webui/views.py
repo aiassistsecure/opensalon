@@ -36,7 +36,7 @@ from bookings.availability import _tz
 from bookings.daybook import blocks_for_day as feed_blocks_for_day
 from bookings.models import Appointment, AppointmentNote
 from clients.models import Client, ClientNote
-from saloncore.models import Salon, ServiceCategory, ServicePrice, StaffLevel
+from saloncore.models import Salon, Service, ServiceCategory, ServicePrice, StaffLevel
 from team.models import RosterPattern, StaffMember
 from team.roster_week import roster_week as build_roster_week
 
@@ -45,6 +45,30 @@ DAY_START_HOUR = 8
 DAY_END_HOUR = 20
 
 _STATUS_LABELS = dict(Appointment.Status.choices)
+
+# The desk's status flow, in order. Each entry: the status it
+# sets, the button label, and whether it is the primary action.
+# The rail renders these for the selected appointment; the status
+# endpoint accepts exactly these transitions.
+_STATUS_ACTIONS = {
+    Appointment.Status.BOOKED: [
+        (Appointment.Status.ARRIVED, "Check In", True),
+        (Appointment.Status.NO_SHOW, "No-show", False),
+        (Appointment.Status.CANCELLED, "Cancel", False),
+    ],
+    Appointment.Status.CONFIRMED: [
+        (Appointment.Status.ARRIVED, "Check In", True),
+        (Appointment.Status.NO_SHOW, "No-show", False),
+        (Appointment.Status.CANCELLED, "Cancel", False),
+    ],
+    Appointment.Status.ARRIVED: [
+        (Appointment.Status.IN_SERVICE, "Start Service", True),
+        (Appointment.Status.CANCELLED, "Cancel", False),
+    ],
+    Appointment.Status.IN_SERVICE: [
+        (Appointment.Status.COMPLETED, "Complete", True),
+    ],
+}
 
 # A follow-on service starting within this gap of the previous one's
 # end belongs to the same visit (the detail rail's Service Stack).
@@ -362,6 +386,10 @@ def _day_book_context(request):
                 "date_label": _fmt_date_label(day, with_year=True),
                 "status": appt.status,
                 "status_label": _STATUS_LABELS.get(appt.status, appt.status),
+                "actions": [
+                    {"status": s, "label": label, "primary": primary}
+                    for s, label, primary in _STATUS_ACTIONS.get(appt.status, [])
+                ],
                 "client_name": client.display_name
                 if hasattr(client, "display_name")
                 else f"{client.first_name} {client.last_name}".strip(),
@@ -784,6 +812,178 @@ def day_book_move(request):
     anchor.staff_member = member
     anchor.save(update_fields=["start", "end", "staff_member"])
     return JsonResponse({"ok": True, "moved": 1, "start_minutes": snapped})
+
+
+@require_POST
+def day_book_status(request):
+    """Move an appointment along the desk's status flow.
+
+    Check In is the first step: booked/confirmed -> arrived ->
+    in_service -> completed, with no-show and cancel offered
+    where the desk needs them. Only the transitions the rail
+    offers are accepted; anything else is a 400, because a status
+    the desk cannot explain should never land silently.
+    """
+    try:
+        payload = json.loads(request.body.decode("utf-8"))
+        appt_id = int(payload["appointment_id"])
+        target = str(payload["status"])
+    except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+        return JsonResponse({"ok": False, "error": "bad payload"}, status=400)
+    appt = Appointment.objects.filter(pk=appt_id).first()
+    if appt is None:
+        return JsonResponse({"ok": False, "error": "no such appointment"}, status=404)
+    allowed = {s for s, _label, _p in _STATUS_ACTIONS.get(appt.status, [])}
+    if target not in allowed:
+        return JsonResponse(
+            {"ok": False, "error": f"cannot move {appt.status} to {target}"},
+            status=400,
+        )
+    appt.status = target
+    appt.save(update_fields=["status"])
+    return JsonResponse(
+        {"ok": True, "status": target, "status_label": _STATUS_LABELS.get(target, target)}
+    )
+
+
+def _first_salon():
+    return Salon.objects.order_by("id").first()
+
+
+def day_book_book_options(request):
+    """The booking form's choices: stylists and the service menu."""
+    salon = _first_salon()
+    if salon is None:
+        return JsonResponse({"members": [], "services": [], "today": ""})
+    tz = _tz(salon)
+    members = [
+        {"id": m.pk, "name": m.display_name}
+        for m in StaffMember.objects.filter(salon=salon, active=True).order_by(
+            "display_name"
+        )
+    ]
+    services = [
+        {
+            "id": s.pk,
+            "name": s.name,
+            "minutes": s.service_minutes,
+            "category": s.category.name if s.category_id else "",
+        }
+        for s in Service.objects.filter(category__salon=salon)
+        .select_related("category")
+        .order_by("category__sort_order", "category__name", "name")
+    ]
+    return JsonResponse(
+        {
+            "members": members,
+            "services": services,
+            "today": timezone.now().astimezone(tz).date().isoformat(),
+        }
+    )
+
+
+def day_book_client_search(request):
+    """Find a client for the booking form: name tokens or phone."""
+    salon = _first_salon()
+    q = (request.GET.get("q") or "").strip()
+    if salon is None or len(q) < 2:
+        return JsonResponse({"clients": []})
+    qs = Client.objects.filter(salon=salon)
+    digits = "".join(ch for ch in q if ch.isdigit())
+    cond = Q()
+    for token in q.split():
+        cond |= Q(first_name__icontains=token) | Q(last_name__icontains=token)
+    rows = list(qs.filter(cond).order_by("first_name", "last_name")[:8])
+    if len(digits) >= 3:
+        # Stored phones carry punctuation ("407-555-0100"), so a
+        # digit query can never substring-match them directly:
+        # narrow by the first digits, then compare digit-to-digit.
+        seen = {c.pk for c in rows}
+        candidates = qs.filter(phone__icontains=digits[:3]).order_by(
+            "first_name", "last_name"
+        )[:200]
+        for c in candidates:
+            phone_digits = "".join(ch for ch in (c.phone or "") if ch.isdigit())
+            if digits in phone_digits and c.pk not in seen:
+                rows.append(c)
+                seen.add(c.pk)
+        rows.sort(key=lambda c: (c.first_name, c.last_name))
+    return JsonResponse(
+        {
+            "clients": [
+                {
+                    "id": c.pk,
+                    "name": f"{c.first_name} {c.last_name}".strip(),
+                    "phone": c.phone,
+                }
+                for c in rows[:8]
+            ]
+        }
+    )
+
+
+@require_POST
+def day_book_book(request):
+    """Create a booking from the desk.
+
+    One service, one stylist, one client — an existing client by
+    id, or a new client created from the name/phone the desk
+    typed. The end is the start plus the service's own minutes;
+    the name snapshot is stored verbatim, like an import's. The
+    book allows overlaps (lanes render them), so no conflict can
+    reject a booking the desk wants to make.
+    """
+    try:
+        payload = json.loads(request.body.decode("utf-8"))
+        member_id = int(payload["staff_member_id"])
+        service_id = int(payload["service_id"])
+        day = datetime.date.fromisoformat(str(payload["date"]))
+        start_time = datetime.datetime.strptime(str(payload["time"]), "%H:%M").time()
+    except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+        return JsonResponse({"ok": False, "error": "bad payload"}, status=400)
+    member = StaffMember.objects.select_related("salon").filter(
+        pk=member_id, active=True
+    ).first()
+    if member is None:
+        return JsonResponse({"ok": False, "error": "no such stylist"}, status=404)
+    salon = member.salon
+    service = Service.objects.filter(pk=service_id, category__salon=salon).first()
+    if service is None:
+        return JsonResponse({"ok": False, "error": "no such service"}, status=404)
+    client = None
+    if payload.get("client_id"):
+        try:
+            client = Client.objects.filter(
+                pk=int(payload["client_id"]), salon=salon
+            ).first()
+        except (TypeError, ValueError):
+            client = None
+    if client is None:
+        new_client = payload.get("new_client") or {}
+        first = str(new_client.get("first_name", "")).strip()
+        last = str(new_client.get("last_name", "")).strip()
+        phone = str(new_client.get("phone", "")).strip()
+        if not first and not last:
+            return JsonResponse(
+                {"ok": False, "error": "pick a client or enter a new client's name"},
+                status=400,
+            )
+        client = Client.objects.create(
+            salon=salon, first_name=first, last_name=last, phone=phone
+        )
+    tz = _tz(salon)
+    start = datetime.datetime.combine(day, start_time, tzinfo=tz)
+    minutes = service.service_minutes or 60
+    appt = Appointment.objects.create(
+        client=client,
+        staff_member=member,
+        service=service,
+        service_name=service.name,
+        start=start,
+        end=start + datetime.timedelta(minutes=minutes),
+        status=Appointment.Status.BOOKED,
+    )
+    return JsonResponse({"ok": True, "appointment_id": appt.pk, "date": day.isoformat()})
 
 
 def price_book(request):

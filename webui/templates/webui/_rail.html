@@ -72,11 +72,14 @@
       {% for note in rail.client_notes %}<div class="note-box">{{ note }}</div>{% empty %}<p class="rail-empty">No client record notes.</p>{% endfor %}
     </div>
 
+    {% if rail.actions %}
     <div class="rail-actions">
-      <button type="button" class="btn-grad grow" disabled title="Check-in arrives with the attendance lane">✓ Check In</button>
-      <button type="button" class="btn-ghost" disabled title="Rescheduling arrives with the booking lane">Reschedule</button>
-      <button type="button" class="btn-ghost" disabled title="Editing arrives with the booking lane">✎ Edit</button>
+      {% for action in rail.actions %}
+      <button type="button" class="{% if action.primary %}btn-grad grow{% else %}btn-ghost{% endif %}" data-status-action="{{ action.status }}" data-appt="{{ rail.id }}">{{ action.label }}</button>
+      {% endfor %}
     </div>
+    <p class="rail-hint">Drag a block on the book to move it — drop it on another stylist to reassign.</p>
+    {% endif %}
   {% else %}
     <div class="rail-head"><div><div class="rail-time">No appointment selected</div>
     <div class="rail-date">Select an appointment on the book to see its detail.</div></div></div>

@@ -53,7 +53,7 @@
         <kbd class="kbd">⌘K</kbd>
       </form>
       <div class="top-actions">
-        <button type="button" class="btn-grad" disabled title="Booking creation arrives with the booking lane">+ New Appointment <span class="btn-chev">⌄</span></button>
+        <button type="button" class="btn-grad" id="newApptBtn">+ New Appointment</button>
         <button type="button" class="icon-btn" aria-label="Notifications" title="Notifications arrive with the messaging lane"><span class="bell">🔔</span><span class="dot"></span></button>
         <div class="avatar" aria-hidden="true">{{ salon.name|default:"O"|first|upper }}</div>
       </div>
@@ -62,6 +62,39 @@
       {% block content %}{% endblock %}
     </main>
     <footer class="foot">Powered by OpenSalon — free, open-source salon software</footer>
+  </div>
+</div>
+
+<div class="book-modal hidden" id="bookModal" role="dialog" aria-modal="true" aria-label="New appointment">
+  <div class="book-card">
+    <div class="book-card-head">
+      <h2>New Appointment</h2>
+      <button type="button" class="rail-close" id="bookClose" aria-label="Close">✕</button>
+    </div>
+    <div class="book-field">
+      <label for="bkSearch">Client</label>
+      <input type="search" id="bkSearch" placeholder="Search name or phone…" autocomplete="off">
+      <div class="book-results hidden" id="bkResults"></div>
+      <div class="book-picked hidden" id="bkPicked"></div>
+      <button type="button" class="book-newclient" id="bkNewToggle">+ New client instead</button>
+      <div class="book-new hidden" id="bkNew">
+        <input type="text" id="bkFirst" placeholder="First name" autocomplete="off">
+        <input type="text" id="bkLast" placeholder="Last name" autocomplete="off">
+        <input type="tel" id="bkPhone" placeholder="Phone" autocomplete="off">
+      </div>
+    </div>
+    <div class="book-grid">
+      <div class="book-field"><label for="bkMember">Stylist</label><select id="bkMember"></select></div>
+      <div class="book-field"><label for="bkService">Service</label><select id="bkService"></select></div>
+      <div class="book-field"><label for="bkDate">Date</label><input type="date" id="bkDate"></div>
+      <div class="book-field"><label for="bkTime">Start</label><input type="time" id="bkTime" step="300"></div>
+    </div>
+    <p class="book-err hidden" id="bkErr" role="alert"></p>
+    <div class="book-actions">
+      <button type="button" class="btn-ghost" id="bookCancel">Cancel</button>
+      <button type="button" class="btn-grad grow" id="bookSave">Book appointment</button>
+    </div>
+    {% csrf_token %}
   </div>
 </div>
 

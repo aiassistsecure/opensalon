@@ -88,10 +88,15 @@
       '<div class="rpanel hidden" data-panel="notes">' +
       '<div class="notes-k">This appointment</div>' + apptNotes +
       '<div class="notes-k">Client record</div>' + clientNotes + "</div>" +
-      '<div class="rail-actions">' +
-      '<button type="button" class="btn-grad grow" disabled title="Check-in arrives with the attendance lane">✓ Check In</button>' +
-      '<button type="button" class="btn-ghost" disabled title="Rescheduling arrives with the booking lane">Reschedule</button>' +
-      '<button type="button" class="btn-ghost" disabled title="Editing arrives with the booking lane">✎ Edit</button></div>';
+      ((d.actions && d.actions.length)
+        ? '<div class="rail-actions">' + d.actions.map(function (a) {
+            return '<button type="button" class="' +
+              (a.primary ? "btn-grad grow" : "btn-ghost") +
+              '" data-status-action="' + esc(a.status) + '" data-appt="' +
+              esc(d.id) + '">' + esc(a.label) + "</button>";
+          }).join("") + "</div>" +
+          '<p class="rail-hint">Drag a block on the book to move it — drop it on another stylist to reassign.</p>'
+        : "");
     if (railEl) railEl.setAttribute("data-current", d.id);
   }
 
@@ -216,12 +221,33 @@
     });
   }
 
-  function refreshDay() {
+  var pendingReselect = null;
+
+  function refreshDay(keepId) {
+    pendingReselect = keepId || null;
     if (!currentDate || !fragmentBase) { window.location.reload(); return; }
     delete hotCache[currentDate];
     fetchFragment(currentDate).then(function () {
       swapTo(currentDate, false);
     }).catch(function () { window.location.reload(); });
+  }
+
+  function postStatus(apptId, status) {
+    var layout = document.querySelector(".book-layout");
+    if (!layout || !layout.dataset.status) return;
+    var tokenEl = layout.querySelector('input[name="csrfmiddlewaretoken"]');
+    fetch(layout.dataset.status, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRFToken": tokenEl ? tokenEl.value : "",
+      },
+      body: JSON.stringify({
+        appointment_id: parseInt(apptId, 10),
+        status: status,
+      }),
+    }).then(function () { refreshDay(apptId); })
+      .catch(function () { refreshDay(apptId); });
   }
 
   /* Bind everything that lives inside the day-book layout. Runs
@@ -261,8 +287,24 @@
       if (first) { selected = first; first.classList.add("sel"); }
     }
 
+    // After a write (a drag, a status change) the day re-reads;
+    // keep the appointment the desk was working on selected.
+    if (pendingReselect) {
+      var keepId = pendingReselect;
+      pendingReselect = null;
+      var keep = document.querySelector(
+        '.appt-block[data-appt="' + keepId + '"], .acard[data-appt="' + keepId + '"]'
+      );
+      if (keep && payloads[keepId]) choose(keep, false);
+    }
+
     if (railBody) {
       railBody.addEventListener("click", function (event) {
+        var actionBtn = event.target.closest("[data-status-action]");
+        if (actionBtn) {
+          postStatus(actionBtn.dataset.appt, actionBtn.dataset.statusAction);
+          return;
+        }
         var tab = event.target.closest(".rtab");
         if (tab) {
           railBody.querySelectorAll(".rtab").forEach(function (t) {
@@ -438,4 +480,156 @@
     sync();
   });
   sync();
+})();
+
+/* ---------- new appointment (every page) ---------- */
+(function () {
+  var modal = document.getElementById("bookModal");
+  var openBtn = document.getElementById("newApptBtn");
+  if (!modal || !openBtn) return;
+  function $(id) { return document.getElementById(id); }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  var pickedClient = null;
+  var optionsLoaded = false;
+  var searchTimer = null;
+
+  function show() {
+    modal.classList.remove("hidden");
+    if (!optionsLoaded) loadOptions();
+    $("bkSearch").focus();
+  }
+  function hide() { modal.classList.add("hidden"); }
+
+  function loadOptions() {
+    fetch("/daybook/book/options/")
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        optionsLoaded = true;
+        $("bkMember").innerHTML = data.members.map(function (m) {
+          return '<option value="' + m.id + '">' + esc(m.name) + "</option>";
+        }).join("");
+        $("bkService").innerHTML = data.services.map(function (s) {
+          return '<option value="' + s.id + '">' + esc(s.name) +
+            (s.minutes ? " · " + s.minutes + "m" : "") + "</option>";
+        }).join("");
+        if (data.today && !$("bkDate").value) $("bkDate").value = data.today;
+      })
+      .catch(function () {});
+  }
+
+  function setPicked(client) {
+    pickedClient = client;
+    var box = $("bkPicked");
+    if (client) {
+      box.innerHTML = "<span>" + esc(client.name) +
+        (client.phone ? " · " + esc(client.phone) : "") +
+        '</span><button type="button" id="bkUnpick" aria-label="Clear client">✕</button>';
+      box.classList.remove("hidden");
+      $("bkResults").classList.add("hidden");
+      $("bkNew").classList.add("hidden");
+      $("bkUnpick").addEventListener("click", function () { setPicked(null); });
+    } else {
+      box.classList.add("hidden");
+      box.innerHTML = "";
+    }
+  }
+
+  $("bkSearch").addEventListener("input", function () {
+    var q = $("bkSearch").value.trim();
+    setPicked(null);
+    if (searchTimer) clearTimeout(searchTimer);
+    if (q.length < 2) { $("bkResults").classList.add("hidden"); return; }
+    searchTimer = setTimeout(function () {
+      fetch("/daybook/clients/search/?q=" + encodeURIComponent(q))
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          var box = $("bkResults");
+          if (!data.clients.length) {
+            box.innerHTML = '<p class="book-noresults">No match — add them as a new client below.</p>';
+          } else {
+            box.innerHTML = data.clients.map(function (c) {
+              return '<button type="button" class="book-result" data-id="' + c.id +
+                '" data-name="' + esc(c.name) + '" data-phone="' + esc(c.phone) + '">' +
+                esc(c.name) + (c.phone ? '<span>' + esc(c.phone) + "</span>" : "") + "</button>";
+            }).join("");
+          }
+          box.classList.remove("hidden");
+        })
+        .catch(function () {});
+    }, 180);
+  });
+  $("bkResults").addEventListener("click", function (event) {
+    var btn = event.target.closest(".book-result");
+    if (!btn) return;
+    setPicked({ id: parseInt(btn.dataset.id, 10), name: btn.dataset.name, phone: btn.dataset.phone });
+    $("bkSearch").value = btn.dataset.name;
+  });
+  $("bkNewToggle").addEventListener("click", function () {
+    setPicked(null);
+    $("bkNew").classList.toggle("hidden");
+  });
+
+  function fail(message) {
+    var err = $("bkErr");
+    err.textContent = message;
+    err.classList.remove("hidden");
+  }
+
+  $("bookSave").addEventListener("click", function () {
+    $("bkErr").classList.add("hidden");
+    var payload = {
+      staff_member_id: parseInt($("bkMember").value, 10),
+      service_id: parseInt($("bkService").value, 10),
+      date: $("bkDate").value,
+      time: $("bkTime").value,
+    };
+    if (pickedClient) {
+      payload.client_id = pickedClient.id;
+    } else if (!$("bkNew").classList.contains("hidden")) {
+      payload.new_client = {
+        first_name: $("bkFirst").value.trim(),
+        last_name: $("bkLast").value.trim(),
+        phone: $("bkPhone").value.trim(),
+      };
+      if (!payload.new_client.first_name && !payload.new_client.last_name) {
+        fail("Enter the new client's name, or pick an existing client.");
+        return;
+      }
+    } else {
+      fail("Pick a client from the search, or add a new client.");
+      return;
+    }
+    if (!payload.date || !payload.time) { fail("Pick a date and a start time."); return; }
+    var tokenEl = modal.querySelector('input[name="csrfmiddlewaretoken"]');
+    fetch("/daybook/book/", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRFToken": tokenEl ? tokenEl.value : "",
+      },
+      body: JSON.stringify(payload),
+    }).then(function (r) {
+      return r.json().then(function (data) { return { ok: r.ok, data: data }; });
+    }).then(function (res) {
+      if (res.ok && res.data.ok) {
+        window.location.href = "/?date=" + res.data.date;
+      } else {
+        fail((res.data && res.data.error) || "That booking did not save — try again.");
+      }
+    }).catch(function () { fail("That booking did not save — try again."); });
+  });
+
+  openBtn.addEventListener("click", show);
+  $("bookClose").addEventListener("click", hide);
+  $("bookCancel").addEventListener("click", hide);
+  modal.addEventListener("click", function (event) {
+    if (event.target === modal) hide();
+  });
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape" && !modal.classList.contains("hidden")) hide();
+  });
 })();
