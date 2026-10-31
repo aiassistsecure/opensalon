@@ -33,16 +33,7 @@ urlpatterns = [
     path("team/", views.team, name="team"),
     path("roster/", views.roster_book, name="roster"),
     path("products/", views.products_page, name="products"),
-    path(
-        "insights/",
-        views.placeholder,
-        {
-            "nav_key": "insights",
-            "title": "Insights",
-            "lane_note": "Revenue, future-appointment value and busiest days arrive with the insights lane.",
-        },
-        name="insights",
-    ),
+    path("insights/", views.insights_page, name="insights"),
     path("pos/", views.pos, name="pos"),
     path(
         "automations/",
