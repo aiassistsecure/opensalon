@@ -1,10 +1,17 @@
 from django.db import models
 from django.db.models import Sum
 
-from saloncore.models import Salon
+from saloncore.models import Salon, StrictConstraints
+
+# N-M-next: StrictConstraints rollout completed for catalog (NEDB
+# DYOR §9.3/§9.4) — declared Meta.constraints are enforced in the
+# app layer on save(), since schemaless NEDB creates no database-
+# level constraints. Product was the one constrained model the
+# N-M17 rollout missed, so its conditional UniqueConstraint
+# (uniq_product_external_id) went unenforced on NEDB.
 
 
-class Product(models.Model):
+class Product(StrictConstraints):
     """A retail product sold by a salon.
 
     Carries an optional SKU and an optional barcode. The barcode is
