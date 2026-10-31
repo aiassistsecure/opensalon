@@ -51,17 +51,37 @@ build the same kind of extension without forking. See
 
 ## Status
 
-Foundation release. This repository currently contains the project
-foundation: license, architecture decisions, a Django + Postgres skeleton,
-and a one-command Docker Compose install. Feature work proceeds in lanes:
+Working software, in daily use at the pilot salon on its real book.
+Built and verified so far:
 
-1. Price book & service truth
-2. Day book & clients
-3. Checkout, transactions & day close (with the payments interface)
-4. Online booking & self-host release
+1. **Price book** — services, categories, staff levels, and prices in
+   exactly one place, with full import and export.
+2. **Day book** — one column per stylist, one block per service,
+   drag to move, check-in / no-show toggles, breaks, and a booking
+   flow that paints in the click's own frame (see
+   [0006](docs/decisions/0006-the-book-lives-in-the-client.md)).
+3. **Roster book** — perpetual scheduling patterns with per-date
+   overrides; the roster controls both the day book and online
+   booking availability.
+4. **Clients** — the full client record: opt-ins for reminders,
+   appointment notes and persistent record notes (never blurred),
+   full import and export.
+5. **Checkout & cashup** — sales and receipts (including emailed
+   receipts) behind the provider-agnostic payments interface, and a
+   cashup that closes the day's takings by tender — more than once
+   a day is fine; a cashup never locks the day.
+6. **Products & inventory** — the retail shelf with barcodes,
+   receiving, and stock adjustments.
+7. **Team** — staff records, levels, and a PIN time clock with
+   attendance recorded against the schedule.
+8. **Insights** — revenue splits, future-book value, busiest days.
 
-The v1 test is simple: a real salon runs a full Saturday on OpenSalon,
-and that night's numbers are queryable without an export job.
+Next lanes: the salon-branded online booking page, and automations
+(appointment reminders first — marketing last).
+
+The v1 test was simple: a real salon runs a full Saturday on
+OpenSalon, and that night's numbers are queryable without an export
+job. The pilot salon now does that as a matter of routine.
 
 ## Quick start
 
@@ -75,13 +95,21 @@ Then open http://localhost:8000/health/ — a healthy install answers
 
 ## Stack
 
-- Python / Django, server-rendered with light JavaScript
-- Postgres (SQLite fallback for a first local look)
-- Docker Compose packaging
-- Payments: provider interface first, adapters second. First adapters
-  planned: Stripe (online-first) and Square (in-person-first), chosen so
-  the interface has to survive two very different providers.
-  See [docs/architecture/payments-interface.md](docs/architecture/payments-interface.md).
+- Python / Django, server-rendered templates, vanilla JavaScript —
+  no build step
+- NEDB is the database
+  ([0005](docs/decisions/0005-nedb-is-the-database.md)): Django
+  reaches it over its Postgres-compatible wire. A SQLite mode
+  exists for development only
+- The day book runs on an embedded NEDB store in the browser
+  ([0006](docs/decisions/0006-the-book-lives-in-the-client.md)) —
+  the same engine at both ends
+- Docker Compose packaging (app + nedbd)
+- Payments: one provider interface; the core names no vendor and
+  never takes custody of money. The shipped proof tenders are cash
+  and external tender (a card run on the salon's own terminal);
+  vendor adapters live in the add-on layer. See
+  [docs/architecture/payments-interface.md](docs/architecture/payments-interface.md)
 
 Decision records live in [docs/decisions/](docs/decisions/).
 
