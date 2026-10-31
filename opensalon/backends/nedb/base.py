@@ -34,8 +34,10 @@ Skeleton scope (N-M3b), per the NEDB DYOR note (2026-10-30), section 9:
   ``id`` column explicitly; no UNNEST bulk shape), with the read-path
   integer converter in ``operations.py``.
 
-Deliberately NOT here (later microtask): TRUNCATE/flush replacement
-(implication 5).
+TRUNCATE/flush replacement (implication 5, N-M3h) lives in
+``creation.py`` (test-database teardown = drop + recreate over the
+nedbd HTTP API) and ``operations.py`` (``sql_flush`` builds nothing;
+``execute_sql_flush`` delegates to that reset).
 """
 
 from django.db.backends.postgresql.base import (

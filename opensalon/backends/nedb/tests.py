@@ -91,26 +91,173 @@ class NoSessionSetupSqlTests(SimpleTestCase):
         self.assertFalse(wrapper.ensure_timezone())
 
 
+import os
+import unittest
+
+
+def _fake_http(existing=()):
+    """Fake _http_request: records calls, serves a name registry."""
+    calls = []
+    names = set(existing)
+
+    def fake(method, path, payload=None):
+        calls.append((method, path, payload))
+        if method == "GET" and path == "/v1/databases":
+            return {"databases": [{"name": n} for n in sorted(names)]}
+        if method == "POST" and path == "/v1/databases":
+            names.add(payload["name"])
+            return {"database": {"name": payload["name"]}}
+        if method == "DELETE" and path.startswith("/v1/databases/"):
+            names.discard(path.rsplit("/", 1)[1])
+            return {}
+        raise AssertionError("unexpected HTTP call %s %s" % (method, path))
+
+    return fake, calls, names
+
+
 class TestDatabaseCreationTests(SimpleTestCase):
-    def test_create_test_db_issues_no_sql(self):
+    def test_create_test_db_issues_no_sql_and_resets_over_http(self):
         wrapper = _wrapper()
         creation = wrapper.creation
-        with mock.patch.object(creation, "_nodb_cursor") as nodb_cursor:
+        fake, calls, names = _fake_http(existing={"test_opensalon"})
+        with mock.patch.object(creation, "_nodb_cursor") as nodb_cursor, \
+                mock.patch.object(creation, "_http_request", fake):
             name = creation._create_test_db(verbosity=0, autoclobber=False)
         self.assertEqual(name, "test_opensalon")
         nodb_cursor.assert_not_called()
+        methods = [c[0] for c in calls]
+        # drop, confirm absent, recreate -- in that order, HTTP only.
+        self.assertEqual(methods[0], "DELETE")
+        self.assertEqual(methods[-1], "POST")
+        self.assertIn("test_opensalon", names)
+
+    def test_create_test_db_keepdb_ensures_without_wiping(self):
+        wrapper = _wrapper()
+        creation = wrapper.creation
+        fake, calls, names = _fake_http(existing={"test_opensalon"})
+        with mock.patch.object(creation, "_http_request", fake):
+            name = creation._create_test_db(
+                verbosity=0, autoclobber=False, keepdb=True
+            )
+        self.assertEqual(name, "test_opensalon")
+        self.assertEqual([c[0] for c in calls], ["GET"])  # exists: no POST
 
     def test_execute_create_test_db_never_touches_cursor(self):
         wrapper = _wrapper()
+        creation = wrapper.creation
+        fake, calls, names = _fake_http()
         cursor = mock.Mock()
-        wrapper.creation._execute_create_test_db(cursor, {"dbname": "x"})
+        with mock.patch.object(creation, "_http_request", fake):
+            creation._execute_create_test_db(cursor, {"dbname": '"x"'})
         cursor.execute.assert_not_called()
+        self.assertEqual(calls, [("POST", "/v1/databases", {"name": "x"})])
 
-    def test_destroy_test_db_issues_no_sql(self):
+    def test_destroy_test_db_is_drop_plus_recreate_over_http(self):
         wrapper = _wrapper()
-        with mock.patch.object(wrapper.creation, "_nodb_cursor") as nodb_cursor:
-            wrapper.creation._destroy_test_db("test_opensalon", verbosity=0)
+        creation = wrapper.creation
+        fake, calls, names = _fake_http(existing={"test_opensalon"})
+        with mock.patch.object(creation, "_nodb_cursor") as nodb_cursor, \
+                mock.patch.object(creation, "_http_request", fake):
+            result = creation._destroy_test_db("test_opensalon", verbosity=0)
         nodb_cursor.assert_not_called()
+        self.assertEqual(result, "test_opensalon")
+        pairs = [(c[0], c[1]) for c in calls]
+        self.assertEqual(pairs[0], ("DELETE", "/v1/databases/test_opensalon"))
+        self.assertEqual(pairs[-1], ("POST", "/v1/databases"))
+        self.assertIn("test_opensalon", names)  # recreated empty
+
+    def test_drop_missing_database_is_success(self):
+        from opensalon.backends.nedb.creation import NedbHttpError
+
+        wrapper = _wrapper()
+        creation = wrapper.creation
+
+        def gone(method, path, payload=None):
+            raise NedbHttpError("missing", status=404)
+
+        with mock.patch.object(creation, "_http_request", gone):
+            self.assertFalse(creation.drop_database("nope"))
+
+    def test_create_http_failure_exits_like_postgres(self):
+        from opensalon.backends.nedb.creation import NedbHttpError
+
+        wrapper = _wrapper()
+        creation = wrapper.creation
+
+        def down(method, path, payload=None):
+            raise NedbHttpError("unreachable")
+
+        with mock.patch.object(creation, "_http_request", down), \
+                mock.patch.object(creation, "log", lambda *a: None):
+            with self.assertRaises(SystemExit):
+                creation._create_test_db(verbosity=0, autoclobber=False)
+
+    def test_http_base_url_defaults_to_spike_port(self):
+        wrapper = _wrapper()
+        with mock.patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(
+                wrapper.creation.http_base_url(), "http://127.0.0.1:17070"
+            )
+
+    def test_http_base_url_env_wins(self):
+        wrapper = _wrapper()
+        with mock.patch.dict("os.environ", {"NEDBD_URL": "http://db:9999/"}):
+            self.assertEqual(wrapper.creation.http_base_url(), "http://db:9999")
+
+    def test_clone_test_db_creates_empty_db_over_http(self):
+        wrapper = _wrapper()
+        creation = wrapper.creation
+        fake, calls, names = _fake_http()
+        with mock.patch.object(creation, "_http_request", fake):
+            creation._clone_test_db("2", verbosity=0)
+        self.assertIn("opensalon_2", names)
+
+
+class FlushNeverTruncateTests(SimpleTestCase):
+    def test_sql_flush_builds_no_statements(self):
+        from django.core.management.color import no_style
+
+        wrapper = _wrapper()
+        sql = wrapper.ops.sql_flush(
+            no_style(), ["saloncore_salon", "clients_client"],
+            reset_sequences=True, allow_cascade=True,
+        )
+        self.assertEqual(sql, [])
+        self.assertNotIn("TRUNCATE", " ".join(sql))
+
+    def test_execute_sql_flush_resets_database_over_http(self):
+        wrapper = _wrapper()
+        with mock.patch.object(
+            DatabaseCreation, "reset_database", autospec=True
+        ) as reset:
+            wrapper.ops.execute_sql_flush(["TRUNCATE anything;"])
+        reset.assert_called_once()
+        self.assertEqual(reset.call_args[0][1], "opensalon")
+
+
+@unittest.skipUnless(
+    os.environ.get("OPENSALON_NEDB_LIVE_TEST") == "1",
+    "live nedbd test-database lifecycle: set OPENSALON_NEDB_LIVE_TEST=1 "
+    "with nedbd running (HTTP 17070) and the NEDB backend configured",
+)
+class NedbTestDatabaseLifecycleLiveTests(SimpleTestCase):
+    """N-M3h acceptance against a real nedbd (guarded, never offline)."""
+
+    def test_create_reset_drop_over_http(self):
+        from django.db import connection
+
+        self.assertEqual(connection.display_name, "NEDB (PostgreSQL pgwire)")
+        creation = connection.creation
+        probe = "opensalon_nm3h_probe"
+        try:
+            self.assertTrue(creation.ensure_database(probe))
+            self.assertTrue(creation.database_exists(probe))
+            self.assertFalse(creation.ensure_database(probe))
+            creation.reset_database(probe)
+            self.assertTrue(creation.database_exists(probe))
+        finally:
+            creation.drop_database(probe)
+        self.assertFalse(creation.database_exists(probe))
 
 
 def _editor(catalog=None, collect_sql=False):
