@@ -93,7 +93,10 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 LANGUAGE_CODE = "en-us"
-TIME_ZONE = "UTC"
+# Deployment default timezone; a salon's own locale lives on
+# Salon.timezone. Set OPENSALON_TIME_ZONE to the salon-local zone
+# (e.g. America/New_York) for a single-salon deployment.
+TIME_ZONE = os.environ.get("OPENSALON_TIME_ZONE", "UTC")
 USE_I18N = True
 USE_TZ = True
 
