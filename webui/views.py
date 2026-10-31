@@ -277,7 +277,8 @@ def _day_book_context(request, *, light=False, kit=None):
     callers that need blocks and facts, not cards: the week
     pack's non-anchor days.
     """
-    salon = Salon.objects.order_by("id").first()
+    kit = kit or {}
+    salon = kit.get("salon") or Salon.objects.order_by("id").first()
     tz = _tz(salon) if salon is not None else timezone.get_current_timezone()
     # "Today" is the salon's today. The server clock (UTC) rolls into
     # tomorrow while the salon is still in its evening; a book that
@@ -334,12 +335,11 @@ def _day_book_context(request, *, light=False, kit=None):
     }
     categories = []
     if salon is not None:
-        categories = list(
+        categories = kit.get("categories") or list(
             ServiceCategory.objects.filter(salon=salon, active=True).order_by(
                 "sort_order", "name"
             )
         )
-        kit = kit or {}
         members = (
             kit["members"]
             if "members" in kit
@@ -373,7 +373,8 @@ def _day_book_context(request, *, light=False, kit=None):
                 )
                 .exclude(status=Appointment.Status.CANCELLED)
                 .select_related(
-                    "client", "staff_member", "service", "service__category"
+                    "client", "staff_member", "staff_member__staff_level",
+                    "service", "service__category"
                 )
                 .order_by("start")
             )
@@ -532,18 +533,34 @@ def _day_book_context(request, *, light=False, kit=None):
 
         # The roster book's instance layer: an override rules its
         # date in this book too (bands, minutes, openings follow).
-        day_overrides = {
-            o.staff_member_id: o
-            for o in ShiftOverride.objects.filter(staff_member__in=members, date=day)
-        }
+        # The pack's kit carries the whole week's overrides and
+        # breaks from two range queries; a lone day queries its
+        # own, exactly as before.
+        if "overrides" in kit:
+            day_overrides = kit["overrides"].get(day, {})
+        else:
+            day_overrides = {
+                o.staff_member_id: o
+                for o in ShiftOverride.objects.filter(
+                    staff_member__in=members, date=day
+                )
+            }
         block_index = 0
         # The day's breaks, grouped by stylist: drawn as their
         # own blocks and counted as busy time in the openings
         # math below — never as booked work.
+        if "breaks_week" in kit:
+            day_break_rows = [
+                br
+                for br in kit["breaks_week"]
+                if br.start < day_end and br.end > day_start
+            ]
+        else:
+            day_break_rows = Break.objects.filter(
+                staff_member__in=members, start__lt=day_end, end__gt=day_start
+            )
         day_breaks = {}
-        for br in Break.objects.filter(
-            staff_member__in=members, start__lt=day_end, end__gt=day_start
-        ):
+        for br in day_break_rows:
             day_breaks.setdefault(br.staff_member_id, []).append(br)
         total_booked, total_roster, total_openings = 0.0, 0.0, 0
         revenue, unpriced = Decimal("0"), 0
@@ -1973,7 +1990,8 @@ def day_book_pack(request):
     # pass over the week's clients — is computed here, once.
     week_appts = list(
         in_range.select_related(
-            "client", "staff_member", "service", "service__category"
+            "client", "staff_member", "staff_member__staff_level",
+            "service", "service__category"
         ).order_by("start")
     )
     client_ids = {row.pk: row.client_id for row in week_appts}
@@ -1988,10 +2006,32 @@ def day_book_pack(request):
         if week_client_ids
         else {}
     )
+    week_overrides = {}
+    for o in ShiftOverride.objects.filter(
+        staff_member__in=members, date__gte=week[0], date__lte=week[-1]
+    ):
+        week_overrides.setdefault(o.date, {})[o.staff_member_id] = o
+    week_breaks = list(
+        Break.objects.filter(
+            staff_member__in=members, start__lt=range_end, end__gt=range_start
+        )
+    )
     kit_base = {
         "members": members,
         "prices": _price_lookup(salon),
         "aggregates": aggregates,
+        # Shared facts the per-day contexts used to re-query
+        # seven times each: the salon itself, its categories,
+        # the week's overrides and breaks. On a scan-priced
+        # store every repeated round trip is real seconds.
+        "salon": salon,
+        "categories": list(
+            ServiceCategory.objects.filter(salon=salon, active=True).order_by(
+                "sort_order", "name"
+            )
+        ),
+        "overrides": week_overrides,
+        "breaks_week": week_breaks,
     }
     days = {}
     anchor_extra = {}
