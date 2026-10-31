@@ -114,4 +114,7 @@
   <p class="rb-law">No salon yet — import or create the salon first.</p>
   {% endfor %}
 </div>
+{{ roster_seed|json_script:"roster-seed" }}
+{% load static %}
+<script type="module" src="{% static 'webui/roster-store.js' %}?v={{ asset_v }}"></script>
 {% endblock %}

@@ -2336,19 +2336,21 @@ def placeholder(request, nav_key, title, lane_note):
 
 def _rb_place(member, day, weekly, start, end):
     """One place play under the switch law: ON writes the
-    perpetual pattern, OFF rules just this date."""
+    perpetual pattern, OFF rules just this date. A weekly
+    place returns the pattern's pk — the roster store chains
+    later plays (a move, a removal) onto it by that id."""
     if weekly:
-        RosterPattern.objects.get_or_create(
+        pat, _created = RosterPattern.objects.get_or_create(
             staff_member=member, weekday=day.weekday(),
             start_time=start, end_time=end,
         )
-    else:
-        ShiftOverride.objects.update_or_create(
-            staff_member=member, date=day,
-            defaults={
-                "is_off": False, "start_time": start, "end_time": end,
-            },
-        )
+        return pat.pk
+    ShiftOverride.objects.update_or_create(
+        staff_member=member, date=day,
+        defaults={
+            "is_off": False, "start_time": start, "end_time": end,
+        },
+    )
     return True
 
 
@@ -2363,7 +2365,7 @@ def _rb_move(member, day, weekly, pattern_pk, start, end):
             return False
         pat.start_time, pat.end_time = start, end
         pat.save(update_fields=["start_time", "end_time"])
-        return True
+        return pat.pk
     ShiftOverride.objects.update_or_create(
         staff_member=member, date=day,
         defaults={"is_off": False, "start_time": start, "end_time": end},
@@ -2535,6 +2537,37 @@ def roster_book(request):
                 else "",
             }
         )
+    def _mins(t):
+        return t.hour * 60 + t.minute if t is not None else None
+
+    # The roster store's hydration seed: the same patterns and
+    # overrides this page renders, in minutes — the embedded
+    # store takes the book's state from here at boot (HTTP is
+    # the recovery), and every gesture after that is a store
+    # play that drains to the apply endpoint.
+    roster_seed = {
+        "date": day.isoformat(),
+        "weekday": day.weekday(),
+        "patterns": [
+            {
+                "id": p.pk,
+                "member": p.staff_member_id,
+                "start_min": _mins(p.start_time),
+                "end_min": _mins(p.end_time),
+            }
+            for member_patterns in patterns.values()
+            for p in member_patterns
+        ],
+        "overrides": {
+            str(member_pk): {
+                "is_off": o.is_off,
+                "start_min": _mins(o.start_time),
+                "end_min": _mins(o.end_time),
+            }
+            for member_pk, o in overrides.items()
+        },
+        "apply_url": reverse("webui:roster_apply"),
+    }
     return render(
         request,
         "webui/roster_book.html",
@@ -2551,6 +2584,7 @@ def roster_book(request):
             "next_week": (day + datetime.timedelta(days=7)).isoformat(),
             "hours": hours,
             "columns": columns,
+            "roster_seed": roster_seed,
         },
     )
 
@@ -2595,7 +2629,14 @@ def _rb_apply_one(salon, op):
         applied = _rb_clear(member, day)
     else:
         return {"ok": False, "error": "unknown kind"}
-    return {"ok": True} if applied else {"ok": False, "error": "not applied"}
+    if not applied:
+        return {"ok": False, "error": "not applied"}
+    result = {"ok": True}
+    if isinstance(applied, int) and not isinstance(applied, bool):
+        # A weekly place/move names its pattern, so the store
+        # can chain the next play onto the real id at once.
+        result["pattern"] = applied
+    return result
 
 
 @require_POST

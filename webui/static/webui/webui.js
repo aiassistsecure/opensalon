@@ -2472,7 +2472,37 @@
         '.rb-colhead-cell[data-member="' + member + '"] form.rb-place'
       );
     }
+    function rbParse(hhmm) {
+      var p = String(hhmm || "").split(":");
+      return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0);
+    }
+    function rbDuration(mins) {
+      var h = Math.floor(mins / 60), m = mins % 60;
+      if (h && m) return h + "h " + m + "m";
+      return h ? h + "h" : m + "m";
+    }
+    /* The chain, on the roster book: when the roster store is
+       live, a gesture's play records there first (os:rplay) —
+       the store repaints the column from its own word and the
+       drain carries the play to the node behind. The form
+       post below survives only for a tab whose store never
+       woke, exactly as the day book keeps its server path. */
+    function rbPlay(fields) {
+      var op = {
+        kind: fields.action,
+        member: parseInt(fields.member, 10),
+        weekly: fields.weekly === "on",
+      };
+      if (fields.pattern) op.pattern = fields.pattern;
+      if (fields.start) op.start_min = rbParse(fields.start);
+      if (fields.end) op.end_min = rbParse(fields.end);
+      document.dispatchEvent(new CustomEvent("os:rplay", { detail: op }));
+    }
+    function rbStoreLive() {
+      return !!(window.OpenSalonRoster && window.OpenSalonRoster.ready);
+    }
     function rbPost(fields, csrfForm) {
+      if (rbStoreLive()) { rbPlay(fields); return; }
       var form = document.createElement("form");
       form.method = "post";
       form.action = window.location.pathname;
@@ -2545,7 +2575,7 @@
       });
     });
 
-    rbBook.querySelectorAll(".rb-shift").forEach(function (block) {
+    function rbBindShift(block) {
       block.addEventListener("pointerdown", function (ev) {
         if (ev.target.closest("form, button, label, input")) return;
         ev.preventDefault();
@@ -2581,6 +2611,133 @@
         window.addEventListener("pointermove", move);
         window.addEventListener("pointerup", up);
       });
+    }
+    rbBook.querySelectorAll(".rb-shift").forEach(rbBindShift);
+
+    /* The block controls and the head place form ride the
+       same chain when the store is live: their fields become
+       a play instead of a page reload. The switch in a weekly
+       block's Remove form keeps its law — off posts an
+       instance ruling, on removes the pattern everywhere. */
+    rbBook.addEventListener("submit", function (ev) {
+      if (!rbStoreLive()) return;
+      var fd = new FormData(ev.target);
+      var action = fd.get("action");
+      if (!action) return;
+      ev.preventDefault();
+      var fields = {
+        action: action,
+        member: fd.get("member"),
+        weekly: fd.get("weekly") != null ? "on" : "",
+      };
+      if (fd.get("pattern")) fields.pattern = fd.get("pattern");
+      if (fd.get("start")) fields.start = fd.get("start");
+      if (fd.get("end")) fields.end = fd.get("end");
+      rbPlay(fields);
+    });
+
+    function rbCsrf() {
+      var t = rbBook.querySelector('input[name="csrfmiddlewaretoken"]');
+      return t ? t.value : "";
+    }
+    function rbHidden(name, value) {
+      return '<input type="hidden" name="' + name + '" value="' + value + '">';
+    }
+    function rbBlockEl(member, date, band) {
+      var el = document.createElement("div");
+      el.className = "rb-shift src-" + band.source;
+      el.style.top = ((band.start_min - RB_START) / RB_SPAN * 100) + "%";
+      el.style.height = ((band.end_min - band.start_min) / RB_SPAN * 100) + "%";
+      el.dataset.start = rbHHMM(band.start_min);
+      el.dataset.end = rbHHMM(band.end_min);
+      el.dataset.source = band.source;
+      var html = '<div class="rb-shift-top"><span class="rb-shift-t">' +
+        rbLabel(band.start_min) + " \u2013 " + rbLabel(band.end_min) + "</span></div>";
+      if (band.source === "weekly") {
+        if (band.pattern != null) el.dataset.pattern = band.pattern;
+        html += '<form method="post" class="rb-ctl">' +
+          rbHidden("csrfmiddlewaretoken", rbCsrf()) +
+          '<span class="rb-chip">Every week</span>' +
+          rbHidden("action", "off") + rbHidden("member", member) +
+          rbHidden("date", date) +
+          (band.pattern != null ? rbHidden("pattern", band.pattern) : "") +
+          '<label class="rb-switch sm" title="On: remove from every week. Off: remove just this day.">' +
+          '<input type="checkbox" name="weekly" checked><span></span></label>' +
+          '<button class="rb-mini danger" type="submit">Remove</button></form>';
+      } else {
+        html += '<div class="rb-ctl"><span class="rb-chip">This day</span>' +
+          '<form method="post" class="rb-inline">' +
+          rbHidden("csrfmiddlewaretoken", rbCsrf()) +
+          rbHidden("action", "clear") + rbHidden("member", member) +
+          rbHidden("date", date) +
+          '<button class="rb-mini" type="submit">Undo</button></form>' +
+          '<form method="post" class="rb-inline">' +
+          rbHidden("csrfmiddlewaretoken", rbCsrf()) +
+          rbHidden("action", "off") + rbHidden("member", member) +
+          rbHidden("date", date) +
+          '<button class="rb-mini danger" type="submit">Day off</button></form></div>';
+      }
+      el.innerHTML = html;
+      return el;
+    }
+    /* Repaint one column from the store's word: the resolved
+       bands (or the day's off ruling) replace the body's
+       blocks wholesale, fresh blocks take the drag binding,
+       and the head's hours label follows. A column with a
+       drag in flight keeps its block — the drop's own play
+       repaints it. */
+    function rbPaintColumn(state) {
+      var body = rbBook.querySelector(
+        '.rb-body[data-member="' + state.member + '"]'
+      );
+      if (!body || body.querySelector(".rb-moving")) return;
+      body.querySelectorAll(".rb-shift, .rb-off, .rb-empty")
+        .forEach(function (el) { el.remove(); });
+      var date = rbBook.dataset.date;
+      if (state.off) {
+        var off = document.createElement("div");
+        off.className = "rb-off";
+        off.innerHTML = "Off \u2014 this day only " +
+          '<form method="post" class="rb-inline">' +
+          rbHidden("csrfmiddlewaretoken", rbCsrf()) +
+          rbHidden("action", "clear") + rbHidden("member", state.member) +
+          rbHidden("date", date) +
+          '<button class="rb-mini" type="submit">Undo</button></form>';
+        body.appendChild(off);
+      } else if (state.bands.length) {
+        state.bands.forEach(function (band) {
+          var el = rbBlockEl(state.member, date, band);
+          body.appendChild(el);
+          rbBindShift(el);
+        });
+      } else {
+        var empty = document.createElement("div");
+        empty.className = "rb-empty";
+        empty.innerHTML = "No hours<br><span>drag to add</span>";
+        body.appendChild(empty);
+      }
+      var cell = rbBook.querySelector(
+        '.rb-colhead-cell[data-member="' + state.member + '"]'
+      );
+      var util = cell ? cell.querySelector(".cutil") : null;
+      if (util) {
+        if (util.dataset.levelPart == null) {
+          var parts = util.textContent.split(" \u00b7 ");
+          if (parts.length > 1 &&
+              /^\d+h( \d+m)?$|^\d+m$/.test(parts[parts.length - 1].trim())) {
+            parts.pop();
+          }
+          util.dataset.levelPart = parts.join(" \u00b7 ");
+        }
+        util.textContent = (util.dataset.levelPart
+          ? util.dataset.levelPart + " \u00b7 " : "") +
+          (state.total_minutes ? rbDuration(state.total_minutes) : "");
+      }
+    }
+    document.addEventListener("os:rstate", function (event) {
+      if (event.detail && event.detail.member != null) {
+        rbPaintColumn(event.detail);
+      }
     });
   }
 })();
