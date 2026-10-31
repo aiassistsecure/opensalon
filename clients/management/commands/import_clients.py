@@ -9,6 +9,32 @@ The input is a JSON list of client objects with ``clientId``,
 ``emailMarketingConsent``, ``emailReminderConsent``,
 ``smsMarketingConsent`` and ``smsReminderConsent``.
 
+It ALSO accepts OpenSalon's own export shape (``export_clients`` /
+``clients.export.export_client``): ``external_id``, ``first_name``,
+``last_name``, ``email``, ``phone``, ``email_opt_in``, ``sms_opt_in``
+and ``active`` round-trip with field-level fidelity, so a salon can
+export its book and re-import it (e.g. on a new install) without
+losing names, phone, opt-ins, active state, or identity. A record
+is treated as export-shape when it carries any of ``external_id``,
+``first_name``, ``last_name``, ``phone``, ``email_opt_in`` or
+``sms_opt_in``. Identity rule for the export shape: ``external_id``
+is the natural key and the internal numeric ``id`` in an export
+record is NEVER used as ``external_id``; an export-shape record
+with a blank ``external_id`` is skipped and counted, exactly like
+a Phorest record with no stable id. The Phorest shape keeps its
+original ``clientId`` (falling back to ``id``) behaviour.
+
+Notes (export shape): a record's ``notes`` list, when present, is
+imported as persistent client record notes (``ClientNote``).
+Idempotency rule: a note is matched on (client, body, author_name)
+-- a re-import whose note has the same body and author for the
+same client creates no duplicate. ``ClientNote.created_at`` is
+``auto_now_add``, so it cannot be assigned on create; when an
+exported note carries a parseable ``created_at`` it is restored
+afterwards with a queryset ``update()``, but the date is not part
+of the match key (the model offers no settable timestamp to key
+on reliably at create time).
+
 Mapping (one source of truth — this command is the only writer here):
 
 - Client <- ``firstName`` / ``lastName`` / ``email``; ``mobile``
@@ -55,9 +81,65 @@ import json
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.db.models.query import QuerySet
+from django.utils.dateparse import parse_datetime
 
-from clients.models import Client
+from clients.models import Client, ClientNote
 from saloncore.models import Salon
+
+_EXPORT_KEYS = (
+    "external_id", "first_name", "last_name", "phone",
+    "email_opt_in", "sms_opt_in",
+)
+
+
+def _is_export_shape(row):
+    return any(key in row for key in _EXPORT_KEYS)
+
+
+def _parse_dt(value):
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        return parse_datetime(value.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+
+
+def _import_notes(salon, notes_by_external_id, stats):
+    """Create ClientNotes for imported records, idempotently.
+
+    Match rule: (client, body, author_name) — see module docstring.
+    """
+    for external_id, notes in notes_by_external_id.items():
+        if not notes:
+            continue
+        client = Client.objects.filter(
+            salon=salon, external_id=external_id).first()
+        if client is None:
+            stats["notes_skipped"] += len(notes)
+            continue
+        existing = {(n.body, n.author_name) for n in client.notes.all()}
+        for note in notes:
+            if not isinstance(note, dict):
+                stats["notes_skipped"] += 1
+                continue
+            raw_body = note.get("body")
+            body = str(raw_body) if raw_body else ""
+            if not body.strip():
+                stats["notes_skipped"] += 1
+                continue
+            author = _text(note, "author_name", 120)
+            if (body, author) in existing:
+                stats["notes_skipped"] += 1
+                continue
+            created = ClientNote.objects.create(
+                client=client, body=body, author_name=author)
+            parsed = _parse_dt(note.get("created_at"))
+            if parsed is not None:
+                ClientNote.objects.filter(pk=created.pk).update(
+                    created_at=parsed)
+            existing.add((body, author))
+            stats["notes_created"] += 1
 
 
 def _load_json(path):
@@ -135,7 +217,8 @@ class Command(BaseCommand):
             raise CommandError("Clients file must be a JSON list of clients.")
 
         stats = dict.fromkeys(
-            ["created", "updated", "skipped", "unchanged"], 0)
+            ["created", "updated", "skipped", "unchanged",
+             "notes_created", "notes_skipped"], 0)
         total = len(data)
         seen = 0
         with transaction.atomic():
@@ -152,6 +235,7 @@ class Command(BaseCommand):
             }
             batch = []
             pending = {}
+            notes_by_external_id = {}
             for row in data:
                 seen += 1
                 if total >= 1000 and seen % 500 == 0:
@@ -163,21 +247,42 @@ class Command(BaseCommand):
                 if row.get("archived") or row.get("deleted") or row.get("banned"):
                     stats["skipped"] += 1
                     continue
-                external_id = _text(row, "clientId", 64) or _text(row, "id", 64)
-                if not external_id:
-                    stats["skipped"] += 1
-                    continue
-                defaults = {
-                    "first_name": _text(row, "firstName", 80),
-                    "last_name": _text(row, "lastName", 80),
-                    "email": _text(row, "email", 254),
-                    "phone": _text(row, "mobile", 32),
-                    "email_opt_in": bool(row.get("emailMarketingConsent"))
-                    and bool(row.get("emailReminderConsent")),
-                    "sms_opt_in": bool(row.get("smsMarketingConsent"))
-                    and bool(row.get("smsReminderConsent")),
-                    "active": True,
-                }
+                if _is_export_shape(row):
+                    # Export shape: external_id is the ONLY identity;
+                    # the internal numeric ``id`` must never become it.
+                    external_id = _text(row, "external_id", 64)
+                    if not external_id:
+                        stats["skipped"] += 1
+                        continue
+                    defaults = {
+                        "first_name": _text(row, "first_name", 80),
+                        "last_name": _text(row, "last_name", 80),
+                        "email": _text(row, "email", 254),
+                        "phone": _text(row, "phone", 32),
+                        "email_opt_in": bool(row.get("email_opt_in")),
+                        "sms_opt_in": bool(row.get("sms_opt_in")),
+                        "active": bool(row.get("active", True)),
+                    }
+                else:
+                    external_id = _text(row, "clientId", 64) or _text(row, "id", 64)
+                    if not external_id:
+                        stats["skipped"] += 1
+                        continue
+                    defaults = {
+                        "first_name": _text(row, "firstName", 80),
+                        "last_name": _text(row, "lastName", 80),
+                        "email": _text(row, "email", 254),
+                        "phone": _text(row, "mobile", 32),
+                        "email_opt_in": bool(row.get("emailMarketingConsent"))
+                        and bool(row.get("emailReminderConsent")),
+                        "sms_opt_in": bool(row.get("smsMarketingConsent"))
+                        and bool(row.get("smsReminderConsent")),
+                        "active": True,
+                    }
+                notes = row.get("notes")
+                if isinstance(notes, list) and notes:
+                    notes_by_external_id.setdefault(
+                        external_id, []).extend(notes)
                 current = existing.get(external_id)
                 if current is not None and all(
                         current[key] == value
@@ -218,6 +323,7 @@ class Command(BaseCommand):
             if batch:
                 _flush_clients(batch)
                 batch.clear()
+            _import_notes(salon, notes_by_external_id, stats)
 
         self.stdout.write(
             "Imported clients for {salon}: {created} created, "
