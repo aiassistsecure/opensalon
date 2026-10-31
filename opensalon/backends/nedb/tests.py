@@ -1524,3 +1524,166 @@ class NedbJsonLiveTests(SimpleTestCase):
         receipt = Receipt.objects.get(sale=sale)
         self.assertEqual(receipt.lines, lines)
         self.assertEqual(receipt.tender, tender)
+
+
+# -- N-M8b: no Django path emits a ::json (non-b) cast ----------------
+#
+# DYOR 9.7 (cast VALUES refused by design) + 9.9 (verbatim JSON text)
+# + 9.1 (semantics layer only). Probe (evidence file cited in the PR):
+# source sweep found no Django construction of psycopg's Json wrapper
+# (the sole adaptation entry is adapt_json_value, already plain text
+# since N-M8a), and a live 16-shape battery sent only ::jsonb, once,
+# from a Cast in the SELECT list. Raw Json DOES mogrify to ::json and
+# NEDB refuses it as a VALUE -- so adapt_json_value unwraps any
+# Json/Jsonb wrapper a caller supplies, and the battery below pins
+# the no-::json finding against regression.
+
+import re as _re
+
+_NONB_JSON_CAST = _re.compile(r"::json(?!b)")
+
+
+def _compiled(qs):
+    wrapper = _wrapper()
+    return qs.query.get_compiler(connection=wrapper).as_sql()
+
+
+def _json_shape_battery():
+    from django.db.models import F, JSONField, Value
+    from django.db.models.functions import Cast
+
+    from checkout.models import Cashup, Receipt
+
+    totals = {"cash": "85.00"}
+    return {
+        "exact": Cashup.objects.filter(tender_totals=totals),
+        "contains": Cashup.objects.filter(tender_totals__contains=totals),
+        "contained_by": Cashup.objects.filter(
+            tender_totals__contained_by=totals
+        ),
+        "has_key": Cashup.objects.filter(tender_totals__has_key="cash"),
+        "has_keys": Cashup.objects.filter(tender_totals__has_keys=["cash"]),
+        "has_any_keys": Cashup.objects.filter(
+            tender_totals__has_any_keys=["cash"]
+        ),
+        "key_exact": Cashup.objects.filter(tender_totals__cash="85.00"),
+        "key_gt": Cashup.objects.filter(tender_totals__cash__gt="10"),
+        "key_in": Cashup.objects.filter(tender_totals__cash__in=["85.00"]),
+        "order_by_key": Cashup.objects.order_by("tender_totals__cash"),
+        "values_key": Cashup.objects.values("tender_totals__cash"),
+        "annotate_value": Cashup.objects.annotate(
+            v=Value({"a": 1}, output_field=JSONField())
+        ),
+        "cast_to_jsonfield": Cashup.objects.annotate(
+            v=Cast(F("tender_totals"), output_field=JSONField())
+        ),
+        "receipt_contains": Receipt.objects.filter(
+            lines__contains=[{"a": 1}]
+        ),
+    }
+
+
+class JsonNonBCastBatteryTests(SimpleTestCase):
+    def test_no_shape_emits_a_nonb_json_cast(self):
+        for name, qs in _json_shape_battery().items():
+            sql, params = _compiled(qs)
+            with self.subTest(shape=name):
+                self.assertIsNone(_NONB_JSON_CAST.search(sql))
+                self.assertFalse(
+                    any(
+                        type(p).__name__ in ("Json", "Jsonb")
+                        for p in params
+                    )
+                )
+
+    def test_cast_shape_emits_jsonb_only(self):
+        # Pin the one cast the battery does produce: ::jsonb in the
+        # SELECT list (accepted live), never its ::json sibling.
+        sql, _params = _compiled(
+            _json_shape_battery()["cast_to_jsonfield"]
+        )
+        self.assertIn("::jsonb", sql)
+
+    def test_update_shape_param_is_plain_text(self):
+        from django.db.models import Q
+        from django.db.models.sql.subqueries import UpdateQuery
+
+        from checkout.models import Cashup
+
+        wrapper = _wrapper()
+        query = UpdateQuery(Cashup)
+        query.add_update_values({"tender_totals": {"cash": "1.00"}})
+        query.add_q(Q(pk=1))
+        sql, params = query.get_compiler(connection=wrapper).as_sql()
+        self.assertIsNone(_NONB_JSON_CAST.search(sql))
+        self.assertIn('{"cash": "1.00"}', params)
+
+
+class JsonWrapperGuardTests(SimpleTestCase):
+    def test_psycopg_json_wrapper_unwraps_to_plain_text(self):
+        from psycopg.types.json import Json
+
+        wrapper = _wrapper()
+        adapted = wrapper.ops.adapt_json_value(Json({"cash": "85.00"}), None)
+        self.assertEqual(adapted, '{"cash": "85.00"}')
+
+    def test_psycopg_jsonb_wrapper_unwraps_to_plain_text(self):
+        from psycopg.types.json import Jsonb
+
+        wrapper = _wrapper()
+        adapted = wrapper.ops.adapt_json_value(Jsonb([{"a": 1}]), None)
+        self.assertEqual(adapted, '[{"a": 1}]')
+
+    def test_wrapper_custom_dumps_is_honoured(self):
+        from psycopg.types.json import Json
+
+        wrapper = _wrapper()
+        adapted = wrapper.ops.adapt_json_value(
+            Json({"a": 1}, dumps=lambda obj: '{"custom": true}'), None
+        )
+        self.assertEqual(adapted, '{"custom": true}')
+
+
+@unittest.skipUnless(
+    os.environ.get("OPENSALON_NEDB_LIVE_TEST") == "1",
+    "live nedbd ::json guard test: set OPENSALON_NEDB_LIVE_TEST=1 "
+    "with the default connection on the NEDB backend (nedbd running)",
+)
+class NedbJsonNonBLiveTests(SimpleTestCase):
+    """N-M8b acceptance against a real nedbd (guarded, never offline).
+
+    Before the guard, a Json-wrapper value died in adaptation with
+    TypeError; a raw one would have been refused as a ::json VALUE.
+    """
+
+    databases = {"default"}
+
+    def test_json_wrapper_value_round_trips_on_live_nedb(self):
+        from django.db import connection
+
+        self.assertEqual(connection.display_name, "NEDB (PostgreSQL pgwire)")
+        from psycopg.types.json import Json
+
+        from checkout.models import Cashup
+        from saloncore.models import Salon
+
+        salon = Salon.objects.create(name="NonB Probe Salon", timezone="UTC")
+        cashup = Cashup.objects.create(
+            salon=salon,
+            period_start=AWARE_DT,
+            period_end=AWARE_DT,
+            tender_totals={"cash": "85.00"},
+            note="",
+        )
+        rows = list(
+            Cashup.objects.filter(
+                pk=cashup.pk, tender_totals=Json({"cash": "85.00"})
+            )
+        )
+        # NEDB stores JSON as a text scalar; exact-match semantics on
+        # it are a separate known surface -- the pin here is only
+        # that the wrapper value is adapted (no TypeError, no cast
+        # refusal) and the query executes.
+        self.assertIsInstance(rows, list)
+        fresh = Cashup.objects.get(pk=cashup.pk)
+        self.assertEqual(fresh.tender_totals, {"cash": "85.00"})
