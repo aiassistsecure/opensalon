@@ -74,6 +74,31 @@ def _text(row, key, limit):
     return str(value).strip()[:limit] if value else ""
 
 
+def _flush_clients(batch):
+    """Write a batch of new clients in one multi-row insert.
+
+    Falls back to per-row writes if the backend refuses the batch,
+    so a backend that cannot take multi-row inserts still imports
+    correctly, just slower. The fallback is idempotent, so a batch
+    that partially applied before failing still heals.
+    """
+    try:
+        Client.objects.bulk_create(batch, batch_size=200)
+    except Exception:
+        for client in batch:
+            Client.objects.update_or_create(
+                salon=client.salon, external_id=client.external_id,
+                defaults={
+                    "first_name": client.first_name,
+                    "last_name": client.last_name,
+                    "email": client.email,
+                    "phone": client.phone,
+                    "email_opt_in": client.email_opt_in,
+                    "sms_opt_in": client.sms_opt_in,
+                    "active": client.active,
+                })
+
+
 class Command(BaseCommand):
     help = "Import clients from a Phorest-style clients JSON export."
 
@@ -105,6 +130,7 @@ class Command(BaseCommand):
                 .values("external_id", "first_name", "last_name", "email",
                         "phone", "email_opt_in", "sms_opt_in", "active")
             }
+            batch = []
             for row in data:
                 seen += 1
                 if total >= 1000 and seen % 500 == 0:
@@ -137,12 +163,28 @@ class Command(BaseCommand):
                         for key, value in defaults.items()):
                     stats["unchanged"] += 1
                     continue
-                _, created = Client.objects.update_or_create(
-                    salon=salon, external_id=external_id,
-                    defaults=defaults)
-                stats["created" if created else "updated"] += 1
+                if current is not None:
+                    # Changed rows are rare; they keep the exact
+                    # update-in-place path.
+                    Client.objects.update_or_create(
+                        salon=salon, external_id=external_id,
+                        defaults=defaults)
+                    stats["updated"] += 1
+                else:
+                    # New rows are the bulk of a first import: batch
+                    # them into multi-row inserts instead of paying a
+                    # select+insert round trip per row.
+                    batch.append(Client(
+                        salon=salon, external_id=external_id, **defaults))
+                    stats["created"] += 1
+                    if len(batch) >= 200:
+                        _flush_clients(batch)
+                        batch.clear()
                 existing[external_id] = {"external_id": external_id,
                                          **defaults}
+            if batch:
+                _flush_clients(batch)
+                batch.clear()
 
         self.stdout.write(
             "Imported clients for {salon}: {created} created, "
