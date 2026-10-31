@@ -23,6 +23,7 @@ send is attempted for a skipped appointment.
 from dataclasses import dataclass, field
 
 from .email_reminders import DEFAULT_WINDOW, REMINDABLE_STATUSES, due_appointments
+from .models import ReminderSend
 from .reminders import ReminderResult, send_sms_reminder
 
 __all__ = [
@@ -76,6 +77,9 @@ def send_due_sms_reminders(now=None, within=DEFAULT_WINDOW, appointments=None,
         summary.results.append(result)
         if result.sent:
             summary.sent += 1
+            ReminderSend.record(
+                appointment, channel="sms", detail=result.reference
+            )
         elif result.reason == "not_opted_in":
             summary.skipped_not_opted_in += 1
         elif result.reason == "missing_phone":
