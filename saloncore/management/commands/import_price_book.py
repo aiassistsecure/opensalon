@@ -194,7 +194,11 @@ def _normalise_csv_rows(rows):
             skipped += 1
             continue
         service_fields = {
-            "name": row["service_name"].strip(),
+            # Verbatim, never stripped: service names must round-trip
+            # byte-for-byte through export -> import (real names carry
+            # trailing spaces). The blank-row skip above judges
+            # emptiness with strip(); the stored name does not.
+            "name": row["service_name"],
             "cat_name": (row.get("category_name") or "").strip()
                         or "Uncategorized",
             "external_id": str(row.get("external_id") or "").strip()[:64],
