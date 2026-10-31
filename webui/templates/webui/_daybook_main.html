@@ -1,4 +1,4 @@
-<div class="book-layout" data-date="{{ day|date:'Y-m-d' }}" data-fragment="{% url 'webui:daybook_fragment' %}">
+<div class="book-layout" data-date="{{ day|date:'Y-m-d' }}" data-fragment="{% url 'webui:daybook_fragment' %}" data-move="{% url 'webui:daybook_move' %}">{% csrf_token %}
   <div class="book-main">
     <section class="day-head">
       <div class="day-title-wrap">
@@ -67,7 +67,7 @@
             {% for hour in hours %}<span class="hourlbl" style="top:{{ hour.top }}%">{{ hour.label }}</span>{% endfor %}
           </div>
           {% for col in staff_columns %}
-          <div class="db-column{% if not col.on_duty %} offduty{% endif %}" id="col-{{ forloop.counter0 }}">
+          <div class="db-column{% if not col.on_duty %} offduty{% endif %}" id="col-{{ forloop.counter0 }}" data-member="{{ col.member.pk }}">
             {% for band in col.bands %}<div class="band" style="top:{{ band.top }}%;height:{{ band.height }}%"></div>{% endfor %}
             {% for block in col.blocks %}{% include "webui/_block.html" %}{% endfor %}
             {% if col.on_duty and not col.blocks %}<div class="open-label">Open for bookings</div>{% endif %}

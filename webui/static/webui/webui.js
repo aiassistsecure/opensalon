@@ -105,6 +105,118 @@
     }
   }
 
+  /* ---- drag a visit to another chair or a new time ----
+     Pointer-driven so mouse and touch behave the same. The tile
+     lifts out of its column and follows the pointer; a ghost in
+     the target column shows the snapped landing spot (5-minute
+     increments, the visit's whole stack moving as one piece).
+     On drop the move posts to the server and the day re-reads —
+     the book never keeps a position the server did not save. */
+  function bindDrag() {
+    document.querySelectorAll(".db-column .appt-block").forEach(function (tile) {
+      tile.addEventListener("pointerdown", function (event) {
+        if (event.button !== undefined && event.button !== 0) return;
+        var grid = tile.closest(".gridwrap");
+        var col = tile.closest(".db-column");
+        var layout = tile.closest(".book-layout");
+        if (!grid || !col || !layout) return;
+        var startX = event.clientX, startY = event.clientY;
+        var engaged = false, ghost = null;
+        var tileRect = tile.getBoundingClientRect();
+        var gridRect = grid.getBoundingClientRect();
+        var grabDX = event.clientX - tileRect.left;
+        var grabDY = event.clientY - tileRect.top;
+        var winMin = 12 * 60, dayStartMin = 8 * 60;
+        var startMin0 = parseInt(tile.dataset.startMin || "0", 10);
+        var durMin = Math.max(5, Math.round(tileRect.height / gridRect.height * winMin));
+        var originMember = col.dataset.member;
+        var target = { member: originMember, startMin: startMin0 };
+        var origTop = tile.style.top, origHeight = tile.style.height;
+
+        function fmt(mins) {
+          var h = Math.floor(mins / 60), m = mins % 60;
+          var ap = h < 12 ? "AM" : "PM", h12 = h % 12 || 12;
+          return m ? h12 + ":" + (m < 10 ? "0" : "") + m + " " + ap : h12 + " " + ap;
+        }
+        function engage() {
+          engaged = true;
+          tile.classList.add("dragging");
+          tile.style.width = tileRect.width + "px";
+          tile.style.height = tileRect.height + "px";
+          tile.style.left = tileRect.left + "px";
+          tile.style.top = tileRect.top + "px";
+          document.body.appendChild(tile);
+          ghost = document.createElement("div");
+          ghost.className = "drop-ghost";
+          ghost.innerHTML = '<span class="ghost-time"></span>';
+          ghost.style.top = origTop;
+          ghost.style.height = origHeight;
+          col.appendChild(ghost);
+          try { tile.setPointerCapture(event.pointerId); } catch (e) {}
+        }
+        function onMove(e) {
+          if (!engaged) {
+            if (Math.abs(e.clientX - startX) + Math.abs(e.clientY - startY) < 7) return;
+            engage();
+          }
+          tile.style.left = (e.clientX - grabDX) + "px";
+          tile.style.top = (e.clientY - grabDY) + "px";
+          var el = document.elementFromPoint(e.clientX, e.clientY);
+          var tcol = el ? el.closest(".db-column") : null;
+          if (tcol) {
+            target.member = tcol.dataset.member;
+            if (ghost.parentElement !== tcol) tcol.appendChild(ghost);
+          }
+          var mins = (e.clientY - grabDY - gridRect.top) / gridRect.height * winMin;
+          var snapped = Math.round(mins / 5) * 5;
+          snapped = Math.max(0, Math.min(snapped, winMin - durMin));
+          target.startMin = snapped;
+          ghost.style.top = (snapped / winMin * 100) + "%";
+          ghost.querySelector(".ghost-time").textContent =
+            fmt(dayStartMin + snapped) + (target.member !== originMember ? " · new stylist" : "");
+        }
+        function finish(commit) {
+          tile.removeEventListener("pointermove", onMove);
+          tile.removeEventListener("pointerup", onUp);
+          tile.removeEventListener("pointercancel", onCancel);
+          if (!engaged) return;
+          if (ghost) ghost.remove();
+          var changed = target.member !== originMember || target.startMin !== startMin0;
+          if (commit && changed) {
+            var tokenEl = layout.querySelector('input[name="csrfmiddlewaretoken"]');
+            fetch(layout.dataset.move, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "X-CSRFToken": tokenEl ? tokenEl.value : "",
+              },
+              body: JSON.stringify({
+                appointment_id: parseInt(tile.dataset.appt, 10),
+                staff_member_id: parseInt(target.member, 10),
+                start_minutes: dayStartMin + target.startMin,
+              }),
+            }).then(function () { refreshDay(); }).catch(function () { refreshDay(); });
+          } else {
+            refreshDay();
+          }
+        }
+        function onUp() { finish(true); }
+        function onCancel() { finish(false); }
+        tile.addEventListener("pointermove", onMove);
+        tile.addEventListener("pointerup", onUp);
+        tile.addEventListener("pointercancel", onCancel);
+      });
+    });
+  }
+
+  function refreshDay() {
+    if (!currentDate || !fragmentBase) { window.location.reload(); return; }
+    delete hotCache[currentDate];
+    fetchFragment(currentDate).then(function () {
+      swapTo(currentDate, false);
+    }).catch(function () { window.location.reload(); });
+  }
+
   /* Bind everything that lives inside the day-book layout. Runs
      on first load and again after every hot-range swap, because a
      swap replaces the layout node wholesale. */
@@ -130,6 +242,8 @@
         }
       });
     });
+
+    bindDrag();
 
     // Mark the server-rendered default appointment as selected.
     if (railEl && railEl.getAttribute("data-current")) {
