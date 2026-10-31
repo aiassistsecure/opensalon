@@ -915,6 +915,9 @@
       el.classList.add("status-" + entry.status);
       el.dataset.status = entry.status;
     }
+    el.classList.toggle("is-new", !!entry.is_new);
+    var newChip = el.querySelector(".b-new");
+    if (newChip) newChip.style.display = entry.is_new ? "" : "none";
     var timeLabel = entry.time_label ||
       (fmtClock(entry.start_min) + " – " + fmtClock(entry.end_min));
     var timeEl = el.querySelector(".b-time");
@@ -943,7 +946,8 @@
      a new appointment without rebuilding the page. */
   function renderBlock(entry) {
     var el = document.createElement("article");
-    el.className = "appt-block cat-" + entry.cat + " status-" + entry.status;
+    el.className = "appt-block cat-" + entry.cat + " status-" + entry.status +
+      (entry.is_new ? " is-new" : "");
     el.setAttribute("tabindex", "0");
     el.setAttribute("role", "button");
     el.dataset.appt = String(entry.id);
@@ -951,6 +955,7 @@
     el.dataset.status = entry.status;
     el.innerHTML =
       '<div class="b-top"><span class="b-time"></span>' +
+      '<span class="b-new" style="display:none">New</span>' +
       '<span class="b-ico" aria-hidden="true"></span></div>' +
       '<div class="b-client"></div>' +
       '<div class="b-services"><div class="b-service"></div></div>';

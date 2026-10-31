@@ -372,6 +372,15 @@ def _day_book_context(request):
             .values("client_id")
             .annotate(n=Count("id"))
         }
+        # First-visit days, one rule shared by the ribbon's new
+        # count and the blocks' new-guest highlight: a client is
+        # new on the day of their first-ever appointment.
+        first_days = {
+            row["client_id"]: row["first"].astimezone(tz).date()
+            for row in Appointment.objects.filter(client_id__in=client_ids)
+            .values("client_id")
+            .annotate(first=Min("start"))
+        }
         client_notes = {}
         for note in ClientNote.objects.filter(client_id__in=client_ids).order_by(
             "-created_at"
@@ -514,6 +523,10 @@ def _day_book_context(request):
                         "service_name": raw.service_name,
                         "category_name": raw.service_category_name,
                         "cat_key": slugify(raw.service_category_name) or "misc",
+                        "is_new": (
+                            appt is not None
+                            and first_days.get(appt.client_id) == day
+                        ),
                         "status": raw.status,
                         "status_label": _STATUS_LABELS.get(raw.status, raw.status),
                         "top": _pct(start, day_start, day_end),
@@ -1357,6 +1370,7 @@ def day_book_pack(request):
                     "client": tile["client_name"],
                     "service": tile["service_name"],
                     "cat": tile["cat_key"],
+                    "is_new": tile["is_new"],
                     "start_min": start.hour * 60 + start.minute,
                     "end_min": end.hour * 60 + end.minute,
                     "status": tile["status"],
