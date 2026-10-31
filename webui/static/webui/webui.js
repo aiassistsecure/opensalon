@@ -455,6 +455,44 @@
     prefetchAround(currentDate);
   }
 
+  /* ---- freshness poll ----
+     The book is shared: another desk's booking, a check-in from
+     the rail down the hall, an online reservation — an open
+     screen must learn about them without being asked. The
+     client polls the pack's version stamp (a one-line answer
+     when nothing changed) and re-reads the day only when the
+     world actually moved. Polling pauses while a drag is in
+     hand: the hand outranks the mirror. */
+  var packVersion = null;
+  var pollBusy = false;
+  function pollPack() {
+    if (pollBusy || document.hidden) return;
+    if (document.querySelector(".appt-block.dragging")) return;
+    pollBusy = true;
+    var url = "/daybook/pack/?date=" + encodeURIComponent(currentDate || "") +
+      (packVersion ? "&stamp=" + encodeURIComponent(packVersion) : "");
+    fetch(url)
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (!data.version) return;
+        if (packVersion === null) {
+          packVersion = data.version;
+        } else if (data.changed) {
+          packVersion = data.version;
+          refreshDay(railEl ? railEl.getAttribute("data-current") : null);
+        }
+      })
+      .catch(function () {})
+      .finally(function () { pollBusy = false; });
+  }
+  if (layoutEl) {
+    pollPack();
+    setInterval(pollPack, 25000);
+    document.addEventListener("visibilitychange", function () {
+      if (!document.hidden) pollPack();
+    });
+  }
+
   bindBook();
 })();
 
