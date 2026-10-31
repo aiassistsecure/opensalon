@@ -8,8 +8,9 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from bookings.models import Appointment
+from bookings.models import Appointment, AppointmentNote
 from clients.models import Client, ClientNote
+from webui.views import _amount_for, _price_lookup
 from saloncore.models import Salon, Service, ServiceCategory, ServicePrice, StaffLevel
 from team.models import RosterPattern, StaffMember
 
@@ -587,6 +588,146 @@ class ApplyBatchTests(WritePathTests):
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 400)
+
+
+class CardEditTests(WritePathTests):
+    """The client card's editors: prices and notes, one law for
+    the single-op endpoints and the batch drain alike."""
+
+    def test_price_single_op_sets_and_clears_override(self):
+        appt = self._make_appt()
+        response = self._post(
+            "webui:daybook_price", {"appointment_id": appt.pk, "price": "72.50"}
+        )
+        self.assertEqual(response.status_code, 200)
+        appt.refresh_from_db()
+        self.assertEqual(appt.price_override, Decimal("72.50"))
+        # The card's price wins over the book everywhere it is read.
+        prices, base_id = _price_lookup(self.salon)
+        self.assertEqual(_amount_for(appt, prices, base_id), Decimal("72.50"))
+        response = self._post(
+            "webui:daybook_price", {"appointment_id": appt.pk, "price": ""}
+        )
+        self.assertEqual(response.status_code, 200)
+        appt.refresh_from_db()
+        self.assertIsNone(appt.price_override)
+
+    def test_price_rejects_bad_money(self):
+        appt = self._make_appt()
+        for bad in ("abc", "-5", "NaN", "100000"):
+            response = self._post(
+                "webui:daybook_price", {"appointment_id": appt.pk, "price": bad}
+            )
+            self.assertEqual(response.status_code, 400, bad)
+        appt.refresh_from_db()
+        self.assertIsNone(appt.price_override)
+
+    def test_price_via_batch_drain(self):
+        appt = self._make_appt()
+        response = self.client.post(
+            reverse("webui:daybook_apply"),
+            data=json.dumps(
+                {"ops": [{"kind": "price", "id": appt.pk, "price": "88"}]}
+            ),
+            content_type="application/json",
+        )
+        self.assertTrue(response.json()["ok"])
+        appt.refresh_from_db()
+        self.assertEqual(appt.price_override, Decimal("88.00"))
+
+    def test_notes_two_kinds_never_blur(self):
+        appt = self._make_appt()
+        other = self._make_appt(start_hour=12, end_hour=13)
+        response = self._post(
+            "webui:daybook_note",
+            {"appointment_id": appt.pk, "scope": "appt", "body": "Allergic to X"},
+        )
+        self.assertEqual(response.status_code, 200)
+        response = self._post(
+            "webui:daybook_note",
+            {"appointment_id": appt.pk, "scope": "client", "body": "Prefers quiet"},
+        )
+        self.assertEqual(response.status_code, 200)
+        note = AppointmentNote.objects.get(appointment=appt)
+        self.assertEqual(note.body, "Allergic to X")
+        self.assertEqual(
+            ClientNote.objects.get(client=self.person, body="Prefers quiet").body,
+            "Prefers quiet",
+        )
+        # Edit reaches only the note that belongs to its target.
+        response = self._post(
+            "webui:daybook_note",
+            {
+                "appointment_id": other.pk,
+                "scope": "appt",
+                "note_id": note.pk,
+                "body": "Hijacked",
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        note.refresh_from_db()
+        self.assertEqual(note.body, "Allergic to X")
+        response = self._post(
+            "webui:daybook_note",
+            {
+                "appointment_id": appt.pk,
+                "scope": "appt",
+                "note_id": note.pk,
+                "body": "Allergic to Y",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        note.refresh_from_db()
+        self.assertEqual(note.body, "Allergic to Y")
+
+    def test_writes_stamp_themselves(self):
+        """The pack version is (count, max updated_at): a desk
+        write that leaves updated_at standing still tells every
+        polling client 'nothing changed' and the mirror never
+        converges. Each write core must move its own stamp."""
+        appt = self._make_appt()
+        before = appt.updated_at
+        response = self._post(
+            "webui:daybook_status", {"appointment_id": appt.pk, "status": "arrived"}
+        )
+        self.assertEqual(response.status_code, 200)
+        appt.refresh_from_db()
+        self.assertGreater(appt.updated_at, before)
+        before = appt.updated_at
+        response = self._post(
+            "webui:daybook_price", {"appointment_id": appt.pk, "price": "70"}
+        )
+        self.assertEqual(response.status_code, 200)
+        appt.refresh_from_db()
+        self.assertGreater(appt.updated_at, before)
+
+    def test_pack_version_moves_after_a_drained_write(self):
+        appt = self._make_appt()
+        pack_url = reverse("webui:daybook_pack") + "?date=2026-11-02"
+        v1 = self.client.get(pack_url).json()["version"]
+        response = self.client.post(
+            reverse("webui:daybook_apply"),
+            data=json.dumps(
+                {"ops": [{"kind": "status", "id": appt.pk, "status": "arrived"}]}
+            ),
+            content_type="application/json",
+        )
+        self.assertTrue(response.json()["ok"])
+        data = self.client.get(pack_url).json()
+        self.assertNotEqual(data["version"], v1)
+        entry = [
+            e for e in data["days"]["2026-11-02"] if e["id"] == appt.pk
+        ][0]
+        self.assertEqual(entry["status"], "arrived")
+
+    def test_note_rejects_empty_and_unknown_scope(self):
+        appt = self._make_appt()
+        for payload in (
+            {"appointment_id": appt.pk, "scope": "appt", "body": "  "},
+            {"appointment_id": appt.pk, "scope": "visit", "body": "Hi"},
+        ):
+            response = self._post("webui:daybook_note", payload)
+            self.assertEqual(response.status_code, 400, payload)
 
 
 class ShadowStoreTests(WebuiTestBase):

@@ -746,6 +746,39 @@ body.os-dragging, body.os-dragging * {
   padding: 3px 9px; border-radius: 999px; box-shadow: 0 4px 12px rgba(8, 8, 26, .35);
 }
 
+/* ---------- the card's editors (prices + notes) ---------- */
+.price-edit {
+  font: inherit; font-weight: inherit; color: inherit; background: none;
+  border: 0; padding: 0 1px; cursor: text; font-variant-numeric: tabular-nums;
+  border-bottom: 1px dashed color-mix(in srgb, currentColor 45%, transparent);
+}
+.price-edit:hover { border-bottom-style: solid; }
+.price-dot { color: #b98a2f; font-weight: 700; }
+.price-editor { display: inline-flex; flex-direction: column; gap: 3px; }
+.price-input {
+  font: inherit; font-variant-numeric: tabular-nums; width: 92px;
+  padding: 3px 7px; border-radius: 7px; border: 1px solid rgba(0, 122, 255, .55);
+  outline: none; background: #fff; color: #1d2530;
+}
+.price-hint { font-size: 10.5px; opacity: .62; white-space: nowrap; }
+.note-box { display: flex; gap: 8px; align-items: flex-start; }
+.note-box .note-body { flex: 1; }
+.note-edit, .note-add {
+  font: inherit; font-size: 11.5px; font-weight: 600; cursor: pointer;
+  background: none; border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
+  border-radius: 999px; padding: 2px 9px; color: inherit; flex: none;
+}
+.note-add { margin: 6px 0 2px; border-style: dashed; }
+.note-edit:hover, .note-add:hover { border-color: currentColor; }
+.note-editor { margin-top: 8px; }
+.note-input {
+  font: inherit; width: 100%; box-sizing: border-box; resize: vertical;
+  padding: 7px 9px; border-radius: 9px; border: 1px solid rgba(0, 122, 255, .55);
+  outline: none; background: #fff; color: #1d2530;
+}
+.note-tools { display: flex; gap: 8px; margin-top: 6px; }
+.note-tools .btn-grad, .note-tools .btn-ghost { font-size: 12.5px; padding: 5px 12px; }
+
 /* ---------- collapsible sidebar ---------- */
 .app { transition: grid-template-columns .18s ease; }
 .side { overflow: hidden; }
