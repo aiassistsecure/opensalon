@@ -67,6 +67,14 @@ this backend is the drop + recreate above, which does isolate.
   a per-field Decimal converter (``decimalfield.py``) -- read-path
   only, following implications 1/9; the write path stays numeric
   because decimal strings compare lexicographically on NEDB.
+
+* Relation materialization (N-M8c, implication 3): a catalogued
+  collection that has never been written does not exist as a
+  relation for NEDB's write path (DELETE/UPDATE) or JOIN
+  resolution, so ``creation.py`` materializes every catalogued
+  collection empty (sentinel put + tombstone, one batch call) on
+  database reset, and ``schema.py`` materializes each CREATE
+  TABLE's collection at migrate time.
 """
 
 from django.db.backends.postgresql.base import (

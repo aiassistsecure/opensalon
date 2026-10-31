@@ -108,6 +108,8 @@ def _fake_http(existing=()):
         if method == "POST" and path == "/v1/databases":
             names.add(payload["name"])
             return {"database": {"name": payload["name"]}}
+        if method == "POST" and path.endswith("/batch"):
+            return {"results": [], "count": len(payload["ops"])}
         if method == "DELETE" and path.startswith("/v1/databases/"):
             names.discard(path.rsplit("/", 1)[1])
             return {}
@@ -164,7 +166,11 @@ class TestDatabaseCreationTests(SimpleTestCase):
         self.assertEqual(result, "test_opensalon")
         pairs = [(c[0], c[1]) for c in calls]
         self.assertEqual(pairs[0], ("DELETE", "/v1/databases/test_opensalon"))
-        self.assertEqual(pairs[-1], ("POST", "/v1/databases"))
+        self.assertEqual(pairs[-2], ("POST", "/v1/databases"))
+        # N-M8c: the recreate is followed by catalog materialization.
+        self.assertEqual(
+            pairs[-1], ("POST", "/v1/databases/test_opensalon/batch")
+        )
         self.assertIn("test_opensalon", names)  # recreated empty
 
     def test_drop_missing_database_is_success(self):
@@ -1687,3 +1693,154 @@ class NedbJsonNonBLiveTests(SimpleTestCase):
         self.assertIsInstance(rows, list)
         fresh = Cashup.objects.get(pk=cashup.pk)
         self.assertEqual(fresh.tender_totals, {"cash": "85.00"})
+
+
+# -- N-M8c: relation materialization (DYOR 9.3) -----------------------
+#
+# A catalogued collection that has never been written does not exist
+# as a relation for NEDB's write path (DELETE/UPDATE) or its SQL
+# evaluator's JOIN resolution: relation "<table>" does not exist
+# (live-suite signature #2, x37). CREATE TABLE's semantics
+# equivalent is materializing the empty collection -- sentinel put
+# + tombstone delete in one CAS batch call (creation.py), applied
+# on reset (flush/test-DB lifecycle) and at CREATE TABLE time
+# (schema.py). Probe: nedb-relation-probe-2026-10-31.md.
+
+
+class MaterializeCollectionsTests(SimpleTestCase):
+    def test_one_batch_call_with_put_del_pair_per_table(self):
+        wrapper = _wrapper()
+        creation = wrapper.creation
+        fake, calls, names = _fake_http()
+        with mock.patch.object(creation, "_http_request", fake):
+            count = creation.materialize_collections(
+                "test_opensalon", ["b_table", "a_table", "a_table", ""]
+            )
+        self.assertEqual(count, 2)
+        self.assertEqual(len(calls), 1)
+        method, path, payload = calls[0]
+        self.assertEqual(method, "POST")
+        self.assertEqual(path, "/v1/databases/test_opensalon/batch")
+        ops = payload["ops"]
+        self.assertEqual(
+            [(op["op"], op["coll"]) for op in ops],
+            [
+                ("put", "a_table"), ("del", "a_table"),
+                ("put", "b_table"), ("del", "b_table"),
+            ],
+        )
+        sentinel = creation.MATERIALIZED_SENTINEL_ID
+        self.assertTrue(all(op["id"] == sentinel for op in ops))
+
+    def test_no_tables_makes_no_http_call(self):
+        wrapper = _wrapper()
+        creation = wrapper.creation
+        fake, calls, names = _fake_http()
+        with mock.patch.object(creation, "_http_request", fake):
+            self.assertEqual(creation.materialize_collections("db", []), 0)
+        self.assertEqual(calls, [])
+
+    def test_reset_recreates_then_materializes_the_catalog(self):
+        wrapper = _wrapper()
+        creation = wrapper.creation
+        fake, calls, names = _fake_http(existing={"test_opensalon"})
+        with mock.patch.object(creation, "_http_request", fake), \
+                mock.patch(
+                    "opensalon.backends.nedb.schema.declared_catalog",
+                    return_value=frozenset({"only_table"}),
+                ):
+            creation.reset_database("test_opensalon")
+        batch = [c for c in calls if c[1].endswith("/batch")]
+        self.assertEqual(len(batch), 1)
+        self.assertEqual(
+            [(op["op"], op["coll"]) for op in batch[0][2]["ops"]],
+            [("put", "only_table"), ("del", "only_table")],
+        )
+
+
+class SchemaMaterializeTests(SimpleTestCase):
+    def _editor_with_creation(self):
+        editor, wrapper, cursor = _editor()
+        wrapper.creation = mock.Mock(name="creation")
+        return editor, wrapper, cursor
+
+    def test_create_table_materializes_that_table(self):
+        editor, wrapper, cursor = self._editor_with_creation()
+        editor.execute(KNOWN_DDL[0], None)
+        wrapper.creation.materialize_collections.assert_called_once_with(
+            "opensalon", {"saloncore_salon"}
+        )
+        cursor.execute.assert_not_called()
+
+    def test_alter_table_does_not_materialize(self):
+        editor, wrapper, cursor = self._editor_with_creation()
+        editor.execute(KNOWN_DDL[1], None)
+        wrapper.creation.materialize_collections.assert_not_called()
+
+    def test_collect_sql_never_materializes(self):
+        editor, wrapper, cursor = _editor(collect_sql=True)
+        wrapper.creation = mock.Mock(name="creation")
+        editor.execute(KNOWN_DDL[0], None)
+        wrapper.creation.materialize_collections.assert_not_called()
+
+    def test_materialize_failure_is_logged_not_raised(self):
+        from opensalon.backends.nedb.creation import NedbHttpError
+
+        editor, wrapper, cursor = self._editor_with_creation()
+        wrapper.creation.materialize_collections.side_effect = NedbHttpError(
+            "unreachable"
+        )
+        self.assertIsNone(editor.execute(KNOWN_DDL[0], None))
+        cursor.execute.assert_not_called()
+
+
+@unittest.skipUnless(
+    os.environ.get("OPENSALON_NEDB_LIVE_TEST") == "1",
+    "live nedbd relation-materialization test: set "
+    "OPENSALON_NEDB_LIVE_TEST=1 with the default connection on the "
+    "NEDB backend (nedbd running)",
+)
+class NedbRelationMaterializationLiveTests(SimpleTestCase):
+    """N-M8c acceptance against a real nedbd (guarded, never offline).
+
+    Before the guard both shapes failed live with
+    relation "<table>" does not exist: the LEFT JOIN in
+    stock_valuation against never-written catalog_stockmovement
+    (SyntaxError), and the cascade DELETEs of a Sale against
+    never-written checkout_saleitem / checkout_payment
+    (UndefinedTable). The test database was materialized at
+    creation/reset by the backend itself.
+    """
+
+    databases = {"default"}
+
+    def test_join_to_never_written_collection_yields_zero(self):
+        from django.db import connection
+
+        self.assertEqual(connection.display_name, "NEDB (PostgreSQL pgwire)")
+        from catalog.models import Product
+        from catalog.valuation import stock_valuation
+        from saloncore.models import Salon
+
+        salon = Salon.objects.create(name="Materialize Probe Salon", timezone="UTC")
+        Product.objects.create(
+            salon=salon, name="Never Stocked", sku="MAT-LIVE", price="15.00"
+        )
+        result = stock_valuation(salon)
+        self.assertEqual(
+            [(row.sku, row.on_hand) for row in result.rows],
+            [("MAT-LIVE", 0)],
+        )
+
+    def test_cascade_delete_over_never_written_children(self):
+        from django.db import connection
+
+        self.assertEqual(connection.display_name, "NEDB (PostgreSQL pgwire)")
+        from checkout.models import Sale
+        from saloncore.models import Salon
+
+        salon = Salon.objects.create(name="Cascade Probe Salon", timezone="UTC")
+        sale = Sale.objects.create(salon=salon)
+        sale.delete()
+        # Scoped to this sale: other live classes share the database.
+        self.assertEqual(Sale.objects.filter(pk=sale.pk).count(), 0)
