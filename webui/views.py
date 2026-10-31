@@ -304,7 +304,7 @@ def day_book(request):
                     stack_total += amount
                 stack.append(
                     {
-                        "service": item.service.name,
+                        "service": item.service.name if item.service else item.service_name,
                         "duration_label": _duration_label(minutes),
                         "price_label": _price_label(amount),
                         "current": item.pk == appt.pk,
@@ -347,7 +347,7 @@ def day_book(request):
                     {
                         "date_label": h.start.astimezone(tz).strftime("%a, %b %-d"),
                         "time_label": _fmt_time(h.start.astimezone(tz).time()),
-                        "service": h.service.name,
+                        "service": h.service.name if h.service else h.service_name,
                         "stylist": h.staff_member.display_name,
                         "status_label": _STATUS_LABELS.get(h.status, h.status),
                     }
