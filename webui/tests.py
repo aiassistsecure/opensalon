@@ -154,6 +154,17 @@ class DayBookTests(WebuiTestBase):
         self.assertEqual(response.context["overview"]["revenue"], Decimal("45.00"))
         self.assertEqual(response.context["overview"]["unpriced"], 0)
 
+    def test_fragment_endpoint_renders_the_day_without_chrome(self):
+        appt = self._appointment()
+        response = self.client.get(
+            reverse("webui:daybook_fragment"), {"date": "2026-11-02"}
+        )
+        self.assertContains(response, "book-layout")
+        self.assertContains(response, f'data-appt="{appt.pk}"')
+        self.assertContains(response, 'id="rail-data"')
+        self.assertNotContains(response, 'class="side"')
+        self.assertNotContains(response, "tabbar")
+
     def test_agenda_is_chronological_across_stylists(self):
         self._appointment(start_hour=14, end_hour=15)
         self._appointment(start_hour=9, end_hour=10)
