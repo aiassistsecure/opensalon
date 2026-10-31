@@ -183,7 +183,13 @@ class Command(BaseCommand):
             services = {s.external_id: s for s in
                         Service.objects.filter(category__salon=salon)
                         .exclude(external_id="")}
+            total = len(records)
+            seen = 0
             for row in records:
+                seen += 1
+                if total >= 1000 and seen % 500 == 0:
+                    self.stdout.write(
+                        f"  ... {seen} / {total} appointments processed")
                 if not isinstance(row, dict) or row.get("deleted"):
                     stats["skipped"] += 1
                     continue
