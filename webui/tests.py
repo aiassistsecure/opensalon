@@ -1,5 +1,6 @@
 import datetime
 from decimal import Decimal
+from unittest import mock
 
 from django.test import TestCase
 from django.urls import reverse
@@ -115,6 +116,67 @@ class DayBookTests(WebuiTestBase):
     def test_theme_is_dark(self):
         response = self.client.get(reverse("webui:daybook"))
         self.assertContains(response, 'data-theme="dark"')
+
+
+class PrecisionTests(WebuiTestBase):
+    def _appt(self, start, end):
+        return Appointment.objects.create(
+            client=self.person,
+            staff_member=self.member,
+            service=self.service,
+            start=timezone.make_aware(start),
+            end=timezone.make_aware(end),
+            status="confirmed",
+        )
+
+    def test_now_line_follows_the_salon_timezone(self):
+        # 2026-11-03 00:30 UTC is 2026-11-02 19:30 in New York: the
+        # salon is still in Monday evening while the server clock
+        # already calls it Tuesday. "Today" — and the now-line —
+        # belong to the salon.
+        self.salon.timezone = "America/New_York"
+        self.salon.save(update_fields=["timezone"])
+        fixed_now = datetime.datetime(
+            2026, 11, 3, 0, 30, tzinfo=datetime.timezone.utc
+        )
+        with mock.patch.object(timezone, "now", return_value=fixed_now):
+            response = self.client.get(
+                reverse("webui:daybook"), {"date": "2026-11-02"}
+            )
+            self.assertEqual(response.context["today"], datetime.date(2026, 11, 2))
+            self.assertContains(response, "nowline")
+            self.assertContains(response, "7:30 PM")
+            other = self.client.get(
+                reverse("webui:daybook"), {"date": "2026-11-01"}
+            )
+            self.assertNotContains(other, "nowline")
+
+    def test_crowded_column_widens_and_price_survives(self):
+        first = self._appt(
+            datetime.datetime(2026, 11, 2, 10, 0), datetime.datetime(2026, 11, 2, 10, 45)
+        )
+        second = self._appt(
+            datetime.datetime(2026, 11, 2, 10, 15), datetime.datetime(2026, 11, 2, 11, 0)
+        )
+        short = self._appt(
+            datetime.datetime(2026, 11, 2, 12, 0), datetime.datetime(2026, 11, 2, 12, 20)
+        )
+        response = self.client.get(reverse("webui:daybook"), {"date": "2026-11-02"})
+        column = response.context["staff_columns"][0]
+        blocks = {b["appointment_id"]: b for b in column["blocks"]}
+        # Two overlapping 45-minute blocks: crowded, but each keeps
+        # its service and its price — neither degrades to mini.
+        for appt in (first, second):
+            self.assertEqual(blocks[appt.pk]["overlap"], 2)
+            self.assertFalse(blocks[appt.pk]["mini"])
+            self.assertEqual(blocks[appt.pk]["price_label"], "$85")
+        # A 20-minute block is micro: too short for its rows.
+        self.assertTrue(blocks[short.pk]["micro"])
+        self.assertTrue(blocks[short.pk]["mini"])
+        # The crowded column asks for double width in the grid tracks.
+        self.assertEqual(column["width_factor"], 2)
+        self.assertIn("var(--colunit) * 2", response.context["grid_tracks"])
+        self.assertContains(response, "micro")
 
 
 class PriceBookTests(WebuiTestBase):

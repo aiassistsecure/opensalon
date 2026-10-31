@@ -14,7 +14,7 @@
   --tx: #eef2ff; --tx2: #9aa7c7; --tx3: #5d6b8f;
   --blue: #2f7bff; --sky: #38bdf8; --violet: #8b5cf6; --teal: #2dd4bf; --green: #4ade80;
   --grad: linear-gradient(120deg, #2196f3, #6366f1 52%, #a855f7);
-  --hour: 64px; --gutter: 52px; --colmin: 172px;
+  --hour: 64px; --gutter: 52px; --colunit: 168px;
   --railw: 336px; --sidew: 212px;
   --r-lg: 16px; --r-md: 12px; --r-sm: 9px;
   --shadow: 0 18px 50px rgba(0, 0, 10, .55);
@@ -27,6 +27,11 @@ body {
   margin: 0; background: var(--bg1); color: var(--tx);
   font-family: var(--font-b); font-size: 14px; line-height: 1.45;
   -webkit-font-smoothing: antialiased;
+  /* A page must never be wider than its window: one over-wide row
+     used to stretch the phone layout viewport and push the fixed
+     bottom sheet off the right edge. clip (not hidden) so sticky
+     chrome keeps working. */
+  overflow-x: clip;
 }
 body::before {
   content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
@@ -98,7 +103,7 @@ button { font-family: inherit; }
 /* ---------- top command bar ---------- */
 .topbar { display: flex; align-items: center; gap: 14px; padding: 14px 18px 10px; }
 .command {
-  flex: 1; display: flex; align-items: center; gap: 11px; max-width: 860px;
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 11px; max-width: 860px;
   padding: 0 16px; height: 46px; border-radius: 999px;
   background: linear-gradient(120deg, rgba(23, 34, 68, .92), rgba(13, 20, 44, .92));
   border: 1px solid rgba(96, 165, 250, .38);
@@ -234,7 +239,11 @@ button { font-family: inherit; }
 .bookscroll { overflow-x: auto; scrollbar-width: thin; }
 .colheads, .gridwrap {
   display: grid; min-width: min-content;
-  grid-template-columns: var(--gutter) repeat(var(--cols, 6), minmax(var(--colmin), 1fr));
+  /* --tracks comes from the view: one minmax per column, its floor
+     and flex weighted by how crowded that column is (overlap lanes),
+     so a double- or triple-booked column widens instead of crushing
+     its blocks. The pane scrolls horizontally past the floors. */
+  grid-template-columns: var(--tracks, var(--gutter) repeat(var(--cols, 6), minmax(var(--colunit), 1fr)));
 }
 .colheads { border-bottom: 1px solid var(--ln); background: rgba(10, 16, 36, .55); }
 .colhead {
@@ -314,10 +323,17 @@ button { font-family: inherit; }
 .status-in_service .b-ico { background: #f472b6; } .status-in_service .b-ico::before { content: "◉"; font-size: 8px; }
 .status-no_show .b-ico { background: #f87171; } .status-no_show .b-ico::before { content: "✕"; }
 .b-client { font-weight: 700; font-size: 13px; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
-.b-service { color: var(--tx2); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.b-service {
+  color: var(--tx2); font-size: 11px; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
 .b-price { position: absolute; right: 10px; bottom: 6px; font-weight: 700; font-size: 12px; color: #fff; }
 .appt-block.mini { padding: 5px 9px; }
-.appt-block.mini .b-service, .appt-block.mini .b-price { display: none; }
+/* Degradation order: mini yields the service line but keeps the
+   price; only a micro block (too short for three rows at all)
+   yields both. A resolved price otherwise always shows. */
+.appt-block.mini .b-service { display: none; }
+.appt-block.micro .b-service, .appt-block.micro .b-price { display: none; }
 .appt-block.mini .b-client { font-size: 11.5px; margin-top: 0; }
 .appt-block.mini .b-time { font-size: 9px; }
 
@@ -466,10 +482,31 @@ thead th { border-top: 0; color: var(--tx3); font-size: 11px; letter-spacing: .0
 .tab .ic { font-size: 16px; }
 .tab.active { color: #fff; background: linear-gradient(140deg, rgba(47, 123, 255, .4), rgba(99, 102, 241, .25)); }
 
+/* ---------- the day book as an app frame (desktop) ----------
+   The day book is a console, not a document: on desktop it fills
+   the viewport, the grid scrolls inside its pane in both
+   directions under a sticky column-head row, and the intelligence
+   bar is pinned into the first viewport under the book — never
+   buried a page-scroll below it. Other pages keep document flow. */
+@media (min-width: 761px) {
+  body.page-daybook .main { height: 100dvh; }
+  body.page-daybook .wrap { display: flex; min-height: 0; }
+  .page-daybook .book-layout { flex: 1; min-height: 0; height: 100%; align-items: stretch; }
+  .page-daybook .book-main { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+  .page-daybook .book { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .page-daybook .bookscroll { flex: 1; min-height: 0; overflow: auto; }
+  .page-daybook .colheads {
+    position: sticky; top: 0; z-index: 9;
+    background: rgba(10, 16, 36, .96);
+  }
+  .page-daybook .rail { top: 8px; max-height: calc(100% - 8px); }
+  .page-daybook .intelbar { flex: none; }
+}
+
 /* ---------- responsive ---------- */
-@media (max-width: 1240px) { :root { --railw: 300px; --colmin: 158px; } }
+@media (max-width: 1240px) { :root { --railw: 300px; --colunit: 156px; } }
 @media (max-width: 760px) {
-  :root { --hour: 76px; --gutter: 46px; --colmin: 0px; }
+  :root { --hour: 76px; --gutter: 46px; }
   .app { display: block; }
   .side { display: none; }
   .wrap { padding: 2px 12px 92px; }
@@ -486,7 +523,9 @@ thead th { border-top: 0; color: var(--tx3); font-size: 11px; letter-spacing: .0
   .week { order: 3; width: 100%; justify-content: space-between; }
   .wpill { min-width: 44px; flex: 1; }
   .overview { order: 2; margin-left: 0; width: 100%; }
-  .filter-right { margin-left: 0; }
+  .filter-right { margin-left: 0; width: 100%; min-width: 0; }
+  .filters { flex-wrap: wrap; width: 100%; }
+  .fsel { flex: 1 1 42%; min-width: 0; }
   .book-layout { display: block; }
   .colheads, .gridwrap { grid-template-columns: var(--gutter) repeat(var(--cols, 6), 86vw); }
   .bookscroll { scroll-snap-type: x proximity; scroll-behavior: smooth; }
@@ -497,7 +536,8 @@ thead th { border-top: 0; color: var(--tx3); font-size: 11px; letter-spacing: .0
   .foot { display: none; }
   /* detail rail becomes a bottom sheet */
   .rail {
-    position: fixed; left: 8px; right: 8px; bottom: 76px; top: auto; z-index: 70;
+    position: fixed; left: 8px; right: 8px; width: auto; max-width: calc(100vw - 16px);
+    bottom: 76px; top: auto; z-index: 70;
     max-height: 62vh; transform: translateY(calc(100% + 92px)); transition: transform .38s cubic-bezier(.2, .8, .25, 1);
     /* Opaque as a sheet: the desktop rail's translucent glass would
        let the book bleed through when it overlays the grid. */
