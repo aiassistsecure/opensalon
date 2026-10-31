@@ -621,6 +621,20 @@ body.page-light .foot { color: #a2987d; }
 .page-light .nowline::after { background: linear-gradient(90deg, #e05260, rgba(224, 82, 96, .25)); box-shadow: 0 0 10px rgba(224, 82, 96, .5); }
 .page-light .now-pill { background: #e05260; color: #fff; box-shadow: 0 0 12px rgba(224, 82, 96, .55); }
 .page-light .empty-card { background: none; color: #1d2530; }
+
+/* the price book in the day book's light (founder direction
+   2026-10-31: every page matches the day book) */
+.page-light .page-title { color: #1d2530; }
+.page-light .page-subtitle { color: #7d7663; }
+.page-light .group-title { color: #1d2530; }
+.page-light .price-group, .page-light .price-table {
+  background: #fffdf7; border-color: #e6ddc6;
+  box-shadow: 0 10px 30px rgba(96, 76, 24, .07);
+}
+.page-light .price-table th, .page-light .price-table td { border-top-color: #f0e7cf; color: #1d2530; }
+.page-light .price-table thead th { background: #fbf7ec; color: #8a826f; }
+.page-light .price-table td.col-duration { color: #8a826f; }
+.page-light .price-none { color: #b0a684; }
 .page-light .empty-sub { color: #8a826f; }
 
 /* visit tiles: pastel on ivory, ink text. Gloss v3: every
@@ -1075,48 +1089,70 @@ button:focus-visible, a:focus-visible, select:focus-visible {
   100% { box-shadow: 0 0 0 14px rgba(176, 141, 87, 0); }
 }
 
-/* The Roster Book — the day book's perpetual controller. */
+/* The Roster Book — the day book's twin, in the day book's own
+   language: one ivory panel, avatar heads, gold week pills, gloss
+   blocks. The grid is the editor: drag on empty space to place
+   hours, drag a block to move it (webui.js, roster section). */
 .rb-weeknav{display:flex;gap:8px}
-.rb-navbtn{padding:7px 14px;border:1px solid #ddd5c2;border-radius:999px;background:#fff;
-  color:#5a5344;font-size:.82rem;font-weight:600;text-decoration:none}
-.rb-navbtn:hover{border-color:#b49a5e;color:#8a6d2f}
+.rb-navbtn{padding:7px 14px;border:1px solid #e6ddc6;border-radius:999px;background:#fff;
+  color:#7d7663;font-size:.82rem;font-weight:600;text-decoration:none;
+  box-shadow:0 2px 8px rgba(96,76,24,.06)}
+.rb-navbtn:hover{border-color:#c49a3a;color:#8a6d2f}
 .rb-pills{display:flex;gap:8px;margin:14px 0 6px;flex-wrap:wrap}
-.rb-pill{display:flex;flex-direction:column;align-items:center;min-width:64px;padding:8px 6px;
-  border:1px solid #e3dccb;border-radius:12px;background:#fff;text-decoration:none;color:#5a5344}
-.rb-pill.on{background:#3f5a36;border-color:#3f5a36;color:#fff}
-.rb-pill-d{font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;opacity:.75}
-.rb-pill-n{font-size:1.15rem;font-weight:700;line-height:1.15}
-.rb-pill-t{font-size:.62rem;color:#c9a44e;font-weight:700;text-transform:uppercase}
-.rb-pill.on .rb-pill-t{color:#ecd9a0}
-.rb-law{color:#6c6455;font-size:.88rem;margin:8px 0 14px}
-.rb-book{display:flex;gap:10px;overflow-x:auto;padding-bottom:8px}
-.rb-gutter{position:relative;min-width:52px;height:560px;margin-top:52px}
-.rb-hour{position:absolute;right:6px;transform:translateY(-50%);font-size:.68rem;color:#9a927e;white-space:nowrap}
-.rb-col{min-width:186px;flex:1 0 186px}
-.rb-colhead{height:44px;margin-bottom:8px}
-.rb-body{position:relative;height:560px;border:1px solid #e7e1d2;border-radius:12px;
-  background:repeating-linear-gradient(to bottom,#fdfcf9 0,#fdfcf9 calc(100%/12 - 1px),#eee8da calc(100%/12 - 1px),#eee8da calc(100%/12))}
-.rb-shift{position:absolute;left:6px;right:6px;border-radius:10px;padding:7px 9px;overflow:hidden;
-  background-image:linear-gradient(180deg,rgba(255,255,255,.65),rgba(255,255,255,0) 55%),linear-gradient(180deg,#e4f0dd,#cfe4c2);
-  border:1px solid #b9d3ab;box-shadow:0 4px 10px rgba(63,90,54,.12)}
+.rb-pills .wp-t{font-size:.58rem;font-weight:800;letter-spacing:.09em;
+  text-transform:uppercase;color:#a87c24}
+.rb-pills .wpill.active .wp-t{color:#f3e3b3}
+.rb-law{color:#6c6455;font-size:.88rem;margin:8px 0 14px;background:rgba(255,253,247,.75);
+  border:1px solid #e6ddc6;border-radius:12px;padding:10px 14px;line-height:1.55}
+.rb-law strong{color:#1d2530}
+.rb-law em{font-style:normal;font-weight:700;color:#8a6d2f}
+.rb-book{background:#fffdf7;border:1px solid #e6ddc6;border-radius:16px;
+  box-shadow:0 14px 38px rgba(96,76,24,.09);overflow-x:auto;padding-bottom:10px}
+.rb-heads{display:flex;background:#fbf7ec;border-bottom:1px solid #ece2c8}
+.rb-gutter-head{flex:0 0 52px}
+.rb-colhead-cell{flex:1 0 190px;border-left:1px solid #f0e7cf;padding:10px 10px 9px}
+.rb-colhead{display:flex;align-items:center;gap:9px}
+.rb-place{margin-top:9px;border:1px solid #e6ddc6;border-radius:11px;padding:8px;background:#fff;
+  box-shadow:0 2px 8px rgba(96,76,24,.05)}
+.rb-place.rb-flash{border-color:#c49a3a;box-shadow:0 0 0 3px rgba(196,154,58,.25)}
+.rb-place-times{display:flex;align-items:center;gap:6px;margin-bottom:8px}
+.rb-place-times input{flex:1;min-width:0;padding:5px 6px;border:1px solid #e6ddc6;border-radius:8px;
+  font:inherit;font-size:.82rem;color:#1d2530;background:#fffdf7}
+.rb-place-row{display:flex;align-items:center;gap:8px;justify-content:space-between}
+.rb-place-btn{padding:7px 13px;border:0;border-radius:9px;cursor:pointer;flex:none;
+  background:linear-gradient(180deg,#c49a3a,#a87c24);color:#fff;font-weight:700;font-size:.83rem;
+  box-shadow:0 4px 12px rgba(168,124,36,.3)}
+.rb-grid{display:flex}
+.rb-gutter{position:relative;flex:0 0 52px;height:560px}
+.rb-hour{position:absolute;right:7px;transform:translateY(-50%);font-size:.66rem;color:#b0a684;white-space:nowrap}
+.rb-body{position:relative;height:560px;flex:1 0 190px;border-left:1px solid #f0e7cf;cursor:crosshair;
+  background-image:linear-gradient(to bottom,#f0e7cf 1px,transparent 1px);background-size:100% calc(100%/12)}
+.rb-shift{position:absolute;left:6px;right:6px;border-radius:10px;padding:6px 8px;overflow:hidden;cursor:grab;
+  background-image:linear-gradient(180deg,rgba(255,255,255,.65),rgba(255,255,255,0) 55%),linear-gradient(180deg,#e7f0dd,#d7e8c8);
+  border:1px solid #b9cfa8;border-left:3px solid #7ba05b;box-shadow:0 4px 12px rgba(96,76,24,.1)}
 .rb-shift.src-instance{background-image:linear-gradient(180deg,rgba(255,255,255,.65),rgba(255,255,255,0) 55%),linear-gradient(180deg,#fdf3d3,#f8e7b2);
-  border-color:#e0cd8d}
-.rb-shift-t{font-weight:700;font-size:.84rem;color:#2e4423}
+  border-color:#e3cf8e;border-left:3px solid #c49a3a}
+.rb-shift.rb-moving{opacity:.85;cursor:grabbing;z-index:6;box-shadow:0 12px 26px rgba(96,76,24,.22)}
+.rb-shift-top{display:flex;align-items:baseline;justify-content:space-between;gap:6px}
+.rb-shift-t{font-weight:750;font-size:.8rem;color:#2e4423;white-space:nowrap}
 .rb-shift.src-instance .rb-shift-t{color:#6b5312}
-.rb-shift-src{font-size:.68rem;text-transform:uppercase;letter-spacing:.06em;color:#5d7355;font-weight:700}
-.rb-shift.src-instance .rb-shift-src{color:#a97c1f}
+.rb-chip{font-size:.58rem;font-weight:800;letter-spacing:.07em;text-transform:uppercase;flex:none;
+  padding:2px 6px;border-radius:999px;background:rgba(255,255,255,.6);color:#5d7355;border:1px solid rgba(93,115,85,.3)}
+.rb-shift.src-instance .rb-chip{color:#a97c1f;border-color:rgba(169,124,36,.35)}
+.rb-ctl{display:flex;align-items:center;gap:6px;margin-top:5px;flex-wrap:wrap}
 .rb-off{position:absolute;top:10px;left:6px;right:6px;border:1.5px dashed #c9b98f;border-radius:10px;
   padding:8px 9px;color:#8a6d2f;font-weight:600;font-size:.82rem;background:rgba(255,251,240,.85)}
-.rb-flipoff{display:flex;align-items:center;gap:6px;margin-top:6px}
-.rb-inline{display:inline-block;margin-left:6px}
+.rb-inline{display:inline-block}
 .rb-mini{border:1px solid #cfc6ae;background:#fff;border-radius:999px;padding:2px 9px;
   font-size:.7rem;font-weight:700;color:#5a5344;cursor:pointer}
 .rb-mini.danger{color:#9c3d2e;border-color:#dfb3a8}
-.rb-place{margin-top:10px;border:1px solid #e7e1d2;border-radius:12px;padding:9px;background:#fff}
-.rb-place-times{display:flex;align-items:center;gap:6px;margin-bottom:8px}
-.rb-place-times input{flex:1;min-width:0;padding:5px 6px;border:1px solid #ddd5c2;border-radius:8px;font:inherit;font-size:.82rem}
-.rb-place-btn{width:100%;margin-top:8px;padding:7px;border:0;border-radius:9px;cursor:pointer;
-  background:#3f5a36;color:#fff;font-weight:700;font-size:.85rem}
+.rb-mini:hover{border-color:#c49a3a}
+.rb-empty{position:absolute;top:14px;left:0;right:0;text-align:center;color:#b0a684;
+  font-size:.76rem;line-height:1.45;pointer-events:none}
+.rb-empty span{font-size:.68rem}
+.rb-ghost{position:absolute;left:6px;right:6px;border:1.5px dashed #a87c24;border-radius:10px;
+  background:rgba(196,154,58,.14);padding:6px 8px;font-size:.78rem;font-weight:700;color:#6b5312;
+  pointer-events:none;z-index:5;overflow:hidden}
 .rb-switch{display:inline-flex;align-items:center;gap:7px;cursor:pointer;font-size:.8rem;color:#5a5344}
 .rb-switch input{display:none}
 .rb-switch span{position:relative;width:36px;height:20px;border-radius:999px;background:#d8d2c0;transition:background .15s;flex:none}
@@ -1135,7 +1171,8 @@ button:focus-visible, a:focus-visible, select:focus-visible {
   box-shadow:0 6px 16px rgba(138,109,47,.3)}
 .pos-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
 @media (max-width:760px){.pos-grid{grid-template-columns:1fr}}
-.pos-card{border:1px solid #e7e1d2;border-radius:14px;background:#fff;padding:16px 18px}
+.pos-card{border:1px solid #e6ddc6;border-radius:14px;background:#fffdf7;padding:16px 18px;
+  box-shadow:0 10px 28px rgba(96,76,24,.06)}
 .pos-h{font-size:.78rem;text-transform:uppercase;letter-spacing:.09em;color:#8a8172;margin:0 0 12px}
 .pos-tender{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid #f0ebdd;font-size:.95rem}
 .pos-tender.pos-total{border-bottom:0;border-top:2px solid #e7e1d2;margin-top:6px;padding-top:10px;font-size:1.05rem}
@@ -1156,7 +1193,8 @@ button:focus-visible, a:focus-visible, select:focus-visible {
 /* The Shelf — products, derived stock, receiving, adjustments. */
 .shelf-search{display:flex;gap:8px;margin:14px 0}
 .shelf-search input{flex:1;padding:10px 14px;border:1px solid #ddd5c2;border-radius:999px;font:inherit;font-size:.95rem;background:#fff}
-.shelf{border:1px solid #e7e1d2;border-radius:14px;background:#fff;overflow:hidden}
+.shelf{border:1px solid #e6ddc6;border-radius:14px;background:#fffdf7;overflow:hidden;
+  box-shadow:0 10px 28px rgba(96,76,24,.06)}
 .shelf-row{display:flex;align-items:center;gap:14px;padding:10px 16px;border-bottom:1px solid #f0ebdd;flex-wrap:wrap}
 .shelf-row:last-child{border-bottom:0}
 .shelf-main{flex:1;min-width:200px}

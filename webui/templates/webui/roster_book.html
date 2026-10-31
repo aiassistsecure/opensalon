@@ -5,7 +5,7 @@
 <div class="day-head">
   <div class="day-title-wrap">
     <div class="day-title">Roster Book</div>
-    <div class="day-sub">{{ day|date:"l, F j, Y" }} · the perpetual controller — hours placed here rule the day book and online booking</div>
+    <div class="day-sub">{{ day|date:"l, F j, Y" }} · standing hours — who can be booked, and when</div>
   </div>
   <div class="rb-weeknav">
     <a class="rb-navbtn" href="?date={{ prev_week }}">‹ Week</a>
@@ -15,25 +15,51 @@
 </div>
 <div class="rb-pills">
   {% for d in week %}
-  <a class="rb-pill{% if d.current %} on{% endif %}" href="?date={{ d.date|date:'Y-m-d' }}">
-    <span class="rb-pill-d">{{ d.date|date:"D" }}</span>
-    <span class="rb-pill-n">{{ d.date|date:"j" }}</span>
-    {% if d.today %}<span class="rb-pill-t">today</span>{% endif %}
+  <a class="wpill{% if d.current %} active{% endif %}" href="?date={{ d.date|date:'Y-m-d' }}">
+    <span class="wp-d">{{ d.date|date:"D" }}</span>
+    <span class="wp-n">{{ d.date|date:"j" }}</span>
+    {% if d.today %}<span class="wp-t">today</span>{% endif %}
   </a>
   {% endfor %}
 </div>
-<p class="rb-law"><strong>The switch is the law:</strong> ON — the change is written to the perpetual roster, every week, forever. OFF — the change rules just this day. Walk any week ahead; the roster is already there.</p>
-<div class="rb-book">
-  <div class="rb-gutter">
-    {% for h in hours %}<div class="rb-hour" style="top:{{ h.top }}%">{{ h.label }}</div>{% endfor %}
-  </div>
-  {% for col in columns %}
-  <div class="rb-col">
-    <div class="rb-colhead">
-      <div class="cname">{{ col.member.display_name }}</div>
-      <div class="chead-meta">{{ col.member.staff_level.name|default:"" }}</div>
+<p class="rb-law"><strong>This book repeats every week.</strong> With <em>Every week</em> on, a change joins the standing schedule. Off, it changes only the day you're viewing. The day book and online booking follow this book. <strong>Drag on empty space to place hours; drag a block to move it.</strong></p>
+<div class="rb-book" data-date="{{ day|date:'Y-m-d' }}">
+  <div class="rb-heads">
+    <div class="rb-gutter-head"></div>
+    {% for col in columns %}
+    <div class="rb-colhead-cell" data-member="{{ col.member.pk }}">
+      <div class="rb-colhead">
+        <div class="avatar-md" style="{{ col.av_style }}">{{ col.initials }}</div>
+        <div class="chead-meta">
+          <div class="cname">{{ col.member.display_name }}</div>
+          <div class="cutil">{{ col.member.staff_level.name|default:"" }}{% if col.hours_label %} · {{ col.hours_label }}{% endif %}</div>
+        </div>
+      </div>
+      <form method="post" class="rb-place">{% csrf_token %}
+        <input type="hidden" name="action" value="place">
+        <input type="hidden" name="member" value="{{ col.member.pk }}">
+        <input type="hidden" name="date" value="{{ day|date:'Y-m-d' }}">
+        <div class="rb-place-times">
+          <input type="time" name="start" required aria-label="Start">
+          <span>–</span>
+          <input type="time" name="end" required aria-label="End">
+        </div>
+        <div class="rb-place-row">
+          <label class="rb-switch" title="On: the standing schedule changes. Off: just this day.">
+            <input type="checkbox" name="weekly" checked data-weekly-switch><span></span><em>Every week</em>
+          </label>
+          <button class="rb-place-btn" type="submit">Place hours</button>
+        </div>
+      </form>
     </div>
-    <div class="rb-body">
+    {% endfor %}
+  </div>
+  <div class="rb-grid">
+    <div class="rb-gutter">
+      {% for h in hours %}<div class="rb-hour" style="top:{{ h.top }}%">{{ h.label }}</div>{% endfor %}
+    </div>
+    {% for col in columns %}
+    <div class="rb-body" data-member="{{ col.member.pk }}">
       {% if col.is_off %}
       <div class="rb-off">Off — this day only
         <form method="post" class="rb-inline">{% csrf_token %}
@@ -45,47 +71,48 @@
       </div>
       {% endif %}
       {% for b in col.blocks %}
-      <div class="rb-shift src-{{ b.source }}" style="top:{{ b.top }}%;height:{{ b.height }}%">
-        <div class="rb-shift-t">{{ b.label }}</div>
-        <div class="rb-shift-src">{% if b.source == 'weekly' %}Every week{% else %}This day only{% endif %}</div>
-        <form method="post" class="rb-flipoff">{% csrf_token %}
+      <div class="rb-shift src-{{ b.source }}" style="top:{{ b.top }}%;height:{{ b.height }}%"
+           data-start="{{ b.start }}" data-end="{{ b.end }}" data-source="{{ b.source }}"{% if b.pattern_id %} data-pattern="{{ b.pattern_id }}"{% endif %}>
+        <div class="rb-shift-top">
+          <span class="rb-shift-t">{{ b.label }}</span>
+          <span class="rb-chip">{% if b.source == 'weekly' %}Every week{% else %}This day{% endif %}</span>
+        </div>
+        {% if b.source == 'weekly' %}
+        <form method="post" class="rb-ctl">{% csrf_token %}
           <input type="hidden" name="action" value="off">
           <input type="hidden" name="member" value="{{ col.member.pk }}">
           <input type="hidden" name="date" value="{{ day|date:'Y-m-d' }}">
           {% if b.pattern_id %}<input type="hidden" name="pattern" value="{{ b.pattern_id }}">{% endif %}
-          <label class="rb-switch sm" title="On: every week. Off: just this day.">
-            <input type="checkbox" name="weekly" {% if b.source == 'weekly' %}checked{% endif %}><span></span>
+          <label class="rb-switch sm" title="On: remove from every week. Off: remove just this day.">
+            <input type="checkbox" name="weekly" checked><span></span>
           </label>
-          <button class="rb-mini danger" type="submit">Flip off</button>
+          <button class="rb-mini danger" type="submit">Remove</button>
         </form>
-        {% if b.source == 'instance' %}
-        <form method="post" class="rb-inline">{% csrf_token %}
-          <input type="hidden" name="action" value="clear">
-          <input type="hidden" name="member" value="{{ col.member.pk }}">
-          <input type="hidden" name="date" value="{{ day|date:'Y-m-d' }}">
-          <button class="rb-mini" type="submit">Undo instance</button>
-        </form>
+        {% else %}
+        <div class="rb-ctl">
+          <form method="post" class="rb-inline">{% csrf_token %}
+            <input type="hidden" name="action" value="clear">
+            <input type="hidden" name="member" value="{{ col.member.pk }}">
+            <input type="hidden" name="date" value="{{ day|date:'Y-m-d' }}">
+            <button class="rb-mini" type="submit">Undo</button>
+          </form>
+          <form method="post" class="rb-inline">{% csrf_token %}
+            <input type="hidden" name="action" value="off">
+            <input type="hidden" name="member" value="{{ col.member.pk }}">
+            <input type="hidden" name="date" value="{{ day|date:'Y-m-d' }}">
+            <button class="rb-mini danger" type="submit">Day off</button>
+          </form>
+        </div>
         {% endif %}
       </div>
       {% endfor %}
+      {% if not col.blocks and not col.is_off %}
+      <div class="rb-empty">No hours<br><span>drag to add</span></div>
+      {% endif %}
     </div>
-    <form method="post" class="rb-place">{% csrf_token %}
-      <input type="hidden" name="action" value="place">
-      <input type="hidden" name="member" value="{{ col.member.pk }}">
-      <input type="hidden" name="date" value="{{ day|date:'Y-m-d' }}">
-      <div class="rb-place-times">
-        <input type="time" name="start" required>
-        <span>–</span>
-        <input type="time" name="end" required>
-      </div>
-      <label class="rb-switch" title="On: every week, forever. Off: just this day.">
-        <input type="checkbox" name="weekly" checked><span></span><em>Every week</em>
-      </label>
-      <button class="rb-place-btn" type="submit">Place hours</button>
-    </form>
+    {% empty %}
+    <p class="rb-law">No salon yet — import or create the salon first.</p>
+    {% endfor %}
   </div>
-  {% empty %}
-  <p class="rb-law">No salon yet — import or create the salon first.</p>
-  {% endfor %}
 </div>
 {% endblock %}
