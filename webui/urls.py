@@ -52,16 +52,7 @@ urlpatterns = [
         },
         name="insights",
     ),
-    path(
-        "pos/",
-        views.placeholder,
-        {
-            "nav_key": "pos",
-            "title": "POS",
-            "lane_note": "Checkout and cashup arrive with the payments lane.",
-        },
-        name="pos",
-    ),
+    path("pos/", views.pos, name="pos"),
     path(
         "automations/",
         views.placeholder,
