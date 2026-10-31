@@ -77,7 +77,7 @@
       {% for t in rail.toggles %}
       <div class="rtoggle-row">
         <span class="rtoggle-label">{{ t.label }}</span>
-        <button type="button" class="tswitch t-{{ t.key }}{% if t.on %} on{% endif %}" role="switch" aria-checked="{{ t.on|yesno:'true,false' }}" {% if not t.enabled %}disabled{% endif %} data-status-action="{{ t.target }}" data-appt="{{ rail.id }}" aria-label="Toggle {{ t.label|lower }}"></button>
+        <button type="button" class="tswitch t-{{ t.key }}{% if t.on %} on{% endif %}" role="switch" aria-checked="{{ t.on|yesno:'true,false' }}" {% if not t.enabled %}disabled{% endif %} data-status-action="{{ t.target }}" data-appt="{{ rail.id }}" aria-label="Toggle {{ t.label|lower }}" title="{% if t.on %}{{ t.label }} is on — flip to undo{% else %}Flip to mark {{ t.label|lower }}{% endif %}"></button>
       </div>
       {% endfor %}
     </div>
@@ -89,7 +89,7 @@
       <button type="button" class="{% if action.primary %}btn-grad grow{% else %}btn-ghost{% endif %}" data-status-action="{{ action.status }}" data-appt="{{ rail.id }}">{{ action.label }}</button>
       {% endfor %}
     </div>
-    <p class="rail-hint">Drag a block on the book to move it — drop it on another stylist to reassign.</p>
+    <p class="rail-hint">Drag to move · Arrow keys nudge 5 min, ←/→ switch stylist · Ctrl+Z undoes a move.</p>
     {% endif %}
   {% else %}
     <div class="rail-head"><div><div class="rail-time">No appointment selected</div>

@@ -901,6 +901,51 @@ body.side-collapsed .switcher { justify-content: center; padding: 8px; }
    just made here) announces itself with one gold pulse instead
    of the entrance choreography. */
 .appt-block.fresh { animation: freshPulse 1.4s ease-out; }
+
+/* ---- macOS polish (founder's pass): system type, an 8pt
+   padding rhythm, names that fit, precise hints ----
+   The feel of a native app: nothing lifts or wiggles under the
+   pointer, numbers align on a tabular grid, one line per name
+   with an honest ellipsis, hairlines instead of boxes. */
+body { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Inter, Roboto, "Helvetica Neue", Arial, sans-serif; }
+.day-title { letter-spacing: -0.02em; }
+.b-time, .b-price, .kpi-v, .istat-v, .cutil, .acard-t, .day-sub {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Names fit: one line, ellipsis, and the flex child must be
+   allowed to shrink or the ellipsis never engages. */
+.chead-meta { min-width: 0; flex: 1; }
+.cutil { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rail-cname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stack-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acard-c span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Padding rhythm: blocks breathe on the same scale as the
+   cards around them, and a micro block spends its few pixels
+   on the one thing that must read — the client's name. */
+.page-light .appt-block { padding: 8px 10px 7px; }
+.page-light .kpi { padding: 13px 15px; }
+.appt-block.micro { padding: 4px 9px; }
+.appt-block.micro .b-top { display: none; }
+.appt-block.micro .b-client { margin-top: 1px; font-size: 12.5px; }
+
+/* Stillness under the pointer (also a stability rule: a
+   transform on a grid-placed block is a repaint storm). */
+.page-light .appt-block { transition: box-shadow .18s ease, border-color .18s ease, background .18s ease; }
+.page-light .appt-block:hover { transform: none; }
+.btn-grad:active, .btn-ghost:active, .tswitch:active { transform: scale(.985); }
+
+/* Keyboard focus the macOS way: a calm blue ring. */
+.appt-block:focus-visible, .acard:focus-visible,
+button:focus-visible, a:focus-visible, select:focus-visible {
+  outline: 2px solid rgba(0, 122, 255, .55); outline-offset: 1px;
+}
+
+/* The book scrolls like a native pane: thin overlay thumb. */
+.bookscroll::-webkit-scrollbar { width: 10px; height: 10px; }
+.bookscroll::-webkit-scrollbar-thumb { background: rgba(96, 82, 40, .25); border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
+.bookscroll::-webkit-scrollbar-track { background: transparent; }
 @keyframes freshPulse {
   0% { box-shadow: 0 0 0 0 rgba(176, 141, 87, .55); }
   100% { box-shadow: 0 0 0 14px rgba(176, 141, 87, 0); }
