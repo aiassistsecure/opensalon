@@ -1017,3 +1017,83 @@ class SchemaEditorAlterFieldTests(SimpleTestCase):
         get_constraints.assert_not_called()
         wrapper.cursor.assert_not_called()
         cursor.execute.assert_not_called()
+
+
+# -- N-M6d: GROUP BY must not collapse to selected PKs (DYOR 9.1) ----
+
+def _annotate_sql():
+    """Compile the low_stock annotate shape offline on a NEDB wrapper."""
+    from django.db.models import Sum, Value
+    from django.db.models.functions import Coalesce
+    from django.db.models.sql import Query as _Query
+
+    from catalog.models import Product
+
+    wrapper = _wrapper()
+    query = _Query(Product)
+    query.add_annotation(
+        Coalesce(Sum("stock_movements__quantity_delta"), Value(0)),
+        "_on_hand",
+    )
+    query.set_group_by()
+    sql, _params = query.get_compiler(connection=wrapper).as_sql()
+    return sql
+
+
+class GroupBySelectedPksTests(SimpleTestCase):
+    def test_allows_group_by_selected_pks_is_false(self):
+        # PostgreSQL's flag (True, inherited) lets the compiler rely
+        # on PK functional dependency; NEDB's evaluator rejects any
+        # selected column not in GROUP BY (live-suite signatures 3/5).
+        wrapper = _wrapper()
+        self.assertIs(wrapper.features_class, DatabaseFeatures)
+        self.assertFalse(wrapper.features.allows_group_by_selected_pks)
+
+    def test_annotate_group_by_lists_every_selected_column(self):
+        sql = _annotate_sql()
+        group_by = sql.split("GROUP BY", 1)[1]
+        for column in (
+            '"catalog_product"."id"',
+            '"catalog_product"."salon_id"',
+            '"catalog_product"."name"',
+            '"catalog_product"."sku"',
+            '"catalog_product"."barcode"',
+            '"catalog_product"."price"',
+            '"catalog_product"."active"',
+        ):
+            with self.subTest(column=column):
+                self.assertIn(column, group_by)
+
+
+@unittest.skipUnless(
+    os.environ.get("OPENSALON_NEDB_LIVE_TEST") == "1",
+    "live nedbd GROUP BY test: set OPENSALON_NEDB_LIVE_TEST=1 with "
+    "the default connection on the NEDB backend (nedbd running)",
+)
+class NedbGroupByLiveTests(SimpleTestCase):
+    """N-M6d acceptance against a real nedbd (guarded, never offline).
+
+    Before the fix this exact shape failed live with:
+    column "catalog_product.salon_id" must appear in the GROUP BY
+    clause or be used in an aggregate function.
+    """
+
+    databases = {"default"}
+
+    def test_low_stock_annotate_passes_on_live_nedb(self):
+        from django.db import connection
+
+        self.assertEqual(connection.display_name, "NEDB (PostgreSQL pgwire)")
+        from catalog.low_stock import low_stock
+        from catalog.models import Product, StockMovement
+        from saloncore.models import Salon
+
+        salon = Salon.objects.create(name="GroupBy Probe Salon", timezone="UTC")
+        product = Product.objects.create(
+            salon=salon, name="Probe Shampoo", sku="GB-LIVE", price="10.00"
+        )
+        StockMovement.objects.create(
+            product=product, kind="receive", quantity_delta=3
+        )
+        rows = low_stock(salon)
+        self.assertEqual([(r.sku, r.on_hand) for r in rows], [("GB-LIVE", 3)])
