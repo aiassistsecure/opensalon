@@ -10,8 +10,11 @@ itself stays UI-free.
 Prices: the Appointment record carries no price of its own in the
 current model, so a block's price is the price-book price for that
 service at that stylist's level — the same rule the price book page
-renders by. A service with no price-book row at that level renders
-no price at all; nothing is invented. Projected revenue is the sum
+renders by. When no row exists at the stylist's own level (imported
+books can carry split level identities), the price falls back to
+the service's Base (menu) row — a real price for that service,
+never an invented one. A service with no price-book row at all
+renders no price; nothing is invented. Projected revenue is the sum
 of those resolved prices over the day's records, and the count of
 unpriced records travels with it so the figure is never mistaken
 for complete when it is not.
@@ -21,7 +24,7 @@ import datetime
 from decimal import Decimal
 
 from django.core.paginator import Paginator
-from django.db.models import Count, Q
+from django.db.models import Count, Min, Q
 from django.shortcuts import render
 from django.utils import timezone
 from django.utils.text import slugify
@@ -224,9 +227,22 @@ def day_book(request):
 
     staff = []
     rail_payloads = {}
+    member_spans = {}
+    agenda_pool = []
     default_rail = None
+    kpi = {"avg_ticket_label": "—", "new_clients": 0}
+    intel = {
+        "next_label": "No 45+ min opening",
+        "next_sub": "",
+        "top_label": "—",
+        "completed": 0,
+        "remaining": 0,
+    }
+    agenda = []
+    agenda_now_index = None
     overview = {
         "appointments": 0,
+        "visits": 0,
         "revenue": Decimal("0"),
         "revenue_label": "$0",
         "unpriced": 0,
@@ -252,6 +268,8 @@ def day_book(request):
                 active=True, service__category__salon=salon
             )
         }
+        base_level = StaffLevel.objects.filter(salon=salon, name="Base").first()
+        base_level_id = base_level.pk if base_level is not None else None
         day_appts = list(
             Appointment.objects.filter(
                 staff_member__in=members, start__lt=day_end, end__gt=day_start
@@ -263,7 +281,12 @@ def day_book(request):
         appt_by_id = {a.pk: a for a in day_appts}
 
         def amount_for(appt):
-            return prices.get((appt.service_id, appt.staff_member.staff_level_id))
+            amount = prices.get((appt.service_id, appt.staff_member.staff_level_id))
+            if amount is None and base_level_id is not None:
+                # No row at the stylist's own level: price at the
+                # service's Base (menu) row rather than not at all.
+                amount = prices.get((appt.service_id, base_level_id))
+            return amount
 
         # ---- visits: same client + stylist, chained by VISIT_GAP ----
         visits = {}
@@ -423,6 +446,7 @@ def day_book(request):
                         ),
                         "time_label": f"{_fmt_time(start.time())} – {_fmt_time(end.time())}",
                         "price_label": _price_label(amount),
+                        "_amount": amount,
                         "index": block_index,
                         "_start": start,
                         "_end": end,
@@ -434,6 +458,7 @@ def day_book(request):
                 for b in blocks
                 if b["_end"] > day_start and b["_start"] < day_end
             ]
+            member_spans[member.pk] = clipped
             booked_minutes = _union_minutes(clipped)
             booked_pct = None
             if roster_minutes:
@@ -456,12 +481,61 @@ def day_book(request):
                     if (not cat_filter or b["cat_key"] == cat_filter)
                     and (not status_filter or b["status"] == status_filter)
                 ]
-                _assign_lanes(display_blocks)
-            else:
-                _assign_lanes(display_blocks)
+            # ---- merge a visit's chained blocks into one tile ----
+            # The grid unit is the visit, not the appointment: a
+            # stack booked back to back is one guest in one chair,
+            # and rendering it as colliding blocks misreads as
+            # overlap. The rail already treats the visit as the
+            # unit; the grid does too now.
+            tiles = []
+            for b in display_blocks:
+                visit = visits.get(b["appointment_id"])
+                if tiles and visit is not None and tiles[-1]["_visit"] is visit:
+                    tile = tiles[-1]
+                    tile["_end"] = max(tile["_end"], b["_end"])
+                    tile["services"].append(b["service_name"])
+                    if b["_amount"] is not None:
+                        tile["_total"] = (tile["_total"] or Decimal("0")) + b["_amount"]
+                    continue
+                tiles.append(
+                    {
+                        "appointment_id": b["appointment_id"],
+                        "client_name": b["client_name"],
+                        "client_initials": b["client_initials"],
+                        "services": [b["service_name"]],
+                        "service_name": b["service_name"],
+                        "category_name": b["category_name"],
+                        "cat_key": b["cat_key"],
+                        "status": b["status"],
+                        "status_label": b["status_label"],
+                        "index": b["index"],
+                        "_start": b["_start"],
+                        "_end": b["_end"],
+                        "_visit": visit,
+                        "_total": b["_amount"],
+                    }
+                )
+            for tile in tiles:
+                tile["top"] = _pct(tile["_start"], day_start, day_end)
+                tile["height"] = max(
+                    _pct(tile["_end"], day_start, day_end) - tile["top"], 4.0
+                )
+                tile["time_label"] = (
+                    f"{_fmt_time(tile['_start'].astimezone(tz).time())} – "
+                    f"{_fmt_time(tile['_end'].astimezone(tz).time())}"
+                )
+                tile["price_label"] = (
+                    _price_label(tile["_total"]) if tile["_total"] is not None else ""
+                )
+                tile["more"] = len(tile["services"]) - 1
+            _assign_lanes(tiles)
             width_factor = min(
                 3,
-                max((b.get("overlap", 1) for b in display_blocks), default=1),
+                max((b.get("overlap", 1) for b in tiles), default=1),
+            )
+            col_total = sum(
+                (t["_total"] for t in tiles if t["_total"] is not None),
+                Decimal("0"),
             )
             staff.append(
                 {
@@ -469,12 +543,21 @@ def day_book(request):
                     "on_duty": bool(bands),
                     "bands": bands,
                     "shift_label": ", ".join(b["label"] for b in bands),
-                    "blocks": display_blocks,
+                    "blocks": tiles,
                     "booked_pct": booked_pct,
                     "initials": _initials(member.display_name),
                     "width_factor": width_factor,
+                    "level_name": member.staff_level.name
+                    if member.staff_level_id
+                    else "",
+                    "day_total_label": _money_label(col_total),
+                    "day_total": col_total,
+                    "visits_count": len(tiles),
+                    "booked_minutes": booked_minutes,
                 }
             )
+            for tile in tiles:
+                agenda_pool.append((tile, member))
         overview["revenue"] = revenue
         overview["revenue_label"] = _money_label(revenue)
         overview["unpriced"] = unpriced
@@ -483,6 +566,103 @@ def day_book(request):
             overview["utilization"] = min(
                 100, int(total_booked / total_roster * 100 + 0.5)
             )
+
+        # ---- the working book: a column exists only for a stylist
+        # who is rostered today or holds appointments. An off, empty
+        # chair is not a column; the desk's screen belongs to the
+        # day that is actually happening.
+        staff = [c for c in staff if c["on_duty"] or c["blocks"]]
+        visits_count = sum(c["visits_count"] for c in staff)
+        overview["visits"] = visits_count
+        if overview["utilization"] is None and staff:
+            # No roster to measure against: utilization is booked
+            # time across the working chairs over the day window.
+            window_minutes = (day_end - day_start).total_seconds() / 60
+            booked_all = sum(c["booked_minutes"] for c in staff)
+            overview["utilization"] = min(
+                100, int(booked_all / (len(staff) * window_minutes) * 100 + 0.5)
+            )
+
+        # ---- KPI ribbon facts: each one computed, never styled in
+        firsts = (
+            Appointment.objects.filter(client_id__in=client_ids)
+            .values("client_id")
+            .annotate(first=Min("start"))
+        )
+        kpi = {
+            "avg_ticket_label": _money_label(revenue / visits_count)
+            if visits_count
+            else "—",
+            "new_clients": sum(
+                1 for row in firsts if row["first"].astimezone(tz).date() == day
+            ),
+        }
+
+        # ---- intelligence strip: real answers from the day itself
+        now_moment = timezone.now().astimezone(tz)
+        cursor = now_moment if day == today else day_start
+        candidates = []
+        for col in staff:
+            spans = sorted(member_spans.get(col["member"].pk, []))
+            probe = max(cursor, day_start)
+            found = None
+            for span_start, span_end in spans:
+                if (
+                    span_start > probe
+                    and (span_start - probe).total_seconds() / 60 >= 45
+                ):
+                    found = (probe, col["member"].display_name, span_start)
+                    break
+                probe = max(probe, span_end)
+            if found is None and (day_end - probe).total_seconds() / 60 >= 45:
+                found = (probe, col["member"].display_name, day_end)
+            if found is not None:
+                candidates.append(found)
+        if candidates:
+            candidates.sort(key=lambda c: c[0])
+            o_start, o_name, o_end = candidates[0]
+            intel["next_label"] = (
+                f"{o_name} — open from {_fmt_time(o_start.astimezone(tz).time())}"
+            )
+            intel["next_sub"] = (
+                f"{_duration_label(int((o_end - o_start).total_seconds() // 60))}"
+                " free · first chair open for a 45+ min service"
+            )
+        top_col = max(staff, key=lambda c: c["day_total"], default=None)
+        if top_col is not None:
+            intel["top_label"] = (
+                f"{top_col['member'].display_name} · {top_col['day_total_label']}"
+            )
+        intel["completed"] = sum(
+            1 for a in day_appts if a.status == Appointment.Status.COMPLETED
+        )
+        intel["remaining"] = (
+            sum(1 for tile, _m in agenda_pool if tile["_end"] > cursor)
+            if day == today
+            else visits_count
+        )
+
+        # ---- the phone agenda: the same visits, chronological
+        staff_index = {c["member"].pk: i for i, c in enumerate(staff)}
+        ordered = sorted(agenda_pool, key=lambda pair: pair[0]["_start"])
+        if day == today:
+            for i, (tile, _member) in enumerate(ordered):
+                if tile["_end"] > now_moment:
+                    agenda_now_index = i
+                    break
+        agenda = [
+            {
+                "appointment_id": tile["appointment_id"],
+                "time_label": tile["time_label"],
+                "client_name": tile["client_name"],
+                "services_label": " + ".join(tile["services"]),
+                "total_label": tile["price_label"],
+                "staff_name": member.display_name,
+                "staff_index": staff_index.get(member.pk, 0),
+            }
+            for tile, member in ordered
+        ]
+
         if day_appts:
             default_rail = rail_payloads[day_appts[0].pk]
 
@@ -513,6 +693,10 @@ def day_book(request):
         "staff_columns": staff,
         "has_blocks": any(c["blocks"] for c in staff),
         "overview": overview,
+        "kpi": kpi,
+        "intel": intel,
+        "agenda": agenda,
+        "agenda_now_index": agenda_now_index,
         "rail": default_rail,
         "rail_data": rail_payloads,
         "categories": categories,

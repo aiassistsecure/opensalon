@@ -16,16 +16,12 @@
       <nav class="week" aria-label="Week">
         {% for d in week_days %}<a class="wpill{% if d == day %} active{% endif %}" href="?date={{ d|date:'Y-m-d' }}"><span class="wp-d">{{ d|date:"D" }}</span><span class="wp-n">{{ d|date:"j" }}</span></a>{% endfor %}
       </nav>
-      <div class="overview">
-        <div class="ov-ring" style="--u:{{ overview.utilization|default:0 }}"><span>{% if overview.utilization != None %}{{ overview.utilization }}%{% else %}—{% endif %}</span></div>
-        <div class="ov-stats">
-          <div class="ov-label">{% if day == today %}Today's Overview{% else %}Day Overview{% endif %}</div>
-          <div class="ov-row">
-            <div class="ov-stat"><div class="ov-v">{{ overview.revenue_label }}</div><div class="ov-k">Projected Revenue{% if overview.unpriced %} · {{ overview.unpriced }} unpriced{% endif %}</div></div>
-            <div class="ov-stat"><div class="ov-v">{{ overview.appointments }}</div><div class="ov-k">Appointments</div></div>
-            <div class="ov-stat"><div class="ov-v">{{ overview.openings }}</div><div class="ov-k">Openings</div></div>
-          </div>
-        </div>
+      <div class="kpis" aria-label="Day at a glance">
+        <div class="kpi"><div class="kpi-k">Projected Revenue</div><div class="kpi-v">{{ overview.revenue_label }}</div><div class="kpi-s">{% if overview.unpriced %}{{ overview.unpriced }} unpriced{% else %}All priced{% endif %}</div></div>
+        <div class="kpi"><div class="kpi-k">Appointments</div><div class="kpi-v">{{ overview.appointments }}</div><div class="kpi-s">{{ overview.visits }} visits</div></div>
+        <div class="kpi"><div class="kpi-k">Utilization</div><div class="kpi-v">{% if overview.utilization != None %}{{ overview.utilization }}%{% else %}—{% endif %}</div><div class="kpi-s">Of the working day</div></div>
+        <div class="kpi"><div class="kpi-k">Avg Ticket</div><div class="kpi-v">{{ kpi.avg_ticket_label }}</div><div class="kpi-s">Per visit</div></div>
+        <div class="kpi"><div class="kpi-k">New Clients</div><div class="kpi-v">{{ kpi.new_clients }}</div><div class="kpi-s">First visit today</div></div>
       </div>
     </section>
 
@@ -65,7 +61,7 @@
             <span class="avatar-md" aria-hidden="true">{{ col.initials }}</span>
             <span class="chead-meta">
               <span class="cname">{{ col.member.display_name }}</span>
-              <span class="cutil">{% if col.booked_pct != None %}{{ col.booked_pct }}% utilized{% elif col.on_duty %}Not booked{% else %}Not rostered{% endif %}</span>
+              <span class="cutil">{% if col.level_name %}{{ col.level_name }} · {% endif %}{{ col.day_total_label }} · {{ col.visits_count }} visit{{ col.visits_count|pluralize }}</span>
             </span>
           </div>
           {% endfor %}
@@ -91,11 +87,27 @@
       <div class="intel-title">Daybook Intelligence <span class="live"><span class="live-dot"></span>Live</span></div>
       <div class="intel-stats">
         <div class="istat"><div class="istat-v">{{ overview.appointments }}</div><div class="istat-k">Appointments</div></div>
-        <div class="istat"><div class="istat-v">{% if overview.utilization != None %}{{ overview.utilization }}%{% else %}—{% endif %}</div><div class="istat-k">Team Utilization</div></div>
-        <div class="istat"><div class="istat-v">{{ overview.revenue_label }}</div><div class="istat-k">Projected Revenue</div></div>
-        <div class="istat"><div class="istat-v">{{ overview.openings }}</div><div class="istat-k">Open Time Slots</div></div>
+        <div class="istat"><div class="istat-v">{{ intel.completed }}</div><div class="istat-k">Completed</div></div>
+        <div class="istat"><div class="istat-v">{{ intel.remaining }}</div><div class="istat-k">Remaining</div></div>
+        <div class="istat"><div class="istat-v">{{ intel.top_label }}</div><div class="istat-k">Top Book Today</div></div>
       </div>
-      <div class="nba"><span class="nba-bolt">⚡</span><div><div class="nba-title">Next Best Action</div><div class="nba-sub">Arrives with the insights lane</div></div></div>
+      <div class="nba"><span class="nba-bolt">⚡</span><div><div class="nba-title">Next Opening — {{ intel.next_label }}</div><div class="nba-sub">{{ intel.next_sub }}</div></div></div>
+    </section>
+
+    <section class="agenda" aria-label="Day agenda">
+      {% for item in agenda %}
+      {% if agenda_now_index == forloop.counter0 %}<div class="agenda-now"><span>Now · {{ now_label }}</span></div>{% endif %}
+      <article class="acard" data-appt="{{ item.appointment_id }}" tabindex="0" role="button" aria-label="{{ item.client_name }}, {{ item.services_label }}, {{ item.time_label }}">
+        <div class="acard-t">{{ item.time_label }}</div>
+        <div class="acard-b">
+          <div class="acard-c"><span>{{ item.client_name }}</span>{% if item.total_label %}<b>{{ item.total_label }}</b>{% endif %}</div>
+          <div class="acard-s">{{ item.services_label }}</div>
+          <div class="acard-st"><span class="adot av-{{ item.staff_index }}" aria-hidden="true"></span>{{ item.staff_name }}</div>
+        </div>
+      </article>
+      {% empty %}
+      <div class="empty-card"><div class="empty-title">No appointments on the book</div><p class="empty-sub">Nothing is booked for this day.</p></div>
+      {% endfor %}
     </section>
   </div>
 
