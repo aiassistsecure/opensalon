@@ -2311,3 +2311,111 @@ class NedbHavingLiveTests(SimpleTestCase):
         rows = inactive_clients(salon=salon, now=_HAVING_NOW)
         self.assertEqual([row.client_id for row in rows], [stale.pk])
         self.assertEqual(rows[0].days_since_last_visit, 91)
+
+
+# -- N-M10: server-side cursors / DECLARE (DYOR 5, 9.1, 9.9) ----------
+
+
+class ChunkedCursorTests(SimpleTestCase):
+    """chunked_cursor() must never produce a named (DECLARE) cursor."""
+
+    def test_chunked_cursor_returns_the_plain_cursor(self):
+        wrapper = _wrapper()
+        sentinel = mock.Mock(name="plain-cursor")
+        with mock.patch.object(wrapper, "cursor", return_value=sentinel) as cur:
+            self.assertIs(wrapper.chunked_cursor(), sentinel)
+        cur.assert_called_once_with()
+
+    def test_chunked_cursor_never_names_a_cursor(self):
+        wrapper = _wrapper()
+        sentinel = mock.Mock(name="plain-cursor")
+        with mock.patch.object(wrapper, "_cursor", return_value=sentinel) as cur:
+            self.assertIs(wrapper.chunked_cursor(), sentinel)
+        # _cursor() reached with no name argument: no DECLARE can follow.
+        cur.assert_called_once_with()
+        self.assertEqual(wrapper._named_cursor_idx, 0)
+
+
+import datetime as _dt10
+
+from django.test import TestCase as _TestCase10
+
+
+@unittest.skipUnless(
+    os.environ.get("OPENSALON_NEDB_LIVE_TEST") == "1",
+    "live nedbd DECLARE test: set OPENSALON_NEDB_LIVE_TEST=1 with the "
+    "default connection on the NEDB backend (nedbd running, test "
+    "database pre-created over HTTP)",
+)
+class NedbDeclareCursorLiveTests(_TestCase10):
+    """iterator() paths execute on live NEDB with no DECLARE (N-M10).
+
+    Census signature 1 (nedb-live-census-2026-10-31.md): 24 live
+    errors, 23 in messaging, from QuerySet.iterator() routing through
+    the PostgreSQL named cursor. Probe: nedb-declare-probe-2026-10-31.md.
+    """
+
+    def setUp(self):
+        from bookings.models import Appointment
+        from clients.models import Client
+        from messaging.models import ReminderSend
+        from saloncore.models import Salon, Service, ServiceCategory
+        from team.models import StaffMember
+
+        self.ReminderSend = ReminderSend
+        self.salon = Salon.objects.create(name="Declare Probe Salon", timezone="UTC")
+        staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Declare Stylist"
+        )
+        category = ServiceCategory.objects.create(salon=self.salon, name="Hair")
+        service = Service.objects.create(
+            category=category, name="Haircut", service_minutes=45
+        )
+        client = Client.objects.create(
+            salon=self.salon, first_name="Declare", last_name="Client",
+            email="declare@example.com", phone="555-0100",
+            sms_opt_in=True, email_opt_in=True,
+        )
+        start = dj_timezone.now() + _dt10.timedelta(days=1)
+        appt = Appointment.objects.create(
+            client=client, staff_member=staff, service=service,
+            start=start, end=start + _dt10.timedelta(minutes=45),
+            status=Appointment.Status.BOOKED,
+        )
+        utc = datetime.timezone.utc
+        for channel, day in (("email", 2), ("sms", 3)):
+            ReminderSend.objects.create(
+                appointment=appt, client=client, channel=channel,
+                status=ReminderSend.Status.SENT,
+                sent_at=datetime.datetime(2026, 3, day, 12, tzinfo=utc),
+            )
+        self.first = datetime.date(2026, 3, 1)
+        self.last = datetime.date(2026, 3, 4)
+
+    def test_plain_iterator_queryset_executes(self):
+        rows = list(
+            self.ReminderSend.objects.order_by("sent_at")
+            .values_list("channel", flat=True)
+            .iterator()
+        )
+        self.assertEqual(rows, ["email", "sms"])
+        chunked = list(
+            self.ReminderSend.objects.order_by("sent_at")
+            .values_list("channel", flat=True)
+            .iterator(chunk_size=1)
+        )
+        self.assertEqual(chunked, ["email", "sms"])
+
+    def test_messaging_history_summary_executes(self):
+        from messaging.history import reminder_history_summary
+
+        summary = reminder_history_summary(self.first, self.last)
+        self.assertEqual(summary.total, 2)
+        self.assertEqual(summary.by_channel, {"email": 1, "sms": 1})
+
+    def test_messaging_send_totals_executes(self):
+        from messaging.send_totals import send_totals
+
+        totals = send_totals(self.salon, self.first, self.last)
+        self.assertEqual(totals.total, 2)
+        self.assertEqual(totals.by_channel, {"email": 1, "sms": 1})
