@@ -4,5 +4,5 @@
 {% block content %}
 {% include "webui/_daybook_main.html" %}
 {% load static %}
-<script type="module" src="{% static 'webui/shadow.js' %}"></script>
+<script type="module" src="{% static 'webui/shadow.js' %}?v={{ asset_v }}"></script>
 {% endblock %}

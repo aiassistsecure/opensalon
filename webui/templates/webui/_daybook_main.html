@@ -62,7 +62,7 @@
           </div>
           {% endfor %}
         </div>
-        <div class="gridwrap" style="--cols:{{ staff_columns|length }}{% if grid_tracks %};--tracks:{{ grid_tracks }}{% endif %}">
+        <div class="gridwrap" data-start-hour="{{ day_start_hour }}" data-end-hour="{{ day_end_hour }}" style="--cols:{{ staff_columns|length }}{% if grid_tracks %};--tracks:{{ grid_tracks }}{% endif %}">
           <div class="db-gutter">
             {% for hour in hours %}<span class="hourlbl" style="top:{{ hour.top }}%">{{ hour.label }}</span>{% endfor %}
           </div>

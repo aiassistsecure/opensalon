@@ -56,6 +56,15 @@ class ShellTests(WebuiTestBase):
         ):
             self.assertContains(response, label)
 
+    def test_shell_assets_carry_a_content_version(self):
+        # ?v= cache busting: a box that pulls new code must never
+        # keep running yesterday's JS from the browser cache.
+        response = self.client.get(reverse("webui:daybook"))
+        version = response.context["asset_v"]
+        self.assertTrue(version)
+        self.assertContains(response, f"webui.css?v={version}")
+        self.assertContains(response, f"webui.js?v={version}")
+
 
 class DayBookTests(WebuiTestBase):
     def test_staff_column_and_roster_shift_render(self):
@@ -64,6 +73,13 @@ class DayBookTests(WebuiTestBase):
         self.assertContains(response, "Level 6")
         self.assertContains(response, "0 visits")
         self.assertContains(response, "No appointments on the book")
+
+    def test_grid_carries_its_window_for_the_empty_space_gesture(self):
+        # The empty-space booking gesture reads the day's window
+        # off the graph itself.
+        response = self.client.get(reverse("webui:daybook"), {"date": "2026-11-02"})
+        self.assertContains(response, 'data-start-hour="8"')
+        self.assertContains(response, 'data-end-hour="20"')
 
     def test_unrostered_unbooked_member_has_no_column(self):
         # The working book: a stylist who is neither rostered nor
