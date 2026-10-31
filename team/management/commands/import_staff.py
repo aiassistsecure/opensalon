@@ -35,8 +35,15 @@ Mapping (one source of truth — this command is the only writer here):
 
 Idempotent: rows are written with ``update_or_create`` keyed by
 (salon, external_id), so re-running updates in place and never
-duplicates. The import runs in one transaction: a bad file changes
-nothing. Output is counts only — no staff names are ever printed.
+duplicates. Bad rows are skipped and counted, not fatal. A file
+that is not valid JSON, or not a JSON list, raises before any
+write. The import runs in one transaction, but that is
+defence-in-depth only: on NEDB ``transaction.atomic()`` rolls
+back nothing (DYOR §9.4), so atomicity on NEDB does not rest on
+``atomic()`` rollback — it rests on bad rows being
+skipped/counted and on skip-and-idempotent-re-run healing any
+partial state a mid-loop failure could leave. Output is counts
+only — no staff names are ever printed.
 """
 
 import json
