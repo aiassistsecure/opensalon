@@ -138,12 +138,87 @@
     if (railEl) railEl.setAttribute("data-current", d.id);
   }
 
+  /* The card, answered from the store first. A block born this
+     session (or adopted from another desk) has no node payload
+     yet — the payloads ride a fragment fetch. The store's doc
+     already knows who, what, when and how much, so the card
+     opens on exactly those facts, honestly labelled as the
+     book's own word, and the node's full payload chains in
+     behind it and takes over (history, notes, the record).
+     Nothing the entry does not know is invented for the card:
+     no visit count, no contact facts, no history. */
+  var STATUS_LABELS_JS = {
+    booked: "Booked", confirmed: "Confirmed", arrived: "Arrived",
+    in_service: "In service", completed: "Completed",
+    cancelled: "Cancelled", no_show: "No show",
+  };
+
+  function initialsOf(name) {
+    var parts = String(name || "").trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return "";
+    var first = parts[0].charAt(0);
+    var last = parts.length > 1 ? parts[parts.length - 1].charAt(0) : "";
+    return (first + last).toUpperCase();
+  }
+
+  function durationLabelJs(mins) {
+    var h = Math.floor(mins / 60), m = mins % 60;
+    if (h && m) return h + "h " + m + "m";
+    return h ? h + "h" : m + "m";
+  }
+
+  function renderRailProvisional(e) {
+    if (!railBody || !e) return;
+    var staff = null;
+    (model.staff || []).forEach(function (s) {
+      if (s.id === e.staff_id) staff = s;
+    });
+    var d = {
+      status: e.status,
+      status_label: STATUS_LABELS_JS[e.status] || e.status,
+    };
+    railBody.innerHTML =
+      '<div class="rail-head"><div><div class="rail-time">' + esc(e.time_label) +
+      '</div><div class="rail-date">' + esc(e.day || currentDate) + "</div></div>" + pill(d) +
+      '<button type="button" class="rail-close" id="railClose" aria-label="Close detail">✕</button></div>' +
+      '<div class="rail-client"><div class="avatar-lg">' + esc(initialsOf(e.client)) + "</div>" +
+      '<div class="rail-client-meta"><div class="rail-cname">' + esc(e.client) + "</div>" +
+      '<div class="rail-meta">From the book itself — the full card is chaining in from the node…</div></div></div>' +
+      '<div class="rpanel" data-panel="appointment">' +
+      '<div class="stack-head"><span>Service Stack</span><span class="stack-total">' +
+      esc(e.price_label || "") + "</span></div>" +
+      '<div class="stack-row current"><span class="stack-dot"></span>' +
+      '<span class="stack-name">' + esc(e.service) + "</span>" +
+      '<span class="stack-dur">' + esc(durationLabelJs(e.end_min - e.start_min)) + "</span>" +
+      '<span class="stack-price">' + esc(e.price_label || "") + "</span></div>" +
+      (staff
+        ? '<div class="drow"><span class="drow-k">Stylist</span><span class="drow-v">' +
+          '<span class="avatar-sm">' + esc(staff.initials) + "</span>" + esc(staff.name) +
+          (staff.level ? " · " + esc(staff.level) : "") + "</span></div>"
+        : "") +
+      '<div class="drow"><span class="drow-k">Status</span><span class="drow-v">' +
+      pill(d) + "</span></div></div>";
+    if (railEl) railEl.setAttribute("data-current", e.id);
+  }
+
   function choose(block, openSheet) {
     if (selected) selected.classList.remove("sel");
     selected = block;
     if (block) {
       block.classList.add("sel");
-      renderRail(payloads[block.dataset.appt]);
+      var d = payloads[block.dataset.appt];
+      if (d) {
+        renderRail(d);
+      } else {
+        var entry = null;
+        (modelDay() || []).forEach(function (e) {
+          if (String(e.id) === String(block.dataset.appt)) entry = e;
+        });
+        if (entry) {
+          renderRailProvisional(entry);
+          refreshRailData(block.dataset.appt);
+        }
+      }
       if (openSheet && railEl && window.innerWidth <= 760) railEl.classList.add("open");
     }
   }
@@ -1133,14 +1208,29 @@
 
   function buildModel(pack, forDate) {
     if (pack && pack.days) {
+      var storeLive = window.OpenSalonShadow && window.OpenSalonShadow.ready;
       model = {
-        days: pack.days,
+        /* The chain, on reads: when the store is live the
+           node's answer does NOT become the model — it
+           reconciles into the store (os:adopt), and the model
+           follows the store's word doc by doc via os:record /
+           os:vanish. The model keeps its store-fed days; only
+           the pack's metadata (staff, the anchor day's ribbon
+           facts) is taken directly. A tab whose store never
+           woke keeps the direct path, as it always has. */
+        days: storeLive ? model.days : pack.days,
         staff: pack.staff || [],
         anchor: pack.anchor || null,
         anchorDate: pack.anchor ? (forDate || currentDate) : "",
       };
-      /* Feed the shadow store (embedded NEDB) the same pack. */
-      document.dispatchEvent(new CustomEvent("os:pack", { detail: pack }));
+      if (storeLive) {
+        document.dispatchEvent(
+          new CustomEvent("os:adopt", { detail: { days: pack.days } })
+        );
+      } else {
+        /* Feed the shadow store (embedded NEDB) the same pack. */
+        document.dispatchEvent(new CustomEvent("os:pack", { detail: pack }));
+      }
     }
   }
   function modelDay() {
@@ -1556,13 +1646,23 @@
   /* The store's word on a record is the projection's word:
      when the embedded NEDB applies a play, its doc lands here
      and the render model follows it — one writer, one truth. */
+  /* The model follows the store, doc by doc, on every day the
+     store speaks for — a play on this day, an adoption from the
+     node's chained answer, a doc born in a booking reply. An
+     unknown doc JOINS the model (a foreign desk's new booking
+     is news, not an error); a known one takes the store's
+     fields. os:vanish is the other half of adoption: the node
+     says this day no longer holds that appointment, the store
+     deleted it, and the model lets it go. */
   document.addEventListener("os:record", function (event) {
     var doc = event.detail;
-    if (!doc || doc.day !== currentDate) return;
-    var entries = modelDay();
-    if (!entries) return;
+    if (!doc || !doc.day) return;
+    var entries = model.days[doc.day];
+    if (!entries) entries = model.days[doc.day] = [];
+    var found = false;
     entries.forEach(function (e) {
       if (e.id === doc.id) {
+        found = true;
         e.staff_id = doc.staff_id;
         e.start_min = doc.start_min;
         e.end_min = doc.end_min;
@@ -1571,6 +1671,19 @@
         e.price_label = doc.price_label;
       }
     });
+    if (!found) {
+      entries.push(Object.assign({}, doc));
+      entries.sort(function (a, b) {
+        return a.start_min - b.start_min || a.id - b.id;
+      });
+    }
+  });
+
+  document.addEventListener("os:vanish", function (event) {
+    var d = event.detail || {};
+    var entries = model.days[d.day];
+    if (!entries) return;
+    model.days[d.day] = entries.filter(function (e) { return e.id !== d.id; });
   });
 
   /* Store law: a clean drain changes nothing on screen — the
@@ -2012,15 +2125,19 @@
         var moved = data.changed && data.version !== packVersion;
         packVersion = data.version;
         if (!data.days) return;
-        buildModel(data, currentDate);
-        if (!initial && !moved && !staleAnchor) return;
         /* Our own writes still in flight (the legacy shadow
            queue, or the embedded store's undrained outbox):
-           syncing now would repaint from a server state that
-           has not seen them yet. The drain ack re-polls. */
+           the node's answer must not reconcile over plays it
+           has not seen yet — adopting now would overwrite the
+           store's docs with a state from before the drain.
+           The check stands BEFORE the model is touched, and
+           the drain ack's re-poll lands the sync once the
+           server's word includes our own writes. */
         var storePending = window.OpenSalonShadow && window.OpenSalonShadow.ready &&
           window.OpenSalonShadow.pending();
         if (Object.keys(shadowPending).length || shadowTimer || storePending) return;
+        buildModel(data, currentDate);
+        if (!initial && !moved && !staleAnchor) return;
         if (!syncFromModel() && !initial) {
           refreshDay(railEl ? railEl.getAttribute("data-current") : null);
         }

@@ -33,10 +33,19 @@
  * its server path exactly as before: the book never depends
  * on the shadow.
  *
- * Seam: CustomEvents on document (os:pack in, os:op in,
- * os:record / os:drain / os:undo-move / os:shadow-ready /
- * os:recovered out), plus window.OpenSalonShadow for state
- * queries.
+ * Seam: CustomEvents on document (os:pack / os:adopt / os:op /
+ * os:put in, os:record / os:vanish / os:drain / os:undo-move /
+ * os:shadow-ready / os:recovered out), plus
+ * window.OpenSalonShadow for state queries.
+ *
+ * The chain, as the founder states it: fetches answer from
+ * this store first, then chain to the HTTP node — the node's
+ * answer arrives as an ADOPT: the pack's days reconcile INTO
+ * the store (docs land or vanish here), and the render model
+ * follows the store's word via os:record / os:vanish, never
+ * the other way around. Writes run the chain in reverse: a
+ * play records here, drains to the node, and the node's
+ * persisted word chains back in through the next adopt.
  */
 const engineUrl = new URL("nedb/nedb_wasm.js", import.meta.url);
 
@@ -183,6 +192,49 @@ function seed(pack) {
         String(entry.id),
         JSON.stringify(Object.assign({ day: iso }, entry))
       );
+      indexDoc(iso, entry.id);
+    });
+  });
+}
+
+/* Which appointment ids live on which day, as this store
+   knows it. A doc lives on exactly one day: indexing it
+   anywhere strips it from every other day's set, so a
+   cross-day move can never be deleted by its old day's
+   reconcile after its new day has adopted it. */
+const dayIndex = {};
+
+function indexDoc(iso, id) {
+  Object.keys(dayIndex).forEach(function (d) {
+    if (d !== iso && dayIndex[d]) delete dayIndex[d][id];
+  });
+  (dayIndex[iso] = dayIndex[iso] || {})[id] = true;
+}
+
+/* The node's answer, reconciled in: for each day the pack
+   speaks for, every entry lands as a doc (os:record carries
+   it to the render model, which follows the store), and any
+   doc the day no longer holds vanishes — deleted here, and
+   os:vanish takes it out of the model. Nothing here queues
+   an op: adoption is the node's word arriving, not a play. */
+function adopt(days) {
+  if (!ready || !days) return;
+  Object.keys(days).forEach(function (iso) {
+    const keep = {};
+    (days[iso] || []).forEach(function (entry) {
+      const doc = Object.assign({ day: iso }, entry);
+      db.put("appointments", String(entry.id), JSON.stringify(doc));
+      indexDoc(iso, entry.id);
+      keep[entry.id] = true;
+      emit("os:record", doc);
+    });
+    const known = dayIndex[iso] || {};
+    Object.keys(known).forEach(function (id) {
+      if (!keep[id]) {
+        try { db.delete("appointments", String(id)); } catch (err) {}
+        delete known[id];
+        emit("os:vanish", { day: iso, id: parseInt(id, 10) });
+      }
     });
   });
 }
@@ -353,6 +405,9 @@ window.addEventListener("pagehide", function () {
 });
 
 document.addEventListener("os:pack", function (event) { seed(event.detail); });
+document.addEventListener("os:adopt", function (event) {
+  adopt(event.detail && event.detail.days);
+});
 document.addEventListener("os:op", function (event) { applyLocal(event.detail); });
 document.addEventListener("os:undo", function () { undo(); });
 
@@ -365,6 +420,7 @@ document.addEventListener("os:put", function (event) {
   const entry = event.detail;
   if (!ready || !entry || !entry.id || !entry.day) return;
   db.put("appointments", String(entry.id), JSON.stringify(entry));
+  indexDoc(entry.day, entry.id);
 });
 
 window.OpenSalonShadow = {
