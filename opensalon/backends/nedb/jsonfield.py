@@ -37,9 +37,33 @@ converter: ``JSONField.from_db_value`` already parses string values
 with ``json.loads``, and an operations converter that parsed first
 would feed it a dict and break it. ``None`` passes through so it
 stays SQL NULL, never the JSON text ``"null"``.
+
+The ``::json`` sibling (N-M8b probe; evidence file cited in the PR):
+no Django path emits it -- the only ``::json`` string in Django is
+the psycopg2 fallback's ``::jsonb`` suffix, no Django code constructs
+psycopg's ``Json`` wrapper, and a live 16-shape compile/run battery
+(exact, contains, has_key(s), key transforms, ordering, ``Value``,
+``Cast`` -- which emits ``::jsonb`` only, SELECT-side) sent no
+``::json`` token to nedbd. Raw psycopg proves the hazard is real if a
+wrapper ever became a VALUE: ``Json`` mogrifies to ``'...'::json``
+and NEDB refuses it on INSERT with the same verbatim refusal as
+``::jsonb`` (DYOR 9.7). So the guard below unwraps a ``Json`` /
+``Jsonb`` wrapper a caller supplies as a JSONField value to its
+plain JSON text (honouring the wrapper's own ``dumps``) -- through
+Django's sole adaptation entry a wrapper can never be the vehicle
+for a cast VALUE, and it no longer dies in ``json.dumps`` either.
+Raw cursors bypass adaptation entirely; that is the caller's SQL,
+not rewritten here (DYOR 9.1).
 """
 
 import json
+
+try:
+    from psycopg.types.json import Json, Jsonb
+except ImportError:  # pragma: no cover - psycopg is a PG dependency
+    Json = Jsonb = None
+
+_JSON_WRAPPERS = tuple(t for t in (Json, Jsonb) if t is not None)
 
 
 def adapt_json_value(value, encoder):
@@ -50,4 +74,11 @@ def adapt_json_value(value, encoder):
         # Query expressions are not values; Django expects adaptation
         # hooks to pass them through untouched (cf. temporal.py).
         return value
+    if _JSON_WRAPPERS and isinstance(value, _JSON_WRAPPERS):
+        # N-M8b guard: unwrap psycopg's Json/Jsonb to plain text so
+        # its cast-rendering dumper never sees it (module docstring).
+        if value.dumps is not None:
+            text = value.dumps(value.obj)
+            return text.decode() if isinstance(text, bytes) else text
+        return json.dumps(value.obj, cls=encoder)
     return json.dumps(value, cls=encoder)
