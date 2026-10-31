@@ -281,3 +281,109 @@ class PriceChangeModelTests(TestCase):
         ordered = list(PriceChange.objects.all())
         self.assertEqual(ordered, [second, first])
         self.assertEqual(list(reversed(ordered)), [first, second])
+
+
+class StrictConstraintsTests(TestCase):
+    """N-M16: StrictConstraints enforces declared Meta.constraints on save().
+
+    The violation surface is IntegrityError (what a DB-level constraint
+    raises), so the ORM write path behaves the same on schemaless NEDB
+    as on an enforcing backend.
+    """
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Mint On The Avenue")
+        self.category = ServiceCategory.objects.create(
+            name="Color", salon=self.salon
+        )
+        self.service = Service.objects.create(
+            name="Single Process Color",
+            category=self.category,
+            service_minutes=45,
+            external_id="svc-color",
+        )
+        self.level = StaffLevel.objects.create(name="Level 6", salon=self.salon)
+        self.other_level = StaffLevel.objects.create(
+            name="Level 8", salon=self.salon
+        )
+
+    def test_duplicate_service_price_pair_rejected_on_save(self):
+        ServicePrice.objects.create(
+            service=self.service, staff_level=self.level, amount=Decimal("85.00")
+        )
+        duplicate = ServicePrice(
+            service=self.service, staff_level=self.level, amount=Decimal("90.00")
+        )
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                duplicate.save()
+        self.assertEqual(ServicePrice.objects.count(), 1)
+
+    def test_update_into_duplicate_service_price_pair_rejected(self):
+        ServicePrice.objects.create(
+            service=self.service, staff_level=self.level, amount=Decimal("85.00")
+        )
+        price = ServicePrice.objects.create(
+            service=self.service,
+            staff_level=self.other_level,
+            amount=Decimal("95.00"),
+        )
+        price.staff_level = self.level
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                price.save()
+
+    def test_duplicate_nonempty_service_external_id_rejected(self):
+        duplicate = Service(
+            name="Balayage",
+            category=self.category,
+            service_minutes=90,
+            external_id="svc-color",
+        )
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                duplicate.save()
+        self.assertEqual(Service.objects.count(), 1)
+
+    def test_duplicate_blank_service_external_id_allowed(self):
+        first = Service.objects.create(
+            name="Haircut", category=self.category, service_minutes=30
+        )
+        second = Service.objects.create(
+            name="Blowout", category=self.category, service_minutes=30
+        )
+        self.assertEqual(first.external_id, "")
+        self.assertEqual(second.external_id, "")
+
+    def test_legitimate_saves_and_updates_pass(self):
+        price = ServicePrice.objects.create(
+            service=self.service, staff_level=self.level, amount=Decimal("85.00")
+        )
+        # Re-saving an unchanged row must not reject itself.
+        price.save()
+        # Ordinary field update, full save and update_fields save.
+        price.amount = Decimal("88.00")
+        price.save()
+        price.amount = Decimal("90.00")
+        price.save(update_fields=["amount"])
+        price.refresh_from_db()
+        self.assertEqual(price.amount, Decimal("90.00"))
+        # A price for a different level is a different pair: allowed.
+        ServicePrice.objects.create(
+            service=self.service,
+            staff_level=self.other_level,
+            amount=Decimal("110.00"),
+        )
+        # Service rename and a fresh unique external_id both save.
+        self.service.name = "Single Process Colour"
+        self.service.save()
+        other = Service.objects.create(
+            name="Balayage",
+            category=self.category,
+            service_minutes=90,
+            external_id="svc-balayage",
+        )
+        other.external_id = "svc-balayage-plus"
+        other.save(update_fields=["external_id"])
+        other.refresh_from_db()
+        self.assertEqual(other.external_id, "svc-balayage-plus")
