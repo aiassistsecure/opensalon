@@ -21,6 +21,7 @@
     <nav class="snav" aria-label="Primary">
       <a class="snav-item {% if nav_key == 'home' %}active{% endif %}" href="{% url 'webui:home' %}" title="Home"><span class="ic">⌂</span><span class="lbl">Home</span></a>
       <a class="snav-item {% if nav_key == 'daybook' %}active{% endif %}" href="{% url 'webui:daybook' %}" title="Daybook"><span class="ic">▦</span><span class="lbl">Daybook</span></a>
+      <a class="snav-item {% if nav_key == 'roster' %}active{% endif %}" href="{% url 'webui:roster' %}" title="Roster"><span class="ic">▩</span><span class="lbl">Roster</span></a>
       <a class="snav-item {% if nav_key == 'clients' %}active{% endif %}" href="{% url 'webui:clients' %}" title="Clients"><span class="ic">◎</span><span class="lbl">Clients</span></a>
       <a class="snav-item {% if nav_key == 'team' %}active{% endif %}" href="{% url 'webui:team' %}" title="Team"><span class="ic">◉</span><span class="lbl">Team</span></a>
       <a class="snav-item {% if nav_key == 'pricebook' %}active{% endif %}" href="{% url 'webui:pricebook' %}" title="Services"><span class="ic">✂</span><span class="lbl">Services</span></a>

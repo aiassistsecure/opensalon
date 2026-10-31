@@ -122,3 +122,54 @@ class AttendanceRecord(models.Model):
 
     def __str__(self):
         return f"{self.staff_member} {self.get_event_type_display()} at {self.recorded_at}"
+
+
+class ShiftOverride(StrictConstraints):
+    """A date-specific roster change for one staff member.
+
+    The roster book's switch, OFF position: where a ``RosterPattern``
+    repeats every week forever, an override rules ONE date only. It
+    replaces the member's pattern windows on that date wholesale —
+    either a single placed shift (``start_time``/``end_time``) or a
+    full day off (``is_off``). Readers resolve a date as: override if
+    one exists, pattern if not — the day book, the roster book and
+    online booking all read that same resolution.
+    """
+
+    staff_member = models.ForeignKey(
+        StaffMember, on_delete=models.CASCADE, related_name="shift_overrides"
+    )
+    date = models.DateField()
+    is_off = models.BooleanField(default=False)
+    start_time = models.TimeField(null=True, blank=True)
+    end_time = models.TimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["date"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["staff_member", "date"],
+                name="uniq_shift_override_per_member_date",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        is_off=True,
+                        start_time__isnull=True,
+                        end_time__isnull=True,
+                    )
+                    | models.Q(
+                        is_off=False,
+                        start_time__isnull=False,
+                        end_time__isnull=False,
+                        end_time__gt=models.F("start_time"),
+                    )
+                ),
+                name="shift_override_shape",
+            ),
+        ]
+
+    def __str__(self):
+        if self.is_off:
+            return f"{self.staff_member} off {self.date}"
+        return f"{self.staff_member} {self.date} {self.start_time}-{self.end_time}"
