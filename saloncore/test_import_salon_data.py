@@ -171,5 +171,19 @@ class ImportSalonDataTests(TestCase):
         Salon.objects.all().delete()
         with self.assertRaises(CommandError):
             call_command("import_salon_data", path)
-        # Transaction rolled back: not even the salons were restored.
+        # Validate-before-write: not even the salons were restored.
+        self.assertTrue(all(c == 0 for c in _counts().values()))
+
+    def test_dangling_reference_in_late_section_writes_nothing(self):
+        # staff_members is the LAST section written; every earlier
+        # section is valid. Pre-validation must still write zero rows.
+        path = self.export()
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        data["staff_members"][0]["staff_level_id"] = 999999
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError):
+            call_command("import_salon_data", path)
         self.assertTrue(all(c == 0 for c in _counts().values()))

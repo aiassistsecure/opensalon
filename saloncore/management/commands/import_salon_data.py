@@ -31,9 +31,20 @@ and creates nothing twice:
   (salon, display_name)
 
 No provider concepts: external ids are the generic fields the models
-already carry. The import runs in one transaction — a bad file (bad
-JSON, missing sections, dangling references, counts that disagree
-with the sections) changes nothing.
+already carry.
+
+Two-phase, validate-before-write (N-M19): phase 1 validates the
+ENTIRE file — every reference resolves to an id present in the file,
+every required field is present, every price amount parses — before
+phase 2 writes a single row. A bad file (bad JSON, missing sections,
+missing fields, dangling references anywhere including the last
+section, counts that disagree with the sections) raises
+``CommandError`` and changes nothing on ANY backend. This must not
+rely on ``transaction.atomic`` rollback: on NEDB ``atomic()`` rolls
+back nothing (DYOR §9.4; strictness probe §4 signature 8), so the
+atomicity guarantee lives in this command layer (probe §5). The
+``atomic`` decorator is kept only as defence-in-depth on backends
+that do support transactions.
 """
 
 import json
@@ -83,6 +94,73 @@ def _load(path):
     return data
 
 
+def _require(row, section, fields):
+    if not isinstance(row, dict):
+        raise CommandError(f"Record in section {section!r} is not an object.")
+    for field in fields:
+        if field not in row:
+            raise CommandError(
+                f"Record in section {section!r} is missing {field!r}.")
+
+
+def _check_ref(ids, old_id, what):
+    if old_id not in ids:
+        raise CommandError(
+            f"Dangling reference: {what} id {old_id!r} not in the file.")
+
+
+def _validate(data):
+    """Phase 1: validate the whole file; write nothing.
+
+    Checks every section's required fields and every file-local
+    reference against the ids present in the file, and parses every
+    service_prices amount. Raises CommandError on the first problem.
+    """
+    required = {
+        "salons": ("id", "name"),
+        "service_categories": ("id", "salon_id", "name"),
+        "services": ("id", "category_id", "name", "service_minutes"),
+        "staff_levels": ("id", "salon_id", "name"),
+        "service_prices": ("service_id", "staff_level_id", "amount"),
+        "clients": ("id", "salon_id", "first_name", "last_name"),
+        "client_notes": ("client_id", "body"),
+        "staff_members": ("salon_id", "display_name"),
+    }
+    for section, fields in required.items():
+        for row in data[section]:
+            _require(row, section, fields)
+
+    salon_ids = {row["id"] for row in data["salons"]}
+    category_ids = {row["id"] for row in data["service_categories"]}
+    level_ids = {row["id"] for row in data["staff_levels"]}
+    service_ids = {row["id"] for row in data["services"]}
+    client_ids = {row["id"] for row in data["clients"]}
+
+    for row in data["service_categories"]:
+        _check_ref(salon_ids, row["salon_id"], "salon")
+    for row in data["staff_levels"]:
+        _check_ref(salon_ids, row["salon_id"], "salon")
+    for row in data["services"]:
+        _check_ref(category_ids, row["category_id"], "category")
+    for row in data["service_prices"]:
+        _check_ref(service_ids, row["service_id"], "service")
+        _check_ref(level_ids, row["staff_level_id"], "staff_level")
+        try:
+            Decimal(str(row["amount"]))
+        except (InvalidOperation, ValueError) as exc:
+            raise CommandError(
+                f"Bad service_prices amount: {row.get('amount')!r}."
+            ) from exc
+    for row in data["clients"]:
+        _check_ref(salon_ids, row["salon_id"], "salon")
+    for row in data["client_notes"]:
+        _check_ref(client_ids, row["client_id"], "client")
+    for row in data["staff_members"]:
+        _check_ref(salon_ids, row["salon_id"], "salon")
+        if row.get("staff_level_id") is not None:
+            _check_ref(level_ids, row["staff_level_id"], "staff_level")
+
+
 def _ref(mapping, old_id, what):
     try:
         return mapping[old_id]
@@ -111,7 +189,10 @@ class Command(BaseCommand):
     @transaction.atomic
     def handle(self, *args, **options):
         data = _load(options["input"])
+        # Phase 1: validate everything before writing anything.
+        _validate(data)
 
+        # Phase 2: write (all references/required data already proven).
         salons = {}
         for row in data["salons"]:
             obj, _ = Salon.objects.update_or_create(
