@@ -129,6 +129,28 @@ def _combine(date_text, time_text, tz):
         return None
 
 
+def _flush_appointments(batch):
+    """Write a batch of new appointments in one multi-row insert.
+
+    Falls back to per-row writes if the backend refuses the batch,
+    so a backend that cannot take multi-row inserts still imports
+    correctly, just slower. The fallback is idempotent, so a batch
+    that partially applied before failing still heals.
+    """
+    try:
+        Appointment.objects.bulk_create(batch, batch_size=200)
+    except Exception:
+        for appt in batch:
+            Appointment.objects.update_or_create(
+                external_id=appt.external_id,
+                defaults={
+                    "client": appt.client, "staff_member": appt.staff_member,
+                    "service": appt.service, "service_name": appt.service_name,
+                    "start": appt.start, "end": appt.end,
+                    "status": appt.status,
+                })
+
+
 class Command(BaseCommand):
     help = "Import appointments from a verbatim appointments JSON extract."
 
@@ -194,6 +216,7 @@ class Command(BaseCommand):
                         "service_id", "service_name", "start", "end",
                         "status")
             }
+            batch = []
             total = len(records)
             seen = 0
             for row in records:
@@ -247,15 +270,31 @@ class Command(BaseCommand):
                     stats["unchanged"] += 1
                     dates.append(row.get("appointmentDate"))
                     continue
-                _, created = Appointment.objects.update_or_create(
-                    external_id=external_id,
-                    defaults={
-                        "client": client, "staff_member": member,
-                        "service": service, "service_name": snapshot,
-                        "start": start, "end": end,
-                        "status": status,
-                    })
-                stats["created" if created else "updated"] += 1
+                if current is not None:
+                    # Changed rows are rare; they keep the exact
+                    # update-in-place path.
+                    Appointment.objects.update_or_create(
+                        external_id=external_id,
+                        defaults={
+                            "client": client, "staff_member": member,
+                            "service": service, "service_name": snapshot,
+                            "start": start, "end": end,
+                            "status": status,
+                        })
+                    stats["updated"] += 1
+                else:
+                    # New rows are the bulk of a first import: batch
+                    # them into multi-row inserts instead of paying a
+                    # select+insert round trip per row.
+                    batch.append(Appointment(
+                        client=client, staff_member=member,
+                        service=service, service_name=snapshot,
+                        start=start, end=end, status=status,
+                        external_id=external_id))
+                    stats["created"] += 1
+                    if len(batch) >= 200:
+                        _flush_appointments(batch)
+                        batch.clear()
                 existing[external_id] = {
                     "external_id": external_id, "client_id": client.id,
                     "staff_member_id": member.id,
@@ -265,6 +304,9 @@ class Command(BaseCommand):
                     "status": status,
                 }
                 dates.append(row.get("appointmentDate"))
+            if batch:
+                _flush_appointments(batch)
+                batch.clear()
         stats["total"] = len(records)
         if dates:
             stats["date_min"], stats["date_max"] = min(dates), max(dates)
