@@ -339,3 +339,158 @@ class ImportPriceBookPreValidationTests(TestCase):
             ServicePrice.objects.get(
                 service=cut, staff_level__name="Base").amount,
             Decimal("50.0"))
+
+
+class ImportPriceBookExternalIdLengthTests(TestCase):
+    """TF-6: ids are never silently truncated; staff-file ids are
+    normalised to str. This importer is validate-before-write, so an
+    overlong id raises CommandError naming the row in phase 1 and
+    the whole file writes nothing (zero partial write for that row).
+    Mirrors the clients/bookings TF-6 pattern (never truncate an
+    identity) in this command's own error mechanism."""
+
+    AT_LIMIT = "x" * 64
+    OVER_LIMIT = "x" * 65
+    LEVEL_AT_LIMIT = "L" * 120
+    LEVEL_OVER_LIMIT = "L" * 121
+
+    MODELS = (Salon, ServiceCategory, Service, StaffLevel,
+              ServicePrice, PriceChange)
+
+    def run_import(self, payload=FIXTURE, **kwargs):
+        out = io.StringIO()
+        call_command("import_price_book", _write(payload),
+                     stdout=out, **kwargs)
+        return out.getvalue()
+
+    def assert_zero_rows(self):
+        for model in self.MODELS:
+            self.assertEqual(model.objects.count(), 0, model.__name__)
+
+    def row(self, **overrides):
+        row = {
+            "serviceId": "svc-x", "name": "Cut", "categoryName": "Hair",
+            "duration": 30, "price": 25.0,
+            "staffCategories": {"prices": []}, "userPrices": [],
+        }
+        row.update(overrides)
+        return row
+
+    def test_overlong_service_id_raises_naming_row_writes_nothing(self):
+        payload = [self.row(),
+                   self.row(serviceId=self.OVER_LIMIT, name="Bad Cut")]
+        with self.assertRaises(CommandError) as caught:
+            self.run_import(payload)
+        self.assertIn("Row 1", str(caught.exception))
+        self.assertIn("serviceId", str(caught.exception))
+        self.assert_zero_rows()
+        # No silently truncated identity was stored.
+        self.assertFalse(
+            Service.objects.filter(external_id=self.AT_LIMIT).exists())
+
+    def test_overlong_fallback_id_raises_naming_row(self):
+        row = self.row()
+        del row["serviceId"]
+        row["id"] = self.OVER_LIMIT
+        with self.assertRaises(CommandError) as caught:
+            self.run_import([row])
+        self.assertIn("Row 0", str(caught.exception))
+        self.assert_zero_rows()
+
+    def test_two_overlong_ids_sharing_prefix_do_not_collide(self):
+        prefix = "b" * 64
+        payload = [self.row(serviceId=prefix + "1", name="One"),
+                   self.row(serviceId=prefix + "2", name="Two")]
+        with self.assertRaises(CommandError):
+            self.run_import(payload)
+        self.assert_zero_rows()
+
+    def test_overlong_csv_external_id_raises_naming_row(self):
+        header = ("salon_id,category_id,category_name,service_id,"
+                  "service_name,description,external_id,service_minutes,"
+                  "processing_minutes,finishing_minutes,total_minutes,"
+                  "service_active,staff_level_id,staff_level_name,"
+                  "service_price_id,amount,is_from,price_active")
+        csv_row = (f",,Hair,,Cut,,{self.OVER_LIMIT},30,0,0,30,"
+                   "true,,,25.0,,")
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".csv", delete=False, encoding="utf-8")
+        fh.write(header + "\n" + csv_row + "\n")
+        fh.close()
+        with self.assertRaises(CommandError) as caught:
+            call_command("import_price_book", fh.name,
+                         stdout=io.StringIO())
+        self.assertIn("Row 0", str(caught.exception))
+        self.assert_zero_rows()
+
+    def test_at_limit_service_id_imports_exactly(self):
+        self.run_import([self.row(serviceId=self.AT_LIMIT)])
+        self.assertEqual(
+            Service.objects.get(name="Cut").external_id, self.AT_LIMIT)
+
+    def test_normal_ids_import_identically(self):
+        out = self.run_import()
+        self.assertIn("IMPORT_SUMMARY", out)
+        self.assertEqual(Service.objects.count(), 2)
+        self.assertEqual(StaffLevel.objects.count(), 3)
+        self.assertEqual(ServicePrice.objects.count(), 4)
+        self.assertEqual(
+            Service.objects.get(name="Haircut").external_id, "svc-1")
+
+    def test_overlong_level_id_raises_naming_row_writes_nothing(self):
+        row = self.row(staffCategories={"prices": [
+            {"id": self.LEVEL_OVER_LIMIT, "price": 10.0}]})
+        with self.assertRaises(CommandError) as caught:
+            self.run_import([row])
+        self.assertIn("Row 0", str(caught.exception))
+        self.assert_zero_rows()
+        self.assertFalse(StaffLevel.objects.filter(
+            name=self.LEVEL_AT_LIMIT).exists())
+
+    def test_at_limit_level_id_imports_as_level_name(self):
+        row = self.row(staffCategories={"prices": [
+            {"id": self.LEVEL_AT_LIMIT, "price": 10.0}]})
+        self.run_import([row])
+        self.assertTrue(StaffLevel.objects.filter(
+            name=self.LEVEL_AT_LIMIT).exists())
+
+    def test_numeric_service_id_normalised_to_str(self):
+        self.run_import([self.row(serviceId=12345)])
+        cut = Service.objects.get(name="Cut")
+        self.assertEqual(cut.external_id, "12345")
+        self.assertIsInstance(cut.external_id, str)
+
+    def test_staff_file_numeric_category_id_matches_string_price_id(self):
+        staff = [{"staffId": 201, "userId": 201,
+                  "staffCategoryId": 101,
+                  "staffCategoryName": "Senior"}]
+        row = self.row(staffCategories={"prices": [
+            {"id": "101", "price": 70.0}]})
+        self.run_import([row], staff=_write(staff))
+        self.assertEqual(
+            set(StaffLevel.objects.values_list("name", flat=True)),
+            {"Base", "Senior"})
+
+    def test_staff_file_string_category_id_matches_numeric_price_id(self):
+        staff = [{"staffId": "201", "userId": "201",
+                  "staffCategoryId": "101",
+                  "staffCategoryName": "Senior"}]
+        row = self.row(staffCategories={"prices": [
+            {"id": 101, "price": 70.0}]})
+        self.run_import([row], staff=_write(staff))
+        self.assertEqual(
+            set(StaffLevel.objects.values_list("name", flat=True)),
+            {"Base", "Senior"})
+
+    def test_staff_file_numeric_user_id_still_skips_individual(self):
+        staff = [{"staffId": 201, "userId": 201,
+                  "staffCategoryId": 101,
+                  "staffCategoryName": "Senior"}]
+        row = self.row(staffCategories={"prices": [
+            {"id": "201", "price": 70.0}]})
+        out = self.run_import([row], staff=_write(staff))
+        summary = json.loads(
+            [ln for ln in out.splitlines()
+             if ln.startswith("IMPORT_SUMMARY ")][0][len("IMPORT_SUMMARY "):])
+        self.assertEqual(summary["skipped_individual_prices"], 1)
+        self.assertEqual(StaffLevel.objects.count(), 1)  # Base only.

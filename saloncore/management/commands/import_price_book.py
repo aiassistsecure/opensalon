@@ -52,6 +52,17 @@ Mapping (one source of truth — this command is the only writer here):
   ``--base-level`` (default "Base"); each staff-category price attaches
   to its level. Per-person ``userPrices`` are skipped and counted —
   ServicePrice is per level by design, never per person.
+- Ids are never silently truncated (TF-6, mirroring import_clients /
+  import_appointments): a service id (``serviceId`` / ``id`` in JSON,
+  ``external_id`` in CSV) longer than ``Service.external_id``'s limit
+  raises ``CommandError`` naming the row in phase 1 and writes
+  nothing — truncating it would silently turn it into a DIFFERENT
+  id and corrupt the identity join. Staff-file ids
+  (``staffCategoryId``, ``userId`` / ``staffId``) and staff-category
+  price ids are normalised to ``str`` before any lookup, so a
+  numeric id in one file matches its string form in the other; a
+  resolved level name longer than ``StaffLevel.name``'s limit
+  likewise raises ``CommandError`` naming the row.
 
 Idempotent: every row is written with ``update_or_create`` keyed by its
 natural identity above, so re-running updates in place and never
@@ -102,6 +113,38 @@ from saloncore.models import (
 )
 
 BASE_LEVEL_DEFAULT = "Base"
+
+_EXTERNAL_ID_LIMIT = Service._meta.get_field("external_id").max_length
+_LEVEL_NAME_LIMIT = StaffLevel._meta.get_field("name").max_length
+
+
+def _external_id(value, index, field):
+    """Service external id for a row: stringified, never truncated.
+
+    An id longer than ``Service.external_id``'s limit raises
+    CommandError naming the row (TF-6) — phase 1 raises before any
+    write, so the row (and the whole file) writes nothing, instead
+    of a silently shortened id becoming a different identity.
+    """
+    if not value:
+        return ""
+    text = str(value).strip()
+    if len(text) > _EXTERNAL_ID_LIMIT:
+        raise CommandError(
+            f"Row {index}: {field} {text!r} exceeds "
+            f"{_EXTERNAL_ID_LIMIT} characters; refusing to truncate "
+            f"an id (truncation would create a different id).")
+    return text
+
+
+def _str_id(value):
+    """Lookup id normalised to ``str`` (TF-6): stripped string form,
+    or "" for an absent/falsy value. Staff-file ids and price-entry
+    ids pass through here so numeric and string spellings of the
+    same id match in the level-resolution maps."""
+    if not value:
+        return ""
+    return str(value).strip()
 
 
 def _decimal(value):
@@ -266,7 +309,8 @@ def _normalise_csv_rows(rows):
             "name": row["service_name"],
             "cat_name": (row.get("category_name") or "").strip()
                         or "Uncategorized",
-            "external_id": str(row.get("external_id") or "").strip()[:64],
+            "external_id": _external_id(
+                row.get("external_id"), index, "external_id"),
             "description": row.get("description") or "",
             "service_minutes": _parse_csv_minutes(
                 row, index, "service_minutes"),
@@ -302,6 +346,11 @@ def _normalise_csv_rows(rows):
                     f"{service_fields['name']!r} in the CSV import.")
 
         level_name = (row.get("staff_level_name") or "").strip()
+        if len(level_name) > _LEVEL_NAME_LIMIT:
+            raise CommandError(
+                f"Row {index}: staff_level_name {level_name!r} exceeds "
+                f"{_LEVEL_NAME_LIMIT} characters; refusing to truncate "
+                f"a level name.")
         amount_raw = (row.get("amount") or "").strip()
         if not level_name and not amount_raw:
             continue  # The one price-less row of an unpriced service.
@@ -345,22 +394,34 @@ def _parse_minutes(row, index, field):
 
 def _resolve_level_name(level_id, category_names, user_category, index):
     """Level name for a staff-category id, or None when the id belongs
-    to an individual (not a level) and the staff mapping is known."""
-    try:
-        if level_id in category_names:
-            name = category_names[level_id]
-        elif level_id in user_category or category_names:
-            return None
-        else:
-            name = level_id
-    except TypeError as exc:
+    to an individual (not a level) and the staff mapping is known.
+
+    ``level_id`` and both maps' keys are ``str``-normalised (TF-6),
+    so numeric and string spellings of the same id match. A resolved
+    name longer than ``StaffLevel.name``'s limit raises CommandError
+    naming the row instead of being stored truncated or failing
+    unnamed at the database."""
+    if isinstance(level_id, (list, dict)):
         raise CommandError(
             f"Row {index}: staff category id {level_id!r} is not a "
-            f"valid identifier.") from exc
+            f"valid identifier.")
+    level_id = _str_id(level_id)
+    if level_id in category_names:
+        name = category_names[level_id]
+    elif level_id in user_category or category_names:
+        return None
+    else:
+        name = level_id
     if isinstance(name, (list, dict)):
         raise CommandError(
             f"Row {index}: staff category id {level_id!r} does not "
             f"resolve to a level name.")
+    name = str(name)
+    if len(name) > _LEVEL_NAME_LIMIT:
+        raise CommandError(
+            f"Row {index}: staff level name {name!r} for id "
+            f"{level_id!r} exceeds {_LEVEL_NAME_LIMIT} characters; "
+            f"refusing to truncate a level name.")
     return name
 
 
@@ -381,6 +442,9 @@ def _normalise_row(row, index, category_names, user_category):
     if isinstance(cat_name, (list, dict)):
         raise CommandError(
             f"Row {index}: category name must be a string.")
+    # A categoryId fallback is an id: normalise it to str (TF-6) so
+    # a numeric category id keys the same category as its string form.
+    cat_name = str(cat_name)
 
     raw_categories = row.get("staffCategories")
     if not raw_categories:
@@ -431,8 +495,9 @@ def _normalise_row(row, index, category_names, user_category):
     return {
         "name": row["name"],
         "cat_name": cat_name,
-        "external_id": str(
-            row.get("serviceId") or row.get("id") or "").strip()[:64],
+        "external_id": _external_id(
+            row.get("serviceId") or row.get("id"), index,
+            "serviceId" if row.get("serviceId") else "id"),
         "description": row.get("internetDescription")
                        or row.get("description") or "",
         "service_minutes": _parse_minutes(row, index, "duration"),
@@ -484,11 +549,15 @@ class Command(BaseCommand):
                 for row in staff if isinstance(staff, list) else []:
                     if not isinstance(row, dict):
                         continue
-                    cid, name = (row.get("staffCategoryId"),
-                                 row.get("staffCategoryName"))
+                    name = row.get("staffCategoryName")
+                    # Staff-file ids are normalised to str (TF-6):
+                    # a numeric staffCategoryId / userId / staffId
+                    # must key the same map entry as the string id
+                    # a services row carries (and vice versa).
+                    cid = _str_id(row.get("staffCategoryId"))
                     if cid and name:
                         category_names[cid] = name
-                    uid = row.get("userId") or row.get("staffId")
+                    uid = _str_id(row.get("userId") or row.get("staffId"))
                     if uid and name:
                         user_category[uid] = name
 
