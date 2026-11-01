@@ -77,12 +77,17 @@ class StaffRevenueExportCsvTests(TestCase):
             sale=sale, kind=SaleItem.Kind.PRODUCT, quantity=1,
             unit_price=Decimal("24.00"),
         )
+        SaleItem.objects.create(
+            sale=sale, kind=SaleItem.Kind.SERIES, quantity=1,
+            unit_price=Decimal("150.00"),
+        )
         text = export_staff_revenue_csv(self.salon, START, END)
         header = list(csv.reader(io.StringIO(text)))[0]
         self.assertEqual(header, STAFF_REVENUE_FIELDNAMES)
         self.assertEqual(
             STAFF_REVENUE_FIELDNAMES,
-            ["staff_name", "service_revenue", "retail_revenue", "total"],
+            ["staff_name", "service_revenue", "retail_revenue",
+             "series_revenue", "total"],
         )
         rows = self._rows()
         service_rows = revenue_by_staff(self.salon, START, END)
@@ -91,7 +96,8 @@ class StaffRevenueExportCsvTests(TestCase):
             "staff_name": "Alice",
             "service_revenue": "85.00",
             "retail_revenue": "24.00",
-            "total": "109.00",
+            "series_revenue": "150.00",
+            "total": "259.00",
         }])
         self.assertEqual(Decimal(rows[0]["total"]), service_rows[0].total)
 
@@ -106,7 +112,24 @@ class StaffRevenueExportCsvTests(TestCase):
             "staff_name": "Unattributed",
             "service_revenue": "30.00",
             "retail_revenue": "0.00",
+            "series_revenue": "0.00",
             "total": "30.00",
+        }])
+
+    def test_series_only_sale_exports_series_column(self):
+        self._appt(self.client_a, self.staff_a, day_offset=2)
+        sale = self._sale(self.client_a, day_offset=2)
+        SaleItem.objects.create(
+            sale=sale, kind=SaleItem.Kind.SERIES, quantity=1,
+            unit_price=Decimal("200.00"),
+        )
+        rows = self._rows()
+        self.assertEqual(rows, [{
+            "staff_name": "Alice",
+            "service_revenue": "0.00",
+            "retail_revenue": "0.00",
+            "series_revenue": "200.00",
+            "total": "200.00",
         }])
 
     def test_period_passthrough(self):

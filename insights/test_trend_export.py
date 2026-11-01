@@ -53,13 +53,15 @@ class TrendExportCsvTests(TestCase):
         header = list(csv.reader(io.StringIO(text)))[0]
         self.assertEqual(header, TREND_FIELDNAMES)
         self.assertEqual(TREND_FIELDNAMES, [
-            "date", "service", "retail", "total", "moving_average_7d",
+            "date", "service", "retail", "series", "total",
+            "moving_average_7d",
         ])
 
     def test_rows_match_service_output_and_ordering(self):
         today_sale = self._sale(day_offset=0)
         self._item(today_sale, SaleItem.Kind.SERVICE, "85.00")
         self._item(today_sale, SaleItem.Kind.PRODUCT, "24.00", quantity=2)
+        self._item(today_sale, SaleItem.Kind.SERIES, "150.00")
         yesterday = self._sale(day_offset=1)
         self._item(yesterday, SaleItem.Kind.SERVICE, "50.00")
         rows = self._rows(days=3)
@@ -72,6 +74,7 @@ class TrendExportCsvTests(TestCase):
                 "date": svc.date.isoformat(),
                 "service": str(svc.service),
                 "retail": str(svc.retail),
+                "series": str(svc.series),
                 "total": str(svc.total),
                 "moving_average_7d": str(svc.moving_average_7d),
             })
@@ -81,7 +84,8 @@ class TrendExportCsvTests(TestCase):
             [(END - timedelta(days=2)).isoformat(),
              (END - timedelta(days=1)).isoformat(), END.isoformat()],
         )
-        self.assertEqual(rows[-1]["total"], "133.00")
+        self.assertEqual(rows[-1]["series"], "150.00")
+        self.assertEqual(rows[-1]["total"], "283.00")
         self.assertEqual(rows[1]["total"], "50.00")
         self.assertEqual(rows[0]["total"], "0.00")
 
@@ -98,6 +102,7 @@ class TrendExportCsvTests(TestCase):
         for row in rows:
             self.assertEqual(row["service"], "0.00")
             self.assertEqual(row["retail"], "0.00")
+            self.assertEqual(row["series"], "0.00")
             self.assertEqual(row["total"], "0.00")
             self.assertEqual(row["moving_average_7d"], "0.00")
 
@@ -113,6 +118,13 @@ class TrendExportCsvTests(TestCase):
         )
         other_rows = self._rows(salon=self.other, days=3)
         self.assertEqual(other_rows[-1]["total"], "999.00")
+
+    def test_series_only_sale_exports_series_column(self):
+        sale = self._sale()
+        self._item(sale, SaleItem.Kind.SERIES, "200.00")
+        rows = self._rows(days=1)
+        self.assertEqual(rows[0]["series"], "200.00")
+        self.assertEqual(rows[0]["total"], "200.00")
 
     def test_alias(self):
         text = trend_csv(self.salon, days=1, end_date=END)

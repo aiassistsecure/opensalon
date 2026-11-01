@@ -167,6 +167,39 @@ class RevenueByStaffTests(TestCase):
         self.assertEqual(rows[0].total, Decimal("135.00"))
         self.assertEqual(rows[0].sale_count, 2)
 
+    def test_series_revenue_attributed_and_included_in_total(self):
+        self._appt(self.client_a, self.staff_a, day_offset=1)
+        sale_a = self._sale(self.client_a, day_offset=1)
+        self._item(sale_a, SaleItem.Kind.SERVICE, "85.00", service=self.cut)
+        self._item(sale_a, SaleItem.Kind.SERIES, "150.00", quantity=2)
+        sale_c = self._sale(self.client_c, day_offset=3)  # no appointment
+        self._item(sale_c, SaleItem.Kind.SERIES, "50.00")
+        rows = revenue_by_staff(self.salon, self.start, self.end)
+        by_name = self._by_name(rows)
+        alice = by_name["Alice"]
+        self.assertEqual(alice.series_revenue, Decimal("300.00"))
+        self.assertEqual(alice.series, Decimal("300.00"))
+        self.assertEqual(alice.total, Decimal("385.00"))
+        self.assertEqual(
+            alice.total,
+            alice.service_revenue + alice.retail_revenue
+            + alice.series_revenue,
+        )
+        unattributed = by_name["Unattributed"]
+        self.assertEqual(unattributed.series_revenue, Decimal("50.00"))
+        self.assertEqual(unattributed.total, Decimal("50.00"))
+        self.assertEqual(unattributed.sale_count, 1)
+
+    def test_series_only_sale_attributes_to_single_staff_that_day(self):
+        self._appt(self.client_a, self.staff_a, day_offset=0)
+        sale = self._sale(self.client_a, day_offset=0)
+        self._item(sale, SaleItem.Kind.SERIES, "200.00")
+        rows = revenue_by_staff(self.salon, self.start, self.end)
+        self.assertEqual([r.display_name for r in rows], ["Alice"])
+        self.assertEqual(rows[0].series_revenue, Decimal("200.00"))
+        self.assertEqual(rows[0].total, Decimal("200.00"))
+        self.assertEqual(rows[0].sale_count, 1)
+
     def test_retail_only_sale_attributes_to_single_staff_that_day(self):
         self._appt(self.client_a, self.staff_a, day_offset=0)
         sale = self._sale(self.client_a, day_offset=0)

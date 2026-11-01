@@ -7,7 +7,7 @@ Founding rule (Exit Principle): anything a salon can enter, it can
 fully export. This module exports a salon's daily revenue trend
 as a CSV string built ON TOP of :mod:`insights.trend` — the
 definition of daily revenue (completed sales only, salon scoping,
-sale day judged in the salon's timezone, service / retail split,
+sale day judged in the salon's timezone, service / retail / series split,
 and the trailing 7-day moving average) is that service's alone
 and is reused verbatim via
 :func:`insights.trend.daily_revenue_trend`; this module never
@@ -19,6 +19,7 @@ Columns are only fields the service's rows actually carry:
 - ``date``: the row's calendar date (ISO date).
 - ``service``: the row's service revenue.
 - ``retail``: the row's retail (product) revenue.
+- ``series``: the row's series revenue.
 - ``total``: the row's total revenue.
 - ``moving_average_7d``: the row's trailing 7-day moving
   average of ``total``.
@@ -47,6 +48,7 @@ TREND_FIELDNAMES = [
     "date",
     "service",
     "retail",
+    "series",
     "total",
     "moving_average_7d",
 ]
@@ -96,6 +98,7 @@ def export_trend_csv(salon, days=14, end_date=None, **kwargs):
             "date": row.date.isoformat(),
             "service": _money(row.service),
             "retail": _money(row.retail),
+            "series": _money(row.series),
             "total": _money(row.total),
             "moving_average_7d": _money(row.moving_average_7d),
         })

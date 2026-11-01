@@ -49,6 +49,8 @@ class DailyRevenueTrendTests(TestCase):
             self.assertIsInstance(entry, TrendDay)
             self.assertEqual(entry.service, Decimal("0.00"))
             self.assertEqual(entry.retail, Decimal("0.00"))
+            self.assertEqual(entry.series, Decimal("0.00"))
+            self.assertEqual(entry.series_revenue, Decimal("0.00"))
             self.assertEqual(entry.total, Decimal("0.00"))
             self.assertEqual(entry.moving_average_7d, Decimal("0.00"))
 
@@ -67,6 +69,28 @@ class DailyRevenueTrendTests(TestCase):
         self.assertEqual(result[1].service, Decimal("50.00"))
         self.assertEqual(result[1].total, Decimal("50.00"))
         self.assertEqual(result[0].total, Decimal("0.00"))
+
+    def test_series_included_in_total_and_moving_average(self):
+        sale = self._sale(day_offset=0)
+        self._item(sale, SaleItem.Kind.SERIES, "150.00", quantity=2)
+        self._item(sale, SaleItem.Kind.SERIES, "50.00")
+        self._item(sale, SaleItem.Kind.SERVICE, "10.00")
+        result = daily_revenue_trend(self.salon, days=2, end_date=END)
+        self.assertEqual(result[-1].series, Decimal("350.00"))
+        self.assertEqual(result[-1].total, Decimal("360.00"))
+        self.assertEqual(
+            result[-1].total,
+            result[-1].service + result[-1].retail + result[-1].series,
+        )
+        self.assertEqual(result[-1].moving_average_7d, Decimal("180.00"))
+        self.assertEqual(result[0].series, Decimal("0.00"))
+
+    def test_series_only_sale_counts_toward_series_and_total(self):
+        sale = self._sale(day_offset=0)
+        self._item(sale, SaleItem.Kind.SERIES, "200.00")
+        result = daily_revenue_trend(self.salon, days=1, end_date=END)
+        self.assertEqual(result[0].series, Decimal("200.00"))
+        self.assertEqual(result[0].total, Decimal("200.00"))
 
     def test_voided_and_open_sales_excluded(self):
         for status in (Sale.Status.VOIDED, Sale.Status.OPEN):

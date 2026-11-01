@@ -11,7 +11,9 @@ open sales are not revenue yet. A sale belongs to the day of its
 ``completed_at`` when set, otherwise its ``created_at``, judged in
 the salon's timezone. ``service`` sums ``SaleItem.Kind.SERVICE``
 line totals, ``retail`` sums ``SaleItem.Kind.PRODUCT`` line totals,
-and ``total`` is their sum.
+``series`` sums ``SaleItem.Kind.SERIES`` line totals, and ``total``
+is their sum — the same split as
+:func:`insights.services.last_7_days_revenue_split`.
 """
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
@@ -41,6 +43,7 @@ class TrendDay:
     date: date
     service: Decimal
     retail: Decimal
+    series: Decimal
     total: Decimal
     moving_average_7d: Decimal
 
@@ -55,6 +58,10 @@ class TrendDay:
     @property
     def retail_revenue(self):
         return self.retail
+
+    @property
+    def series_revenue(self):
+        return self.series
 
     @property
     def total_revenue(self):
@@ -143,6 +150,7 @@ def daily_revenue_trend(salon, days=14, *, end_date=None, today=None):
     )
     service_by_day = {}
     retail_by_day = {}
+    series_by_day = {}
     for item in items:
         stamp = item.sale.completed_at or item.sale.created_at
         if stamp is None:
@@ -152,6 +160,8 @@ def daily_revenue_trend(salon, days=14, *, end_date=None, today=None):
             bucket = service_by_day
         elif item.kind == SaleItem.Kind.PRODUCT:
             bucket = retail_by_day
+        elif item.kind == SaleItem.Kind.SERIES:
+            bucket = series_by_day
         else:
             continue
         bucket[day] = bucket.get(day, ZERO) + item.line_total
@@ -162,7 +172,8 @@ def daily_revenue_trend(salon, days=14, *, end_date=None, today=None):
         day = start_date + timedelta(days=offset)
         service = service_by_day.get(day, ZERO)
         retail = retail_by_day.get(day, ZERO)
-        total = service + retail
+        series = series_by_day.get(day, ZERO)
+        total = service + retail + series
         trailing.append(total)
         if len(trailing) > 7:
             trailing.pop(0)
@@ -170,8 +181,8 @@ def daily_revenue_trend(salon, days=14, *, end_date=None, today=None):
             CENTS, rounding=ROUND_HALF_UP
         )
         entries.append(TrendDay(
-            date=day, service=service, retail=retail, total=total,
-            moving_average_7d=average,
+            date=day, service=service, retail=retail, series=series,
+            total=total, moving_average_7d=average,
         ))
     return RevenueTrend(
         entries, start_date=start_date, end_date=end_date, days=days,
