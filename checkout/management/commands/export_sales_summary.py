@@ -1,21 +1,21 @@
-"""Export a salon's sale search results as CSV.
+"""Export a salon's sales summary as CSV.
 
 Usage:
-    python manage.py export_search --salon-id ID
-        [--client-name TEXT] [--date-from YYYY-MM-DD]
-        [--date-to YYYY-MM-DD] [--min-total AMOUNT]
-        [--include-voided] [--output PATH]
+    python manage.py export_sales_summary --salon-id ID
+        --date-from YYYY-MM-DD [--date-to YYYY-MM-DD]
+        [--output PATH]
 
 Thin wrapper around the existing
-:func:`checkout.search_export.export_search_sales_csv` service:
+:func:`checkout.summary_export.export_summary_csv` service:
 the salon is resolved by id, the dates are parsed to
-``datetime.date`` objects, and every filter is passed to the
-service verbatim -- its CSV text is written unchanged, to
-``--output`` when given and to stdout otherwise. All filters
-are optional exactly as the service defines them, so omitting
-them exports every (non-voided) sale for the salon. This
-command adds no export logic of its own, so command and
-service output can never disagree -- one source of truth.
+``datetime.date`` objects, and both are passed to the service
+verbatim -- its CSV text is written unchanged, to ``--output``
+when given and to stdout otherwise. The service's ``date_to``
+is optional, so ``--date-to`` is optional here too and
+defaults to a single-day export exactly as the service
+defines it. This command adds no export logic of its own, so
+command and service output can never disagree -- one source
+of truth.
 
 Invalid input -- an unparseable date or a reversed range --
 raises ``CommandError``, as do service errors. Dates mean
@@ -28,7 +28,7 @@ import datetime
 
 from django.core.management.base import BaseCommand, CommandError
 
-from checkout.search_export import export_search_sales_csv
+from checkout.summary_export import export_summary_csv
 from saloncore.models import Salon
 
 
@@ -48,39 +48,23 @@ def _parse_date(value, label):
 
 
 class Command(BaseCommand):
-    help = "Export a salon's sale search results as CSV."
+    help = "Export a salon's sales summary as CSV."
 
     def add_arguments(self, parser):
         parser.add_argument(
             "--salon-id", type=int, required=True,
-            help="Id of the salon whose sales to export.",
-        )
-        parser.add_argument(
-            "--client-name", "--name",
-            dest="client_name", default=None,
-            help="Client name fragment to match (case-insensitive; "
-                 "default: no name filter).",
+            help="Id of the salon whose sales summary to export.",
         )
         parser.add_argument(
             "--date-from", "--start-date", "--start", dest="date_from",
-            default=None,
-            help="First day of the range, YYYY-MM-DD (inclusive; "
-                 "default: unbounded).",
+            required=True,
+            help="First day of the range, YYYY-MM-DD (inclusive).",
         )
         parser.add_argument(
             "--date-to", "--end-date", "--end", dest="date_to",
             default=None,
             help="Last day of the range, YYYY-MM-DD (inclusive; "
-                 "default: unbounded).",
-        )
-        parser.add_argument(
-            "--min-total", dest="min_total", default=None,
-            help="Minimum sale total to include (default: no minimum).",
-        )
-        parser.add_argument(
-            "--include-voided", dest="include_voided",
-            action="store_true", default=False,
-            help="Include voided sales (default: excluded).",
+                 "default: the start date, a single-day export).",
         )
         parser.add_argument(
             "--output", default=None,
@@ -96,20 +80,13 @@ class Command(BaseCommand):
             ) from exc
         date_from = _parse_date(options.get("date_from"), "date_from")
         date_to = _parse_date(options.get("date_to"), "date_to")
-        if date_from is not None and date_to is not None and date_to < date_from:
+        if date_to is not None and date_from is not None and date_to < date_from:
             raise CommandError(
                 f"End date {date_to.isoformat()} is before start date "
                 f"{date_from.isoformat()}."
             )
         try:
-            text = export_search_sales_csv(
-                salon,
-                client_name=options.get("client_name"),
-                date_from=date_from,
-                date_to=date_to,
-                min_total=options.get("min_total"),
-                include_voided=bool(options.get("include_voided", False)),
-            )
+            text = export_summary_csv(salon, date_from, date_to)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options.get("output"):

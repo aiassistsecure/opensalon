@@ -1,4 +1,4 @@
-"""Tests for the checkout export_search management command.
+"""Tests for the checkout export_sales_search management command.
 
 The command is a thin wrapper around
 ``checkout.search_export.export_search_sales_csv``: these tests
@@ -8,11 +8,15 @@ bad dates, reversed ranges, bad min-total, and unwritable
 output fail cleanly as ``CommandError``. Fixtures are tiny
 synthetic records -- unit logic only.
 
-Note: ``bookings`` already owns the global ``export_search``
-command name, so these tests load the checkout command class
-explicitly via ``load_command_class("checkout", "export_search")``
-and pass that instance to ``call_command`` -- pinning this app's
-command, not the global name resolution.
+The command was renamed from ``export_search`` to
+``export_sales_search`` because the bare ``export_search`` name
+was shadowed by another app in Django's global command
+namespace. These tests load the checkout command class
+explicitly via
+``load_command_class("checkout", "export_sales_search")`` and
+pass that instance to ``call_command``; a resolution test below
+also pins ``get_commands()`` mapping the new name to
+``checkout``.
 """
 import datetime
 import io
@@ -20,7 +24,8 @@ import os
 import tempfile
 from decimal import Decimal
 
-from django.core.management import CommandError, call_command, load_command_class
+from django.core.management import (
+    CommandError, call_command, get_commands, load_command_class)
 from django.test import TestCase
 from django.utils import timezone
 
@@ -34,7 +39,7 @@ NEXT = DAY + datetime.timedelta(days=1)
 
 
 def _cmd():
-    return load_command_class("checkout", "export_search")
+    return load_command_class("checkout", "export_sales_search")
 
 
 def _stamp(day, hour=12):
@@ -43,7 +48,7 @@ def _stamp(day, hour=12):
         datetime.timezone.utc)
 
 
-class ExportSearchCommandTests(TestCase):
+class ExportSalesSearchCommandTests(TestCase):
     def setUp(self):
         self.salon = Salon.objects.create(name="Example Salon", timezone="UTC")
         self.other = Salon.objects.create(name="Other Salon", timezone="UTC")
@@ -62,6 +67,10 @@ class ExportSearchCommandTests(TestCase):
             created_at=stamp, completed_at=stamp)
         sale.refresh_from_db()
         return sale
+
+    def test_command_name_resolves_to_checkout(self):
+        self.assertEqual(get_commands()["export_sales_search"], "checkout")
+        self.assertEqual(get_commands()["export_sales_summary"], "checkout")
 
     def test_stdout_matches_service(self):
         self._sale(client=self.ana)
