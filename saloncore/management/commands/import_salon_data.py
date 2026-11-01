@@ -45,6 +45,19 @@ back nothing (DYOR §9.4; strictness probe §4 signature 8), so the
 atomicity guarantee lives in this command layer (probe §5). The
 ``atomic`` decorator is kept only as defence-in-depth on backends
 that do support transactions.
+
+Strict boolean types (TF-3): the boolean fields the exporter always
+carries — ``active`` (service_categories, services, staff_levels,
+service_prices, clients, staff_members), ``is_from``
+(service_prices) and ``online_bookable`` (staff_members) — are
+validated in phase 1 and never guessed in phase 2. The three bad
+shapes are distinct, named errors: a missing key is not a value, an
+explicit ``null`` is rejected because none of these model fields can
+hold null, and any non-boolean value (the string ``"false"``, the
+number ``1``) is rejected rather than coerced — under plain Python
+truthiness ``"false"`` would silently restore as ``True``. A file
+that passes phase 1 therefore carries a real JSON boolean for every
+one of these fields, and phase 2 restores exactly that value.
 """
 
 import json
@@ -103,6 +116,39 @@ def _require(row, section, fields):
                 f"Record in section {section!r} is missing {field!r}.")
 
 
+BOOL_FIELDS = {
+    "service_categories": ("active",),
+    "services": ("active",),
+    "staff_levels": ("active",),
+    "service_prices": ("is_from", "active"),
+    "clients": ("active",),
+    "staff_members": ("online_bookable", "active"),
+}
+
+
+def _check_bool(row, section, field):
+    """Phase-1 strict check for one boolean field (TF-3).
+
+    Missing, explicit null and non-boolean values are three
+    different problems and get three different messages; none of
+    them is ever repaired by guessing a default.
+    """
+    label = f"section {section!r} record id {row.get('id')!r}"
+    if field not in row:
+        raise CommandError(
+            f"Missing boolean field: {label} has no {field!r}; "
+            f"export files always carry it and it is never guessed.")
+    value = row[field]
+    if value is None:
+        raise CommandError(
+            f"Null boolean field: {label} has {field!r}=null, but "
+            f"the model field cannot hold null.")
+    if not isinstance(value, bool):
+        raise CommandError(
+            f"Bad boolean field: {label} has {field!r}={value!r} "
+            f"({type(value).__name__}), not a JSON boolean.")
+
+
 def _check_ref(ids, old_id, what):
     if old_id not in ids:
         raise CommandError(
@@ -129,6 +175,11 @@ def _validate(data):
     for section, fields in required.items():
         for row in data[section]:
             _require(row, section, fields)
+
+    for section, fields in BOOL_FIELDS.items():
+        for row in data[section]:
+            for field in fields:
+                _check_bool(row, section, field)
 
     salon_ids = {row["id"] for row in data["salons"]}
     category_ids = {row["id"] for row in data["service_categories"]}
@@ -212,7 +263,7 @@ class Command(BaseCommand):
                 name=row["name"],
                 defaults={
                     "sort_order": row.get("sort_order", 0),
-                    "active": row.get("active", True),
+                    "active": row["active"],
                 },
             )
             categories[row["id"]] = obj
@@ -224,7 +275,7 @@ class Command(BaseCommand):
                 name=row["name"],
                 defaults={
                     "sort_order": row.get("sort_order", 0),
-                    "active": row.get("active", True),
+                    "active": row["active"],
                 },
             )
             levels[row["id"]] = obj
@@ -238,7 +289,7 @@ class Command(BaseCommand):
                 "service_minutes": row["service_minutes"],
                 "processing_minutes": row.get("processing_minutes", 0),
                 "finishing_minutes": row.get("finishing_minutes", 0),
-                "active": row.get("active", True),
+                "active": row["active"],
             }
             external_id = row.get("external_id") or ""
             if external_id:
@@ -262,8 +313,8 @@ class Command(BaseCommand):
                 staff_level=_ref(levels, row["staff_level_id"], "staff_level"),
                 defaults={
                     "amount": amount,
-                    "is_from": row.get("is_from", False),
-                    "active": row.get("active", True),
+                    "is_from": row["is_from"],
+                    "active": row["active"],
                 },
             )
 
@@ -276,7 +327,7 @@ class Command(BaseCommand):
                 "phone": row.get("phone", ""),
                 "sms_opt_in": row.get("sms_opt_in", False),
                 "email_opt_in": row.get("email_opt_in", False),
-                "active": row.get("active", True),
+                "active": row["active"],
             }
             salon = _ref(salons, row["salon_id"], "salon")
             external_id = row.get("external_id") or ""
@@ -307,8 +358,8 @@ class Command(BaseCommand):
                     _ref(levels, row["staff_level_id"], "staff_level")
                     if row.get("staff_level_id") is not None else None
                 ),
-                "online_bookable": row.get("online_bookable", True),
-                "active": row.get("active", True),
+                "online_bookable": row["online_bookable"],
+                "active": row["active"],
             }
             salon = _ref(salons, row["salon_id"], "salon")
             external_id = row.get("external_id") or ""
