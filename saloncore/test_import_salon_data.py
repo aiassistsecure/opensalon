@@ -586,3 +586,171 @@ class ImportAppointmentsTests(TestCase):
         self.assertIn("appointment", str(ctx.exception))
         self.assertEqual(Appointment.objects.count(), 0)
         self.assertEqual(Salon.objects.count(), 0)
+
+
+LIMIT = 64  # external_id max_length on Service/Client/StaffMember/Appointment
+
+
+def _minimal_data():
+    """A small export-shaped salon_data file (synthetic ids only)."""
+    return {
+        "salons": [{"id": 1, "name": "TF6 Salon", "timezone": "UTC",
+                    "currency": "USD"}],
+        "service_categories": [
+            {"id": 10, "salon_id": 1, "name": "Color", "sort_order": 1,
+             "active": True}],
+        "services": [
+            {"id": 20, "category_id": 10, "external_id": "svc-1",
+             "name": "Single Process", "description": "",
+             "service_minutes": 45, "processing_minutes": 0,
+             "finishing_minutes": 0, "active": True}],
+        "staff_levels": [
+            {"id": 30, "salon_id": 1, "name": "Level 6", "sort_order": 6,
+             "active": True}],
+        "service_prices": [
+            {"id": 40, "service_id": 20, "staff_level_id": 30,
+             "amount": "85.00", "is_from": True, "active": True}],
+        "clients": [
+            {"id": 50, "salon_id": 1, "external_id": "cli-1",
+             "first_name": "Ada", "last_name": "Optin", "email": "",
+             "phone": "", "sms_opt_in": False, "email_opt_in": False,
+             "active": True}],
+        "client_notes": [],
+        "staff_members": [
+            {"id": 60, "salon_id": 1, "external_id": "staff-1",
+             "display_name": "Stylist One", "staff_level_id": 30,
+             "online_bookable": True, "active": True}],
+        "appointments": [
+            {"id": 70, "external_id": "appt-1", "client_id": 50,
+             "client_external_id": "cli-1", "staff_member_id": 60,
+             "staff_member_external_id": "staff-1", "service_id": 20,
+             "service_external_id": "svc-1", "service_name": "",
+             "start": "2026-11-02T14:00:00+00:00",
+             "end": "2026-11-02T14:45:00+00:00",
+             "status": "booked", "origin": "phone",
+             "price_override": None}],
+        "appointment_notes": [],
+    }
+
+
+class ImportSalonDataExternalIdTests(TestCase):
+    """TF-6: faithful external ids — no truncation, str-normalised."""
+
+    def temp_path(self):
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        fh.close()
+        return fh.name
+
+    def run_data(self, data):
+        path = self.temp_path()
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        out = io.StringIO()
+        call_command("import_salon_data", path, stdout=out)
+        return out.getvalue()
+
+    def assert_zero_written(self):
+        for model in (Salon, ServiceCategory, Service, StaffLevel,
+                      ServicePrice, Client, ClientNote, StaffMember,
+                      Appointment, AppointmentNote):
+            self.assertEqual(model.objects.count(), 0, model.__name__)
+
+    def test_overlong_external_id_fails_naming_row_zero_writes(self):
+        cases = [
+            ("clients", "external_id"),
+            ("staff_members", "external_id"),
+            ("services", "external_id"),
+            ("appointments", "external_id"),
+            ("appointments", "client_external_id"),
+            ("appointments", "staff_member_external_id"),
+            ("appointments", "service_external_id"),
+        ]
+        for section, field in cases:
+            with self.subTest(section=section, field=field):
+                data = _minimal_data()
+                data[section][0][field] = "x" * (LIMIT + 1)
+                with self.assertRaises(CommandError) as ctx:
+                    self.run_data(data)
+                self.assertIn(section, str(ctx.exception))
+                self.assertIn(field, str(ctx.exception))
+                self.assertIn(
+                    str(data[section][0]["id"]), str(ctx.exception))
+                self.assert_zero_written()
+                # No truncated identity was stored anywhere.
+                truncated = "x" * LIMIT
+                self.assertFalse(
+                    Client.objects.filter(external_id=truncated).exists())
+                self.assertFalse(
+                    Service.objects.filter(external_id=truncated).exists())
+                self.assertFalse(Appointment.objects.filter(
+                    external_id=truncated).exists())
+
+    def test_two_overlong_ids_sharing_prefix_do_not_collide(self):
+        data = _minimal_data()
+        prefix = "y" * LIMIT
+        second = dict(data["clients"][0])
+        second["id"] = 51
+        second["external_id"] = prefix + "B"
+        data["clients"][0]["external_id"] = prefix + "A"
+        data["clients"].append(second)
+        with self.assertRaises(CommandError):
+            self.run_data(data)
+        self.assert_zero_written()
+        self.assertFalse(
+            Client.objects.filter(external_id=prefix).exists())
+
+    def test_at_limit_external_id_imports_exactly(self):
+        data = _minimal_data()
+        exact = "z" * LIMIT
+        data["clients"][0]["external_id"] = exact
+        data["appointments"][0]["client_external_id"] = exact
+        self.run_data(data)
+        self.assertEqual(Client.objects.get().external_id, exact)
+
+    def test_numeric_ids_stored_and_matched_as_str(self):
+        data = _minimal_data()
+        # Numeric external ids; string spellings on the links, and
+        # mixed int/str spellings for the file-local references.
+        data["services"][0]["external_id"] = 4201
+        data["clients"][0]["external_id"] = 4202
+        data["staff_members"][0]["external_id"] = 4203
+        data["appointments"][0]["external_id"] = 4204
+        data["appointments"][0]["client_external_id"] = "4202"
+        data["appointments"][0]["staff_member_external_id"] = "4203"
+        data["appointments"][0]["service_external_id"] = "4201"
+        data["service_categories"][0]["salon_id"] = "1"
+        data["services"][0]["category_id"] = "10"
+        data["clients"][0]["salon_id"] = "1"
+        data["appointments"][0]["client_id"] = "50"
+        self.run_data(data)
+        self.assertEqual(Service.objects.get().external_id, "4201")
+        self.assertEqual(Client.objects.get().external_id, "4202")
+        self.assertEqual(StaffMember.objects.get().external_id, "4203")
+        appt = Appointment.objects.get()
+        self.assertEqual(appt.external_id, "4204")
+        self.assertEqual(appt.client.external_id, "4202")
+        self.assertEqual(appt.staff_member.external_id, "4203")
+        self.assertEqual(appt.service.external_id, "4201")
+        # Re-import with string spellings updates in place.
+        data["services"][0]["external_id"] = "4201"
+        data["clients"][0]["external_id"] = "4202"
+        data["staff_members"][0]["external_id"] = "4203"
+        data["appointments"][0]["external_id"] = "4204"
+        self.run_data(data)
+        self.assertEqual(Client.objects.count(), 1)
+        self.assertEqual(Appointment.objects.count(), 1)
+
+    def test_export_shaped_fixture_imports_identically(self):
+        out = self.run_data(_minimal_data())
+        self.assertIn("IMPORT_SUMMARY", out)
+        self.assertEqual(Salon.objects.get().name, "TF6 Salon")
+        self.assertEqual(Service.objects.get().external_id, "svc-1")
+        self.assertEqual(
+            ServicePrice.objects.get().amount, Decimal("85.00"))
+        self.assertEqual(Client.objects.get().external_id, "cli-1")
+        self.assertEqual(StaffMember.objects.get().external_id, "staff-1")
+        appt = Appointment.objects.get()
+        self.assertEqual(appt.external_id, "appt-1")
+        self.assertEqual(appt.client.external_id, "cli-1")
+        self.assertEqual(appt.service.external_id, "svc-1")
