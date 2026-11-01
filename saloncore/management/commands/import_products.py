@@ -8,7 +8,22 @@ Type-faithful mapping (the importer's fidelity rules):
   spells them (including the source's own inconsistencies);
 * the whole source record is preserved verbatim in ``payload``;
 * stock on hand becomes ONE opening StockMovement per newly created
-  product (movements are the stock truth; a re-run never re-adds).
+  product (movements are the stock truth; a re-run never re-adds);
+* ``price`` is REQUIRED: ``Product.price`` cannot hold null, so a
+  record whose price is missing, empty or unparseable is a counted
+  skip (reported separately as ``skipped_missing_price`` in the
+  summary) — never silently imported as 0.00. That is the one
+  behaviour for every such row; it differs from ``reorderCost``
+  only because ``cost_price`` IS nullable, so a missing cost stays
+  None there;
+* ``quantityInStock`` must be an integer: a fractional or otherwise
+  non-integer value is a counted skip, never truncated via
+  ``int(...)`` (2.9 does not become 2);
+* money parsing mirrors ``import_price_book._decimal`` exactly —
+  ``Decimal(str(value))``, no local quantize — so the same input
+  yields the same Decimal in both importers; cents rounding is
+  left to the shared DecimalField(decimal_places=2) storage shape
+  both models use.
 
 Resumable like the other importers: a product whose mapped fields
 already match is counted ``unchanged`` and left alone.
@@ -23,13 +38,49 @@ from saloncore.models import Salon
 
 
 def _money(value):
-    """Decimal from a source money value, or None when absent/bad."""
+    """Decimal from a source money value, or None when absent/bad.
+
+    Mirrors ``import_price_book._decimal`` exactly (TF-8):
+    ``Decimal(str(value))`` with NO quantize here, so the same
+    input yields the same Decimal in both importers.
+    """
     if value is None or value == "":
         return None
     try:
-        return Decimal(str(value)).quantize(Decimal("0.01"))
+        return Decimal(str(value))
     except (InvalidOperation, ValueError):
         return None
+
+
+class _MissingPrice(ValueError):
+    """The record has no usable price; counted as skipped_missing_price."""
+
+
+def _stock_quantity(record):
+    """Opening stock from ``quantityInStock`` as a strict int.
+
+    Absent/None/empty means 0 (no opening movement), as before.
+    An integral value (6, 6.0, "6") returns that int; anything
+    fractional (2.9, "2.9") or non-numeric raises ValueError so
+    the caller counts the record skipped — the old
+    ``int(on_hand)`` silently truncated 2.9 to 2.
+    """
+    value = record.get("quantityInStock")
+    if value is None or value == "":
+        return 0
+    if isinstance(value, bool) or isinstance(
+            value, (dict, list, tuple, set)):
+        raise ValueError(
+            f"quantityInStock {value!r} is not an integer.")
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        raise ValueError(
+            f"quantityInStock {value!r} is not an integer.") from None
+    if not number.is_finite() or number != number.to_integral_value():
+        raise ValueError(
+            f"quantityInStock {value!r} is not an integer.")
+    return int(number)
 
 
 _STRICT_TRUE_WORDS = {"true", "1", "yes"}
@@ -80,6 +131,13 @@ def _coerce_id_string(value):
 def _mapped(record):
     """The mapped field set for one source product record."""
     price = _money(record.get("price"))
+    if price is None:
+        # Product.price is NOT nullable, so there is no honest
+        # None to store — and the old fallback stored 0.00 while
+        # a missing reorderCost stored None. One behaviour now:
+        # counted skip (see the module docstring).
+        raise _MissingPrice(
+            f"product {record.get('productId')!r} has no usable price")
     # Missing "archived" means not archived; a present value must
     # parse strictly (raises ValueError, counted as skipped by the
     # caller) rather than being truthiness-guessed.
@@ -91,7 +149,7 @@ def _mapped(record):
         "name": (record.get("name") or "")[:160],
         "sku": _coerce_id_string(record.get("code"))[:64],
         "barcode": _coerce_id_string(record.get("barcode"))[:64],
-        "price": price if price is not None else Decimal("0.00"),
+        "price": price,
         "active": not archived,
         "brand_name": (record.get("brandName") or "")[:120],
         "category_name": (record.get("categoryName") or "")[:120],
@@ -120,6 +178,7 @@ class Command(BaseCommand):
 
         salon, _ = Salon.objects.get_or_create(name=options["salon"])
         created = updated = unchanged = skipped = stocked = 0
+        missing_price = 0
         for record in records:
             if not isinstance(record, dict):
                 skipped += 1
@@ -136,10 +195,18 @@ class Command(BaseCommand):
                 continue
             try:
                 fields = _mapped(record)
+                on_hand = _stock_quantity(record)
+            except _MissingPrice:
+                # No usable price: counted as skipped (and in its
+                # own skipped_missing_price counter), never
+                # imported as 0.00.
+                skipped += 1
+                missing_price += 1
+                continue
             except ValueError:
-                # Strict-bool failure (e.g. junk "archived") or an
-                # unstringifiable code/barcode: counted as skipped,
-                # never guessed.
+                # Strict-bool failure (e.g. junk "archived"), an
+                # unstringifiable code/barcode, or a non-integer
+                # quantityInStock: counted as skipped, never guessed.
                 skipped += 1
                 continue
             existing = Product.objects.filter(
@@ -150,12 +217,11 @@ class Command(BaseCommand):
                     salon=salon, external_id=external_id, **fields
                 )
                 created += 1
-                on_hand = record.get("quantityInStock") or 0
-                if isinstance(on_hand, (int, float)) and int(on_hand) > 0:
+                if on_hand > 0:
                     StockMovement.objects.create(
                         product=product,
                         kind=StockMovement.Kind.RECEIVE,
-                        quantity_delta=int(on_hand),
+                        quantity_delta=on_hand,
                         note="Opening stock from source import",
                     )
                     stocked += 1
@@ -168,9 +234,13 @@ class Command(BaseCommand):
             existing.save()
             updated += 1
 
+        # Summary note: rows with no usable price are counted in
+        # BOTH 'skipped' and 'skipped_missing_price' and are never
+        # imported (Product.price cannot be null; no 0.00 fallback).
         self.stdout.write(
             f"products: {{'created': {created}, 'updated': {updated}, "
             f"'unchanged': {unchanged}, 'skipped': {skipped}, "
+            f"'skipped_missing_price': {missing_price}, "
             f"'opening_stock_movements': {stocked}, "
             f"'total': {len(records)}}}"
         )

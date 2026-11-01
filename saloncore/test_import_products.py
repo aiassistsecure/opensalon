@@ -163,6 +163,102 @@ class ImportProductsTests(TestCase):
                 self.assertIn("'skipped': 1", out)
                 self.assertEqual(Product.objects.count(), 0)
 
+    def test_missing_price_is_skipped_never_zero(self):
+        # TF-8: price is required (Product.price is not nullable).
+        # Missing/empty/unparseable price = counted skip, reported
+        # as skipped_missing_price — never imported as 0.00 while a
+        # missing reorderCost imports as cost_price=None.
+        variants = [
+            {"productId": "p-np-1", "name": "No Price Key"},
+            {"productId": "p-np-2", "name": "Null Price", "price": None},
+            {"productId": "p-np-3", "name": "Empty Price", "price": ""},
+            {"productId": "p-np-4", "name": "Bad Price", "price": "abc"},
+        ]
+        for record in variants:
+            with self.subTest(record=record):
+                out = self._run([record])
+                self.assertIn("'created': 0", out)
+                self.assertIn("'skipped': 1", out)
+                self.assertIn("'skipped_missing_price': 1", out)
+                self.assertEqual(Product.objects.count(), 0)
+
+    def test_missing_price_skip_does_not_block_others(self):
+        out = self._run([
+            {"productId": "p-np", "name": "No Price"},
+            {"productId": "p-ok", "name": "Priced", "price": 5.0,
+             "reorderCost": None},
+        ])
+        self.assertIn("'created': 1", out)
+        self.assertIn("'skipped_missing_price': 1", out)
+        product = Product.objects.get(external_id="p-ok")
+        self.assertEqual(product.price, Decimal("5.00"))
+        # The nullable field keeps its distinct behaviour: a
+        # missing cost is None, not 0.00 and not a skip.
+        self.assertIsNone(product.cost_price)
+
+    def test_explicit_zero_price_imports_as_zero(self):
+        # A present 0 is a usable price, distinct from missing.
+        out = self._run([{
+            "productId": "p-free", "name": "Free Sample", "price": 0,
+        }])
+        self.assertIn("'created': 1", out)
+        self.assertIn("'skipped_missing_price': 0", out)
+        self.assertEqual(
+            Product.objects.get(external_id="p-free").price,
+            Decimal("0.00"))
+
+    def test_fractional_quantity_is_skipped_not_truncated(self):
+        # TF-8: int(2.9) silently became 2 under the old code.
+        for value in (2.9, "2.9", 0.5, "lots", True, [6]):
+            with self.subTest(value=value):
+                out = self._run([{
+                    "productId": "p-frac", "name": "Fractional",
+                    "price": 10.0, "quantityInStock": value,
+                }])
+                self.assertIn("'created': 0", out)
+                self.assertIn("'skipped': 1", out)
+                self.assertEqual(Product.objects.count(), 0)
+                self.assertEqual(StockMovement.objects.count(), 0)
+
+    def test_integral_quantity_forms_import(self):
+        cases = [(6, 6), (6.0, 6), ("6", 6), (0, 0), (None, 0)]
+        records = [{
+            "productId": f"p-qty-{i}", "name": f"Qty {i}",
+            "price": 10.0, "quantityInStock": value,
+        } for i, (value, _e) in enumerate(cases)]
+        records.append({
+            "productId": "p-qty-absent", "name": "Qty Absent",
+            "price": 10.0,
+        })
+        out = self._run(records)
+        self.assertIn("'created': 6", out)
+        self.assertIn("'skipped': 0", out)
+        for i, (_value, expected) in enumerate(cases):
+            self.assertEqual(
+                Product.objects.get(
+                    external_id=f"p-qty-{i}").current_stock, expected)
+        self.assertEqual(
+            Product.objects.get(
+                external_id="p-qty-absent").current_stock, 0)
+
+    def test_money_parsing_matches_price_book_decimal(self):
+        # TF-8: the same input must yield the same Decimal in both
+        # importers — _money here mirrors import_price_book._decimal
+        # (Decimal(str(value)), no local quantize).
+        from saloncore.management.commands.import_price_book import (
+            _decimal as price_book_decimal,
+        )
+        from saloncore.management.commands.import_products import _money
+
+        samples = [38, 38.0, "38.0", 12.75, "10.005", "10.004",
+                   "19.999", "0.10", "7", None, "", "not-money"]
+        for value in samples:
+            with self.subTest(value=value):
+                mine, theirs = _money(value), price_book_decimal(value)
+                self.assertEqual(mine, theirs)
+                if mine is not None:
+                    self.assertEqual(mine.as_tuple(), theirs.as_tuple())
+
     def test_external_id_unique_when_present(self):
         self._run()
         with self.assertRaises(Exception):
