@@ -40,6 +40,11 @@ fully export. This is part 1 of that test — the core records only:
   the internal ``product_id`` and the product's
   ``product_external_id``, like sale lines. ``quantity_delta`` is
   emitted as the exact stored integer, never a float.
+- team: AttendanceRecord (the time-clock event log, scoped
+  through its staff member's salon). Rows carry the staff
+  reference as both the internal ``staff_member_id`` and the
+  member's ``staff_member_external_id``, like roster rows;
+  ``recorded_at`` is emitted as ISO-8601 with its timezone.
 
 The ``payload`` (whole source record, stored verbatim) is emitted
 for every section whose model carries one — clients, services,
@@ -70,7 +75,12 @@ from saloncore.models import (
     ServicePrice,
     StaffLevel,
 )
-from team.models import RosterPattern, ShiftOverride, StaffMember
+from team.models import (
+    AttendanceRecord,
+    RosterPattern,
+    ShiftOverride,
+    StaffMember,
+)
 
 
 def _dt(value):
@@ -78,7 +88,7 @@ def _dt(value):
 
 
 class Command(BaseCommand):
-    help = "Export salon core data (price book, clients, staff, appointments, products, sales, stock movements) to one JSON file."
+    help = "Export salon core data (price book, clients, staff, appointments, products, sales, stock movements, attendance) to one JSON file."
 
     def add_arguments(self, parser):
         parser.add_argument("output", help="Path of the JSON file to write.")
@@ -129,6 +139,8 @@ class Command(BaseCommand):
         sale_items = SaleItem.objects.filter(
             sale_id__in=sale_ids).select_related("service", "product")
         sale_payments = Payment.objects.filter(sale_id__in=sale_ids)
+        attendance_records = AttendanceRecord.objects.filter(
+            staff_member_id__in=staff_ids).select_related("staff_member")
 
         data = {
             "salons": [
@@ -322,6 +334,17 @@ class Command(BaseCommand):
                     "updated_at": _dt(pay.updated_at),
                 }
                 for pay in sale_payments
+            ],
+            "attendance_records": [
+                {
+                    "id": r.id,
+                    "staff_member_id": r.staff_member_id,
+                    "staff_member_external_id": r.staff_member.external_id,
+                    "event_type": r.event_type,
+                    "recorded_at": _dt(r.recorded_at),
+                    "note": r.note,
+                }
+                for r in attendance_records
             ],
             "stock_movements": [
                 {
