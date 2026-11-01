@@ -31,10 +31,15 @@ fully export. This is part 1 of that test — the core records only:
   a payment-provider identifier and provider-agnostic core carries
   no provider identifiers, SDK fields, or provider names.
 - catalog: Product (retail products, scoped by salon like clients
-  and staff). Stock is NOT exported: it is derived from
+  and staff). Stock is NOT exported as a field: it is derived from
   StockMovement rows, never stored on Product, so there is no
   stock field to emit — money fields (``price``, ``cost_price``)
   are emitted exactly as stored, as strings.
+- catalog: StockMovement (the stock event log, scoped through
+  its product's salon). Rows carry the product reference as both
+  the internal ``product_id`` and the product's
+  ``product_external_id``, like sale lines. ``quantity_delta`` is
+  emitted as the exact stored integer, never a float.
 
 The ``payload`` (whole source record, stored verbatim) is emitted
 for every section whose model carries one — clients, services,
@@ -56,7 +61,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 from bookings.models import Appointment, AppointmentNote
 from checkout.models import Payment, Sale, SaleItem
-from catalog.models import Product
+from catalog.models import Product, StockMovement
 from clients.models import Client, ClientNote
 from saloncore.models import (
     Salon,
@@ -73,7 +78,7 @@ def _dt(value):
 
 
 class Command(BaseCommand):
-    help = "Export salon core data (price book, clients, staff, appointments, products, sales) to one JSON file."
+    help = "Export salon core data (price book, clients, staff, appointments, products, sales, stock movements) to one JSON file."
 
     def add_arguments(self, parser):
         parser.add_argument("output", help="Path of the JSON file to write.")
@@ -115,6 +120,9 @@ class Command(BaseCommand):
             appointment_id__in=appointment_ids
         )
         products = Product.objects.filter(salon_id__in=salon_ids)
+        product_ids = list(products.values_list("id", flat=True))
+        stock_movements = StockMovement.objects.filter(
+            product_id__in=product_ids).select_related("product")
         sales = Sale.objects.filter(
             salon_id__in=salon_ids).select_related("client")
         sale_ids = list(sales.values_list("id", flat=True))
@@ -314,6 +322,17 @@ class Command(BaseCommand):
                     "updated_at": _dt(pay.updated_at),
                 }
                 for pay in sale_payments
+            ],
+            "stock_movements": [
+                {
+                    "id": m.id, "product_id": m.product_id,
+                    "product_external_id": m.product.external_id,
+                    "kind": m.kind,
+                    "quantity_delta": m.quantity_delta,
+                    "note": m.note,
+                    "created_at": _dt(m.created_at),
+                }
+                for m in stock_movements
             ],
         }
         data["counts"] = {
