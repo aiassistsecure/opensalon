@@ -31,6 +31,12 @@ class Client(StrictConstraints):
     sms_opt_in = models.BooleanField(default=False)
     email_opt_in = models.BooleanField(default=False)
     active = models.BooleanField(default=True)
+    # Whole source record preserved verbatim (DYOR section 9),
+    # mirroring bookings.Appointment.payload and catalog
+    # Product.payload: fields with no mapped column here are
+    # retained in ``payload``, never dropped on import. Empty
+    # dict for clients created directly in OpenSalon.
+    payload = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
