@@ -3,14 +3,17 @@
 The fixture below is a tiny hand-written JSON document in the shape of
 a real clients export — unit logic only, no real salon data.
 """
+import datetime
 import io
 import json
 import tempfile
 
 from django.core.management import CommandError, call_command
 from django.test import TestCase
+from django.utils import timezone
 
-from clients.models import Client
+from clients.models import Client, ClientNote
+from saloncore.models import Salon
 
 FIXTURE = [
     {
@@ -129,6 +132,73 @@ class ImportClientsTests(TestCase):
         self.assertEqual(
             Client.objects.filter(salon__name="Other Salon").count(), 2)
 
+class ImportClientsNaiveDatetimeTests(TestCase):
+    """TF-7a: naive note datetimes are made aware in the salon zone
+    and counted; unparseable ones are counted as dropped."""
+
+    def setUp(self):
+        self.salon = Salon.objects.create(
+            name="TZ Salon", timezone="America/New_York")
+
+    def run_import(self, payload):
+        out = io.StringIO()
+        call_command("import_clients", _write(payload),
+                     salon="TZ Salon", stdout=out)
+        return out.getvalue()
+
+    @staticmethod
+    def _summary(out):
+        line = [ln for ln in out.splitlines()
+                if ln.startswith("IMPORT_SUMMARY ")][0]
+        return json.loads(line[len("IMPORT_SUMMARY "):])
+
+    @staticmethod
+    def _payload(created_at):
+        return [{
+            "external_id": "cli-tz-1", "first_name": "Tz",
+            "last_name": "Case",
+            "notes": [{"body": "A note", "author_name": "Desk",
+                       "created_at": created_at}],
+        }]
+
+    def test_naive_datetime_made_aware_in_salon_zone_and_counted(self):
+        out = self.run_import(self._payload("2026-01-15T10:00:00"))
+        summary = self._summary(out)
+        self.assertEqual(summary["naive_datetimes_made_aware"], 1)
+        self.assertEqual(summary["datetimes_dropped"], 0)
+        note = ClientNote.objects.get()
+        self.assertTrue(timezone.is_aware(note.created_at))
+        # 10:00 in America/New_York in January is EST (UTC-5).
+        self.assertEqual(
+            note.created_at,
+            datetime.datetime(2026, 1, 15, 15, 0,
+                              tzinfo=datetime.timezone.utc))
+
+    def test_garbage_datetime_counted_dropped_note_still_imports(self):
+        out = self.run_import(self._payload("not-a-date"))
+        summary = self._summary(out)
+        self.assertEqual(summary["datetimes_dropped"], 1)
+        self.assertEqual(summary["naive_datetimes_made_aware"], 0)
+        self.assertEqual(summary["notes_created"], 1)
+        note = ClientNote.objects.get()
+        self.assertEqual(note.body, "A note")
+        # No fabricated timestamp: the automatic aware timestamp stands.
+        self.assertTrue(timezone.is_aware(note.created_at))
+
+    def test_already_aware_datetime_unchanged_no_counts(self):
+        out = self.run_import(
+            self._payload("2026-01-15T10:00:00+00:00"))
+        summary = self._summary(out)
+        self.assertEqual(summary["naive_datetimes_made_aware"], 0)
+        self.assertEqual(summary["datetimes_dropped"], 0)
+        note = ClientNote.objects.get()
+        self.assertEqual(
+            note.created_at,
+            datetime.datetime(2026, 1, 15, 10, 0,
+                              tzinfo=datetime.timezone.utc))
+
+
+class ImportClientsFileErrorTests(TestCase):
     def test_missing_file_raises_command_error(self):
         with self.assertRaises(CommandError):
             call_command("import_clients", "/nonexistent/clients.json")
