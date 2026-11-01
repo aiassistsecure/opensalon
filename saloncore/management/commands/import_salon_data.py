@@ -8,10 +8,11 @@ JSON format written by ``export_salon_data`` (see that command for the
 section list) and restores Salon, ServiceCategory, Service,
 StaffLevel, ServicePrice, Client, ClientNote, StaffMember,
 Appointment, AppointmentNote, Product, RosterPattern,
-ShiftOverride, Sale, SaleItem, Payment and StockMovement
-records. The ``products``,
+ShiftOverride, Sale, SaleItem, Payment, StockMovement and
+AttendanceRecord records. The ``products``,
 ``roster_patterns``, ``shift_overrides``, ``sales``, ``sale_items``,
-``sale_payments`` and ``stock_movements`` sections are optional on read: an export
+``sale_payments``, ``stock_movements`` and ``attendance_records``
+sections are optional on read: an export
 file written before they existed (no such section, no ``counts``
 entry for it) imports exactly as before, with the section
 treated as empty. Roster rows restore idempotently too:
@@ -66,6 +67,20 @@ and creates nothing twice:
   ``product_external_id`` first, falling back to the file-local
   ``product_id`` map; a link that resolves by neither fails
   closed in phase 1.
+- AttendanceRecord <- (staff_member, recorded_at, event_type).
+  The model has no external_id of its own and no unique
+  constraint; ``recorded_at`` is the anchor that distinguishes
+  two otherwise identical events, exactly as ``created_at``
+  anchors Sale/Payment/StockMovement, and ``event_type`` keeps a
+  check-in and a check-out recorded at the same instant distinct.
+  ``note`` is a default (updated in place on re-import). Its
+  staff link resolves by ``staff_member_external_id`` first,
+  falling back to the file-local ``staff_member_id`` map; a link
+  that resolves by neither fails closed in phase 1.
+  ``recorded_at`` must be timezone-explicit (TF-7): it is the
+  identity anchor, so unlike a best-effort ``created_at`` it is
+  required, and a naive value is rejected in phase 1, never
+  guessed into a zone.
   FOUNDING RULE: Payment's ``provider_reference`` is never
   imported or exported — it is a payment-provider identifier and
   provider-agnostic core carries none; if a file carries it, it
@@ -178,7 +193,12 @@ from saloncore.models import (
     ServicePrice,
     StaffLevel,
 )
-from team.models import RosterPattern, ShiftOverride, StaffMember
+from team.models import (
+    AttendanceRecord,
+    RosterPattern,
+    ShiftOverride,
+    StaffMember,
+)
 
 SECTIONS = (
     "salons", "service_categories", "services", "staff_levels",
@@ -186,13 +206,14 @@ SECTIONS = (
     "appointments", "appointment_notes", "products",
     "roster_patterns", "shift_overrides",
     "sales", "sale_items", "sale_payments", "stock_movements",
+    "attendance_records",
 )
 
 # Sections an older export file may legitimately lack entirely:
 # missing means empty, never an error (back-compat).
 OPTIONAL_SECTIONS = ("products", "roster_patterns", "shift_overrides",
                      "sales", "sale_items", "sale_payments",
-                     "stock_movements")
+                     "stock_movements", "attendance_records")
 
 # Every key the exporter emits (hence the importer may consume) per
 # section. Any other key in a record is unknown (TF-11).
@@ -245,6 +266,9 @@ KNOWN_KEYS = {
     "stock_movements": {"id", "product_id", "product_external_id",
                         "kind", "quantity_delta", "note",
                         "created_at"},
+    "attendance_records": {"id", "staff_member_id",
+                           "staff_member_external_id", "event_type",
+                           "recorded_at", "note"},
 }
 
 TOP_LEVEL_KEYS = set(SECTIONS) | {"counts"}
@@ -395,6 +419,8 @@ _ID_FIELDS = {
                    "product_external_id"),
     "sale_payments": ("id", "sale_id"),
     "stock_movements": ("id", "product_id", "product_external_id"),
+    "attendance_records": ("id", "staff_member_id",
+                           "staff_member_external_id"),
 }
 
 # (section, field) -> model whose external_id limit governs it.
@@ -427,6 +453,8 @@ _EXTERNAL_ID_LIMITS = {
         Product._meta.get_field("external_id").max_length,
     ("stock_movements", "product_external_id"):
         Product._meta.get_field("external_id").max_length,
+    ("attendance_records", "staff_member_external_id"):
+        StaffMember._meta.get_field("external_id").max_length,
 }
 
 
@@ -579,6 +607,8 @@ def _validate(data):
                           "status"),
         "stock_movements": ("id", "product_id", "kind",
                             "quantity_delta"),
+        "attendance_records": ("id", "staff_member_id",
+                               "event_type", "recorded_at"),
     }
     for section, fields in required.items():
         for row in data[section]:
@@ -791,6 +821,17 @@ def _validate(data):
         if not isinstance(delta, int) or isinstance(delta, bool):
             raise CommandError(
                 f"Bad stock_movements quantity_delta: {delta!r}.")
+    for row in data["attendance_records"]:
+        _check_appt_ref(
+            staff_ids, staff_ext_ids, row.get("staff_member_id"),
+            row.get("staff_member_external_id"), "staff_member")
+        if row["event_type"] not in AttendanceRecord.EventType.values:
+            raise CommandError(
+                f"Bad attendance_records event_type: "
+                f"{row['event_type']!r}.")
+        _checked_datetime(
+            row["recorded_at"], f"attendance_records recorded_at "
+            f"record id {row.get('id')!r}")
 
 
 def _ref(mapping, old_id, what):
@@ -1234,6 +1275,20 @@ class Command(BaseCommand):
                     quantity_delta=row["quantity_delta"],
                     note=row.get("note", ""), defaults={})
             _restore_created_at(obj, created_raw)
+
+        for row in data["attendance_records"]:
+            staff_member = _resolve_appt_ref(
+                staff_members, staff_by_ext, row,
+                "staff_member_id", "staff_member_external_id",
+                "staff_member")
+            AttendanceRecord.objects.update_or_create(
+                staff_member=staff_member,
+                recorded_at=_checked_datetime(
+                    row["recorded_at"],
+                    "attendance_records recorded_at"),
+                event_type=row["event_type"],
+                defaults={"note": row.get("note", "")},
+            )
 
         summary = ", ".join(
             f"{section}={len(data[section])}" for section in SECTIONS

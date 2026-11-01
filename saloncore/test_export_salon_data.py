@@ -22,7 +22,12 @@ from saloncore.models import (
     ServicePrice,
     StaffLevel,
 )
-from team.models import RosterPattern, ShiftOverride, StaffMember
+from team.models import (
+    AttendanceRecord,
+    RosterPattern,
+    ShiftOverride,
+    StaffMember,
+)
 
 
 class ExportSalonDataTests(TestCase):
@@ -72,7 +77,7 @@ class ExportSalonDataTests(TestCase):
             "appointments": 0, "appointment_notes": 0, "products": 0,
             "roster_patterns": 0, "shift_overrides": 0,
             "sales": 0, "sale_items": 0, "sale_payments": 0,
-            "stock_movements": 0,
+            "stock_movements": 0, "attendance_records": 0,
         })
         for key, count in data["counts"].items():
             self.assertEqual(len(data[key]), count)
@@ -575,3 +580,62 @@ class ExportStockMovementsTests(TestCase):
         self.assertEqual(data["counts"]["stock_movements"], 1)
         self.assertEqual(
             data["stock_movements"][0]["product_id"], other_product.id)
+
+
+class ExportAttendanceRecordsTests(TestCase):
+    """Attendance leg: export scoped via the staff member's salon."""
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Clock Salon")
+        self.staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Stylist One",
+            external_id="staff-a")
+        self.check_in = AttendanceRecord.objects.create(
+            staff_member=self.staff,
+            event_type=AttendanceRecord.EventType.CHECK_IN,
+            recorded_at=datetime(2026, 10, 3, 9, 0,
+                                 tzinfo=dt_timezone.utc),
+            note="On time")
+        self.check_out = AttendanceRecord.objects.create(
+            staff_member=self.staff,
+            event_type=AttendanceRecord.EventType.CHECK_OUT,
+            recorded_at=datetime(2026, 10, 3, 17, 0,
+                                 tzinfo=dt_timezone.utc))
+
+    def run_export(self, **kwargs):
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        fh.close()
+        call_command("export_salon_data", fh.name,
+                     stdout=io.StringIO(), **kwargs)
+        with open(fh.name, encoding="utf-8") as exported:
+            return json.load(exported)
+
+    def test_export_emits_attendance_records_with_all_fields(self):
+        data = self.run_export()
+        self.assertEqual(data["counts"]["attendance_records"], 2)
+        by_type = {r["event_type"]: r for r in data["attendance_records"]}
+        rec = by_type["check_in"]
+        self.assertEqual(rec["staff_member_id"], self.staff.id)
+        self.assertEqual(rec["staff_member_external_id"], "staff-a")
+        self.assertEqual(
+            rec["recorded_at"], "2026-10-03T09:00:00+00:00")
+        self.assertEqual(rec["note"], "On time")
+        self.assertEqual(by_type["check_out"]["note"], "")
+
+    def test_salon_filter_scopes_attendance_via_staff_member(self):
+        other = Salon.objects.create(name="Other Salon")
+        other_staff = StaffMember.objects.create(
+            salon=other, display_name="Other Stylist")
+        AttendanceRecord.objects.create(
+            staff_member=other_staff,
+            event_type=AttendanceRecord.EventType.CHECK_IN,
+            recorded_at=datetime(2026, 10, 3, 8, 0,
+                                 tzinfo=dt_timezone.utc))
+        data = self.run_export(salon="Clock Salon")
+        self.assertEqual(data["counts"]["attendance_records"], 2)
+        data = self.run_export(salon="Other Salon")
+        self.assertEqual(data["counts"]["attendance_records"], 1)
+        self.assertEqual(
+            data["attendance_records"][0]["staff_member_id"],
+            other_staff.id)

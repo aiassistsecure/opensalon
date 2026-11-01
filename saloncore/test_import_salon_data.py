@@ -25,7 +25,12 @@ from saloncore.models import (
     ServicePrice,
     StaffLevel,
 )
-from team.models import RosterPattern, ShiftOverride, StaffMember
+from team.models import (
+    AttendanceRecord,
+    RosterPattern,
+    ShiftOverride,
+    StaffMember,
+)
 
 MODELS = (Salon, ServiceCategory, Service, StaffLevel, ServicePrice,
           Client, ClientNote, StaffMember)
@@ -806,7 +811,8 @@ class ImportSalonDataDryRunTests(TestCase):
             "service_prices", "clients", "client_notes", "staff_members",
             "appointments", "appointment_notes", "products",
             "roster_patterns", "shift_overrides", "sales",
-            "sale_items", "sale_payments", "stock_movements"})
+            "sale_items", "sale_payments", "stock_movements",
+            "attendance_records"})
         for section, report in reports.items():
             self.assertEqual(report["source"], section)
             self.assertEqual(
@@ -1453,3 +1459,135 @@ class ImportSalonDataStockMovementsTests(TestCase):
         with self.assertRaises(CommandError):
             call_command("import_salon_data", path)
         self.assertEqual(StockMovement.objects.count(), 0)
+
+
+class ImportSalonDataAttendanceRecordsTests(TestCase):
+    """Attendance leg: round-trip preserves the event log exactly.
+
+    Idempotency key: (staff_member, recorded_at, event_type) —
+    recorded_at is the anchor, as created_at is for sales.
+    """
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Clock Restore Salon")
+        self.staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Stylist One",
+            external_id="staff-a")
+        AttendanceRecord.objects.create(
+            staff_member=self.staff,
+            event_type=AttendanceRecord.EventType.CHECK_IN,
+            recorded_at=datetime(2026, 10, 3, 9, 0,
+                                 tzinfo=dt_timezone.utc),
+            note="On time")
+        AttendanceRecord.objects.create(
+            staff_member=self.staff,
+            event_type=AttendanceRecord.EventType.CHECK_OUT,
+            recorded_at=datetime(2026, 10, 3, 17, 0,
+                                 tzinfo=dt_timezone.utc))
+
+    def temp_path(self):
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        fh.close()
+        return fh.name
+
+    def export_data(self):
+        path = self.temp_path()
+        call_command("export_salon_data", path, stdout=io.StringIO())
+        with open(path, encoding="utf-8") as fh:
+            return path, json.load(fh)
+
+    def write_data(self, path, data):
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+
+    def run_import(self, path):
+        out = io.StringIO()
+        call_command("import_salon_data", path, stdout=out)
+        return out.getvalue()
+
+    def test_round_trip_preserves_attendance_records(self):
+        path, _ = self.export_data()
+        Salon.objects.all().delete()
+        self.assertEqual(AttendanceRecord.objects.count(), 0)
+        out = self.run_import(path)
+        self.assertIn("attendance_records=2", out)
+        self.assertIn("unknown_keys=none", out)
+        self.assertEqual(AttendanceRecord.objects.count(), 2)
+        restored = StaffMember.objects.get(external_id="staff-a")
+        by_type = {r.event_type: r
+                   for r in restored.attendance_records.all()}
+        self.assertEqual(
+            by_type["check_in"].recorded_at,
+            datetime(2026, 10, 3, 9, 0, tzinfo=dt_timezone.utc))
+        self.assertEqual(by_type["check_in"].note, "On time")
+        self.assertEqual(by_type["check_out"].note, "")
+        self.assertTrue(restored.is_checked_in() is False)
+
+    def test_reimport_attendance_records_is_idempotent(self):
+        path, _ = self.export_data()
+        Salon.objects.all().delete()
+        self.run_import(path)
+        self.run_import(path)
+        self.assertEqual(AttendanceRecord.objects.count(), 2)
+
+    def test_missing_attendance_section_imports_as_before(self):
+        path, data = self.export_data()
+        del data["attendance_records"]
+        del data["counts"]["attendance_records"]
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        out = self.run_import(path)
+        self.assertIn("attendance_records=0", out)
+        self.assertEqual(AttendanceRecord.objects.count(), 0)
+        self.assertEqual(StaffMember.objects.count(), 1)
+
+    def test_unknown_key_in_attendance_named_not_dropped(self):
+        path, data = self.export_data()
+        data["attendance_records"][0]["legacy_badge"] = "B-7"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        out = self.run_import(path)
+        self.assertIn("attendance_records.legacy_badge", out)
+        self.assertEqual(AttendanceRecord.objects.count(), 2)
+
+    def test_dangling_staff_ref_fails_closed_zero_writes(self):
+        path, data = self.export_data()
+        data["attendance_records"][0]["staff_member_id"] = 999999
+        data["attendance_records"][0]["staff_member_external_id"] = "nope"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError):
+            call_command("import_salon_data", path)
+        self.assertEqual(Salon.objects.count(), 0)
+        self.assertEqual(AttendanceRecord.objects.count(), 0)
+
+    def test_overlong_staff_external_id_fails_closed(self):
+        path, data = self.export_data()
+        data["attendance_records"][0][
+            "staff_member_external_id"] = "x" * 65
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError):
+            call_command("import_salon_data", path)
+        self.assertEqual(AttendanceRecord.objects.count(), 0)
+
+    def test_naive_recorded_at_fails_closed_zero_writes(self):
+        path, data = self.export_data()
+        data["attendance_records"][0]["recorded_at"] = \
+            "2026-10-03T09:00:00"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError):
+            call_command("import_salon_data", path)
+        self.assertEqual(Salon.objects.count(), 0)
+        self.assertEqual(AttendanceRecord.objects.count(), 0)
+
+    def test_bad_event_type_fails_closed_zero_writes(self):
+        path, data = self.export_data()
+        data["attendance_records"][0]["event_type"] = "clock_in"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError):
+            call_command("import_salon_data", path)
+        self.assertEqual(AttendanceRecord.objects.count(), 0)
