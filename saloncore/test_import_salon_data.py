@@ -15,7 +15,7 @@ from django.core.management import CommandError, call_command
 from django.test import TestCase
 
 from bookings.models import Appointment, AppointmentNote, Break
-from checkout.models import Payment, Refund, Sale, SaleItem
+from checkout.models import Cashup, Payment, Refund, Sale, SaleItem
 from catalog.models import Product, StockMovement
 from clients.models import Client, ClientNote
 from saloncore.models import (
@@ -871,7 +871,7 @@ class ImportSalonDataDryRunTests(TestCase):
             "appointments", "appointment_notes", "products",
             "roster_patterns", "shift_overrides", "sales",
             "sale_items", "sale_payments", "stock_movements",
-            "attendance_records", "price_changes", "refunds", "breaks"})
+            "attendance_records", "price_changes", "refunds", "breaks", "cashups"})
         for section, report in reports.items():
             self.assertEqual(report["source"], section)
             self.assertEqual(
@@ -2062,4 +2062,148 @@ class ImportSalonDataBreaksTests(TestCase):
         self.assertEqual(reports["breaks"]["record_count"], 2)
         self.assertEqual(reports["breaks"]["unmapped_keys"], [])
         self.assertEqual(Break.objects.count(), 0)
+        self.assertEqual(Salon.objects.count(), 0)
+
+
+class ImportSalonDataCashupsTests(TestCase):
+    """Cashups leg: round-trip preserves cashups exactly.
+
+    Idempotency natural key: (salon, period_start, period_end,
+    created_at) — a snapshot is get_or_create'd, never updated,
+    never duplicated.
+    """
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Cashup Restore Salon")
+        self.start = datetime(2026, 10, 3, 9, 0, tzinfo=dt_timezone.utc)
+        self.end = datetime(2026, 10, 3, 17, 0, tzinfo=dt_timezone.utc)
+        self.cashup = Cashup.objects.create(
+            salon=self.salon, period_start=self.start,
+            period_end=self.end,
+            tender_totals={"cash": "85.00", "external": "20.50"},
+            total=Decimal("105.50"), note="Morning close")
+        self.other_cashup = Cashup.objects.create(
+            salon=self.salon, period_start=self.end,
+            period_end=datetime(2026, 10, 3, 21, 0,
+                                 tzinfo=dt_timezone.utc),
+            tender_totals={"cash": "10.00"}, total=Decimal("10.00"))
+
+    def temp_path(self):
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        fh.close()
+        return fh.name
+
+    def export_data(self):
+        path = self.temp_path()
+        call_command("export_salon_data", path, stdout=io.StringIO())
+        with open(path, encoding="utf-8") as fh:
+            return path, json.load(fh)
+
+    def write_data(self, path, data):
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+
+    def run_import(self, path):
+        out = io.StringIO()
+        call_command("import_salon_data", path, stdout=out)
+        return out.getvalue()
+
+    def test_round_trip_preserves_cashups_exactly(self):
+        expected_times = sorted(
+            c.created_at for c in (self.cashup, self.other_cashup))
+        path, _ = self.export_data()
+        Salon.objects.all().delete()
+        self.assertEqual(Cashup.objects.count(), 0)
+        out = self.run_import(path)
+        self.assertIn("cashups=2", out)
+        self.assertIn("unknown_keys=none", out)
+        self.assertEqual(Cashup.objects.count(), 2)
+        salon = Salon.objects.get()
+        by_total = {c.total: c for c in salon.cashups.all()}
+        row = by_total[Decimal("105.50")]
+        self.assertEqual(str(row.total), "105.50")
+        self.assertEqual(
+            row.tender_totals, {"cash": "85.00", "external": "20.50"})
+        self.assertEqual(row.period_start, self.start)
+        self.assertEqual(row.period_end, self.end)
+        self.assertEqual(row.note, "Morning close")
+        self.assertEqual(
+            sorted(c.created_at for c in salon.cashups.all()),
+            expected_times)
+
+    def test_reimport_cashups_is_idempotent(self):
+        path, _ = self.export_data()
+        Salon.objects.all().delete()
+        self.run_import(path)
+        self.run_import(path)
+        self.assertEqual(Cashup.objects.count(), 2)
+
+    def test_missing_cashups_section_imports_as_before(self):
+        path, data = self.export_data()
+        del data["cashups"]
+        del data["counts"]["cashups"]
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        out = self.run_import(path)
+        self.assertIn("cashups=0", out)
+        self.assertEqual(Cashup.objects.count(), 0)
+        self.assertEqual(Salon.objects.count(), 1)
+
+    def test_unknown_key_in_cashups_named_not_dropped(self):
+        path, data = self.export_data()
+        data["cashups"][0]["legacy_code"] = "X"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        out = self.run_import(path)
+        self.assertIn("cashups.legacy_code", out)
+        self.assertEqual(Cashup.objects.count(), 2)
+
+    def test_dangling_salon_ref_fails_closed_zero_writes(self):
+        path, data = self.export_data()
+        data["cashups"][0]["salon_id"] = 999999
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError):
+            call_command("import_salon_data", path)
+        self.assertEqual(Salon.objects.count(), 0)
+        self.assertEqual(Cashup.objects.count(), 0)
+
+    def test_naive_period_start_fails_closed_zero_writes(self):
+        path, data = self.export_data()
+        data["cashups"][0]["period_start"] = "2026-10-03T09:00:00"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError):
+            call_command("import_salon_data", path)
+        self.assertEqual(Salon.objects.count(), 0)
+        self.assertEqual(Cashup.objects.count(), 0)
+
+    def test_bad_tender_totals_fails_closed_zero_writes(self):
+        path, data = self.export_data()
+        data["cashups"][0]["tender_totals"] = {"cash": "not-a-number"}
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError):
+            call_command("import_salon_data", path)
+        self.assertEqual(Cashup.objects.count(), 0)
+
+    def test_bad_total_fails_closed_zero_writes(self):
+        path, data = self.export_data()
+        data["cashups"][0]["total"] = "not-a-number"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError):
+            call_command("import_salon_data", path)
+        self.assertEqual(Cashup.objects.count(), 0)
+
+    def test_dry_run_reports_cashups_and_writes_nothing(self):
+        path, _ = self.export_data()
+        Salon.objects.all().delete()
+        out = io.StringIO()
+        call_command("import_salon_data", path, dry_run=True, stdout=out)
+        reports = json.loads(out.getvalue())
+        self.assertEqual(reports["cashups"]["record_count"], 2)
+        self.assertEqual(reports["cashups"]["unmapped_keys"], [])
+        self.assertEqual(Cashup.objects.count(), 0)
         self.assertEqual(Salon.objects.count(), 0)

@@ -12,7 +12,7 @@ from django.core.management import CommandError, call_command
 from django.test import TestCase
 
 from bookings.models import Appointment, AppointmentNote, Break
-from checkout.models import Payment, Refund, Sale, SaleItem
+from checkout.models import Cashup, Payment, Refund, Sale, SaleItem
 from catalog.models import Product, StockMovement
 from clients.models import Client, ClientNote
 from saloncore.models import (
@@ -79,7 +79,7 @@ class ExportSalonDataTests(TestCase):
             "roster_patterns": 0, "shift_overrides": 0,
             "sales": 0, "sale_items": 0, "sale_payments": 0,
             "stock_movements": 0, "attendance_records": 0,
-            "price_changes": 0, "refunds": 0, "breaks": 0,
+            "price_changes": 0, "refunds": 0, "breaks": 0, "cashups": 0,
         })
         for key, count in data["counts"].items():
             self.assertEqual(len(data[key]), count)
@@ -852,3 +852,59 @@ class ExportBreaksTests(TestCase):
         self.assertEqual(data["counts"]["breaks"], 1)
         self.assertEqual(
             data["breaks"][0]["staff_member_id"], other_staff.id)
+
+
+class ExportCashupsTests(TestCase):
+    """Cashups leg: export scoped directly by salon."""
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Cashup Salon")
+        self.start = datetime(2026, 10, 3, 9, 0, tzinfo=dt_timezone.utc)
+        self.end = datetime(2026, 10, 3, 17, 0, tzinfo=dt_timezone.utc)
+        self.cashup = Cashup.objects.create(
+            salon=self.salon, period_start=self.start,
+            period_end=self.end,
+            tender_totals={"cash": "85.00", "external": "20.50"},
+            total=Decimal("105.50"), note="Morning close")
+        self.other_cashup = Cashup.objects.create(
+            salon=self.salon, period_start=self.end,
+            period_end=datetime(2026, 10, 3, 21, 0,
+                                 tzinfo=dt_timezone.utc),
+            tender_totals={"cash": "10.00"}, total=Decimal("10.00"))
+
+    def run_export(self, **kwargs):
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        fh.close()
+        call_command("export_salon_data", fh.name,
+                     stdout=io.StringIO(), **kwargs)
+        with open(fh.name, encoding="utf-8") as exported:
+            return json.load(exported)
+
+    def test_export_emits_cashups_with_all_fields(self):
+        data = self.run_export()
+        self.assertEqual(data["counts"]["cashups"], 2)
+        by_total = {c["total"]: c for c in data["cashups"]}
+        row = by_total["105.50"]
+        self.assertEqual(row["id"], self.cashup.id)
+        self.assertEqual(row["salon_id"], self.salon.id)
+        self.assertIsInstance(row["total"], str)
+        self.assertEqual(row["period_start"], self.start.isoformat())
+        self.assertEqual(row["period_end"], self.end.isoformat())
+        self.assertEqual(
+            row["tender_totals"], {"cash": "85.00", "external": "20.50"})
+        self.assertEqual(row["note"], "Morning close")
+        self.assertEqual(
+            row["created_at"], self.cashup.created_at.isoformat())
+        self.assertEqual(by_total["10.00"]["note"], "")
+
+    def test_salon_filter_scopes_cashups_by_salon(self):
+        other = Salon.objects.create(name="Other Salon")
+        Cashup.objects.create(
+            salon=other, period_start=self.start, period_end=self.end,
+            total=Decimal("9.00"))
+        data = self.run_export(salon="Cashup Salon")
+        self.assertEqual(data["counts"]["cashups"], 2)
+        data = self.run_export(salon="Other Salon")
+        self.assertEqual(data["counts"]["cashups"], 1)
+        self.assertEqual(data["cashups"][0]["salon_id"], other.id)
