@@ -38,6 +38,13 @@ Columns are only real fields:
   ``price_active``: the price itself (empty for an unpriced
   service). ``amount`` is formatted to two decimal places as
   a string, ``"85.00"``.
+- ``payload``: the service's verbatim source record
+  (``Service.payload``, TF-10), included ONLY when non-empty --
+  as a dict key on the dict export, and as an extra CSV column
+  (JSON string) on the CSV export when any service in the book
+  carries one. ``import_price_book`` restores it as-is, so the
+  payload round-trips unchanged; a book with no payloads
+  exports exactly as before, with no ``payload`` key or column.
 
 Nothing is filtered on ``active``: inactive categories,
 services, levels, and prices are exported too, with their
@@ -55,6 +62,7 @@ then price ``id``.
 """
 import csv
 import io
+import json
 from decimal import Decimal
 
 from saloncore.models import Service
@@ -101,7 +109,7 @@ def _money(value):
 
 def _base_record(salon_id, service):
     category = service.category
-    return {
+    record = {
         "salon_id": salon_id,
         "category_id": category.pk,
         "category_name": category.name,
@@ -121,6 +129,10 @@ def _base_record(salon_id, service):
         "is_from": None,
         "price_active": None,
     }
+    payload = getattr(service, "payload", None)
+    if payload:
+        record["payload"] = payload
+    return record
 
 
 def _record(salon_id, service, price):
@@ -142,10 +154,12 @@ def export_price_book(salon):
     """Return ``salon``'s full price book as dicts.
 
     Each entry is a dict with exactly
-    :data:`PRICE_BOOK_FIELDNAMES` keys. Only ``salon``'s
-    services and prices are included, ordered as described
-    in the module docstring. A salon with no services exports
-    as ``[]``; ``salon=None`` exports as ``[]``. Read-only.
+    :data:`PRICE_BOOK_FIELDNAMES` keys, plus a ``payload``
+    key when the service carries a verbatim source record.
+    Only ``salon``'s services and prices are included, ordered
+    as described in the module docstring. A salon with no
+    services exports as ``[]``; ``salon=None`` exports as
+    ``[]``. Read-only.
     """
     if salon is None:
         return []
@@ -178,16 +192,27 @@ def export_price_book_csv(salon):
     The header row is :data:`PRICE_BOOK_FIELDNAMES` and every
     data row comes from :func:`export_price_book` with the
     same argument, so the CSV and list exports always agree.
+    When any exported service carries a payload, a trailing
+    ``payload`` column is added holding it as a JSON string
+    (empty on rows whose service has none); a payload-free
+    book's CSV is byte-identical to the export before TF-10.
     A salon with no services exports as the header row alone.
     Lines end ``"\\n"``.
     """
+    records = export_price_book(salon)
+    fieldnames = list(PRICE_BOOK_FIELDNAMES)
+    if any("payload" in record for record in records):
+        fieldnames.append("payload")
     buffer = io.StringIO()
     writer = csv.DictWriter(
-        buffer, fieldnames=PRICE_BOOK_FIELDNAMES, lineterminator="\n"
+        buffer, fieldnames=fieldnames, lineterminator="\n"
     )
     writer.writeheader()
-    for record in export_price_book(salon):
-        writer.writerow(record)
+    for record in records:
+        row = dict(record)
+        if "payload" in row:
+            row["payload"] = json.dumps(row["payload"], sort_keys=True)
+        writer.writerow(row)
     return buffer.getvalue()
 
 

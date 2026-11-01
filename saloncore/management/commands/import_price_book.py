@@ -58,6 +58,17 @@ natural identity above, so re-running updates in place and never
 duplicates. When a re-import changes an existing price amount, a
 PriceChange audit row is appended (changed_by="import_price_book").
 
+Verbatim retention (TF-10): the source record for each service is
+stored whole in ``Service.payload`` (mirroring ``Client.payload``)
+on create and on update, so fields with no mapped column are never
+dropped. For the JSON shape the payload is the entire source row.
+For the CSV (export) shape, a record's own ``payload`` column value
+(a JSON object written by ``export_price_book``) is restored as-is,
+never re-wrapped; a CSV carrying no payload imports with an empty
+payload. The import summary counts a service whose only change is
+its payload as ``services_updated``; a service whose mapped fields
+and payload both already match counts as ``services_unchanged``.
+
 Two-phase, validate-before-write (N-M20a, following N-M19): phase 1
 validates and normalises the ENTIRE services file — every
 ``duration``/``gapTime`` parsed to int, ``staffCategories`` verified
@@ -210,6 +221,29 @@ def _parse_csv_minutes(row, index, field):
             f"of minutes.") from exc
 
 
+def _parse_csv_payload(row, index):
+    """The CSV shape's ``payload`` cell: a JSON object, or None.
+
+    ``export_price_book`` writes the service's verbatim source
+    record as a JSON string in this column (only on books that
+    carry payloads). It is restored as-is — never re-wrapped in
+    the CSV row. An absent column or empty cell means no payload.
+    Anything else malformed raises CommandError in phase 1.
+    """
+    raw = row.get("payload")
+    if raw is None or not str(raw).strip():
+        return None
+    try:
+        payload = json.loads(raw)
+    except (ValueError, TypeError) as exc:
+        raise CommandError(
+            f"Row {index}: payload {raw!r} is not valid JSON.") from exc
+    if not isinstance(payload, dict):
+        raise CommandError(
+            f"Row {index}: payload must be a JSON object.")
+    return payload
+
+
 def _normalise_csv_rows(rows):
     """Phase 1 for the CSV shape: group rows into service plans.
 
@@ -248,7 +282,8 @@ def _normalise_csv_rows(rows):
         plan = by_key.get(key)
         if plan is None:
             plan = {**service_fields, "base_amount": None,
-                    "level_prices": [], "user_prices_count": 0}
+                    "level_prices": [], "user_prices_count": 0,
+                    "payload": None}
             by_key[key] = plan
             plans.append(plan)
         elif any(plan[field] != value
@@ -256,6 +291,15 @@ def _normalise_csv_rows(rows):
             raise CommandError(
                 f"Row {index}: conflicting service fields for "
                 f"{service_fields['name']!r} in the CSV import.")
+
+        row_payload = _parse_csv_payload(row, index)
+        if row_payload is not None:
+            if plan["payload"] is None:
+                plan["payload"] = row_payload
+            elif plan["payload"] != row_payload:
+                raise CommandError(
+                    f"Row {index}: conflicting payloads for "
+                    f"{service_fields['name']!r} in the CSV import.")
 
         level_name = (row.get("staff_level_name") or "").strip()
         amount_raw = (row.get("amount") or "").strip()
@@ -283,6 +327,9 @@ def _normalise_csv_rows(rows):
                 f"{level_name!r} on {service_fields['name']!r}.")
         if prior is None:
             plan["level_prices"].append(price)
+    for plan in plans:
+        if plan["payload"] is None:
+            plan["payload"] = {}
     return plans, skipped
 
 
@@ -397,6 +444,8 @@ def _normalise_row(row, index, category_names, user_category):
         "base_amount": _decimal(row.get("price")),
         "level_prices": level_prices,
         "user_prices_count": user_prices_count,
+        # Verbatim source record (TF-10): the whole row, as loaded.
+        "payload": dict(row),
     }
 
 
@@ -449,7 +498,8 @@ class Command(BaseCommand):
             ]
 
         stats = dict.fromkeys(
-            ["services", "categories", "levels", "prices",
+            ["services", "services_updated", "services_unchanged",
+             "categories", "levels", "prices",
              "skipped_services", "skipped_individual_prices"], 0)
         stats["skipped_services"] = pre_skipped
 
@@ -503,6 +553,7 @@ class Command(BaseCommand):
                     "service_minutes": plan["service_minutes"],
                     "processing_minutes": plan["processing_minutes"],
                     "active": plan["active"],
+                    "payload": plan["payload"],
                 }
                 if plan.get("finishing_minutes") is not None:
                     defaults["finishing_minutes"] = plan["finishing_minutes"]
@@ -517,6 +568,8 @@ class Command(BaseCommand):
                             external_id=external_id).exists():
                         legacy.external_id = external_id
                         legacy.save(update_fields=["external_id"])
+                    existing = Service.objects.filter(
+                        external_id=external_id).first()
                     service, created = Service.objects.update_or_create(
                         external_id=external_id,
                         defaults={"category": category, "name": plan["name"],
@@ -525,10 +578,25 @@ class Command(BaseCommand):
                     # No source id: keep the natural key and leave any
                     # stored external_id untouched (never clobber with
                     # blank).
+                    existing = Service.objects.filter(
+                        category=category, name=plan["name"]).first()
                     service, created = Service.objects.update_or_create(
                         category=category, name=plan["name"],
                         defaults=defaults)
                 stats["services"] += int(created)
+                if not created:
+                    # A payload-only difference counts as an update;
+                    # a fully identical re-run counts as unchanged.
+                    new_values = {
+                        "category_id": category.pk, "name": plan["name"],
+                        **defaults}
+                    if external_id:
+                        new_values["external_id"] = external_id
+                    changed = any(
+                        getattr(existing, field) != value
+                        for field, value in new_values.items())
+                    stats["services_updated" if changed
+                          else "services_unchanged"] += 1
 
                 if plan["base_amount"] is not None:
                     if base_level is None:
