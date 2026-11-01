@@ -101,12 +101,17 @@ class CampaignTests(TestCase):
             list(audience_for(self.salon, "sms")), [mine]
         )
 
-    def test_draft_only_no_send_path(self):
+    def test_status_lifecycle_guards(self):
+        # M2: draft -> sent exists (via messaging.campaign_send,
+        # tested there); unknown statuses are still refused, a
+        # bare "sent" without a timestamp is refused, and the
+        # audience module itself still has no send path.
         self.assertEqual(
-            [value for value, _ in Campaign.Status.choices], ["draft"]
+            [value for value, _ in Campaign.Status.choices],
+            ["draft", "sent"],
         )
         campaign = self._campaign()
-        campaign.status = "sent"
+        campaign.status = "sent"  # no sent_at -> refused
         with self.assertRaises(ValidationError):
             campaign.save()
         with self.assertRaises(ValidationError):
