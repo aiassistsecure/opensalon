@@ -83,6 +83,19 @@ naive one — there is simply no timestamp to restore, so it stays
 a best-effort skip; a present but unparseable ``created_at`` is
 likewise a phase-1 ``CommandError``, never a silent drop.
 
+Faithful external ids (TF-6): every id this command consumes —
+file-local ``id`` values, every ``*_id`` reference (including
+``category_id``), the ``external_id`` of the clients, staff_members,
+services and appointments sections, and appointments'
+``*_external_id`` link fields — is normalised to ``str`` in phase 1,
+so a numeric id and its string spelling (``123`` vs ``"123"``) are
+the same identity in every lookup, map and ``update_or_create`` key.
+An ``external_id`` / ``*_external_id`` longer than its model field's
+``max_length`` is never silently truncated (a shortened id would
+become a different identity, and two overlong ids sharing a prefix
+would collide into one): it raises ``CommandError`` in phase 1
+naming the section and record, so the whole file writes zero rows.
+
 Unknown sections / keys (TF-11): anything in the file this command
 does not consume — an unknown top-level section, or an unknown key
 inside a record of a known section (or inside ``counts``) — has no
@@ -251,6 +264,88 @@ def _check_bool(row, section, field):
             f"({type(value).__name__}), not a JSON boolean.")
 
 
+def _norm_id(value):
+    """Normalise an id scalar to its string spelling (TF-6).
+
+    Ints and strings become ``str(value)`` (strings stripped, like
+    the other TF-6 importers); anything else (None, bool, containers,
+    floats) is returned unchanged so existing validation treats it
+    exactly as before.
+    """
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    return value
+
+
+# Id-bearing fields per section, normalised in phase 1 (TF-6).
+_ID_FIELDS = {
+    "salons": ("id",),
+    "service_categories": ("id", "salon_id"),
+    "services": ("id", "category_id", "external_id"),
+    "staff_levels": ("id", "salon_id"),
+    "service_prices": ("id", "service_id", "staff_level_id"),
+    "clients": ("id", "salon_id", "external_id"),
+    "client_notes": ("id", "client_id"),
+    "staff_members": ("id", "salon_id", "staff_level_id",
+                      "external_id"),
+    "appointments": ("id", "external_id", "client_id",
+                     "client_external_id", "staff_member_id",
+                     "staff_member_external_id", "service_id",
+                     "service_external_id"),
+    "appointment_notes": ("id", "appointment_id"),
+}
+
+# (section, field) -> model whose external_id limit governs it.
+_EXTERNAL_ID_LIMITS = {
+    ("services", "external_id"):
+        Service._meta.get_field("external_id").max_length,
+    ("clients", "external_id"):
+        Client._meta.get_field("external_id").max_length,
+    ("staff_members", "external_id"):
+        StaffMember._meta.get_field("external_id").max_length,
+    ("appointments", "external_id"):
+        Appointment._meta.get_field("external_id").max_length,
+    ("appointments", "client_external_id"):
+        Client._meta.get_field("external_id").max_length,
+    ("appointments", "staff_member_external_id"):
+        StaffMember._meta.get_field("external_id").max_length,
+    ("appointments", "service_external_id"):
+        Service._meta.get_field("external_id").max_length,
+}
+
+
+def _normalise_ids(data):
+    """Phase-1 TF-6 pass: stringify ids in place, reject overlong.
+
+    Runs before any reference set is built, so phase 1 and phase 2
+    both see the normalised spellings. An overlong external id
+    raises CommandError naming the section and record — before a
+    single row is written, and never as a truncated identity.
+    """
+    for section, fields in _ID_FIELDS.items():
+        for row in data[section]:
+            if not isinstance(row, dict):
+                continue
+            for field in fields:
+                if field in row:
+                    row[field] = _norm_id(row[field])
+    for (section, field), limit in _EXTERNAL_ID_LIMITS.items():
+        for row in data[section]:
+            if not isinstance(row, dict):
+                continue
+            value = row.get(field)
+            if isinstance(value, str) and len(value) > limit:
+                raise CommandError(
+                    f"Overlong external id: section {section!r} "
+                    f"record id {row.get('id')!r} has "
+                    f"{field!r}={value!r} ({len(value)} characters), "
+                    f"which exceeds the {limit}-character limit; "
+                    f"refusing to truncate an id (truncation would "
+                    f"create a different identity).")
+
+
 def _check_ref(ids, old_id, what):
     if old_id not in ids:
         raise CommandError(
@@ -264,9 +359,10 @@ def _check_appt_ref(ids, ext_ids, old_id, external_id, what):
     in the file; if neither does, the reference is dangling and the
     whole file fails closed — a link is never fabricated.
     """
+    external_id = _norm_id(external_id)
     if external_id and external_id in ext_ids:
         return
-    if old_id in ids:
+    if _norm_id(old_id) in ids:
         return
     raise CommandError(
         f"Dangling reference: {what} id {old_id!r} / external_id "
@@ -343,6 +439,8 @@ def _validate(data):
     for section, fields in required.items():
         for row in data[section]:
             _require(row, section, fields)
+
+    _normalise_ids(data)
 
     for section, fields in BOOL_FIELDS.items():
         for row in data[section]:
@@ -441,17 +539,17 @@ def _ref(mapping, old_id, what):
 
 def _by_external(rows, mapping):
     return {
-        row["external_id"]: mapping[row["id"]]
+        _norm_id(row["external_id"]): mapping[_norm_id(row["id"])]
         for row in rows if row.get("external_id")
     }
 
 
 def _resolve_appt_ref(by_id, by_ext, row, id_field, ext_field, what):
     """Resolve an appointment link: external_id first, id fallback."""
-    external_id = row.get(ext_field)
+    external_id = _norm_id(row.get(ext_field))
     if external_id and external_id in by_ext:
         return by_ext[external_id]
-    return _ref(by_id, row.get(id_field), what)
+    return _ref(by_id, _norm_id(row.get(id_field)), what)
 
 
 def _restore_created_at(obj, raw):
@@ -530,7 +628,7 @@ class Command(BaseCommand):
                 "finishing_minutes": row.get("finishing_minutes", 0),
                 "active": row["active"],
             }
-            external_id = row.get("external_id") or ""
+            external_id = _norm_id(row.get("external_id")) or ""
             if external_id:
                 obj, _ = Service.objects.update_or_create(
                     external_id=external_id, defaults=defaults)
@@ -569,7 +667,7 @@ class Command(BaseCommand):
                 "active": row["active"],
             }
             salon = _ref(salons, row["salon_id"], "salon")
-            external_id = row.get("external_id") or ""
+            external_id = _norm_id(row.get("external_id")) or ""
             if external_id:
                 obj, _ = Client.objects.update_or_create(
                     salon=salon, external_id=external_id, defaults=defaults)
@@ -602,7 +700,7 @@ class Command(BaseCommand):
                 "active": row["active"],
             }
             salon = _ref(salons, row["salon_id"], "salon")
-            external_id = row.get("external_id") or ""
+            external_id = _norm_id(row.get("external_id")) or ""
             if external_id:
                 obj, _ = StaffMember.objects.update_or_create(
                     salon=salon, external_id=external_id, defaults=defaults)
@@ -646,7 +744,7 @@ class Command(BaseCommand):
                     if row.get("price_override") is not None else None
                 ),
             }
-            external_id = row.get("external_id") or ""
+            external_id = _norm_id(row.get("external_id")) or ""
             if external_id:
                 obj, _ = Appointment.objects.update_or_create(
                     external_id=external_id, defaults=defaults)
