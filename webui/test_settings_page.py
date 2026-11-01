@@ -6,6 +6,7 @@ three-letter currency, a non-empty name); the system card
 reports presence — engine, mail host, adapter — never values
 it shouldn't carry.
 """
+from django.conf import settings as dj_settings
 from django.test import TestCase
 from django.urls import reverse
 
@@ -22,8 +23,14 @@ class SettingsPageTests(TestCase):
         response = self.client.get(reverse("webui:settings"))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Old Name")
-        # The test run is the SQLite fallback, and the card says so.
-        self.assertEqual(response.context["db_label"], "SQLite")
+        # The card names the engine the deployment actually runs:
+        # NEDB on the NEDB lane, SQLite on the fallback lane —
+        # the expectation follows the configured engine, never a
+        # hardcoded lane (cycle-58 NEDB census caught exactly
+        # that coupling).
+        engine = dj_settings.DATABASES["default"]["ENGINE"]
+        expected = "NEDB" if "nedb" in engine else "SQLite"
+        self.assertEqual(response.context["db_label"], expected)
         self.assertEqual(response.context["sms_adapter"], "ConsoleSmsAdapter")
         self.assertEqual(response.context["staff_count"], 0)
 
