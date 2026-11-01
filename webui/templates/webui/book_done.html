@@ -1,0 +1,22 @@
+{% load static %}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Booked — {{ salon.name }}</title>
+<link rel="stylesheet" href="{% static 'webui/webui.css' %}?v={{ asset_v }}">
+</head>
+<body class="book-body">
+<main class="book-wrap">
+  <header class="book-head">
+    <div class="book-brand">{{ salon.name }}</div>
+    <div class="book-sub">Online booking</div>
+  </header>
+  <section class="book-card">
+    <h2 class="book-h">You're booked, {{ appointment.client.first_name }}</h2>
+    <p class="book-pick">{{ appointment.service }} with {{ appointment.staff_member }}<br>{{ appointment.start|date:"l, F j" }} at {{ appointment.start|date:"g:i A" }}</p>
+    <p class="book-note">If you need to change or cancel, call the salon and we'll take care of it.</p>
+  </section>
+</main>
+</body>
+</html>

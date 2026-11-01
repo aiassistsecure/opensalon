@@ -58,4 +58,7 @@ urlpatterns = [
     ),
     path("settings/", views.settings_page, name="settings"),
     path("settings/save/", views.settings_save, name="settings_save"),
+    path("book/", views.book_page, name="book"),
+    path("book/confirm/", views.book_confirm, name="book_confirm"),
+    path("book/done/", views.book_done, name="book_done"),
 ]

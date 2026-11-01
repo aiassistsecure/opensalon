@@ -2619,6 +2619,267 @@ def settings_page(request):
     return render(request, "webui/settings.html", ctx)
 
 
+BOOKING_WINDOW_DAYS = 14
+
+
+def _book_services(salon):
+    """The public menu: active services with their from-price.
+
+    The from-price is the price book's lowest rung for the
+    service — the same "from $X" the salon publishes — and a
+    service with no prices simply shows none; the page never
+    invents a figure.
+    """
+    from django.db.models import Min
+
+    from saloncore.models import Service
+
+    services = (
+        Service.objects.filter(category__salon=salon, active=True)
+        .order_by("category__sort_order", "name")
+        .annotate(from_price=Min("prices__amount"))
+    )
+    return [
+        {
+            "service": service,
+            "from_label": (
+                _money_label(service.from_price)
+                if service.from_price is not None
+                else ""
+            ),
+            "minutes": service.total_minutes,
+        }
+        for service in services
+    ]
+
+
+def _grid_starts(interval, minutes, now):
+    """Quarter-hour start times inside one free interval that
+    fit the service and haven't already passed."""
+    start = interval.start
+    remainder = start.minute % 15
+    if remainder or start.second or start.microsecond:
+        start = start.replace(second=0, microsecond=0) + datetime.timedelta(
+            minutes=(15 - remainder) % 15 or 15
+        )
+    length = datetime.timedelta(minutes=minutes)
+    starts = []
+    while start + length <= interval.end:
+        if start > now:
+            starts.append(start)
+        start += datetime.timedelta(minutes=15)
+    return starts
+
+
+def book_page(request):
+    """Online booking — the salon's public page, its own brand.
+
+    Server-rendered steps over the onlinebooking lane's own
+    services: `bookable_slots` (rostered time only, per-staff
+    online toggle respected, breaks and appointments already
+    excluded) decides what can be offered; the write goes
+    through `create_online_booking`, which re-checks
+    everything at write time. The salon's name is the brand —
+    no OpenSalon furniture anywhere on the page. The client
+    book is never exposed: a returning guest is matched
+    silently at confirm time, never searched or listed here.
+    """
+    from onlinebooking.services import bookable_slots
+    from saloncore.models import Service
+    from team.models import StaffMember
+
+    salon = Salon.objects.order_by("id").first()
+    ctx = {"salon": salon}
+    if salon is None:
+        return render(request, "webui/book.html", ctx)
+    tz = _tz(salon)
+    now = timezone.now().astimezone(tz)
+    today = now.date()
+    days = [today + datetime.timedelta(days=i) for i in range(BOOKING_WINDOW_DAYS)]
+    ctx.update({"services": _book_services(salon), "days": days, "today": today})
+
+    service = None
+    try:
+        service = Service.objects.get(
+            pk=int(request.GET.get("service", "")), category__salon=salon,
+            active=True,
+        )
+    except (ValueError, Service.DoesNotExist):
+        service = None
+    ctx["service"] = service
+    if service is None:
+        return render(request, "webui/book.html", ctx)
+
+    try:
+        day = datetime.date.fromisoformat(request.GET.get("day", ""))
+    except ValueError:
+        day = today
+    if day not in days:
+        day = today
+    ctx["day"] = day
+
+    staff_filter = request.GET.get("staff", "")
+    sections = []
+    for availability in bookable_slots(salon, service, day):
+        member = availability.staff_member
+        if staff_filter and str(member.pk) != staff_filter:
+            continue
+        starts = []
+        for interval in availability.intervals:
+            starts.extend(_grid_starts(interval, service.total_minutes, now))
+        if starts:
+            sections.append({"staff": member, "starts": starts})
+    ctx["sections"] = sections
+    ctx["staff_filter"] = staff_filter
+
+    # The details step: a chosen stylist + start time.
+    chosen_staff = None
+    chosen_start = None
+    if request.GET.get("time"):
+        try:
+            chosen_staff = StaffMember.objects.get(
+                pk=int(request.GET.get("staff", "")), salon=salon
+            )
+            hour, minute = (int(p) for p in request.GET["time"].split(":"))
+            candidate = datetime.datetime.combine(
+                day, datetime.time(hour, minute), tzinfo=tz
+            )
+            for section in sections:
+                if section["staff"].pk == chosen_staff.pk and (
+                    candidate in section["starts"]
+                ):
+                    chosen_start = candidate
+                    break
+        except (ValueError, StaffMember.DoesNotExist):
+            chosen_staff = chosen_start = None
+    ctx["chosen_staff"] = chosen_staff
+    ctx["chosen_start"] = chosen_start
+    ctx["taken"] = request.GET.get("taken") == "1"
+    return render(request, "webui/book.html", ctx)
+
+
+@require_POST
+def book_confirm(request):
+    """Take the booking — re-validated at the write, by the lane.
+
+    The slot is re-checked against a fresh `bookable_slots`
+    read (fit inside a free interval), the guest is matched
+    silently by phone, then email, else created, and
+    `create_online_booking` makes the appointment — its
+    lifecycle delegate re-checks the toggle, the roster and
+    overlaps, so a race or a crafted post cannot land a
+    booking the page wouldn't have offered. A refusal returns
+    to the time step with a plain "just taken" note.
+    """
+    from django.core.exceptions import ValidationError
+
+    from onlinebooking.services import bookable_slots, create_online_booking
+    from saloncore.models import Service
+    from team.models import StaffMember
+
+    salon = Salon.objects.order_by("id").first()
+    if salon is None:
+        return redirect("webui:book")
+    tz = _tz(salon)
+    now = timezone.now().astimezone(tz)
+    today = now.date()
+
+    def back_to_times(**extra):
+        params = {
+            "service": request.POST.get("service", ""),
+            "day": request.POST.get("day", ""),
+            "staff": request.POST.get("staff", ""),
+        }
+        params.update(extra)
+        query = "&".join(f"{k}={v}" for k, v in params.items() if v)
+        return redirect(f"{reverse('webui:book')}?{query}")
+
+    try:
+        service = Service.objects.get(
+            pk=int(request.POST.get("service", "")), category__salon=salon,
+            active=True,
+        )
+        member = StaffMember.objects.get(
+            pk=int(request.POST.get("staff", "")), salon=salon
+        )
+        day = datetime.date.fromisoformat(request.POST.get("day", ""))
+        hour, minute = (int(p) for p in request.POST.get("time", "").split(":"))
+        start = datetime.datetime.combine(
+            day, datetime.time(hour, minute), tzinfo=tz
+        )
+    except (ValueError, Service.DoesNotExist, StaffMember.DoesNotExist):
+        return redirect("webui:book")
+    if day < today or day >= today + datetime.timedelta(
+        days=BOOKING_WINDOW_DAYS
+    ) or start <= now:
+        return back_to_times(taken="1")
+
+    fits = False
+    for availability in bookable_slots(salon, service, day):
+        if availability.staff_member.pk != member.pk:
+            continue
+        length = datetime.timedelta(minutes=service.total_minutes)
+        fits = any(
+            interval.start <= start and start + length <= interval.end
+            for interval in availability.intervals
+        )
+    if not fits:
+        return back_to_times(taken="1")
+
+    first = request.POST.get("first_name", "").strip()
+    last = request.POST.get("last_name", "").strip()
+    phone = request.POST.get("phone", "").strip()
+    email = request.POST.get("email", "").strip()
+    note = request.POST.get("note", "").strip()
+    if not first or not phone:
+        return back_to_times(taken="1")
+
+    guest = None
+    if phone:
+        guest = Client.objects.filter(salon=salon, phone=phone).first()
+    if guest is None and email:
+        guest = Client.objects.filter(
+            salon=salon, email__iexact=email
+        ).first()
+    if guest is None:
+        guest = Client.objects.create(
+            salon=salon, first_name=first, last_name=last,
+            phone=phone, email=email,
+        )
+    try:
+        appointment = create_online_booking(
+            client=guest, staff_member=member, service=service,
+            start=start, note=note,
+            note_author=f"{first} {last}".strip() or "Online booking",
+        )
+    except ValidationError:
+        return back_to_times(taken="1")
+    request.session["booked_appointment"] = appointment.pk
+    return redirect("webui:book_done")
+
+
+def book_done(request):
+    """The confirmation — reached only with a booking in hand."""
+    salon = Salon.objects.order_by("id").first()
+    appointment = None
+    pk = request.session.get("booked_appointment")
+    if salon is not None and pk:
+        appointment = (
+            Appointment.objects.filter(
+                pk=pk, staff_member__salon=salon
+            )
+            .select_related("client", "service", "staff_member")
+            .first()
+        )
+    if appointment is None:
+        return redirect("webui:book")
+    return render(
+        request,
+        "webui/book_done.html",
+        {"salon": salon, "appointment": appointment},
+    )
+
+
 @require_POST
 def settings_save(request):
     """Save the salon profile — validated whole, or not at all.

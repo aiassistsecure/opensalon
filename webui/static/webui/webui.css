@@ -1348,6 +1348,31 @@ button:focus-visible, a:focus-visible, select:focus-visible {
 .set-form input{padding:9px 11px;border:1px solid #ddd3b8;border-radius:9px;background:#fff;color:#1d2530;font-size:14.5px}
 .set-form .btn-primary{align-self:flex-start;margin-top:2px}
 .set-error{background:#fbeeee;border:1px solid #eec9c9;color:#8a3b3b;border-radius:12px;padding:11px 15px;font-size:14px;margin:14px 0}
+
+/* Public booking: the salon's own page — its name is the brand */
+.book-body{background:#faf7ef;margin:0;font-family:Inter,system-ui,sans-serif;color:#1d2530}
+.book-wrap{max-width:640px;margin:0 auto;padding:28px 16px 56px}
+.book-head{text-align:center;margin-bottom:22px}
+.book-brand{font-family:Manrope,Inter,sans-serif;font-size:30px;font-weight:800;color:#3f5a36}
+.book-sub{color:#9a927e;font-size:13.5px;letter-spacing:.08em;text-transform:uppercase;margin-top:3px}
+.book-card{background:#fffdf7;border:1px solid #e6ddc6;border-radius:18px;padding:22px;box-shadow:0 8px 30px rgba(63,90,54,.08)}
+.book-h{font-size:19px;font-weight:750;margin:0 0 14px}
+.book-note{color:#6b6250;font-size:14px}
+.book-note a{color:#3f5a36;font-weight:650}
+.book-services{display:flex;flex-direction:column;gap:9px}
+.book-service{display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding:13px 15px;border:1px solid #e6ddc6;border-radius:13px;text-decoration:none;color:#1d2530;background:#fff}
+.book-service:hover{border-color:#3f5a36}
+.book-service-name{font-weight:650}
+.book-service-meta{color:#9a927e;font-size:13px;white-space:nowrap}
+.book-days{display:flex;gap:7px;overflow-x:auto;padding-bottom:8px;margin-bottom:8px}
+.book-day{flex:0 0 auto;display:flex;flex-direction:column;align-items:center;padding:8px 11px;border:1px solid #ddd3b8;border-radius:12px;text-decoration:none;color:#4a4232;font-size:12px;background:#fff}
+.book-day b{font-size:16px}
+.book-day.active{background:#3f5a36;border-color:#3f5a36;color:#fff}
+.book-staff{font-size:15.5px;font-weight:700;margin:18px 0 8px}
+.book-times{display:flex;flex-wrap:wrap;gap:8px}
+.book-time{padding:8px 13px;border:1px solid #ddd3b8;border-radius:999px;text-decoration:none;color:#3f5a36;font-weight:650;font-size:13.5px;background:#fff}
+.book-time:hover{background:#eef5e8}
+.book-pick{font-size:16px;line-height:1.5;background:#eef5e8;border-radius:12px;padding:12px 15px}
 .ins-trend{display:flex;align-items:flex-end;gap:6px;height:120px;padding-top:8px}
 .ins-bar-wrap{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;gap:5px}
 .ins-bar{width:100%;min-height:2px;border-radius:5px 5px 2px 2px;
