@@ -110,6 +110,15 @@ dropped silently: every unknown section and key is listed BY NAME
 in an ``IMPORT_DROPPED`` line in the import summary output (an
 explicit ``none`` when there is nothing dropped), while all known
 data imports exactly as before.
+
+Dry run (TF-12): with ``--dry-run`` the file is loaded and
+validated in phase 1 exactly as for a real import, then a JSON
+report from ``saloncore.dry_run`` is printed to stdout — one
+report per section, over that section's rows, with that section's
+``KNOWN_KEYS`` as the mapped keys (so its ``unmapped_keys`` name
+exactly the keys TF-11 would list as dropped for that section,
+keeping null / missing / empty-string counts distinct) — and the
+command returns before phase 2 writes a single row.
 """
 
 import json
@@ -122,6 +131,7 @@ from django.utils.timezone import is_naive
 
 from bookings.models import Appointment, AppointmentNote
 from clients.models import Client, ClientNote
+from saloncore.dry_run import build_dry_run_reports
 from saloncore.models import (
     Salon,
     Service,
@@ -573,12 +583,29 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("input", help="Path of the export JSON file to load.")
+        parser.add_argument(
+            "--dry-run", action="store_true",
+            help="Print a per-section JSON dry-run report "
+                 "(saloncore.dry_run) for the source file and "
+                 "write nothing to the database.")
 
     @transaction.atomic
     def handle(self, *args, **options):
         data = _load(options["input"])
         # Phase 1: validate everything before writing anything.
         _validate(data)
+
+        if options.get("dry_run"):
+            # Zero writes: report per section and return before
+            # phase 2. Mapped keys per section are KNOWN_KEYS —
+            # every key this importer consumes in that section.
+            record_sets = {
+                section: (data[section], KNOWN_KEYS[section])
+                for section in SECTIONS if section in data
+            }
+            self.stdout.write(json.dumps(
+                build_dry_run_reports(record_sets), sort_keys=True))
+            return
 
         # Phase 2: write (all references/required data already proven).
         salons = {}
