@@ -5,6 +5,7 @@ centrepiece is a round trip: build records, export them with
 export_salon_data, wipe the database, import, and assert the
 restored records match on counts and key fields.
 """
+import copy
 import io
 import json
 import tempfile
@@ -467,6 +468,103 @@ class ImportSalonDataTests(TestCase):
         self.assertIn("staff_members.legacy_badge_no", dropped[0])
         self.assertIn("counts.extra_top", dropped[0])
         self.assertNotIn("none", dropped[0])
+
+    def test_staff_pin_round_trips_exactly(self):
+        path, data = self.load_export_data()
+        data["staff_members"][0]["pin"] = "0426"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        self.run_import(path)
+        self.assertEqual(StaffMember.objects.get().pin, "0426")
+
+    def test_staff_empty_pin_round_trips(self):
+        path, data = self.load_export_data()
+        self.assertEqual(data["staff_members"][0]["pin"], "")
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        self.run_import(path)
+        self.assertEqual(StaffMember.objects.get().pin, "")
+
+    def test_old_file_without_pin_key_imports_clean(self):
+        path, data = self.load_export_data()
+        data["staff_members"][0].pop("pin", None)
+        self.write_data(path, data)
+        before = _counts()
+        Salon.objects.all().delete()
+        self.run_import(path)
+        self.assertEqual(_counts(), before)
+        self.assertEqual(StaffMember.objects.get().pin, "")
+
+    def test_duplicate_pin_same_salon_fails_closed_zero_writes(self):
+        path, data = self.load_export_data()
+        second = copy.deepcopy(data["staff_members"][0])
+        second["id"] = data["staff_members"][0]["id"] + 1000
+        second["external_id"] = "staff-2"
+        second["display_name"] = "Stylist Two"
+        data["staff_members"][0]["pin"] = "1234"
+        second["pin"] = "1234"
+        data["staff_members"].append(second)
+        data["counts"]["staff_members"] = 2
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError) as ctx:
+            call_command("import_salon_data", path)
+        self.assertIn("pin", str(ctx.exception))
+        self.assertIn("staff_members", str(ctx.exception))
+        self.assertTrue(all(c == 0 for c in _counts().values()))
+
+    def test_same_pin_in_different_salons_imports(self):
+        path, data = self.load_export_data()
+        salon2 = copy.deepcopy(data["salons"][0])
+        salon2["id"] = data["salons"][0]["id"] + 1000
+        salon2["name"] = "Second Salon"
+        data["salons"].append(salon2)
+        data["counts"]["salons"] = 2
+        second = copy.deepcopy(data["staff_members"][0])
+        second["id"] = data["staff_members"][0]["id"] + 1000
+        second["salon_id"] = salon2["id"]
+        second["external_id"] = "staff-2"
+        second["display_name"] = "Stylist Two"
+        data["staff_members"][0]["pin"] = "1234"
+        second["pin"] = "1234"
+        data["staff_members"].append(second)
+        data["counts"]["staff_members"] = 2
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        self.run_import(path)
+        self.assertEqual(
+            sorted(StaffMember.objects.values_list("pin", flat=True)),
+            ["1234", "1234"])
+
+    def test_overlong_pin_fails_closed_zero_writes(self):
+        path, data = self.load_export_data()
+        data["staff_members"][0]["pin"] = "123456789"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError) as ctx:
+            call_command("import_salon_data", path)
+        self.assertIn("pin", str(ctx.exception))
+        self.assertTrue(all(c == 0 for c in _counts().values()))
+
+    def test_non_string_pin_fails_closed_zero_writes(self):
+        path, data = self.load_export_data()
+        data["staff_members"][0]["pin"] = 1234
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError) as ctx:
+            call_command("import_salon_data", path)
+        self.assertIn("pin", str(ctx.exception))
+        self.assertTrue(all(c == 0 for c in _counts().values()))
+
+    def test_reimport_keeps_staff_pin(self):
+        path, data = self.load_export_data()
+        data["staff_members"][0]["pin"] = "8765"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        self.run_import(path)
+        self.run_import(path)
+        self.assertEqual(StaffMember.objects.count(), 1)
+        self.assertEqual(StaffMember.objects.get().pin, "8765")
 
     def test_dangling_reference_in_late_section_writes_nothing(self):
         # staff_members is the LAST section written; every earlier

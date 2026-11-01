@@ -110,6 +110,13 @@ class ExportSalonDataTests(TestCase):
         self.assertEqual(staff["display_name"], "Stylist One")
         self.assertFalse(staff["online_bookable"])
         self.assertEqual(staff["staff_level_id"], self.level.id)
+        self.assertEqual(staff["pin"], "")
+
+    def test_staff_member_pin_is_exported_in_plaintext(self):
+        self.staff.pin = "0426"
+        self.staff.save()
+        data, _ = self.run_export()
+        self.assertEqual(data["staff_members"][0]["pin"], "0426")
 
     def test_salon_row_carries_every_salon_field_with_full_values(self):
         # Salon self-fields (cycle 72): the salons row must carry

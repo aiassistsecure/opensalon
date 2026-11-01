@@ -11,7 +11,9 @@ fully export. This is part 1 of that test — the core records only:
   without levels an exported price cannot be interpreted.)
 - clients: Client (including the ``sms_opt_in`` / ``email_opt_in``
   flags) and ClientNote (persistent client record notes).
-- team: StaffMember (including the ``online_bookable`` toggle).
+- team: StaffMember (including the ``online_bookable`` toggle
+  and the time-clock ``pin``, in plaintext — Mark's 2026-11-01
+  decision: full export/import completeness wins for staff PINs).
 - bookings: Appointment and AppointmentNote (appointment-only
   notes; a separate model from ClientNote — the two kinds never
   blur). Appointment rows carry their own ``external_id`` plus the
@@ -293,7 +295,7 @@ class Command(BaseCommand):
                     "display_name": m.display_name,
                     "staff_level_id": m.staff_level_id,
                     "online_bookable": m.online_bookable,
-                    "active": m.active,
+                    "active": m.active, "pin": m.pin,
                 }
                 for m in staff
             ],
