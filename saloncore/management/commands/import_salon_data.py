@@ -7,11 +7,17 @@ This is the restore side of the Exit Test: it consumes exactly the
 JSON format written by ``export_salon_data`` (see that command for the
 section list) and restores Salon, ServiceCategory, Service,
 StaffLevel, ServicePrice, Client, ClientNote, StaffMember,
-Appointment, AppointmentNote and Product records. The
-``products`` section is optional on read: an export file written
-before it existed (no ``products`` section, no ``counts``
+Appointment, AppointmentNote, Product, RosterPattern and
+ShiftOverride records. The ``products``, ``roster_patterns``
+and ``shift_overrides`` sections are optional on read: an export
+file written before they existed (no such section, no ``counts``
 entry for it) imports exactly as before, with the section
-treated as empty.
+treated as empty. Roster rows restore idempotently too:
+RosterPattern keyed by (staff_member, weekday, start_time,
+end_time) — the model allows multiple patterns per weekday —
+and ShiftOverride by (staff_member, date), its unique
+constraint; both resolve their staff member by ``external_id``
+when present, else by the file-local id map, like appointments.
 
 The exporter's ``id`` values are file-local: foreign keys in the
 file refer to those ids, so the import builds old-id -> new-record
@@ -137,7 +143,7 @@ from decimal import Decimal, InvalidOperation
 
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
-from django.utils.dateparse import parse_datetime
+from django.utils.dateparse import parse_date, parse_datetime, parse_time
 from django.utils.timezone import is_naive
 
 from bookings.models import Appointment, AppointmentNote
@@ -151,17 +157,18 @@ from saloncore.models import (
     ServicePrice,
     StaffLevel,
 )
-from team.models import StaffMember
+from team.models import RosterPattern, ShiftOverride, StaffMember
 
 SECTIONS = (
     "salons", "service_categories", "services", "staff_levels",
     "service_prices", "clients", "client_notes", "staff_members",
     "appointments", "appointment_notes", "products",
+    "roster_patterns", "shift_overrides",
 )
 
 # Sections an older export file may legitimately lack entirely:
 # missing means empty, never an error (back-compat).
-OPTIONAL_SECTIONS = ("products",)
+OPTIONAL_SECTIONS = ("products", "roster_patterns", "shift_overrides")
 
 # Every key the exporter emits (hence the importer may consume) per
 # section. Any other key in a record is unknown (TF-11).
@@ -196,6 +203,12 @@ KNOWN_KEYS = {
                  "barcode", "price", "cost_price", "active",
                  "brand_name", "category_name", "product_type",
                  "payload"},
+    "roster_patterns": {"id", "staff_member_id",
+                        "staff_member_external_id", "weekday",
+                        "start_time", "end_time", "active"},
+    "shift_overrides": {"id", "staff_member_id",
+                        "staff_member_external_id", "date", "is_off",
+                        "start_time", "end_time"},
 }
 
 TOP_LEVEL_KEYS = set(SECTIONS) | {"counts"}
@@ -276,6 +289,8 @@ BOOL_FIELDS = {
     "clients": ("active",),
     "staff_members": ("online_bookable", "active"),
     "products": ("active",),
+    "roster_patterns": ("active",),
+    "shift_overrides": ("is_off",),
 }
 
 
@@ -334,6 +349,10 @@ _ID_FIELDS = {
                      "service_external_id"),
     "appointment_notes": ("id", "appointment_id"),
     "products": ("id", "salon_id", "external_id"),
+    "roster_patterns": ("id", "staff_member_id",
+                        "staff_member_external_id"),
+    "shift_overrides": ("id", "staff_member_id",
+                        "staff_member_external_id"),
 }
 
 # (section, field) -> model whose external_id limit governs it.
@@ -354,6 +373,10 @@ _EXTERNAL_ID_LIMITS = {
         Service._meta.get_field("external_id").max_length,
     ("products", "external_id"):
         Product._meta.get_field("external_id").max_length,
+    ("roster_patterns", "staff_member_external_id"):
+        StaffMember._meta.get_field("external_id").max_length,
+    ("shift_overrides", "staff_member_external_id"):
+        StaffMember._meta.get_field("external_id").max_length,
 }
 
 
@@ -443,6 +466,26 @@ def _checked_datetime(raw, label):
     return parsed
 
 
+def _checked_time(raw, section):
+    """Parse a phase-1 time value; missing/unparseable fails closed."""
+    parsed = parse_time(raw) if isinstance(raw, str) else None
+    if parsed is None:
+        raise CommandError(
+            f"Bad time: section {section!r} value {raw!r} "
+            f"is not an ISO-8601 time string.")
+    return parsed
+
+
+def _checked_date(raw, section):
+    """Parse a phase-1 date value; missing/unparseable fails closed."""
+    parsed = parse_date(raw) if isinstance(raw, str) else None
+    if parsed is None:
+        raise CommandError(
+            f"Bad date: section {section!r} value {raw!r} "
+            f"is not an ISO-8601 date string.")
+    return parsed
+
+
 def _check_created_at(row, section):
     """Phase-1 TF-7 check for one record's ``created_at``.
 
@@ -477,6 +520,9 @@ def _validate(data):
                          "start", "end"),
         "appointment_notes": ("appointment_id", "body"),
         "products": ("id", "salon_id", "name", "price"),
+        "roster_patterns": ("id", "staff_member_id", "weekday",
+                            "start_time", "end_time"),
+        "shift_overrides": ("id", "staff_member_id", "date"),
     }
     for section, fields in required.items():
         for row in data[section]:
@@ -568,6 +614,41 @@ def _validate(data):
                 f"Bad appointments origin: {row['origin']!r}.")
     for row in data["appointment_notes"]:
         _check_ref(appointment_ids, row["appointment_id"], "appointment")
+    for row in data["roster_patterns"]:
+        _check_appt_ref(
+            staff_ids, staff_ext_ids, row.get("staff_member_id"),
+            row.get("staff_member_external_id"), "staff_member")
+        if row["weekday"] not in RosterPattern.Weekday.values:
+            raise CommandError(
+                f"Bad roster_patterns weekday: {row['weekday']!r}.")
+        start = _checked_time(row["start_time"], "roster_patterns")
+        end = _checked_time(row["end_time"], "roster_patterns")
+        if end <= start:
+            raise CommandError(
+                f"Bad roster_patterns window: end_time {row['end_time']!r} "
+                f"is not after start_time {row['start_time']!r}.")
+    for row in data["shift_overrides"]:
+        _check_appt_ref(
+            staff_ids, staff_ext_ids, row.get("staff_member_id"),
+            row.get("staff_member_external_id"), "staff_member")
+        _checked_date(row["date"], "shift_overrides")
+        # Model shape: a day off carries no times; a placed shift
+        # carries both, end after start (shift_override_shape).
+        if row.get("is_off"):
+            if (row.get("start_time") is not None
+                    or row.get("end_time") is not None):
+                raise CommandError(
+                    "Bad shift_overrides row: a day off (is_off) "
+                    "must not carry start_time/end_time.")
+        else:
+            start = _checked_time(
+                row.get("start_time"), "shift_overrides")
+            end = _checked_time(row.get("end_time"), "shift_overrides")
+            if end <= start:
+                raise CommandError(
+                    f"Bad shift_overrides window: end_time "
+                    f"{row['end_time']!r} is not after start_time "
+                    f"{row['start_time']!r}.")
     for row in data["products"]:
         _check_ref(salon_ids, row["salon_id"], "salon")
         try:
@@ -849,6 +930,40 @@ class Command(BaseCommand):
                 defaults={},
             )
             _restore_created_at(obj, row.get("created_at"))
+
+        for row in data["roster_patterns"]:
+            staff_member = _resolve_appt_ref(
+                staff_members, staff_by_ext, row,
+                "staff_member_id", "staff_member_external_id",
+                "staff_member")
+            RosterPattern.objects.update_or_create(
+                staff_member=staff_member,
+                weekday=row["weekday"],
+                start_time=parse_time(row["start_time"]),
+                end_time=parse_time(row["end_time"]),
+                defaults={"active": row["active"]},
+            )
+
+        for row in data["shift_overrides"]:
+            staff_member = _resolve_appt_ref(
+                staff_members, staff_by_ext, row,
+                "staff_member_id", "staff_member_external_id",
+                "staff_member")
+            ShiftOverride.objects.update_or_create(
+                staff_member=staff_member,
+                date=parse_date(row["date"]),
+                defaults={
+                    "is_off": row["is_off"],
+                    "start_time": (
+                        parse_time(row["start_time"])
+                        if row.get("start_time") is not None else None
+                    ),
+                    "end_time": (
+                        parse_time(row["end_time"])
+                        if row.get("end_time") is not None else None
+                    ),
+                },
+            )
 
         for row in data["products"]:
             defaults = {

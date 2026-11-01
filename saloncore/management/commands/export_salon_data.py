@@ -18,6 +18,11 @@ fully export. This is part 1 of that test — the core records only:
   ``client`` / ``staff_member`` / ``service`` references as both the
   internal ``*_id`` (following the other sections) and the related
   record's ``*_external_id`` where that model carries one.
+- team: RosterPattern and ShiftOverride (the roster: recurring
+  weekly patterns and one-date overrides, scoped through their
+  staff member's salon). Both rows carry the staff reference as
+  both the internal ``staff_member_id`` and the member's
+  ``staff_member_external_id``, like appointments.
 - catalog: Product (retail products, scoped by salon like clients
   and staff). Stock is NOT exported: it is derived from
   StockMovement rows, never stored on Product, so there is no
@@ -52,7 +57,7 @@ from saloncore.models import (
     ServicePrice,
     StaffLevel,
 )
-from team.models import StaffMember
+from team.models import RosterPattern, ShiftOverride, StaffMember
 
 
 def _dt(value):
@@ -87,6 +92,13 @@ class Command(BaseCommand):
         client_ids = list(clients.values_list("id", flat=True))
         notes = ClientNote.objects.filter(client_id__in=client_ids)
         staff = StaffMember.objects.filter(salon_id__in=salon_ids)
+        staff_ids = list(staff.values_list("id", flat=True))
+        roster_patterns = RosterPattern.objects.filter(
+            staff_member_id__in=staff_ids
+        ).select_related("staff_member")
+        shift_overrides = ShiftOverride.objects.filter(
+            staff_member_id__in=staff_ids
+        ).select_related("staff_member")
         appointments = Appointment.objects.filter(
             client_id__in=client_ids
         ).select_related("client", "staff_member", "service")
@@ -172,6 +184,30 @@ class Command(BaseCommand):
                     "active": m.active,
                 }
                 for m in staff
+            ],
+            "roster_patterns": [
+                {
+                    "id": r.id,
+                    "staff_member_id": r.staff_member_id,
+                    "staff_member_external_id": r.staff_member.external_id,
+                    "weekday": r.weekday,
+                    "start_time": _dt(r.start_time),
+                    "end_time": _dt(r.end_time),
+                    "active": r.active,
+                }
+                for r in roster_patterns
+            ],
+            "shift_overrides": [
+                {
+                    "id": o.id,
+                    "staff_member_id": o.staff_member_id,
+                    "staff_member_external_id": o.staff_member.external_id,
+                    "date": _dt(o.date),
+                    "is_off": o.is_off,
+                    "start_time": _dt(o.start_time),
+                    "end_time": _dt(o.end_time),
+                }
+                for o in shift_overrides
             ],
             "appointments": [
                 {

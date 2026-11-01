@@ -8,7 +8,7 @@ restored records match on counts and key fields.
 import io
 import json
 import tempfile
-from datetime import datetime, timedelta, timezone as dt_timezone
+from datetime import date, datetime, time, timedelta, timezone as dt_timezone
 from decimal import Decimal
 
 from django.core.management import CommandError, call_command
@@ -24,7 +24,7 @@ from saloncore.models import (
     ServicePrice,
     StaffLevel,
 )
-from team.models import StaffMember
+from team.models import RosterPattern, ShiftOverride, StaffMember
 
 MODELS = (Salon, ServiceCategory, Service, StaffLevel, ServicePrice,
           Client, ClientNote, StaffMember)
@@ -803,7 +803,8 @@ class ImportSalonDataDryRunTests(TestCase):
         self.assertEqual(set(reports), {
             "salons", "service_categories", "services", "staff_levels",
             "service_prices", "clients", "client_notes", "staff_members",
-            "appointments", "appointment_notes", "products"})
+            "appointments", "appointment_notes", "products",
+            "roster_patterns", "shift_overrides"})
         for section, report in reports.items():
             self.assertEqual(report["source"], section)
             self.assertEqual(
@@ -1090,3 +1091,109 @@ class ImportSalonDataProductsTests(TestCase):
             call_command("import_salon_data", path)
         self.assertEqual(Salon.objects.count(), 0)
         self.assertEqual(Product.objects.count(), 0)
+
+
+class ImportSalonDataRosterTests(TestCase):
+    """Roster leg: salon_data round-trip preserves the roster exactly."""
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Roster Restore Salon")
+        self.staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Stylist One",
+            external_id="staff-r")
+        RosterPattern.objects.create(
+            staff_member=self.staff, weekday=0,
+            start_time=time(9, 0), end_time=time(17, 0))
+        RosterPattern.objects.create(
+            staff_member=self.staff, weekday=5,
+            start_time=time(10, 0), end_time=time(14, 0), active=False)
+        ShiftOverride.objects.create(
+            staff_member=self.staff, date=date(2026, 11, 7), is_off=True)
+        ShiftOverride.objects.create(
+            staff_member=self.staff, date=date(2026, 11, 14),
+            is_off=False, start_time=time(9, 0), end_time=time(13, 0))
+
+    def temp_path(self):
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        fh.close()
+        return fh.name
+
+    def export_data(self):
+        path = self.temp_path()
+        call_command("export_salon_data", path, stdout=io.StringIO())
+        with open(path, encoding="utf-8") as fh:
+            return path, json.load(fh)
+
+    def write_data(self, path, data):
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+
+    def run_import(self, path):
+        out = io.StringIO()
+        call_command("import_salon_data", path, stdout=out)
+        return out.getvalue()
+
+    def test_round_trip_preserves_all_roster_fields(self):
+        path, _ = self.export_data()
+        Salon.objects.all().delete()
+        self.assertEqual(RosterPattern.objects.count(), 0)
+        out = self.run_import(path)
+        self.assertIn("roster_patterns=2", out)
+        self.assertIn("shift_overrides=2", out)
+        staff = StaffMember.objects.get(external_id="staff-r")
+        patterns = {(p.weekday, p.start_time, p.end_time, p.active)
+                    for p in RosterPattern.objects.filter(
+                        staff_member=staff)}
+        self.assertEqual(patterns, {
+            (0, time(9, 0), time(17, 0), True),
+            (5, time(10, 0), time(14, 0), False),
+        })
+        overrides = {(o.date, o.is_off, o.start_time, o.end_time)
+                     for o in ShiftOverride.objects.filter(
+                         staff_member=staff)}
+        self.assertEqual(overrides, {
+            (date(2026, 11, 7), True, None, None),
+            (date(2026, 11, 14), False, time(9, 0), time(13, 0)),
+        })
+
+    def test_reimport_roster_is_idempotent(self):
+        path, _ = self.export_data()
+        Salon.objects.all().delete()
+        self.run_import(path)
+        self.run_import(path)
+        self.assertEqual(RosterPattern.objects.count(), 2)
+        self.assertEqual(ShiftOverride.objects.count(), 2)
+
+    def test_missing_roster_sections_import_exactly_as_before(self):
+        path, data = self.export_data()
+        for section in ("roster_patterns", "shift_overrides"):
+            del data[section]
+            del data["counts"][section]
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        out = self.run_import(path)
+        self.assertIn("roster_patterns=0", out)
+        self.assertIn("shift_overrides=0", out)
+        self.assertEqual(RosterPattern.objects.count(), 0)
+        self.assertEqual(ShiftOverride.objects.count(), 0)
+
+    def test_non_bool_is_off_fails_closed_with_zero_writes(self):
+        path, data = self.export_data()
+        data["shift_overrides"][0]["is_off"] = "false"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError):
+            call_command("import_salon_data", path)
+        self.assertEqual(Salon.objects.count(), 0)
+        self.assertEqual(RosterPattern.objects.count(), 0)
+        self.assertEqual(ShiftOverride.objects.count(), 0)
+
+    def test_unknown_key_in_roster_patterns_named_not_dropped(self):
+        path, data = self.export_data()
+        data["roster_patterns"][0]["legacy_roster_code"] = "R-9"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        out = self.run_import(path)
+        self.assertIn("roster_patterns.legacy_roster_code", out)
+        self.assertEqual(RosterPattern.objects.count(), 2)

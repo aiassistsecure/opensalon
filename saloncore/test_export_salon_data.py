@@ -5,7 +5,7 @@ Synthetic records only — no real salon/client data.
 import io
 import json
 import tempfile
-from datetime import datetime, timedelta, timezone as dt_timezone
+from datetime import date, datetime, time, timedelta, timezone as dt_timezone
 from decimal import Decimal
 
 from django.core.management import CommandError, call_command
@@ -21,7 +21,7 @@ from saloncore.models import (
     ServicePrice,
     StaffLevel,
 )
-from team.models import StaffMember
+from team.models import RosterPattern, ShiftOverride, StaffMember
 
 
 class ExportSalonDataTests(TestCase):
@@ -69,6 +69,7 @@ class ExportSalonDataTests(TestCase):
             "staff_levels": 1, "service_prices": 1, "clients": 2,
             "client_notes": 1, "staff_members": 1,
             "appointments": 0, "appointment_notes": 0, "products": 0,
+            "roster_patterns": 0, "shift_overrides": 0,
         })
         for key, count in data["counts"].items():
             self.assertEqual(len(data[key]), count)
@@ -359,3 +360,73 @@ class ExportProductsTests(TestCase):
         data = self.run_export(salon="Other Salon")
         self.assertEqual(data["counts"]["products"], 1)
         self.assertEqual(data["products"][0]["name"], "Elsewhere Gel")
+
+
+class ExportRosterTests(TestCase):
+    """Roster leg: export emits roster patterns + shift overrides."""
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Roster Salon")
+        self.staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Stylist One",
+            external_id="staff-r")
+        self.pattern = RosterPattern.objects.create(
+            staff_member=self.staff, weekday=RosterPattern.Weekday.MONDAY,
+            start_time=time(9, 0), end_time=time(17, 0))
+        RosterPattern.objects.create(
+            staff_member=self.staff, weekday=RosterPattern.Weekday.SATURDAY,
+            start_time=time(10, 0), end_time=time(14, 0), active=False)
+        self.off = ShiftOverride.objects.create(
+            staff_member=self.staff, date=date(2026, 11, 7), is_off=True)
+        self.placed = ShiftOverride.objects.create(
+            staff_member=self.staff, date=date(2026, 11, 14),
+            is_off=False, start_time=time(9, 0), end_time=time(13, 0))
+
+    def run_export(self, **kwargs):
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        fh.close()
+        call_command("export_salon_data", fh.name,
+                     stdout=io.StringIO(), **kwargs)
+        with open(fh.name, encoding="utf-8") as exported:
+            return json.load(exported)
+
+    def test_export_emits_both_sections_with_all_fields(self):
+        data = self.run_export()
+        self.assertEqual(data["counts"]["roster_patterns"], 2)
+        self.assertEqual(data["counts"]["shift_overrides"], 2)
+        by_weekday = {r["weekday"]: r for r in data["roster_patterns"]}
+        mon = by_weekday[0]
+        self.assertEqual(mon["id"], self.pattern.id)
+        self.assertEqual(mon["staff_member_id"], self.staff.id)
+        self.assertEqual(mon["staff_member_external_id"], "staff-r")
+        self.assertEqual(mon["start_time"], "09:00:00")
+        self.assertEqual(mon["end_time"], "17:00:00")
+        self.assertTrue(mon["active"])
+        self.assertFalse(by_weekday[5]["active"])
+        by_date = {o["date"]: o for o in data["shift_overrides"]}
+        off = by_date["2026-11-07"]
+        self.assertEqual(off["id"], self.off.id)
+        self.assertTrue(off["is_off"])
+        self.assertIsNone(off["start_time"])
+        self.assertIsNone(off["end_time"])
+        placed = by_date["2026-11-14"]
+        self.assertFalse(placed["is_off"])
+        self.assertEqual(placed["start_time"], "09:00:00")
+        self.assertEqual(placed["end_time"], "13:00:00")
+
+    def test_salon_filter_scopes_roster_sections(self):
+        other = Salon.objects.create(name="Other Salon")
+        other_staff = StaffMember.objects.create(
+            salon=other, display_name="Other Stylist")
+        RosterPattern.objects.create(
+            staff_member=other_staff, weekday=2,
+            start_time=time(9, 0), end_time=time(12, 0))
+        ShiftOverride.objects.create(
+            staff_member=other_staff, date=date(2026, 11, 8), is_off=True)
+        data = self.run_export(salon="Roster Salon")
+        self.assertEqual(data["counts"]["roster_patterns"], 2)
+        self.assertEqual(data["counts"]["shift_overrides"], 2)
+        data = self.run_export(salon="Other Salon")
+        self.assertEqual(data["counts"]["roster_patterns"], 1)
+        self.assertEqual(data["counts"]["shift_overrides"], 1)
