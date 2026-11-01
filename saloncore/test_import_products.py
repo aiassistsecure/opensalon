@@ -377,3 +377,73 @@ class ImportProductsOverlongIdTests(TestCase):
         self.assertIn("'unchanged': 1", out)
         self.assertIn("'skipped_id_too_long': 1", out)
         self.assertEqual(Product.objects.count(), 1)
+
+
+class ImportProductsDryRunTests(TestCase):
+    """TF-12: --dry-run reports via saloncore.dry_run, writes nothing."""
+
+    FIXTURE = [
+        {
+            "productId": "p-dry-1", "name": "Dry Shampoo",
+            "code": "11511", "barcode": "018084000001", "price": 38.0,
+            "reorderCost": 19.5, "brandName": "Aveda",
+            "categoryName": "Hair Care", "type": "RETAIL",
+            "archived": False, "quantityInStock": 6,
+            "parentProductId": "parent-9",
+        },
+    ]
+
+    def _run(self, records, *extra):
+        fh = tempfile.NamedTemporaryFile(
+            "w", suffix=".json", delete=False)
+        json.dump(records, fh)
+        fh.close()
+        out = StringIO()
+        call_command("import_products", fh.name, "--salon", "Test Salon",
+                     *extra, stdout=out)
+        return out.getvalue()
+
+    def _run_dry(self, records):
+        return self._run(records, "--dry-run")
+
+    def test_dry_run_creates_zero_products_and_writes_nothing(self):
+        out = self._run_dry(self.FIXTURE)
+        report = json.loads(out)
+        self.assertEqual(report["record_count"], 1)
+        self.assertEqual(Product.objects.count(), 0)
+        self.assertEqual(StockMovement.objects.count(), 0)
+        self.assertEqual(Salon.objects.count(), 0)
+
+    def test_dry_run_reports_unmapped_key(self):
+        report = json.loads(self._run_dry(self.FIXTURE))
+        self.assertIn("parentProductId", report["unmapped_keys"])
+        self.assertNotIn("price", report["unmapped_keys"])
+        self.assertIn("price", report["mapped_keys"])
+
+    def test_dry_run_null_missing_empty_counts_are_distinct(self):
+        records = [
+            {"productId": "p-a", "name": "A", "price": 1.0,
+             "brandName": None},
+            {"productId": "p-b", "name": "B", "price": 1.0},
+            {"productId": "p-c", "name": "C", "price": 1.0,
+             "brandName": ""},
+            {"productId": "p-d", "name": "D", "price": 1.0,
+             "brandName": "Aveda"},
+        ]
+        report = json.loads(self._run_dry(records))
+        field = report["fields"]["brandName"]
+        self.assertEqual(field["null"], 1)
+        self.assertEqual(field["missing"], 1)
+        self.assertEqual(field["empty_string"], 1)
+        self.assertEqual(field["present"], 3)
+        self.assertEqual(field["valued"], 1)
+        self.assertEqual(Product.objects.count(), 0)
+
+    def test_normal_import_after_dry_run_still_works(self):
+        self._run_dry(self.FIXTURE)
+        self.assertEqual(Product.objects.count(), 0)
+        out = self._run(self.FIXTURE)
+        self.assertIn("'created': 1", out)
+        product = Product.objects.get(external_id="p-dry-1")
+        self.assertEqual(product.price, Decimal("38.00"))
+        self.assertEqual(product.current_stock, 6)
