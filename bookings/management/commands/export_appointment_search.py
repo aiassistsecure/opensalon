@@ -1,7 +1,7 @@
 """Export one salon's appointment search results as CSV.
 
 Usage:
-    python manage.py export_search --salon-id ID
+    python manage.py export_appointment_search --salon-id ID
         [--query TEXT] [--date-from YYYY-MM-DD]
         [--date-to YYYY-MM-DD] [--staff-member ID]
         [--status STATUS] [--output PATH]

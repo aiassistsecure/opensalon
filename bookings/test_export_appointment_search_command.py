@@ -1,4 +1,4 @@
-"""Tests for the export_search management command.
+"""Tests for the export_appointment_search management command.
 
 The command is a thin wrapper around
 ``bookings.search_export.export_search_csv``: these tests pin
@@ -7,18 +7,21 @@ that salon scoping is honoured, and that unknown salons and
 unwritable outputs fail cleanly. Fixtures are tiny synthetic
 records -- unit logic only.
 
-Note: other apps also define an ``export_search`` command, so
-these tests load the bookings command class explicitly via
-``load_command_class("bookings", "export_search")`` and pass
-that instance to ``call_command`` -- pinning this app's
-command, not the global name resolution.
+Note: this command was renamed from ``export_search`` because
+Django's global command namespace shadowed it (catalog's
+``export_search`` wins), making it unreachable by bare name.
+These tests load the bookings command class explicitly via
+``load_command_class("bookings", "export_appointment_search")``
+and pass that instance to ``call_command`` -- pinning this
+app's command -- and also pin the global name resolution.
 """
 import datetime
 import io
 import os
 import tempfile
 
-from django.core.management import CommandError, call_command, load_command_class
+from django.core.management import (
+    CommandError, call_command, get_commands, load_command_class)
 from django.test import TestCase
 
 from bookings.models import Appointment
@@ -37,7 +40,13 @@ def at(day, hour, minute=0):
 
 
 def _cmd():
-    return load_command_class("bookings", "export_search")
+    return load_command_class("bookings", "export_appointment_search")
+
+
+class ExportAppointmentSearchResolutionTests(TestCase):
+    def test_command_resolves_to_bookings(self):
+        self.assertEqual(
+            get_commands()["export_appointment_search"], "bookings")
 
 
 class ExportSearchCommandTests(TestCase):
