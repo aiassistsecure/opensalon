@@ -82,6 +82,21 @@ rather than being guessed into the salon's timezone. An absent
 naive one — there is simply no timestamp to restore, so it stays
 a best-effort skip; a present but unparseable ``created_at`` is
 likewise a phase-1 ``CommandError``, never a silent drop.
+
+Unknown sections / keys (TF-11): anything in the file this command
+does not consume — an unknown top-level section, or an unknown key
+inside a record of a known section (or inside ``counts``) — has no
+model home in the salon_data shape. The verbatim ``payload``
+retention used by the price-book / product importers lives only on
+``Service`` / ``Client`` / ``Appointment`` / ``Product`` and the
+salon_data exporter emits no ``payload`` at all, so there is no
+clean retention seam here covering every section (Salon,
+ServiceCategory, StaffLevel, ServicePrice, the notes and
+StaffMember carry no payload). Such data is therefore never
+dropped silently: every unknown section and key is listed BY NAME
+in an ``IMPORT_DROPPED`` line in the import summary output (an
+explicit ``none`` when there is nothing dropped), while all known
+data imports exactly as before.
 """
 
 import json
@@ -108,6 +123,66 @@ SECTIONS = (
     "service_prices", "clients", "client_notes", "staff_members",
     "appointments", "appointment_notes",
 )
+
+# Every key the exporter emits (hence the importer may consume) per
+# section. Any other key in a record is unknown (TF-11).
+KNOWN_KEYS = {
+    "salons": {"id", "name", "timezone", "currency", "created_at",
+               "updated_at"},
+    "service_categories": {"id", "salon_id", "name", "sort_order",
+                           "active"},
+    "services": {"id", "category_id", "external_id", "name",
+                 "description", "service_minutes",
+                 "processing_minutes", "finishing_minutes", "active"},
+    "staff_levels": {"id", "salon_id", "name", "sort_order", "active"},
+    "service_prices": {"id", "service_id", "staff_level_id", "amount",
+                       "is_from", "active"},
+    "clients": {"id", "salon_id", "external_id", "first_name",
+                "last_name", "email", "phone", "sms_opt_in",
+                "email_opt_in", "active", "created_at"},
+    "client_notes": {"id", "client_id", "body", "author_name",
+                     "created_at"},
+    "staff_members": {"id", "salon_id", "external_id", "display_name",
+                      "staff_level_id", "online_bookable", "active"},
+    "appointments": {"id", "external_id", "client_id",
+                     "client_external_id", "staff_member_id",
+                     "staff_member_external_id", "service_id",
+                     "service_external_id", "service_name", "start",
+                     "end", "status", "origin", "price_override",
+                     "created_at", "updated_at"},
+    "appointment_notes": {"id", "appointment_id", "body",
+                          "author_name", "created_at"},
+}
+
+TOP_LEVEL_KEYS = set(SECTIONS) | {"counts"}
+
+
+def _unknown_drops(data):
+    """Return (unknown_sections, unknown_keys) present in ``data``.
+
+    ``unknown_sections``: sorted top-level keys that are neither a
+    known section nor ``counts``. ``unknown_keys``: sorted unique
+    ``section.key`` names for keys outside KNOWN_KEYS in known
+    sections, plus ``counts.<key>`` for counts entries naming no
+    known section. Pure inspection — writes nothing.
+    """
+    unknown_sections = sorted(set(data) - TOP_LEVEL_KEYS)
+    unknown_keys = set()
+    counts = data.get("counts")
+    if isinstance(counts, dict):
+        for key in counts:
+            if key not in SECTIONS:
+                unknown_keys.add(f"counts.{key}")
+    for section in SECTIONS:
+        rows = data.get(section)
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if isinstance(row, dict):
+                for key in row:
+                    if key not in KNOWN_KEYS[section]:
+                        unknown_keys.add(f"{section}.{key}")
+    return unknown_sections, sorted(unknown_keys)
 
 
 def _load(path):
@@ -601,4 +676,9 @@ class Command(BaseCommand):
             f"{section}={len(data[section])}" for section in SECTIONS
         )
         self.stdout.write(f"IMPORT_SUMMARY {summary}")
+        unknown_sections, unknown_keys = _unknown_drops(data)
+        self.stdout.write(
+            "IMPORT_DROPPED "
+            f"unknown_sections={','.join(unknown_sections) or 'none'} "
+            f"unknown_keys={','.join(unknown_keys) or 'none'}")
         self.stdout.write(f"Imported {options['input']}")

@@ -325,6 +325,74 @@ class ImportSalonDataTests(TestCase):
         self.run_import(path)
         self.assertEqual(_counts(), before)
 
+    def test_unknown_section_named_in_summary(self):
+        # TF-11: an unknown top-level section is listed BY NAME in
+        # the summary output, never dropped silently.
+        path, data = self.load_export_data()
+        data["mystery_section"] = [{"legacy_field": 1}]
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        out = self.run_import(path)
+        self.assertIn("IMPORT_DROPPED", out)
+        self.assertIn("unknown_sections=mystery_section", out)
+
+    def test_unknown_keys_named_in_summary(self):
+        # TF-11: unknown keys inside known section records are
+        # listed BY NAME as section.key, across sections.
+        path, data = self.load_export_data()
+        data["clients"][0]["legacy_loyalty_code"] = "GOLD-9"
+        data["services"][0]["legacy_vendor_flag"] = True
+        data["salons"][0]["legacy_region"] = "north"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        out = self.run_import(path)
+        self.assertIn("clients.legacy_loyalty_code", out)
+        self.assertIn("services.legacy_vendor_flag", out)
+        self.assertIn("salons.legacy_region", out)
+
+    def test_unknown_data_known_data_still_imports_identically(self):
+        # TF-11: naming the drops must not change the restore —
+        # counts and key fields match a clean round trip exactly.
+        path, data = self.load_export_data()
+        data["mystery_section"] = [{"x": 1}]
+        data["clients"][0]["legacy_loyalty_code"] = "GOLD-9"
+        self.write_data(path, data)
+        before = _counts()
+        Salon.objects.all().delete()
+        out = self.run_import(path)
+        self.assertEqual(_counts(), before)
+        self.assertEqual(Service.objects.get().external_id, "svc-1")
+        self.assertEqual(
+            Client.objects.get(external_id="cli-1").email,
+            "ada@example.com")
+        self.assertIn("mystery_section", out)
+        self.assertIn("clients.legacy_loyalty_code", out)
+
+    def test_zero_silent_drops(self):
+        # TF-11: a clean file explicitly reports no drops, and a
+        # file carrying both kinds of unknown data names BOTH —
+        # there is no path where a drop goes unlisted.
+        path, data = self.load_export_data()
+        Salon.objects.all().delete()
+        out = self.run_import(path)
+        self.assertIn(
+            "IMPORT_DROPPED unknown_sections=none unknown_keys=none",
+            out)
+        path, data = self.load_export_data()
+        data["extra_top"] = []
+        data["staff_members"][0]["legacy_badge_no"] = "B-1"
+        data["counts"]["extra_top"] = 0
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        out = self.run_import(path)
+        dropped = [ln for ln in out.splitlines()
+                   if ln.startswith("IMPORT_DROPPED")]
+        self.assertEqual(len(dropped), 1)
+        self.assertIn("extra_top", dropped[0])
+        self.assertIn("staff_members.legacy_badge_no", dropped[0])
+        self.assertIn("counts.extra_top", dropped[0])
+        self.assertNotIn("none", dropped[0])
+
     def test_dangling_reference_in_late_section_writes_nothing(self):
         # staff_members is the LAST section written; every earlier
         # section is valid. Pre-validation must still write zero rows.
