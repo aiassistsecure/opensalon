@@ -12,7 +12,7 @@ from django.core.management import CommandError, call_command
 from django.test import TestCase
 
 from bookings.models import Appointment, AppointmentNote
-from checkout.models import Payment, Sale, SaleItem
+from checkout.models import Payment, Refund, Sale, SaleItem
 from catalog.models import Product, StockMovement
 from clients.models import Client, ClientNote
 from saloncore.models import (
@@ -79,7 +79,7 @@ class ExportSalonDataTests(TestCase):
             "roster_patterns": 0, "shift_overrides": 0,
             "sales": 0, "sale_items": 0, "sale_payments": 0,
             "stock_movements": 0, "attendance_records": 0,
-            "price_changes": 0,
+            "price_changes": 0, "refunds": 0,
         })
         for key, count in data["counts"].items():
             self.assertEqual(len(data[key]), count)
@@ -744,3 +744,55 @@ class ExportPriceChangesTests(TestCase):
         self.assertEqual(data["counts"]["price_changes"], 1)
         self.assertEqual(
             data["price_changes"][0]["service_price_id"], other_price.id)
+
+
+class ExportRefundsTests(TestCase):
+    """Refunds leg: export scoped via sale -> salon."""
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Refund Salon")
+        self.sale = Sale.objects.create(
+            salon=self.salon, status=Sale.Status.COMPLETED)
+        self.refund = Refund.objects.create(
+            sale=self.sale, amount=Decimal("20.50"),
+            reason="Client unhappy", tender=Payment.Method.CASH)
+        self.other_refund = Refund.objects.create(
+            sale=self.sale, amount=Decimal("5.00"),
+            tender=Payment.Method.EXTERNAL)
+
+    def run_export(self, **kwargs):
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        fh.close()
+        call_command("export_salon_data", fh.name,
+                     stdout=io.StringIO(), **kwargs)
+        with open(fh.name, encoding="utf-8") as exported:
+            return json.load(exported)
+
+    def test_export_emits_refunds_with_all_fields(self):
+        data = self.run_export()
+        self.assertEqual(data["counts"]["refunds"], 2)
+        by_amount = {r["amount"]: r for r in data["refunds"]}
+        row = by_amount["20.50"]
+        self.assertEqual(row["id"], self.refund.id)
+        self.assertEqual(row["sale_id"], self.sale.id)
+        self.assertIsInstance(row["amount"], str)
+        self.assertEqual(row["reason"], "Client unhappy")
+        self.assertEqual(row["tender"], "cash")
+        self.assertEqual(
+            row["created_at"], self.refund.created_at.isoformat())
+        self.assertEqual(by_amount["5.00"]["reason"], "")
+        self.assertEqual(by_amount["5.00"]["tender"], "external")
+
+    def test_salon_filter_scopes_refunds_via_sale(self):
+        other = Salon.objects.create(name="Other Salon")
+        other_sale = Sale.objects.create(
+            salon=other, status=Sale.Status.COMPLETED)
+        Refund.objects.create(
+            sale=other_sale, amount=Decimal("9.00"))
+        data = self.run_export(salon="Refund Salon")
+        self.assertEqual(data["counts"]["refunds"], 2)
+        data = self.run_export(salon="Other Salon")
+        self.assertEqual(data["counts"]["refunds"], 1)
+        self.assertEqual(
+            data["refunds"][0]["sale_id"], other_sale.id)
