@@ -2751,91 +2751,139 @@ def _grid_starts(interval, minutes, now):
     return starts
 
 
+def _book_service_groups(salon):
+    """The menu grouped by category, in the book's own order —
+    a real salon's menu is a directory, not a scroll."""
+    groups = []
+    by_category = {}
+    for row in _book_services(salon):
+        name = row["service"].category.name if row["service"].category_id else ""
+        group = by_category.get(name)
+        if group is None:
+            group = {"name": name, "rows": []}
+            by_category[name] = group
+            groups.append(group)
+        group["rows"].append(row)
+    return groups
+
+
 def book_page(request):
     """Online booking — the salon's public page, its own brand.
 
-    Server-rendered steps over the onlinebooking lane's own
-    services: `bookable_slots` (rostered time only, per-staff
-    online toggle respected, breaks and appointments already
-    excluded) decides what can be offered; the write goes
-    through `create_online_booking`, which re-checks
-    everything at write time. The salon's name is the brand —
-    no OpenSalon furniture anywhere on the page. The client
-    book is never exposed: a returning guest is matched
-    silently at confirm time, never searched or listed here.
-    """
-    from onlinebooking.services import bookable_slots
-    from saloncore.models import Service
-    from team.models import StaffMember
+    The page is an enclave: one load, and every step of the
+    journey is a room already on it — menu, times, details,
+    done. The guest moves room to room over the page's edge
+    table (show/hide with depth motion, the whiteglove
+    pattern); the only fetches are data edges: the chosen
+    service's slot grid (`book_slots`) and the confirm
+    (`book_confirm`, JSON mode). The classic no-JS posts still
+    land on the same endpoints and redirect as they always
+    did; a bounced confirm returns here with `taken` and the
+    enclave reopens at the times room with the news.
 
+    The lane's law is unchanged: `bookable_slots` (rostered
+    time only, per-staff online toggle respected, breaks and
+    appointments excluded) decides what can be offered, and
+    `create_online_booking` re-checks everything at the
+    write. The salon's name is the brand — no OpenSalon
+    furniture anywhere on the page. The client book is never
+    exposed: a returning guest is matched silently at confirm
+    time, never searched or listed here.
+    """
     salon = Salon.objects.order_by("id").first()
     ctx = {"salon": salon}
     if salon is None:
         return render(request, "webui/book.html", ctx)
     tz = _tz(salon)
-    now = timezone.now().astimezone(tz)
-    today = now.date()
+    today = timezone.now().astimezone(tz).date()
     days = [today + datetime.timedelta(days=i) for i in range(BOOKING_WINDOW_DAYS)]
-    ctx.update({"services": _book_services(salon), "days": days, "today": today})
+    resume_service = None
+    try:
+        from saloncore.models import Service
 
-    service = None
+        resume_service = Service.objects.get(
+            pk=int(request.GET.get("service", "")), category__salon=salon,
+            active=True,
+        ).pk
+    except (ValueError, Service.DoesNotExist):
+        resume_service = None
+    ctx.update(
+        {
+            "groups": _book_service_groups(salon),
+            "days": days,
+            "today": today,
+            "taken": request.GET.get("taken") == "1",
+            "resume_service": resume_service,
+        }
+    )
+    return render(request, "webui/book.html", ctx)
+
+
+def book_slots(request):
+    """The data edge for the times room: one service's whole
+    window — fourteen days of per-stylist quarter-hour starts
+    — in a single payload, so day-hopping inside the room is
+    pure show/hide and never another fetch."""
+    from onlinebooking.services import bookable_slots
+    from saloncore.models import Service
+
+    salon = Salon.objects.order_by("id").first()
+    if salon is None:
+        return JsonResponse({"ok": False, "error": "closed"}, status=404)
     try:
         service = Service.objects.get(
             pk=int(request.GET.get("service", "")), category__salon=salon,
             active=True,
         )
     except (ValueError, Service.DoesNotExist):
-        service = None
-    ctx["service"] = service
-    if service is None:
-        return render(request, "webui/book.html", ctx)
-
-    try:
-        day = datetime.date.fromisoformat(request.GET.get("day", ""))
-    except ValueError:
-        day = today
-    if day not in days:
-        day = today
-    ctx["day"] = day
-
-    staff_filter = request.GET.get("staff", "")
-    sections = []
-    for availability in bookable_slots(salon, service, day):
-        member = availability.staff_member
-        if staff_filter and str(member.pk) != staff_filter:
-            continue
-        starts = []
-        for interval in availability.intervals:
-            starts.extend(_grid_starts(interval, service.total_minutes, now))
-        if starts:
-            sections.append({"staff": member, "starts": starts})
-    ctx["sections"] = sections
-    ctx["staff_filter"] = staff_filter
-
-    # The details step: a chosen stylist + start time.
-    chosen_staff = None
-    chosen_start = None
-    if request.GET.get("time"):
-        try:
-            chosen_staff = StaffMember.objects.get(
-                pk=int(request.GET.get("staff", "")), salon=salon
-            )
-            hour, minute = (int(p) for p in request.GET["time"].split(":"))
-            candidate = datetime.datetime.combine(
-                day, datetime.time(hour, minute), tzinfo=tz
-            )
-            for section in sections:
-                if section["staff"].pk == chosen_staff.pk and (
-                    candidate in section["starts"]
-                ):
-                    chosen_start = candidate
-                    break
-        except (ValueError, StaffMember.DoesNotExist):
-            chosen_staff = chosen_start = None
-    ctx["chosen_staff"] = chosen_staff
-    ctx["chosen_start"] = chosen_start
-    ctx["taken"] = request.GET.get("taken") == "1"
-    return render(request, "webui/book.html", ctx)
+        return JsonResponse({"ok": False, "error": "service"}, status=404)
+    tz = _tz(salon)
+    now = timezone.now().astimezone(tz)
+    today = now.date()
+    days = []
+    for offset in range(BOOKING_WINDOW_DAYS):
+        day = today + datetime.timedelta(days=offset)
+        sections = []
+        for availability in bookable_slots(salon, service, day):
+            starts = []
+            for interval in availability.intervals:
+                starts.extend(
+                    _grid_starts(interval, service.total_minutes, now)
+                )
+            if starts:
+                sections.append(
+                    {
+                        "staff_id": availability.staff_member.pk,
+                        "staff": availability.staff_member.display_name,
+                        "starts": [
+                            {
+                                "t": s.strftime("%H:%M"),
+                                "label": _fmt_time(s.time()),
+                            }
+                            for s in starts
+                        ],
+                    }
+                )
+        days.append(
+            {
+                "date": day.isoformat(),
+                "dow": day.strftime("%a"),
+                "dom": day.day,
+                "label": f"{day.strftime('%A, %B')} {day.day}",
+                "sections": sections,
+            }
+        )
+    return JsonResponse(
+        {
+            "ok": True,
+            "service": {
+                "id": service.pk,
+                "name": service.name,
+                "minutes": service.total_minutes,
+            },
+            "days": days,
+        }
+    )
 
 
 @require_POST
@@ -2858,7 +2906,10 @@ def book_confirm(request):
     from team.models import StaffMember
 
     salon = Salon.objects.order_by("id").first()
+    wants_json = request.POST.get("format") == "json"
     if salon is None:
+        if wants_json:
+            return JsonResponse({"ok": False, "error": "closed"}, status=404)
         return redirect("webui:book")
     tz = _tz(salon)
     now = timezone.now().astimezone(tz)
@@ -2874,6 +2925,15 @@ def book_confirm(request):
         query = "&".join(f"{k}={v}" for k, v in params.items() if v)
         return redirect(f"{reverse('webui:book')}?{query}")
 
+    def fail(error, message):
+        # The enclave's confirm speaks JSON: a refusal is an
+        # answer the page turns into a toast and a step back,
+        # never a silent nothing — the founder clicked Confirm
+        # on a live build and the page said nothing at all.
+        if wants_json:
+            return JsonResponse({"ok": False, "error": error, "message": message})
+        return back_to_times(taken="1")
+
     try:
         service = Service.objects.get(
             pk=int(request.POST.get("service", "")), category__salon=salon,
@@ -2888,11 +2948,16 @@ def book_confirm(request):
             day, datetime.time(hour, minute), tzinfo=tz
         )
     except (ValueError, Service.DoesNotExist, StaffMember.DoesNotExist):
+        if wants_json:
+            return JsonResponse(
+                {"ok": False, "error": "invalid",
+                 "message": "That booking couldn't be read — pick a time again."}
+            )
         return redirect("webui:book")
     if day < today or day >= today + datetime.timedelta(
         days=BOOKING_WINDOW_DAYS
     ) or start <= now:
-        return back_to_times(taken="1")
+        return fail("taken", "That time was just taken — please pick another.")
 
     fits = False
     for availability in bookable_slots(salon, service, day):
@@ -2904,7 +2969,7 @@ def book_confirm(request):
             for interval in availability.intervals
         )
     if not fits:
-        return back_to_times(taken="1")
+        return fail("taken", "That time was just taken — please pick another.")
 
     first = request.POST.get("first_name", "").strip()
     last = request.POST.get("last_name", "").strip()
@@ -2912,7 +2977,7 @@ def book_confirm(request):
     email = request.POST.get("email", "").strip()
     note = request.POST.get("note", "").strip()
     if not first or not phone:
-        return back_to_times(taken="1")
+        return fail("details", "Add your name and a mobile number, and we'll book it.")
 
     guest = None
     if phone:
@@ -2933,8 +2998,23 @@ def book_confirm(request):
             note_author=f"{first} {last}".strip() or "Online booking",
         )
     except ValidationError:
-        return back_to_times(taken="1")
+        return fail("taken", "That time was just taken — please pick another.")
     request.session["booked_appointment"] = appointment.pk
+    if wants_json:
+        return JsonResponse(
+            {
+                "ok": True,
+                "summary": {
+                    "service": service.name,
+                    "staff": member.display_name,
+                    "when": (
+                        f"{day.strftime('%A, %B')} {day.day} at "
+                        f"{_fmt_time(start.time())}"
+                    ),
+                    "name": f"{first} {last}".strip(),
+                },
+            }
+        )
     return redirect("webui:book_done")
 
 
