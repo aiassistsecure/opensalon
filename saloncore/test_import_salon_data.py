@@ -15,7 +15,7 @@ from django.core.management import CommandError, call_command
 from django.test import TestCase
 
 from bookings.models import Appointment, AppointmentNote, Break
-from checkout.models import Cashup, Payment, Refund, Sale, SaleItem
+from checkout.models import Cashup, Payment, Receipt, Refund, Sale, SaleItem
 from catalog.models import Product, StockMovement
 from clients.models import Client, ClientNote
 from saloncore.models import (
@@ -871,7 +871,7 @@ class ImportSalonDataDryRunTests(TestCase):
             "appointments", "appointment_notes", "products",
             "roster_patterns", "shift_overrides", "sales",
             "sale_items", "sale_payments", "stock_movements",
-            "attendance_records", "price_changes", "refunds", "breaks", "cashups"})
+            "attendance_records", "price_changes", "refunds", "breaks", "cashups", "receipts"})
         for section, report in reports.items():
             self.assertEqual(report["source"], section)
             self.assertEqual(
@@ -2206,4 +2206,150 @@ class ImportSalonDataCashupsTests(TestCase):
         self.assertEqual(reports["cashups"]["record_count"], 2)
         self.assertEqual(reports["cashups"]["unmapped_keys"], [])
         self.assertEqual(Cashup.objects.count(), 0)
+        self.assertEqual(Salon.objects.count(), 0)
+
+
+class ImportSalonDataReceiptsTests(TestCase):
+    """Receipts leg: round-trip preserves receipts exactly.
+
+    Idempotency natural key: (sale) — the OneToOne — a snapshot
+    is get_or_create'd on its sale, never updated, never duplicated.
+    """
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Receipt Restore Salon")
+        self.sale = Sale.objects.create(
+            salon=self.salon, status=Sale.Status.COMPLETED)
+        self.sent_at = datetime(2026, 10, 3, 17, 5, tzinfo=dt_timezone.utc)
+        self.receipt = Receipt.objects.create(
+            sale=self.sale, salon_name="Receipt Restore Salon",
+            lines=[{"description": "Single Process", "kind": "service",
+                    "quantity": 1, "unit_price": "85.00",
+                    "line_total": "85.00"}],
+            total=Decimal("85.00"),
+            tender=[{"method": "cash", "amount": "85.00",
+                     "status": "completed"}],
+            recipient_email="ada@example.com", sent_at=self.sent_at)
+        self.sale2 = Sale.objects.create(
+            salon=self.salon, status=Sale.Status.COMPLETED)
+        self.receipt2 = Receipt.objects.create(
+            sale=self.sale2, total=Decimal("10.00"))
+
+    def temp_path(self):
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        fh.close()
+        return fh.name
+
+    def export_data(self):
+        path = self.temp_path()
+        call_command("export_salon_data", path, stdout=io.StringIO())
+        with open(path, encoding="utf-8") as fh:
+            return path, json.load(fh)
+
+    def write_data(self, path, data):
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+
+    def run_import(self, path):
+        out = io.StringIO()
+        call_command("import_salon_data", path, stdout=out)
+        return out.getvalue()
+
+    def fail_closed(self, mutate):
+        path, data = self.export_data()
+        mutate(data)
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError):
+            call_command("import_salon_data", path)
+        self.assertEqual(Salon.objects.count(), 0)
+        self.assertEqual(Receipt.objects.count(), 0)
+
+    def test_round_trip_preserves_receipts_exactly(self):
+        expected_issued = sorted(
+            r.issued_at for r in (self.receipt, self.receipt2))
+        path, _ = self.export_data()
+        Salon.objects.all().delete()
+        self.assertEqual(Receipt.objects.count(), 0)
+        out = self.run_import(path)
+        self.assertIn("receipts=2", out)
+        self.assertIn("unknown_keys=none", out)
+        self.assertEqual(Receipt.objects.count(), 2)
+        sale = Sale.objects.get(receipt__total=Decimal("85.00"))
+        row = sale.receipt
+        self.assertEqual(str(row.total), "85.00")
+        self.assertEqual(row.salon_name, "Receipt Restore Salon")
+        self.assertEqual(row.lines, self.receipt.lines)
+        self.assertEqual(row.tender, self.receipt.tender)
+        self.assertEqual(row.recipient_email, "ada@example.com")
+        self.assertEqual(row.sent_at, self.sent_at)
+        self.assertEqual(
+            sorted(r.issued_at for r in Receipt.objects.all()),
+            expected_issued)
+        self.assertIsNone(
+            Receipt.objects.get(total=Decimal("10.00")).sent_at)
+
+    def test_reimport_receipts_is_idempotent(self):
+        path, _ = self.export_data()
+        Salon.objects.all().delete()
+        self.run_import(path)
+        self.run_import(path)
+        self.assertEqual(Receipt.objects.count(), 2)
+
+    def test_missing_receipts_section_imports_as_before(self):
+        path, data = self.export_data()
+        del data["receipts"]
+        del data["counts"]["receipts"]
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        out = self.run_import(path)
+        self.assertIn("receipts=0", out)
+        self.assertEqual(Receipt.objects.count(), 0)
+        self.assertEqual(Salon.objects.count(), 1)
+
+    def test_unknown_key_in_receipts_named_not_dropped(self):
+        path, data = self.export_data()
+        data["receipts"][0]["legacy_code"] = "X"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        out = self.run_import(path)
+        self.assertIn("receipts.legacy_code", out)
+        self.assertEqual(Receipt.objects.count(), 2)
+
+    def test_dangling_sale_ref_fails_closed_zero_writes(self):
+        self.fail_closed(
+            lambda d: d["receipts"][0].update(sale_id=999999))
+
+    def test_naive_issued_at_fails_closed_zero_writes(self):
+        self.fail_closed(
+            lambda d: d["receipts"][0].update(
+                issued_at="2026-10-03T09:00:00"))
+
+    def test_naive_sent_at_fails_closed_zero_writes(self):
+        self.fail_closed(
+            lambda d: d["receipts"][0].update(
+                sent_at="2026-10-03T09:00:00"))
+
+    def test_bad_total_fails_closed_zero_writes(self):
+        self.fail_closed(
+            lambda d: d["receipts"][0].update(total="not-a-number"))
+
+    def test_lines_not_list_fails_closed_zero_writes(self):
+        self.fail_closed(
+            lambda d: d["receipts"][0].update(lines="not-a-list"))
+
+    def test_tender_not_list_fails_closed_zero_writes(self):
+        self.fail_closed(
+            lambda d: d["receipts"][0].update(tender={"method": "cash"}))
+
+    def test_dry_run_reports_receipts_and_writes_nothing(self):
+        path, _ = self.export_data()
+        Salon.objects.all().delete()
+        out = io.StringIO()
+        call_command("import_salon_data", path, dry_run=True, stdout=out)
+        reports = json.loads(out.getvalue())
+        self.assertEqual(reports["receipts"]["record_count"], 2)
+        self.assertEqual(reports["receipts"]["unmapped_keys"], [])
+        self.assertEqual(Receipt.objects.count(), 0)
         self.assertEqual(Salon.objects.count(), 0)

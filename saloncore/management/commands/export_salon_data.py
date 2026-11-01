@@ -73,6 +73,13 @@ fully export. This is part 1 of that test — the core records only:
   ``period_end`` / ``created_at`` as ISO-8601 with timezone,
   ``tender_totals`` verbatim (method slug -> total as string),
   and ``total`` as an exact string (money never floats).
+- checkout: Receipt (an immutable snapshot of a sale, scoped
+  through its sale's salon). Rows carry the sale reference as
+  the internal ``sale_id``, like refunds; ``lines`` / ``tender``
+  verbatim (money inside them stored as strings), ``total`` as
+  an exact string (money never floats), and ``issued_at`` /
+  ``sent_at`` as ISO-8601 with timezone via ``_dt``
+  (``sent_at`` is ``None`` when unsent).
 
 The ``payload`` (whole source record, stored verbatim) is emitted
 for every section whose model carries one — clients, services,
@@ -93,7 +100,7 @@ import json
 from django.core.management.base import BaseCommand, CommandError
 
 from bookings.models import Appointment, AppointmentNote, Break
-from checkout.models import Cashup, Payment, Refund, Sale, SaleItem
+from checkout.models import Cashup, Payment, Receipt, Refund, Sale, SaleItem
 from catalog.models import Product, StockMovement
 from clients.models import Client, ClientNote
 from saloncore.models import (
@@ -117,7 +124,7 @@ def _dt(value):
 
 
 class Command(BaseCommand):
-    help = "Export salon core data (price book, clients, staff, appointments, products, sales, stock movements, attendance, price changes, refunds, breaks, cashups) to one JSON file."
+    help = "Export salon core data (price book, clients, staff, appointments, products, sales, stock movements, attendance, price changes, refunds, breaks, cashups, receipts) to one JSON file."
 
     def add_arguments(self, parser):
         parser.add_argument("output", help="Path of the JSON file to write.")
@@ -179,6 +186,7 @@ class Command(BaseCommand):
         breaks = Break.objects.filter(
             staff_member_id__in=staff_ids).select_related("staff_member")
         cashups = Cashup.objects.filter(salon_id__in=salon_ids)
+        receipts = Receipt.objects.filter(sale__salon_id__in=salon_ids)
 
         data = {
             "salons": [
@@ -443,6 +451,17 @@ class Command(BaseCommand):
                     "created_at": _dt(c.created_at),
                 }
                 for c in cashups
+            ],
+            "receipts": [
+                {
+                    "id": r.id, "sale_id": r.sale_id,
+                    "salon_name": r.salon_name, "lines": r.lines,
+                    "total": str(r.total), "tender": r.tender,
+                    "recipient_email": r.recipient_email,
+                    "issued_at": _dt(r.issued_at),
+                    "sent_at": _dt(r.sent_at),
+                }
+                for r in receipts
             ],
         }
         data["counts"] = {
