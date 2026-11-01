@@ -314,6 +314,16 @@
           ghost.querySelector(".ghost-time").textContent =
             fmt(dayStartMin + snapped) + " – " + fmt(dayStartMin + snapped + durMin) +
             (target.member !== originMember ? " · new stylist" : "");
+          /* The flying card tells its own time, from the same
+             snapped graph position, on every move: time is
+             derived from the graph, so the card in the hand
+             reads the hour it is hovering — never the hour it
+             was recorded with when the booking was made. */
+          var tileTime = tile.querySelector(".b-time");
+          if (tileTime) {
+            tileTime.textContent =
+              fmt(dayStartMin + snapped) + " – " + fmt(dayStartMin + snapped + durMin);
+          }
           /* Live stacking: the lanes make room DURING the drag,
              not after it — the column re-lanes around the tile's
              hover position on the next animation frame. */
@@ -1311,8 +1321,20 @@
     el.classList.toggle("is-new", !!entry.is_new);
     var newChip = el.querySelector(".b-new");
     if (newChip) newChip.style.display = entry.is_new ? "" : "none";
-    var timeLabel = entry.time_label ||
-      (fmtClock(entry.start_min) + " – " + fmtClock(entry.end_min));
+    /* Time is derived from the graph, never carried as text.
+       The pack entry rides a server-stamped time_label, and
+       preferring it here meant a dragged block kept wearing
+       the hour it left: the model had moved, the geometry had
+       the new minutes, and the card still said 9:30 in its
+       8 AM seat — because a stored string outranked the
+       position it sat in. Deriving the label from the same
+       start/end minutes that place the block makes the text
+       and the seat the same fact, in real time, on every
+       paint. (fmtClock and the server's _fmt_time are the
+       same algorithm, so derived text matches served text
+       word for word.) */
+    var timeLabel =
+      fmtClock(entry.start_min) + " – " + fmtClock(entry.end_min);
     var timeEl = el.querySelector(".b-time");
     if (timeEl) timeEl.textContent = timeLabel;
     var clientEl = el.querySelector(".b-client");
