@@ -44,7 +44,13 @@ and creates nothing twice:
   (salon, first_name, last_name, email, phone)
 - ClientNote       <- (client, body, author_name)
 - StaffMember      <- (salon, external_id) when present, else
-  (salon, display_name)
+  (salon, display_name). Its time-clock ``pin`` restores in
+  plaintext (Mark's 2026-11-01 decision); an older file with no
+  ``pin`` key restores ``""``. Phase 1 rejects a non-string pin,
+  a pin over the field's 8 characters, and two rows in the same
+  salon carrying the same non-empty pin — all with zero writes.
+  The payment ``provider_reference`` strip is a separate rule
+  and is untouched by this.
 - Appointment      <- external_id when present, else
   (client, staff_member, start, end). Its client / staff_member /
   service links resolve by the related record's ``*_external_id``
@@ -393,7 +399,8 @@ KNOWN_KEYS = {
     "client_notes": {"id", "client_id", "body", "author_name",
                      "created_at"},
     "staff_members": {"id", "salon_id", "external_id", "display_name",
-                      "staff_level_id", "online_bookable", "active"},
+                      "staff_level_id", "online_bookable", "active",
+                      "pin"},
     "appointments": {"id", "external_id", "client_id",
                      "client_external_id", "staff_member_id",
                      "staff_member_external_id", "service_id",
@@ -907,10 +914,38 @@ def _validate(data):
         _check_ref(salon_ids, row["salon_id"], "salon")
     for row in data["client_notes"]:
         _check_ref(client_ids, row["client_id"], "client")
+    _pin_limit = StaffMember._meta.get_field("pin").max_length
+    _seen_pins = {}
     for row in data["staff_members"]:
         _check_ref(salon_ids, row["salon_id"], "salon")
         if row.get("staff_level_id") is not None:
             _check_ref(level_ids, row["staff_level_id"], "staff_level")
+        # pin is optional for back-compat (an older file has no
+        # pin key and restores ""); when present it is strict:
+        # a real string, at most max_length, and non-empty pins
+        # unique per salon in the file (uniq_staff_pin_per_salon).
+        if "pin" in row:
+            pin = row["pin"]
+            label = (
+                f"section 'staff_members' record id {row.get('id')!r}")
+            if not isinstance(pin, str):
+                raise CommandError(
+                    f"Bad staff_members pin: {label} has 'pin'="
+                    f"{pin!r} ({type(pin).__name__}), not a string.")
+            if len(pin) > _pin_limit:
+                raise CommandError(
+                    f"Overlong staff_members pin: {label} has 'pin'="
+                    f"{pin!r} ({len(pin)} characters), which exceeds "
+                    f"the {_pin_limit}-character limit.")
+            if pin:
+                key = (row["salon_id"], pin)
+                if key in _seen_pins:
+                    raise CommandError(
+                        f"Duplicate staff_members pin: {label} has "
+                        f"'pin'={pin!r}, already used by record id "
+                        f"{_seen_pins[key]!r} in the same salon; "
+                        f"non-empty pins are unique per salon.")
+                _seen_pins[key] = row.get("id")
     for row in data["appointments"]:
         _check_appt_ref(
             client_ids, client_ext_ids, row.get("client_id"),
@@ -1477,6 +1512,7 @@ class Command(BaseCommand):
                 ),
                 "online_bookable": row["online_bookable"],
                 "active": row["active"],
+                "pin": row.get("pin", ""),
             }
             salon = _ref(salons, row["salon_id"], "salon")
             external_id = _norm_id(row.get("external_id")) or ""
