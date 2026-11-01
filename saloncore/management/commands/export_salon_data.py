@@ -80,6 +80,14 @@ fully export. This is part 1 of that test — the core records only:
   an exact string (money never floats), and ``issued_at`` /
   ``sent_at`` as ISO-8601 with timezone via ``_dt``
   (``sent_at`` is ``None`` when unsent).
+- messaging: ReminderSend (the log of dispatched appointment
+  reminders, scoped through its appointment — appointments are
+  themselves scoped through their client's salon). Rows carry
+  the appointment and client references as the internal
+  ``appointment_id`` / ``client_id``, like refunds carry their
+  ``sale_id``; ``detail`` is free-form send detail exported
+  verbatim, and ``sent_at`` as ISO-8601 with timezone via
+  ``_dt``.
 
 The ``payload`` (whole source record, stored verbatim) is emitted
 for every section whose model carries one — clients, services,
@@ -103,6 +111,7 @@ from bookings.models import Appointment, AppointmentNote, Break
 from checkout.models import Cashup, Payment, Receipt, Refund, Sale, SaleItem
 from catalog.models import Product, StockMovement
 from clients.models import Client, ClientNote
+from messaging.models import ReminderSend
 from saloncore.models import (
     PriceChange,
     Salon,
@@ -124,7 +133,7 @@ def _dt(value):
 
 
 class Command(BaseCommand):
-    help = "Export salon core data (price book, clients, staff, appointments, products, sales, stock movements, attendance, price changes, refunds, breaks, cashups, receipts) to one JSON file."
+    help = "Export salon core data (price book, clients, staff, appointments, products, sales, stock movements, attendance, price changes, refunds, breaks, cashups, receipts, reminder sends) to one JSON file."
 
     def add_arguments(self, parser):
         parser.add_argument("output", help="Path of the JSON file to write.")
@@ -187,6 +196,8 @@ class Command(BaseCommand):
             staff_member_id__in=staff_ids).select_related("staff_member")
         cashups = Cashup.objects.filter(salon_id__in=salon_ids)
         receipts = Receipt.objects.filter(sale__salon_id__in=salon_ids)
+        reminder_sends = ReminderSend.objects.filter(
+            appointment_id__in=appointment_ids)
 
         data = {
             "salons": [
@@ -462,6 +473,15 @@ class Command(BaseCommand):
                     "sent_at": _dt(r.sent_at),
                 }
                 for r in receipts
+            ],
+            "reminder_sends": [
+                {
+                    "id": r.id, "appointment_id": r.appointment_id,
+                    "client_id": r.client_id, "channel": r.channel,
+                    "status": r.status, "sent_at": _dt(r.sent_at),
+                    "detail": r.detail,
+                }
+                for r in reminder_sends
             ],
         }
         data["counts"] = {

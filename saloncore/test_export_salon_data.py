@@ -15,6 +15,7 @@ from bookings.models import Appointment, AppointmentNote, Break
 from checkout.models import Cashup, Payment, Receipt, Refund, Sale, SaleItem
 from catalog.models import Product, StockMovement
 from clients.models import Client, ClientNote
+from messaging.models import ReminderSend
 from saloncore.models import (
     PriceChange,
     Salon,
@@ -80,7 +81,7 @@ class ExportSalonDataTests(TestCase):
             "sales": 0, "sale_items": 0, "sale_payments": 0,
             "stock_movements": 0, "attendance_records": 0,
             "price_changes": 0, "refunds": 0, "breaks": 0, "cashups": 0,
-            "receipts": 0,
+            "receipts": 0, "reminder_sends": 0,
         })
         for key, count in data["counts"].items():
             self.assertEqual(len(data[key]), count)
@@ -968,3 +969,69 @@ class ExportReceiptsTests(TestCase):
         data = self.run_export(salon="Other Salon")
         self.assertEqual(data["counts"]["receipts"], 1)
         self.assertEqual(data["receipts"][0]["sale_id"], other_sale.id)
+
+
+class ExportReminderSendsTests(TestCase):
+    """Reminder sends leg: export scoped through the appointment."""
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Reminder Salon")
+        self.client = Client.objects.create(
+            salon=self.salon, first_name="Ada", last_name="Optin")
+        self.staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Stylist One")
+        self.start = datetime(2026, 11, 2, 14, 0, tzinfo=dt_timezone.utc)
+        self.appt = Appointment.objects.create(
+            client=self.client, staff_member=self.staff, service=None,
+            start=self.start, end=self.start + timedelta(minutes=45))
+        self.sent_at = datetime(2026, 10, 3, 17, 5, tzinfo=dt_timezone.utc)
+        self.send = ReminderSend.objects.create(
+            appointment=self.appt, client=self.client, channel="email",
+            status="sent", sent_at=self.sent_at, detail="")
+        self.send2 = ReminderSend.objects.create(
+            appointment=self.appt, client=self.client, channel="sms",
+            status="sent", sent_at=self.sent_at + timedelta(hours=1),
+            detail="ref-123")
+
+    def run_export(self, **kwargs):
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        fh.close()
+        call_command("export_salon_data", fh.name,
+                     stdout=io.StringIO(), **kwargs)
+        with open(fh.name, encoding="utf-8") as exported:
+            return json.load(exported)
+
+    def test_export_emits_reminder_sends_with_all_fields(self):
+        data = self.run_export()
+        self.assertEqual(data["counts"]["reminder_sends"], 2)
+        by_channel = {r["channel"]: r for r in data["reminder_sends"]}
+        row = by_channel["email"]
+        self.assertEqual(row["id"], self.send.id)
+        self.assertEqual(row["appointment_id"], self.appt.id)
+        self.assertEqual(row["client_id"], self.client.id)
+        self.assertEqual(row["status"], "sent")
+        self.assertEqual(row["sent_at"], self.sent_at.isoformat())
+        self.assertEqual(row["detail"], "")
+        self.assertEqual(by_channel["sms"]["detail"], "ref-123")
+
+    def test_salon_filter_scopes_reminder_sends_via_appointment(self):
+        other = Salon.objects.create(name="Other Salon")
+        other_client = Client.objects.create(
+            salon=other, first_name="Bob", last_name="Optout")
+        other_staff = StaffMember.objects.create(
+            salon=other, display_name="Stylist Two")
+        other_appt = Appointment.objects.create(
+            client=other_client, staff_member=other_staff, service=None,
+            start=self.start, end=self.start + timedelta(minutes=45))
+        ReminderSend.objects.create(
+            appointment=other_appt, client=other_client, channel="email",
+            sent_at=self.sent_at)
+        data = self.run_export(salon="Reminder Salon")
+        self.assertEqual(data["counts"]["reminder_sends"], 2)
+        data = self.run_export(salon="Other Salon")
+        self.assertEqual(data["counts"]["reminder_sends"], 1)
+        self.assertEqual(
+            data["reminder_sends"][0]["appointment_id"], other_appt.id)
+        self.assertEqual(
+            data["reminder_sends"][0]["client_id"], other_client.id)

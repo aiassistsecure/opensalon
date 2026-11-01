@@ -9,10 +9,12 @@ section list) and restores Salon, ServiceCategory, Service,
 StaffLevel, ServicePrice, Client, ClientNote, StaffMember,
 Appointment, AppointmentNote, Product, RosterPattern,
 ShiftOverride, Sale, SaleItem, Payment, StockMovement,
-AttendanceRecord, PriceChange, Refund, Break, Cashup and Receipt records. The ``products``,
+AttendanceRecord, PriceChange, Refund, Break, Cashup, Receipt and
+ReminderSend records. The ``products``,
 ``roster_patterns``, ``shift_overrides``, ``sales``, ``sale_items``,
 ``sale_payments``, ``stock_movements``, ``attendance_records``,
-``price_changes``, ``refunds``, ``breaks``, ``cashups`` and ``receipts`` sections are optional on read: an export
+``price_changes``, ``refunds``, ``breaks``, ``cashups``, ``receipts``
+and ``reminder_sends`` sections are optional on read: an export
 file written before they existed (no such section, no ``counts``
 entry for it) imports exactly as before, with the section
 treated as empty. Roster rows restore idempotently too:
@@ -174,6 +176,24 @@ and creates nothing twice:
   (that helper only handles a ``created_at`` attribute, which
   Receipt does not carry): re-stamped once at creation only,
   never on an existing row.
+- ReminderSend <- (appointment, client, channel, sent_at).
+  ReminderSend is the log of dispatched reminders, with no
+  salon link of its own, so restore runs after appointments
+  and clients. Its appointment and client links both resolve
+  by the file-local ``appointment_id`` / ``client_id`` maps,
+  like refunds resolve their sale; a link that resolves by
+  neither fails closed in phase 1. Restore uses
+  ``get_or_create`` on the natural key — a send already
+  restored is returned untouched and a re-import never
+  duplicates it; ``status`` and ``detail`` are creation
+  defaults only, and ``detail`` is free-form send detail
+  restored verbatim. ``sent_at`` must be timezone-explicit
+  (TF-7): it is part of the identity, required, and a naive
+  value is rejected in phase 1. ``channel`` / ``status`` must
+  be the model's own values, rejected in phase 1 otherwise.
+  Restoring ``sent_at`` follows the
+  ``_restore_created_at`` pattern adapted to ``sent_at``:
+  re-stamped once at creation only, never on an existing row.
 
 No provider concepts: external ids are the generic fields the models
 already carry.
@@ -274,6 +294,7 @@ from bookings.models import Appointment, AppointmentNote, Break
 from checkout.models import Cashup, Payment, Receipt, Refund, Sale, SaleItem
 from catalog.models import Product, StockMovement
 from clients.models import Client, ClientNote
+from messaging.models import ReminderSend
 from saloncore.dry_run import build_dry_run_reports
 from saloncore.models import (
     PriceChange,
@@ -297,7 +318,7 @@ SECTIONS = (
     "roster_patterns", "shift_overrides",
     "sales", "sale_items", "sale_payments", "stock_movements",
     "attendance_records", "price_changes", "refunds", "breaks", "cashups",
-    "receipts",
+    "receipts", "reminder_sends",
 )
 
 # Sections an older export file may legitimately lack entirely:
@@ -305,7 +326,8 @@ SECTIONS = (
 OPTIONAL_SECTIONS = ("products", "roster_patterns", "shift_overrides",
                      "sales", "sale_items", "sale_payments",
                      "stock_movements", "attendance_records",
-                     "price_changes", "refunds", "breaks", "cashups", "receipts")
+                     "price_changes", "refunds", "breaks", "cashups",
+                     "receipts", "reminder_sends")
 
 # Every key the exporter emits (hence the importer may consume) per
 # section. Any other key in a record is unknown (TF-11).
@@ -373,6 +395,8 @@ KNOWN_KEYS = {
                 "tender_totals", "total", "note", "created_at"},
     "receipts": {"id", "sale_id", "salon_name", "lines", "total",
                  "tender", "recipient_email", "issued_at", "sent_at"},
+    "reminder_sends": {"id", "appointment_id", "client_id",
+                       "channel", "status", "sent_at", "detail"},
 }
 
 TOP_LEVEL_KEYS = set(SECTIONS) | {"counts"}
@@ -533,6 +557,7 @@ _ID_FIELDS = {
                "staff_member_external_id"),
     "cashups": ("id", "salon_id"),
     "receipts": ("id", "sale_id"),
+    "reminder_sends": ("id", "appointment_id", "client_id"),
 }
 
 # (section, field) -> model whose external_id limit governs it.
@@ -755,6 +780,8 @@ def _validate(data):
         "cashups": ("id", "salon_id", "period_start", "period_end",
                     "total", "created_at"),
         "receipts": ("id", "sale_id", "total", "issued_at"),
+        "reminder_sends": ("id", "appointment_id", "client_id",
+                           "channel", "sent_at"),
     }
     for section, fields in required.items():
         for row in data[section]:
@@ -1081,6 +1108,21 @@ def _validate(data):
                 raise CommandError(
                     f"Bad receipts {field}: {row[field]!r} "
                     f"is not a list.")
+    for row in data["reminder_sends"]:
+        _check_ref(appointment_ids, row["appointment_id"], "appointment")
+        _check_ref(client_ids, row["client_id"], "client")
+        if row["channel"] not in ReminderSend.Channel.values:
+            raise CommandError(
+                f"Bad reminder_sends channel: {row['channel']!r}.")
+        if ("status" in row
+                and row["status"] not in ReminderSend.Status.values):
+            raise CommandError(
+                f"Bad reminder_sends status: {row['status']!r}.")
+        # sent_at is part of the identity: required and
+        # timezone-explicit (TF-7), like refunds created_at.
+        _checked_datetime(
+            row["sent_at"], f"reminder_sends sent_at "
+            f"record id {row.get('id')!r}")
 
 
 def _ref(mapping, old_id, what):
@@ -1158,6 +1200,21 @@ def _restore_issued_at(obj, raw):
     if obj.issued_at != parsed:
         type(obj).objects.filter(pk=obj.pk).update(issued_at=parsed)
         obj.issued_at = parsed
+
+
+def _restore_sent_at(obj, raw):
+    """ReminderSend analogue of ``_restore_created_at`` for sent_at.
+
+    Same pattern as ``_restore_issued_at``: absent skips, present
+    values were already phase-1 checked, and the exported instant
+    is re-stamped once, at creation only.
+    """
+    if not raw:
+        return
+    parsed = _checked_datetime(raw, "ReminderSend 'sent_at'")
+    if obj.sent_at != parsed:
+        type(obj).objects.filter(pk=obj.pk).update(sent_at=parsed)
+        obj.sent_at = parsed
 
 
 class Command(BaseCommand):
@@ -1684,6 +1741,27 @@ class Command(BaseCommand):
             )
             if created:
                 _restore_issued_at(receipt, row.get("issued_at"))
+
+        for row in data["reminder_sends"]:
+            sent_at = _checked_datetime(
+                row["sent_at"], "reminder_sends sent_at")
+            # Send log: get_or_create on the natural key — a send
+            # already restored is returned untouched, never
+            # updated and never duplicated.
+            send, created = ReminderSend.objects.get_or_create(
+                appointment=_ref(
+                    appointments, row["appointment_id"], "appointment"),
+                client=_ref(clients, row["client_id"], "client"),
+                channel=row["channel"],
+                sent_at=sent_at,
+                defaults={
+                    "status": row.get(
+                        "status", ReminderSend.Status.SENT),
+                    "detail": row.get("detail", ""),
+                },
+            )
+            if created:
+                _restore_sent_at(send, row.get("sent_at"))
 
         summary = ", ".join(
             f"{section}={len(data[section])}" for section in SECTIONS
