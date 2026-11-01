@@ -33,7 +33,12 @@ same client creates no duplicate. ``ClientNote.created_at`` is
 exported note carries a parseable ``created_at`` it is restored
 afterwards with a queryset ``update()``, but the date is not part
 of the match key (the model offers no settable timestamp to key
-on reliably at create time).
+on reliably at create time). A naive ``created_at`` is never
+stored as-is under ``USE_TZ``: it is interpreted explicitly in
+the salon's timezone (``Salon.timezone``) and counted as
+``naive_datetimes_made_aware``; an unparseable ``created_at`` is
+counted as ``datetimes_dropped`` and the note still imports with
+its automatic timestamp -- no timestamp is fabricated.
 
 Mapping (one source of truth — this command is the only writer here):
 
@@ -89,10 +94,13 @@ partial state a mid-loop failure could leave.
 """
 
 import json
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.db.models.query import QuerySet
+from django.utils import timezone as dj_timezone
 from django.utils.dateparse import parse_datetime
 
 from clients.models import Client, ClientNote
@@ -108,13 +116,57 @@ def _is_export_shape(row):
     return any(key in row for key in _EXPORT_KEYS)
 
 
-def _parse_dt(value):
-    if not value or not isinstance(value, str):
+def _salon_zone(salon):
+    """ZoneInfo for the salon's timezone, falling back safely.
+
+    Source of truth is ``Salon.timezone``; when it is blank or not a
+    known zone, fall back to ``settings.TIME_ZONE``, then UTC.
+    """
+    for name in (getattr(salon, "timezone", None),
+                 getattr(settings, "TIME_ZONE", None), "UTC"):
+        if not name:
+            continue
+        try:
+            return ZoneInfo(str(name))
+        except (ZoneInfoNotFoundError, ValueError, TypeError):
+            continue
+    return ZoneInfo("UTC")
+
+
+def _parse_dt(value, salon=None, stats=None):
+    """Parse a datetime string; never return a naive datetime.
+
+    Absent values (missing / ``None`` / empty) return ``None`` with
+    no count -- there is no timestamp to restore. A present value
+    that cannot be parsed returns ``None`` and is counted in
+    ``stats["datetimes_dropped"]`` instead of being silently
+    dropped. A parsed naive datetime is interpreted explicitly in
+    the salon's timezone via ``make_aware`` and counted in
+    ``stats["naive_datetimes_made_aware"]``; an already-aware
+    datetime is returned unchanged with no counts.
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if not isinstance(value, str):
+        if stats is not None:
+            stats["datetimes_dropped"] = (
+                stats.get("datetimes_dropped", 0) + 1)
         return None
     try:
-        return parse_datetime(value.replace("Z", "+00:00"))
+        parsed = parse_datetime(value.replace("Z", "+00:00"))
     except (ValueError, TypeError):
+        parsed = None
+    if parsed is None:
+        if stats is not None:
+            stats["datetimes_dropped"] = (
+                stats.get("datetimes_dropped", 0) + 1)
         return None
+    if dj_timezone.is_naive(parsed):
+        parsed = dj_timezone.make_aware(parsed, _salon_zone(salon))
+        if stats is not None:
+            stats["naive_datetimes_made_aware"] = (
+                stats.get("naive_datetimes_made_aware", 0) + 1)
+    return parsed
 
 
 def _import_notes(salon, notes_by_external_id, stats):
@@ -146,7 +198,8 @@ def _import_notes(salon, notes_by_external_id, stats):
                 continue
             created = ClientNote.objects.create(
                 client=client, body=body, author_name=author)
-            parsed = _parse_dt(note.get("created_at"))
+            parsed = _parse_dt(note.get("created_at"), salon=salon,
+                               stats=stats)
             if parsed is not None:
                 ClientNote.objects.filter(pk=created.pk).update(
                     created_at=parsed)
@@ -276,7 +329,8 @@ class Command(BaseCommand):
 
         stats = dict.fromkeys(
             ["created", "updated", "skipped", "unchanged",
-             "notes_created", "notes_skipped"], 0)
+             "notes_created", "notes_skipped",
+             "naive_datetimes_made_aware", "datetimes_dropped"], 0)
         total = len(data)
         seen = 0
         with transaction.atomic():
