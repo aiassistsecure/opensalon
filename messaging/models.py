@@ -1,16 +1,18 @@
-"""Messaging's own persisted record: the reminder send log (L8-M7a).
+"""Messaging's own persisted records.
 
 Opt-in state still lives on ``clients.Client`` (the one source of
-truth) and is never duplicated here. What messaging now stores is
-only the history of sends it has actually dispatched, so a later
-history summary can be built from real rows instead of re-deriving
-outcomes from delivery summaries that are discarded after a run.
+truth) and is never duplicated here. Messaging stores the history
+of reminder sends it has actually dispatched (``ReminderSend``),
+and marketing campaign drafts (``Campaign``) -- M1 is model and
+audience only: a campaign has no send path yet.
 """
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
 from bookings.models import Appointment
 from clients.models import Client
+from saloncore.models import Salon
 
 
 class ReminderSend(models.Model):
@@ -67,3 +69,60 @@ class ReminderSend(models.Model):
             sent_at=timezone.now(),
             detail=detail or "",
         )
+
+
+class Campaign(models.Model):
+    """A marketing campaign draft for one salon on one channel.
+
+    Marketing is the last Slice-3 capability and M1 is deliberately
+    draft-only: the only status is ``draft``, there is no send
+    method and no state transition beyond draft, and audience
+    selection (see ``messaging.campaigns``) only reads the
+    per-channel opt-ins on ``clients.Client``. Sending -- through
+    the existing provider-agnostic SMS adapter interface or
+    Django's SMTP email settings, never a provider SDK in core --
+    is a later microtask. ``subject`` is used by email campaigns
+    and may be blank for SMS.
+    """
+
+    class Channel(models.TextChoices):
+        SMS = "sms", "SMS"
+        EMAIL = "email", "Email"
+
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+
+    salon = models.ForeignKey(
+        Salon, on_delete=models.CASCADE, related_name="campaigns"
+    )
+    name = models.CharField(max_length=200)
+    channel = models.CharField(max_length=20, choices=Channel.choices)
+    subject = models.CharField(max_length=200, blank=True)
+    body = models.TextField(blank=True)
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.DRAFT
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self):
+        return f"{self.name} ({self.channel}, {self.status})"
+
+    def clean(self):
+        super().clean()
+        if self.status != self.Status.DRAFT:
+            raise ValidationError(
+                {"status": "Campaigns are draft-only in this version."}
+            )
+
+    def save(self, *args, **kwargs):
+        # Draft-only lifecycle: refuse any non-draft status rather
+        # than implying a send/sent state that does not exist yet.
+        if self.status != self.Status.DRAFT:
+            raise ValidationError(
+                {"status": "Campaigns are draft-only in this version."}
+            )
+        return super().save(*args, **kwargs)
