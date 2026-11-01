@@ -43,7 +43,13 @@ its automatic timestamp -- no timestamp is fabricated.
 Mapping (one source of truth — this command is the only writer here):
 
 - Client <- ``firstName`` / ``lastName`` / ``email``; ``mobile``
-  becomes ``phone``. Values are truncated to the model's field lengths.
+  becomes ``phone``. Non-identity values are truncated to the
+  model's field lengths. Identity is the exception: an
+  ``external_id`` / ``clientId`` / ``id`` longer than
+  ``Client.external_id``'s limit is NEVER silently truncated --
+  the record is skipped and counted as
+  ``skipped_external_id_too_long`` (truncation would corrupt
+  identity joins and break export/import round-trip fidelity).
 - Natural key: ``clientId``, stored on the generic ``Client.external_id``
   field (never a provider-named column) and scoped to the salon.
   Justification: ``clientId`` is unique for every record in a real
@@ -231,6 +237,31 @@ def _text(row, key, limit):
     return str(value).strip()[:limit] if value else ""
 
 
+_EXTERNAL_ID_LIMIT = Client._meta.get_field("external_id").max_length
+
+
+class _OverlongExternalId(ValueError):
+    """An id / external-id value exceeds the model field limit."""
+
+
+def _id_value(row, key):
+    """Stringified id for ``key``; never silently truncated.
+
+    Mirrors ``_text`` (stringify, strip, falsy -> ``""``), except a
+    value longer than ``Client.external_id``'s limit raises
+    ``_OverlongExternalId`` so the caller skips and counts the
+    record instead of shortening its identity.
+    """
+    value = row.get(key)
+    if not value:
+        return ""
+    text = str(value).strip()
+    if len(text) > _EXTERNAL_ID_LIMIT:
+        raise _OverlongExternalId(
+            f"{key} exceeds {_EXTERNAL_ID_LIMIT} characters")
+    return text
+
+
 _TRUE_STRINGS = frozenset({"true", "1", "yes"})
 _FALSE_STRINGS = frozenset({"false", "0", "no"})
 
@@ -339,6 +370,7 @@ class Command(BaseCommand):
 
         stats = dict.fromkeys(
             ["created", "updated", "skipped", "unchanged",
+             "skipped_external_id_too_long",
              "notes_created", "notes_skipped",
              "naive_datetimes_made_aware", "datetimes_dropped"], 0)
         total = len(data)
@@ -376,7 +408,7 @@ class Command(BaseCommand):
                     if _is_export_shape(row):
                         # Export shape: external_id is the ONLY identity;
                         # the internal numeric ``id`` must never become it.
-                        external_id = _text(row, "external_id", 64)
+                        external_id = _id_value(row, "external_id")
                         if not external_id:
                             stats["skipped"] += 1
                             continue
@@ -400,8 +432,8 @@ class Command(BaseCommand):
                         }
                     else:
                         external_id = (
-                            _text(row, "clientId", 64)
-                            or _text(row, "id", 64))
+                            _id_value(row, "clientId")
+                            or _id_value(row, "id"))
                         if not external_id:
                             stats["skipped"] += 1
                             continue
@@ -421,6 +453,12 @@ class Command(BaseCommand):
                             "active": True,
                             "payload": dict(row),
                         }
+                except _OverlongExternalId:
+                    # Over-long identity: counted skip under its own
+                    # counter, never a silently truncated external_id.
+                    stats["skipped"] += 1
+                    stats["skipped_external_id_too_long"] += 1
+                    continue
                 except _InvalidBool:
                     # Junk boolean (e.g. an unparseable consent):
                     # counted skip, never a silent True / opt-in.

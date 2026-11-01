@@ -285,6 +285,94 @@ class ImportClientsPayloadTests(TestCase):
         self.assertEqual(imported.payload, row)
 
 
+class ImportClientsExternalIdLengthTests(TestCase):
+    """TF-6: over-long ids are skipped+counted, never truncated."""
+
+    AT_LIMIT = "x" * 64
+    OVER_LIMIT = "x" * 65
+
+    def run_import(self, payload, **kwargs):
+        out = io.StringIO()
+        call_command("import_clients", _write(payload), stdout=out, **kwargs)
+        return out.getvalue()
+
+    @staticmethod
+    def _summary(out):
+        line = [ln for ln in out.splitlines()
+                if ln.startswith("IMPORT_SUMMARY ")][0]
+        return json.loads(line[len("IMPORT_SUMMARY "):])
+
+    def test_overlong_phorest_client_id_skipped_and_counted(self):
+        row = {"clientId": self.OVER_LIMIT, "firstName": "Too",
+               "lastName": "Long", "mobile": "555-0400"}
+        out = self.run_import([row])
+        summary = self._summary(out)
+        self.assertEqual(summary["skipped_external_id_too_long"], 1)
+        self.assertEqual(summary["skipped"], 1)
+        self.assertEqual(summary["created"], 0)
+        self.assertEqual(Client.objects.count(), 0)
+        # No silently truncated identity was stored.
+        self.assertFalse(
+            Client.objects.filter(external_id=self.AT_LIMIT).exists())
+
+    def test_overlong_export_external_id_skipped_and_counted(self):
+        row = {"external_id": self.OVER_LIMIT, "first_name": "Too",
+               "last_name": "Long", "phone": "555-0401"}
+        out = self.run_import([row])
+        summary = self._summary(out)
+        self.assertEqual(summary["skipped_external_id_too_long"], 1)
+        self.assertEqual(Client.objects.count(), 0)
+
+    def test_overlong_fallback_id_skipped_and_counted(self):
+        row = {"id": self.OVER_LIMIT, "firstName": "Fallback",
+               "lastName": "Long", "mobile": "555-0402"}
+        out = self.run_import([row])
+        summary = self._summary(out)
+        self.assertEqual(summary["skipped_external_id_too_long"], 1)
+        self.assertEqual(Client.objects.count(), 0)
+
+    def test_at_limit_ids_import_exactly(self):
+        rows = [
+            {"clientId": self.AT_LIMIT, "firstName": "At",
+             "lastName": "Limit", "mobile": "555-0403"},
+            {"external_id": "y" * 64, "first_name": "At",
+             "last_name": "Limit", "phone": "555-0404"},
+        ]
+        out = self.run_import(rows)
+        summary = self._summary(out)
+        self.assertEqual(summary["created"], 2)
+        self.assertEqual(summary["skipped_external_id_too_long"], 0)
+        self.assertTrue(
+            Client.objects.filter(external_id=self.AT_LIMIT).exists())
+        self.assertTrue(
+            Client.objects.filter(external_id="y" * 64).exists())
+
+    def test_normal_ids_unaffected(self):
+        row = {"clientId": "cli-short", "firstName": "Normal",
+               "lastName": "Row", "mobile": "555-0405"}
+        out = self.run_import([row])
+        summary = self._summary(out)
+        self.assertEqual(summary["created"], 1)
+        self.assertEqual(summary["skipped_external_id_too_long"], 0)
+        self.assertTrue(
+            Client.objects.filter(external_id="cli-short").exists())
+
+    def test_reimport_is_idempotent_for_at_limit_and_overlong(self):
+        at_limit = {"clientId": self.AT_LIMIT, "firstName": "At",
+                    "lastName": "Limit", "mobile": "555-0406"}
+        overlong = {"clientId": self.OVER_LIMIT, "firstName": "Too",
+                    "lastName": "Long", "mobile": "555-0407"}
+        self.run_import([at_limit, overlong])
+        out = self.run_import([at_limit, overlong])
+        summary = self._summary(out)
+        self.assertEqual(summary["created"], 0)
+        self.assertEqual(summary["unchanged"], 1)
+        self.assertEqual(summary["skipped_external_id_too_long"], 1)
+        self.assertEqual(Client.objects.count(), 1)
+        self.assertEqual(
+            Client.objects.get().external_id, self.AT_LIMIT)
+
+
 class ImportClientsFileErrorTests(TestCase):
     def test_missing_file_raises_command_error(self):
         with self.assertRaises(CommandError):
