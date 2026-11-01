@@ -106,6 +106,39 @@ class ExportSalonDataTests(TestCase):
         self.assertFalse(staff["online_bookable"])
         self.assertEqual(staff["staff_level_id"], self.level.id)
 
+    def test_salon_row_carries_every_salon_field_with_full_values(self):
+        # Salon self-fields (cycle 72): the salons row must carry
+        # EVERY concrete field of the real Salon model — the key set
+        # is derived from the model itself, so a future Salon field
+        # that the exporter forgets fails this test by name. There
+        # is no SalonSettings model in any app (searched saloncore,
+        # clients, team, bookings, checkout, catalog, messaging,
+        # onlinebooking, insights): the salon profile IS the Salon
+        # record (name/timezone/currency), per webui's settings page.
+        self.salon.refresh_from_db()
+        data, _ = self.run_export()
+        row = data["salons"][0]
+        self.assertEqual(
+            set(row), {f.name for f in Salon._meta.fields})
+        self.assertEqual(row["id"], self.salon.id)
+        self.assertEqual(row["name"], "Export Salon")
+        self.assertEqual(row["timezone"], "America/New_York")
+        self.assertEqual(row["currency"], "USD")
+        self.assertEqual(row["created_at"],
+                         self.salon.created_at.isoformat())
+        self.assertEqual(row["updated_at"],
+                         self.salon.updated_at.isoformat())
+
+    def test_salon_filter_scopes_salon_row_full_values(self):
+        Salon.objects.create(
+            name="Other Salon", timezone="Europe/Paris", currency="EUR")
+        data, _ = self.run_export(salon="Other Salon")
+        self.assertEqual(data["counts"]["salons"], 1)
+        row = data["salons"][0]
+        self.assertEqual(row["name"], "Other Salon")
+        self.assertEqual(row["timezone"], "Europe/Paris")
+        self.assertEqual(row["currency"], "EUR")
+
     def test_opt_in_flags_are_included(self):
         data, _ = self.run_export()
         by_last = {c["last_name"]: c for c in data["clients"]}
