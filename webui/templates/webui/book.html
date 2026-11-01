@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="{% static 'webui/webui.css' %}?v={{ asset_v }}">
 </head>
 <body class="book-body">
+<div id="bookToasts" aria-live="polite"></div>
 <main class="book-wrap">
   <header class="book-head">
     <div class="book-brand">{{ salon.name }}</div>
@@ -14,16 +15,52 @@
   </header>
   {% if not salon %}
   <p class="book-note">Booking isn't available right now.</p>
-  {% elif chosen_start %}
-  <section class="book-card">
+  {% else %}
+  <!-- The enclave: one load, every step a room already on the
+       page. Navigation walks the edge table below — rooms are
+       shown and hidden in place with depth motion, never
+       fetched as pages. The only network edges are data:
+       the slot grid for a chosen service, and the confirm. -->
+  <section class="book-card book-room" id="roomMenu">
+    <h2 class="book-h">Choose a service</h2>
+    <input type="search" id="bookSearch" class="book-search" placeholder="Search services…" autocomplete="off" aria-label="Search services">
+    {% for group in groups %}
+    <div class="book-group">
+      {% if group.name %}<h3 class="book-cat">{{ group.name }}</h3>{% endif %}
+      <div class="book-services">
+        {% for row in group.rows %}
+        <button type="button" class="book-service" data-pick="{{ row.service.pk }}" data-name="{{ row.service.name|lower }}">
+          <span class="book-service-name">{{ row.service.name }}</span>
+          <span class="book-service-meta">{{ row.minutes }} min{% if row.from_label %} · from {{ row.from_label }}{% endif %}</span>
+        </button>
+        {% endfor %}
+      </div>
+    </div>
+    {% empty %}
+    <p class="book-note">No services are bookable online yet.</p>
+    {% endfor %}
+    <p class="book-note" id="bookNoMatch" hidden>No services match your search.</p>
+  </section>
+
+  <section class="book-card book-room" id="roomTimes" hidden>
+    <button type="button" class="book-back" data-go="backToMenu">← All services</button>
+    <h2 class="book-h" id="timesService">Choose a time</h2>
+    <div class="book-days" id="timesDays"></div>
+    <p class="book-note book-loading" id="timesLoading">Finding open times…</p>
+    <div id="timesSections"></div>
+  </section>
+
+  <section class="book-card book-room" id="roomDetails" hidden>
+    <button type="button" class="book-back" data-go="backToTimes">← Choose a different time</button>
     <h2 class="book-h">Your details</h2>
-    <p class="book-pick">{{ service.name }} with {{ chosen_staff }}<br>{{ chosen_start|date:"l, F j" }} at {{ chosen_start|date:"g:i A" }}</p>
-    <form method="post" action="{% url 'webui:book_confirm' %}" class="set-form">
+    <p class="book-pick" id="pickSummary"></p>
+    <form method="post" action="{% url 'webui:book_confirm' %}" class="set-form" id="bookForm">
       {% csrf_token %}
-      <input type="hidden" name="service" value="{{ service.pk }}">
-      <input type="hidden" name="staff" value="{{ chosen_staff.pk }}">
-      <input type="hidden" name="day" value="{{ day|date:'Y-m-d' }}">
-      <input type="hidden" name="time" value="{{ chosen_start|date:'H:i' }}">
+      <input type="hidden" name="format" value="json">
+      <input type="hidden" name="service" id="fService">
+      <input type="hidden" name="staff" id="fStaff">
+      <input type="hidden" name="day" id="fDay">
+      <input type="hidden" name="time" id="fTime">
       <label>First name
         <input type="text" name="first_name" required autocomplete="given-name">
       </label>
@@ -39,59 +76,89 @@
       <label>Anything we should know? (optional)
         <input type="text" name="note" maxlength="500">
       </label>
-      <button type="submit" class="btn-primary">Confirm booking</button>
+      <button type="submit" class="btn-primary" id="confirmBtn">Confirm booking</button>
     </form>
-    <p class="book-note"><a href="?service={{ service.pk }}&amp;day={{ day|date:'Y-m-d' }}">Choose a different time</a></p>
   </section>
-  {% elif service %}
-  <section class="book-card">
-    <h2 class="book-h">{{ service.name }}</h2>
-    <div class="book-days">
-      {% for d in days %}
-      <a class="book-day{% if d == day %} active{% endif %}" href="?service={{ service.pk }}&amp;day={{ d|date:'Y-m-d' }}">{{ d|date:"D" }}<b>{{ d|date:"j" }}</b></a>
-      {% endfor %}
-    </div>
-    {% if taken %}<p class="set-error">That time was just taken — please pick another.</p>{% endif %}
-    {% for section in sections %}
-    <h3 class="book-staff">{{ section.staff }}</h3>
-    <div class="book-times">
-      {% for t in section.starts %}
-      <a class="book-time" href="?service={{ service.pk }}&amp;day={{ day|date:'Y-m-d' }}&amp;staff={{ section.staff.pk }}&amp;time={{ t|date:'H:i' }}">{{ t|date:"g:i A" }}</a>
-      {% endfor %}
-    </div>
-    {% empty %}
-    <p class="book-note">No open times on {{ day|date:"l, F j" }} — try another day.</p>
-    {% endfor %}
-    <p class="book-note"><a href="{% url 'webui:book' %}">Choose a different service</a></p>
-  </section>
-  {% else %}
-  <section class="book-card">
-    <h2 class="book-h">Choose a service</h2>
-    <input type="search" id="bookSearch" class="book-search" placeholder="Search services…" autocomplete="off" aria-label="Search services">
-    <div class="book-services">
-      {% for row in services %}
-      <a class="book-service" href="?service={{ row.service.pk }}" data-name="{{ row.service.name|lower }}">
-        <span class="book-service-name">{{ row.service.name }}</span>
-        <span class="book-service-meta">{{ row.minutes }} min{% if row.from_label %} · from {{ row.from_label }}{% endif %}</span>
-      </a>
-      {% empty %}
-      <p class="book-note">No services are bookable online yet.</p>
-      {% endfor %}
-    </div>
-    <p class="book-note" id="bookNoMatch" hidden>No services match your search.</p>
-  </section>
+
+  <div class="book-modal" id="roomDone" hidden>
+    <section class="book-card book-done-card">
+      <div class="book-done-check">✓</div>
+      <h2 class="book-h">You're booked</h2>
+      <p class="book-pick" id="doneSummary"></p>
+      <p class="book-note">Come a few minutes early — we can't wait to see you.</p>
+      <button type="button" class="btn-primary" id="againBtn">Book another visit</button>
+    </section>
+  </div>
+
   <script>
-  /* The menu is the whole bookable list — a real salon's
-     runs near a hundred services — so the guest filters it
-     in place as they type. Purely local: every token of the
-     query must appear in the service's name, matching rows
-     stay, the rest hide, and an empty result says so
-     plainly instead of leaving a blank card. */
+  /* The edge table: every way a guest can move through the
+     enclave, named once. go() walks an edge — the room behind
+     recedes, the room ahead arrives — and nothing else in the
+     page knows how rooms change. */
+  var EDGES = {
+    pickService: { from: "roomMenu", to: "roomTimes" },
+    pickTime: { from: "roomTimes", to: "roomDetails" },
+    backToMenu: { from: "roomTimes", to: "roomMenu" },
+    backToTimes: { from: "roomDetails", to: "roomTimes" },
+    booked: { from: "roomDetails", to: "roomDone" },
+    again: { from: "roomDone", to: "roomMenu" }
+  };
+  var currentRoom = "roomMenu";
+  function room(id) { return document.getElementById(id); }
+  function go(edge) {
+    var e = EDGES[edge];
+    if (!e) return;
+    var from = room(e.from), to = room(e.to);
+    if (e.to === "roomDone" || e.from === "roomDone") {
+      if (e.to === "roomDone") {
+        to.hidden = false;
+        requestAnimationFrame(function () {
+          requestAnimationFrame(function () { to.classList.add("open"); });
+        });
+      } else {
+        to.hidden = false;
+        from.classList.remove("open");
+        setTimeout(function () { from.hidden = true; }, 240);
+      }
+      currentRoom = e.to;
+      return;
+    }
+    from.classList.add("room-leave");
+    setTimeout(function () {
+      from.hidden = true;
+      from.classList.remove("room-leave");
+      to.hidden = false;
+      to.classList.add("room-enter");
+      setTimeout(function () { to.classList.remove("room-enter"); }, 420);
+    }, 150);
+    currentRoom = e.to;
+  }
+  function toast(message, isError) {
+    var stack = room("bookToasts");
+    var el = document.createElement("div");
+    el.className = "book-toast" + (isError ? " err" : "");
+    el.textContent = message;
+    stack.appendChild(el);
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () { el.classList.add("show"); });
+    });
+    setTimeout(function () {
+      el.classList.remove("show");
+      setTimeout(function () { el.remove(); }, 320);
+    }, 4600);
+  }
+
+  /* The menu search: purely local, every token must appear in
+     the service's name; a category group hides when nothing
+     inside it survives, and an empty result says so plainly. */
   (function () {
     var input = document.getElementById("bookSearch");
     if (!input) return;
     var rows = Array.prototype.slice.call(
       document.querySelectorAll(".book-service[data-name]")
+    );
+    var groups = Array.prototype.slice.call(
+      document.querySelectorAll(".book-group")
     );
     var noMatch = document.getElementById("bookNoMatch");
     input.addEventListener("input", function () {
@@ -104,9 +171,154 @@
         row.hidden = !hit;
         if (hit) shown += 1;
       });
+      groups.forEach(function (group) {
+        group.hidden = !group.querySelector(".book-service:not([hidden])");
+      });
       if (noMatch) noMatch.hidden = shown !== 0;
     });
   })();
+
+  /* The journey itself: pick a service (one data fetch for
+     the whole fortnight), walk days inside the room, pick a
+     time, confirm — the answer comes back as data and the
+     page speaks it: a toast, a step back, or the door to the
+     done room. Nothing a guest does here ends in silence. */
+  var SLOTS_URL = "{% url 'webui:book_slots' %}";
+  var state = { serviceId: null, payload: null, dayIdx: 0 };
+
+  function loadSlots(serviceId, then) {
+    room("timesLoading").hidden = false;
+    room("timesSections").innerHTML = "";
+    room("timesDays").innerHTML = "";
+    fetch(SLOTS_URL + "?service=" + serviceId, { headers: { "Accept": "application/json" } })
+      .then(function (r) { return r.json(); })
+      .then(function (payload) {
+        state.payload = payload;
+        state.dayIdx = 0;
+        for (var i = 0; i < payload.days.length; i++) {
+          if (payload.days[i].sections.length) { state.dayIdx = i; break; }
+        }
+        room("timesService").textContent = payload.service.name;
+        room("timesLoading").hidden = true;
+        renderDays();
+        renderSections();
+        if (then) then();
+      })
+      .catch(function () {
+        room("timesLoading").hidden = true;
+        toast("Open times couldn't load — check your connection and try again.", true);
+      });
+  }
+  function renderDays() {
+    var strip = room("timesDays");
+    strip.innerHTML = "";
+    state.payload.days.forEach(function (day, i) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "book-day" + (i === state.dayIdx ? " active" : "");
+      b.innerHTML = day.dow + "<b>" + day.dom + "</b>";
+      b.addEventListener("click", function () {
+        state.dayIdx = i;
+        renderDays();
+        renderSections();
+      });
+      strip.appendChild(b);
+    });
+  }
+  function renderSections() {
+    var host = room("timesSections");
+    host.innerHTML = "";
+    var day = state.payload.days[state.dayIdx];
+    if (!day.sections.length) {
+      host.innerHTML = "<p class='book-note'>No open times on " + day.label + " — try another day.</p>";
+      return;
+    }
+    day.sections.forEach(function (section) {
+      var h = document.createElement("h3");
+      h.className = "book-staff";
+      h.textContent = section.staff;
+      host.appendChild(h);
+      var wrap = document.createElement("div");
+      wrap.className = "book-times";
+      section.starts.forEach(function (start) {
+        var b = document.createElement("button");
+        b.type = "button";
+        b.className = "book-time";
+        b.textContent = start.label;
+        b.addEventListener("click", function () {
+          pickTime(day, section, start);
+        });
+        wrap.appendChild(b);
+      });
+      host.appendChild(wrap);
+    });
+  }
+  function pickTime(day, section, start) {
+    room("fService").value = state.serviceId;
+    room("fStaff").value = section.staff_id;
+    room("fDay").value = day.date;
+    room("fTime").value = start.t;
+    room("pickSummary").textContent =
+      state.payload.service.name + " with " + section.staff + " — " +
+      day.label + " at " + start.label;
+    go("pickTime");
+  }
+  document.querySelectorAll(".book-service[data-pick]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      state.serviceId = btn.getAttribute("data-pick");
+      go("pickService");
+      loadSlots(state.serviceId);
+    });
+  });
+  document.querySelectorAll("[data-go]").forEach(function (btn) {
+    btn.addEventListener("click", function () { go(btn.getAttribute("data-go")); });
+  });
+  room("againBtn").addEventListener("click", function () { go("again"); });
+
+  var form = room("bookForm");
+  form.addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var btn = room("confirmBtn");
+    btn.disabled = true;
+    btn.textContent = "Booking…";
+    fetch(form.action, { method: "POST", body: new FormData(form) })
+      .then(function (r) { return r.json(); })
+      .then(function (body) {
+        btn.disabled = false;
+        btn.textContent = "Confirm booking";
+        if (body.ok) {
+          room("doneSummary").textContent =
+            body.summary.service + " with " + body.summary.staff + " — " +
+            body.summary.when + ". See you soon, " +
+            body.summary.name.split(" ")[0] + ".";
+          go("booked");
+          toast("Booked — " + body.summary.service + ", " + body.summary.when + ".");
+        } else if (body.error === "taken") {
+          toast(body.message, true);
+          loadSlots(state.serviceId);
+          go("backToTimes");
+        } else {
+          toast(body.message || "That booking couldn't be made.", true);
+        }
+      })
+      .catch(function () {
+        btn.disabled = false;
+        btn.textContent = "Confirm booking";
+        toast("The booking didn't go through — check your connection and try again.", true);
+      });
+  });
+
+  /* A bounced classic confirm returns with a service and the
+     taken flag: reopen that service's room and say why. */
+  var RESUME_SERVICE = {{ resume_service|default:"null" }};
+  var RESUME_TAKEN = {% if taken %}true{% else %}false{% endif %};
+  if (RESUME_SERVICE) {
+    state.serviceId = RESUME_SERVICE;
+    go("pickService");
+    loadSlots(RESUME_SERVICE, function () {
+      if (RESUME_TAKEN) toast("That time was just taken — please pick another.", true);
+    });
+  }
   </script>
   {% endif %}
 </main>

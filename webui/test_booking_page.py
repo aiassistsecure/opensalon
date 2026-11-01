@@ -47,6 +47,22 @@ class BookingPageTests(TestCase):
         query = "&".join(f"{k}={v}" for k, v in params.items())
         return f"{reverse('webui:book')}?{query}"
 
+    def slots(self):
+        response = self.client.get(
+            reverse("webui:book_slots"), {"service": self.service.pk}
+        )
+        self.assertEqual(response.status_code, 200)
+        return response.json()
+
+    def first_start(self):
+        """Tomorrow's first offered start, as an \"H:M\" string —
+        read from the enclave's data edge, the way the page does."""
+        payload = self.slots()
+        for day in payload["days"]:
+            if day["date"] == self.tomorrow.isoformat():
+                return day["sections"][0]["starts"][0]["t"]
+        raise AssertionError("no starts offered tomorrow")
+
     def test_menu_shows_services_under_the_salons_name(self):
         response = self.client.get(reverse("webui:book"))
         self.assertEqual(response.status_code, 200)
@@ -55,34 +71,29 @@ class BookingPageTests(TestCase):
         self.assertNotContains(response, "OpenSalon")
 
     def test_slots_come_from_the_roster_and_the_toggle(self):
-        response = self.client.get(
-            self.book_url(
-                service=self.service.pk, day=self.tomorrow.isoformat()
-            )
+        payload = self.slots()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(len(payload["days"]), 14)
+        tomorrow = next(
+            d for d in payload["days"]
+            if d["date"] == self.tomorrow.isoformat()
         )
-        sections = response.context["sections"]
-        names = [s["staff"].display_name for s in sections]
+        names = [s["staff"] for s in tomorrow["sections"]]
         self.assertEqual(names, ["Dana Stylist"])
-        starts = sections[0]["starts"]
+        starts = tomorrow["sections"][0]["starts"]
         self.assertTrue(starts)
-        self.assertTrue(all(s.minute % 15 == 0 for s in starts))
         self.assertTrue(
-            all(s.date() == self.tomorrow for s in starts)
+            all(int(s["t"].split(":")[1]) % 15 == 0 for s in starts)
         )
 
     def test_full_flow_books_an_online_appointment(self):
-        page = self.client.get(
-            self.book_url(
-                service=self.service.pk, day=self.tomorrow.isoformat()
-            )
-        )
-        start = page.context["sections"][0]["starts"][0]
+        start = self.first_start()
         response = self.client.post(
             reverse("webui:book_confirm"),
             {
                 "service": self.service.pk, "staff": self.staff.pk,
                 "day": self.tomorrow.isoformat(),
-                "time": start.strftime("%H:%M"),
+                "time": start,
                 "first_name": "Robin", "last_name": "Guest",
                 "phone": "555-0110", "email": "robin@example.com",
                 "note": "First visit",
@@ -94,7 +105,10 @@ class BookingPageTests(TestCase):
         self.assertEqual(appointment.origin, "online")
         self.assertEqual(appointment.service, self.service)
         self.assertEqual(appointment.client.phone, "555-0110")
-        self.assertEqual(appointment.start, start)
+        hour, minute = (int(p) for p in start.split(":"))
+        self.assertEqual(
+            (appointment.start.hour, appointment.start.minute), (hour, minute)
+        )
         done = self.client.get(reverse("webui:book_done"))
         self.assertEqual(done.status_code, 200)
         self.assertContains(done, "Signature Cut")
@@ -105,18 +119,13 @@ class BookingPageTests(TestCase):
             salon=self.salon, first_name="Robin", last_name="Guest",
             phone="555-0110", email="old@example.com",
         )
-        page = self.client.get(
-            self.book_url(
-                service=self.service.pk, day=self.tomorrow.isoformat()
-            )
-        )
-        start = page.context["sections"][0]["starts"][0]
+        start = self.first_start()
         self.client.post(
             reverse("webui:book_confirm"),
             {
                 "service": self.service.pk, "staff": self.staff.pk,
                 "day": self.tomorrow.isoformat(),
-                "time": start.strftime("%H:%M"),
+                "time": start,
                 "first_name": "Robin", "last_name": "Guest",
                 "phone": "555-0110", "email": "new@example.com",
                 "note": "",
@@ -126,16 +135,11 @@ class BookingPageTests(TestCase):
         self.assertEqual(Appointment.objects.get().client, existing)
 
     def test_taken_slot_and_toggle_off_both_refuse(self):
-        page = self.client.get(
-            self.book_url(
-                service=self.service.pk, day=self.tomorrow.isoformat()
-            )
-        )
-        start = page.context["sections"][0]["starts"][0]
+        start = self.first_start()
         payload = {
             "service": self.service.pk, "staff": self.staff.pk,
             "day": self.tomorrow.isoformat(),
-            "time": start.strftime("%H:%M"),
+            "time": start,
             "first_name": "Robin", "last_name": "Guest",
             "phone": "555-0110", "email": "", "note": "",
         }
@@ -180,3 +184,74 @@ class BookingPageTests(TestCase):
         # .book-service is display:flex, which would otherwise
         # override the hidden attribute's own display:none.
         self.assertIn(".book-service[hidden]{display:none}", css)
+
+    def test_menu_groups_services_by_category(self):
+        from saloncore.models import Service, ServiceCategory
+
+        spa = ServiceCategory.objects.create(
+            salon=self.salon, name="Rituals", sort_order=5
+        )
+        Service.objects.create(
+            category=spa, name="Aveda Ritual", active=True,
+            service_minutes=30,
+        )
+        response = self.client.get(reverse("webui:book"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "book-cat")
+        self.assertContains(response, "Cuts")
+        self.assertContains(response, "Rituals")
+        self.assertContains(response, "Aveda Ritual")
+        # The group data rides in the view's own context, in
+        # the book's category order.
+        groups = response.context["groups"]
+        self.assertEqual([g["name"] for g in groups], ["Cuts", "Rituals"])
+
+    def test_page_is_an_enclave_of_rooms_on_an_edge_table(self):
+        from pathlib import Path
+
+        response = self.client.get(reverse("webui:book"))
+        self.assertEqual(response.status_code, 200)
+        # Every step of the journey is a room already on the
+        # page; the toast stack stands ready; a confirm bounce
+        # can resume at the times room.
+        for marker in (
+            'id="roomMenu"', 'id="roomTimes"', 'id="roomDetails"',
+            'id="roomDone"', 'id="bookToasts"',
+        ):
+            self.assertContains(response, marker)
+        template = (
+            Path(__file__).parent / "templates" / "webui" / "book.html"
+        ).read_text()
+        # Navigation is the edge table: named edges, traversed
+        # by go(), over rooms shown and hidden in place.
+        self.assertIn("EDGES", template)
+        self.assertIn("function go(edge)", template)
+        self.assertIn("pickService", template)
+        self.assertIn("booked", template)
+        self.assertIn("function toast(", template)
+
+    def test_confirm_json_mode_answers_instead_of_redirecting(self):
+        payload = {
+            "service": self.service.pk, "staff": self.staff.pk,
+            "day": self.tomorrow.isoformat(),
+            "time": self.first_start(),
+            "first_name": "Robin", "last_name": "Guest",
+            "phone": "555-0110", "email": "", "note": "",
+            "format": "json",
+        }
+        response = self.client.post(reverse("webui:book_confirm"), payload)
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["summary"]["service"], "Signature Cut")
+        self.assertEqual(body["summary"]["staff"], "Dana Stylist")
+        self.assertEqual(Appointment.objects.count(), 1)
+        # The same slot again: a spoken refusal the page can
+        # toast, not a silent redirect to nowhere.
+        payload["phone"] = "555-9999"
+        response = self.client.post(reverse("webui:book_confirm"), payload)
+        body = response.json()
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["error"], "taken")
+        self.assertTrue(body["message"])
+        self.assertEqual(Appointment.objects.count(), 1)
