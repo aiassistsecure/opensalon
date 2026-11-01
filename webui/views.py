@@ -1552,29 +1552,100 @@ def day_book_book_options(request):
     )
 
 
+def _phone_digit_tier(stored_digits, query_digits):
+    """How a stored phone answers a digit query: 0 for the same
+    number (bar the leading country 1), 1 for a suffix match
+    (the desk typed the tail), 2 for a substring, None for no
+    match. Both sides are digit-only by the time this runs, so
+    stored punctuation can never hide a number."""
+    if not stored_digits or not query_digits:
+        return None
+    if stored_digits == query_digits or stored_digits == "1" + query_digits:
+        return 0
+    if stored_digits.endswith(query_digits):
+        return 1
+    if query_digits in stored_digits:
+        return 2
+    return None
+
+
+def _phone_matches(salon, digits):
+    """Every client whose phone digits contain the query digits,
+    best tier first — the WHOLE book compared digit-to-digit.
+
+    The old funnel narrowed by the query's first three digits
+    as a raw substring and compared only the first few hundred
+    rows alphabetically; with 2,968 of Mint's phones containing
+    "407", a phone search physically could not reach most of
+    the book (measured on the real data: 43% of clients
+    unreachable by their own number). Phones are few and the
+    columns are light — compare them all, and let the tier
+    do the narrowing."""
+    if len(digits) < 4:
+        return []
+    scored = []
+    rows = (
+        Client.objects.filter(salon=salon)
+        .exclude(phone__isnull=True)
+        .exclude(phone="")
+        .values_list("pk", "first_name", "last_name", "phone")
+    )
+    for pk, first, last, phone in rows:
+        stored = "".join(ch for ch in phone if ch.isdigit())
+        tier = _phone_digit_tier(stored, digits)
+        if tier is not None:
+            scored.append(
+                (tier, (first or "").lower(), (last or "").lower(), pk)
+            )
+    scored.sort()
+    return [pk for _tier, _first, _last, pk in scored]
+
+
 def day_book_client_search(request):
     """Find a client for the booking form: first, last, first + last,
-    phone, or email — the ways the desk actually looks someone up."""
+    phone, or email — the ways the desk actually looks someone up.
+
+    Ranking is scored, not alphabetical-with-a-cap. The old code
+    took any-token matches in name order up to eight, so a common
+    token flooded the eight slots with strangers and the real
+    client fell past the cut. Now the working set is fetched
+    wide — every-token matches and any-token matches and the
+    phone leg's digit-compared set — every row is scored by how
+    the desk means the query (an exact phone first; then the
+    whole query living in the name; a surname prefix; a stray
+    email substring last; a nameless record never outranks a
+    named one), and only the scored order is cut to eight."""
     salon = _first_salon()
     q = (request.GET.get("q") or "").strip()
     if salon is None or len(q) < 2:
         return JsonResponse({"clients": []})
     qs = Client.objects.filter(salon=salon)
+    tokens = [t.lower() for t in q.split()]
     digits = "".join(ch for ch in q if ch.isdigit())
-    cond = Q()
-    for token in q.split():
-        cond |= (
+
+    by_pk = {}
+    # The phone leg: a typed number is the strongest signal the
+    # desk can give, and its matches lead, best tier first.
+    phone_rank = {}
+    for rank, pk in enumerate(_phone_matches(salon, digits)):
+        phone_rank[pk] = rank
+    if phone_rank:
+        for c in qs.filter(pk__in=list(phone_rank)):
+            by_pk[c.pk] = c
+
+    token_cond = Q()
+    for token in tokens:
+        token_cond |= (
             Q(first_name__icontains=token)
             | Q(last_name__icontains=token)
             | Q(email__icontains=token)
         )
-    rows = list(qs.filter(cond).order_by("first_name", "last_name")[:8])
-    exact = []
-    tokens = q.split()
+    # Any-token rows, fetched wide...
+    for c in qs.filter(token_cond).order_by("first_name", "last_name")[:300]:
+        by_pk.setdefault(c.pk, c)
+    # ...and every-token rows with their own fetch, so the exact
+    # person survives however many strangers share one token.
     if len(tokens) >= 2:
-        # "First Last" typed in full names ONE person. Rows matching
-        # EVERY token are fetched separately and ranked first, so a
-        # common surname can't push the exact person past the cap.
         exact_qs = qs
         for token in tokens:
             exact_qs = exact_qs.filter(
@@ -1582,25 +1653,39 @@ def day_book_client_search(request):
                 | Q(last_name__icontains=token)
                 | Q(email__icontains=token)
             )
-        exact = list(exact_qs.order_by("first_name", "last_name")[:8])
-        if exact:
-            exact_pks = {c.pk for c in exact}
-            rows = (exact + [c for c in rows if c.pk not in exact_pks])[:8]
-    if len(digits) >= 3:
-        # Stored phones carry punctuation ("407-555-0100"), so a
-        # digit query can never substring-match them directly:
-        # narrow by the first digits, then compare digit-to-digit.
-        seen = {c.pk for c in rows}
-        candidates = qs.filter(phone__icontains=digits[:3]).order_by(
-            "first_name", "last_name"
-        )[:200]
-        for c in candidates:
-            phone_digits = "".join(ch for ch in (c.phone or "") if ch.isdigit())
-            if digits in phone_digits and c.pk not in seen:
-                rows.append(c)
-                seen.add(c.pk)
-        if not exact:
-            rows.sort(key=lambda c: (c.first_name, c.last_name))
+        for c in exact_qs.order_by("first_name", "last_name")[:300]:
+            by_pk.setdefault(c.pk, c)
+
+    def score(c):
+        first = (c.first_name or "").lower()
+        last = (c.last_name or "").lower()
+        email = (c.email or "").lower()
+        if c.pk in phone_rank:
+            return (0, phone_rank[c.pk], first, last)
+        if not first and not last:
+            tier = 9  # nameless: a bare email is a last resort
+        else:
+            in_name = [t for t in tokens if t in first or t in last]
+            in_any = [
+                t for t in tokens if t in first or t in last or t in email
+            ]
+            if len(in_name) == len(tokens):
+                tier = 1  # the whole query lives in the name itself
+            elif len(in_any) == len(tokens):
+                tier = 2  # every token accounted for, some via email
+            elif any(last.startswith(t) for t in tokens):
+                tier = 3  # a surname prefix — the desk's main gesture
+            elif any(first.startswith(t) for t in tokens):
+                tier = 4
+            elif in_name:
+                tier = 5
+            elif in_any:
+                tier = 6
+            else:
+                tier = 7
+        return (tier, 0, first, last)
+
+    rows = sorted(by_pk.values(), key=score)[:8]
     return JsonResponse(
         {
             "clients": [
@@ -1609,7 +1694,7 @@ def day_book_client_search(request):
                     "name": f"{c.first_name} {c.last_name}".strip(),
                     "phone": c.phone,
                 }
-                for c in rows[:8]
+                for c in rows
             ]
         }
     )
@@ -2235,18 +2320,13 @@ def clients(request):
                     | Q(phone__icontains=token)
                 )
             digits = "".join(ch for ch in query if ch.isdigit())
-            if len(digits) >= 3:
-                # Stored phones carry punctuation ("407-555-0100"),
-                # so a digit query compares digit-to-digit over a
-                # narrowed candidate set — the booking search's rule.
-                phone_pks = [
-                    c.pk
-                    for c in Client.objects.filter(
-                        salon=salon, phone__icontains=digits[:3]
-                    )[:500]
-                    if digits
-                    in "".join(ch for ch in (c.phone or "") if ch.isdigit())
-                ]
+            if len(digits) >= 4:
+                # Digit-to-digit over the whole book — the
+                # booking search's rule (_phone_matches). The
+                # narrowed funnel this replaces compared only
+                # the first few hundred substring candidates
+                # and silently lost most of the book.
+                phone_pks = _phone_matches(salon, digits)
                 if phone_pks:
                     matched = {c.pk for c in qs} | set(phone_pks)
                     qs = (
