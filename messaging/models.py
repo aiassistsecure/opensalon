@@ -3,8 +3,8 @@
 Opt-in state still lives on ``clients.Client`` (the one source of
 truth) and is never duplicated here. Messaging stores the history
 of reminder sends it has actually dispatched (``ReminderSend``),
-and marketing campaign drafts (``Campaign``) -- M1 is model and
-audience only: a campaign has no send path yet.
+marketing campaigns (``Campaign``), and one send-log row per
+campaign recipient actually dispatched (``CampaignSend``).
 """
 from django.core.exceptions import ValidationError
 from django.db import models
@@ -12,7 +12,7 @@ from django.utils import timezone
 
 from bookings.models import Appointment
 from clients.models import Client
-from saloncore.models import Salon
+from saloncore.models import Salon, StrictConstraints
 
 
 class ReminderSend(models.Model):
@@ -72,17 +72,17 @@ class ReminderSend(models.Model):
 
 
 class Campaign(models.Model):
-    """A marketing campaign draft for one salon on one channel.
+    """A marketing campaign for one salon on one channel.
 
-    Marketing is the last Slice-3 capability and M1 is deliberately
-    draft-only: the only status is ``draft``, there is no send
-    method and no state transition beyond draft, and audience
-    selection (see ``messaging.campaigns``) only reads the
-    per-channel opt-ins on ``clients.Client``. Sending -- through
-    the existing provider-agnostic SMS adapter interface or
-    Django's SMTP email settings, never a provider SDK in core --
-    is a later microtask. ``subject`` is used by email campaigns
-    and may be blank for SMS.
+    M1 was draft-only; M2 adds the send path
+    (``messaging.campaign_send.send_campaign``): a draft campaign
+    may transition exactly once, to ``sent`` (with ``sent_at``
+    stamped), through the existing provider-agnostic SMS adapter
+    interface or Django's SMTP email settings -- never a provider
+    SDK in core. Audience selection (see ``messaging.campaigns``)
+    only reads the per-channel opt-ins on ``clients.Client`` and
+    is re-resolved at send time. ``subject`` is used by email
+    campaigns and may be blank for SMS.
     """
 
     class Channel(models.TextChoices):
@@ -91,6 +91,7 @@ class Campaign(models.Model):
 
     class Status(models.TextChoices):
         DRAFT = "draft", "Draft"
+        SENT = "sent", "Sent"
 
     salon = models.ForeignKey(
         Salon, on_delete=models.CASCADE, related_name="campaigns"
@@ -102,6 +103,7 @@ class Campaign(models.Model):
     status = models.CharField(
         max_length=20, choices=Status.choices, default=Status.DRAFT
     )
+    sent_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -113,16 +115,69 @@ class Campaign(models.Model):
 
     def clean(self):
         super().clean()
-        if self.status != self.Status.DRAFT:
+        if self.status not in self.Status.values:
+            raise ValidationError({"status": "Unknown campaign status."})
+        if self.status == self.Status.SENT and self.sent_at is None:
             raise ValidationError(
-                {"status": "Campaigns are draft-only in this version."}
+                {"sent_at": "A sent campaign must carry a sent_at timestamp."}
             )
 
     def save(self, *args, **kwargs):
-        # Draft-only lifecycle: refuse any non-draft status rather
-        # than implying a send/sent state that does not exist yet.
-        if self.status != self.Status.DRAFT:
+        # Lifecycle guard: only draft/sent are valid, and ``sent``
+        # must carry its timestamp. The one-way draft -> sent
+        # transition itself (and the re-send refusal) is enforced
+        # by the send service, the only intended writer of ``sent``.
+        if self.status not in self.Status.values:
+            raise ValidationError({"status": "Unknown campaign status."})
+        if self.status == self.Status.SENT and self.sent_at is None:
             raise ValidationError(
-                {"status": "Campaigns are draft-only in this version."}
+                {"sent_at": "A sent campaign must carry a sent_at timestamp."}
             )
         return super().save(*args, **kwargs)
+
+
+class CampaignSend(StrictConstraints):
+    """One successfully dispatched campaign message to one client.
+
+    The campaign send-log (``ReminderSend`` cannot serve here: it
+    is keyed to an appointment). As with ``ReminderSend``, a row
+    is written only on a successful dispatch -- skipped or failed
+    attempts create no row, exactly as they send nothing.
+    ``channel`` is denormalised from the campaign at send time.
+    """
+
+    class Status(models.TextChoices):
+        SENT = "sent", "Sent"
+
+    campaign = models.ForeignKey(
+        Campaign, on_delete=models.CASCADE, related_name="sends"
+    )
+    client = models.ForeignKey(
+        Client, on_delete=models.CASCADE, related_name="campaign_sends"
+    )
+    channel = models.CharField(max_length=20, choices=Campaign.Channel.choices)
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.SENT
+    )
+    sent_at = models.DateTimeField(default=timezone.now)
+    # Free-form send detail: the adapter reference for SMS, blank
+    # for email. Never a provider name or provider-specific field.
+    detail = models.CharField(max_length=200, blank=True)
+
+    class Meta:
+        ordering = ["-sent_at", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["campaign", "client"], name="uniq_campaign_send_per_client"
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.channel} campaign {self.campaign_id} to client {self.client_id}"
+
+    @classmethod
+    def record(cls, campaign, client, detail=""):
+        return cls.objects.create(
+            campaign=campaign, client=client, channel=campaign.channel,
+            status=cls.Status.SENT, sent_at=timezone.now(), detail=detail or "",
+        )
