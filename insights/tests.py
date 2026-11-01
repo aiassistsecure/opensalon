@@ -58,15 +58,41 @@ class Last7DaysRevenueSplitTests(TestCase):
         self.assertIsInstance(result, RevenueSplit)
         self.assertEqual(result.service, Decimal("85.00"))
         self.assertEqual(result.retail, Decimal("48.00"))
+        self.assertEqual(result.series, Decimal("0.00"))
         self.assertEqual(result.total, Decimal("133.00"))
         self.assertEqual(result.end_date, self.today)
         self.assertEqual(result.start_date, self.today - timedelta(days=6))
         self.assertEqual(result.days, 7)
 
+    def test_split_includes_series_with_quantities(self):
+        sale = self._sale()
+        self._item(sale, SaleItem.Kind.SERVICE, "85.00")
+        self._item(sale, SaleItem.Kind.PRODUCT, "24.00", quantity=2)
+        self._item(sale, SaleItem.Kind.SERIES, "150.00", quantity=2)
+        self._item(sale, SaleItem.Kind.SERIES, "50.00")
+        result = last_7_days_revenue_split(self.salon, today=self.today)
+        self.assertEqual(result.service, Decimal("85.00"))
+        self.assertEqual(result.retail, Decimal("48.00"))
+        self.assertEqual(result.series, Decimal("350.00"))
+        self.assertEqual(result.total, Decimal("483.00"))
+        self.assertEqual(
+            result.total, result.service + result.retail + result.series
+        )
+
+    def test_series_only_sale_counts_toward_series_and_total(self):
+        sale = self._sale()
+        self._item(sale, SaleItem.Kind.SERIES, "200.00")
+        result = last_7_days_revenue_split(self.salon, today=self.today)
+        self.assertEqual(result.service, Decimal("0.00"))
+        self.assertEqual(result.retail, Decimal("0.00"))
+        self.assertEqual(result.series, Decimal("200.00"))
+        self.assertEqual(result.total, Decimal("200.00"))
+
     def test_no_sales_returns_zeroes_not_none(self):
         result = last_7_days_revenue_split(self.salon, today=self.today)
         self.assertEqual(result.service, Decimal("0.00"))
         self.assertEqual(result.retail, Decimal("0.00"))
+        self.assertEqual(result.series, Decimal("0.00"))
         self.assertEqual(result.total, Decimal("0.00"))
 
     def test_window_includes_day_7_boundary_and_excludes_older(self):

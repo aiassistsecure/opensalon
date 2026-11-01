@@ -15,10 +15,8 @@ never reimplements that math or re-queries sales.
 
 The service returns a single
 :class:`insights.services.RevenueSplit`, so the export is at most
-one data row. There is no series column: ``SaleItem.Kind`` defines
-only ``SERVICE`` and ``PRODUCT``, and the service deliberately
-carries no series field — inventing one here would report a
-permanently-zero category as if it were measured.
+one data row. The ``series`` column is the result's series revenue,
+computed by the service from ``SaleItem.Kind.SERIES`` items.
 
 Columns are only fields the service's result actually carries:
 
@@ -27,6 +25,7 @@ Columns are only fields the service's result actually carries:
 - ``days``: the result's window length in days (7).
 - ``service``: the result's service revenue.
 - ``retail``: the result's retail (product) revenue.
+- ``series``: the result's series revenue.
 - ``total``: the result's total revenue.
 
 Money is rendered as a string to two decimal places, never
@@ -55,6 +54,7 @@ SPLIT_FIELDNAMES = [
     "days",
     "service",
     "retail",
+    "series",
     "total",
 ]
 
@@ -98,6 +98,7 @@ def export_split_csv(salon, *, today=None, **kwargs):
             "days": result.days,
             "service": _money(result.service),
             "retail": _money(result.retail),
+            "series": _money(result.series),
             "total": _money(result.total),
         })
     return buffer.getvalue()

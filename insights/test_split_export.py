@@ -52,15 +52,16 @@ class SplitExportCsvTests(TestCase):
         self.assertEqual(header, SPLIT_FIELDNAMES)
         self.assertEqual(SPLIT_FIELDNAMES, [
             "start_date", "end_date", "days",
-            "service", "retail", "total",
+            "service", "retail", "series", "total",
         ])
-        # No series column: the service carries no series field.
-        self.assertNotIn("series", SPLIT_FIELDNAMES)
+        # Series column present: the service carries a series field.
+        self.assertIn("series", SPLIT_FIELDNAMES)
 
     def test_row_matches_service_output(self):
         sale = self._sale()
         self._item(sale, SaleItem.Kind.SERVICE, "85.00")
         self._item(sale, SaleItem.Kind.PRODUCT, "24.00", quantity=2)
+        self._item(sale, SaleItem.Kind.SERIES, "150.00")
         result = last_7_days_revenue_split(self.salon, today=TODAY)
         rows = self._rows()
         self.assertEqual(len(rows), 1)
@@ -70,12 +71,39 @@ class SplitExportCsvTests(TestCase):
             "days": str(result.days),
             "service": str(result.service.quantize(Decimal("0.01"))),
             "retail": str(result.retail.quantize(Decimal("0.01"))),
+            "series": str(result.series.quantize(Decimal("0.01"))),
             "total": str(result.total.quantize(Decimal("0.01"))),
         })
-        self.assertEqual(rows[0]["total"], "133.00")
+        self.assertEqual(rows[0]["series"], "150.00")
+        self.assertEqual(rows[0]["total"], "283.00")
         self.assertEqual(
             result.start_date, TODAY - timedelta(days=6)
         )
+
+    def test_series_column_sums_correctly(self):
+        sale = self._sale()
+        self._item(sale, SaleItem.Kind.SERVICE, "85.00")
+        self._item(sale, SaleItem.Kind.SERIES, "150.00", quantity=2)
+        self._item(sale, SaleItem.Kind.SERIES, "50.00")
+        rows = self._rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["series"], "350.00")
+        self.assertEqual(rows[0]["total"], "435.00")
+        self.assertEqual(
+            Decimal(rows[0]["total"]),
+            Decimal(rows[0]["service"]) + Decimal(rows[0]["retail"])
+            + Decimal(rows[0]["series"]),
+        )
+
+    def test_series_only_sale_exports_a_row(self):
+        sale = self._sale()
+        self._item(sale, SaleItem.Kind.SERIES, "200.00")
+        rows = self._rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["service"], "0.00")
+        self.assertEqual(rows[0]["retail"], "0.00")
+        self.assertEqual(rows[0]["series"], "200.00")
+        self.assertEqual(rows[0]["total"], "200.00")
 
     def test_salon_isolation(self):
         other_sale = self._sale(salon=self.other)
