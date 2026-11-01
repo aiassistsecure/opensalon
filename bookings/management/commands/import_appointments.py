@@ -53,6 +53,12 @@ Mapping (one source of truth — this command is the only writer here):
   The whole source record is preserved verbatim on
   ``Appointment.payload`` (price and every other unmapped field
   included), so nothing the source knew is dropped on import.
+- Ids are never silently truncated: ``appointmentId`` and the
+  ``clientId`` / ``staffId`` / ``serviceId`` lookup ids are
+  normalised to ``str`` and, if any exceeds its model
+  ``external_id`` limit (64), the record is skipped and counted
+  under ``oversized_id`` — truncating an id would corrupt the
+  identity join it keys.
 - Records flagged ``deleted`` and records without an
   ``appointmentId`` or with unparseable date/times are skipped and
   counted under ``skipped``. ``deleted`` is parsed strictly, never
@@ -241,7 +247,7 @@ class Command(BaseCommand):
         records = _load_records(options["path"])
         stats = dict.fromkeys(
             ["created", "updated", "skipped", "unchanged",
-             "unknown_state",
+             "unknown_state", "oversized_id",
              "unresolved_client",
              "unresolved_staff", "unresolved_service",
              "imported_with_service_snapshot"], 0)
@@ -311,7 +317,20 @@ class Command(BaseCommand):
                 if status is None:
                     stats["unknown_state"] += 1
                     continue
-                external_id = str(row.get("appointmentId") or "")[:64]
+                external_id = str(row.get("appointmentId") or "")
+                client_id = str(row.get("clientId") or "")
+                staff_id = str(row.get("staffId") or "")
+                service_id = str(row.get("serviceId") or "")
+                if (len(external_id) > Appointment._meta.get_field(
+                        "external_id").max_length
+                        or len(client_id) > Client._meta.get_field(
+                            "external_id").max_length
+                        or len(staff_id) > StaffMember._meta.get_field(
+                            "external_id").max_length
+                        or len(service_id) > Service._meta.get_field(
+                            "external_id").max_length):
+                    stats["oversized_id"] += 1
+                    continue
                 start = _combine(row.get("appointmentDate"),
                                  row.get("startTime"), tz)
                 end = _combine(row.get("appointmentDate"),
@@ -321,15 +340,15 @@ class Command(BaseCommand):
                     continue
                 if end <= start:
                     end += timedelta(days=1)
-                client = clients.get(str(row.get("clientId") or ""))
+                client = clients.get(client_id)
                 if client is None:
                     stats["unresolved_client"] += 1
                     continue
-                member = staff.get(str(row.get("staffId") or ""))
+                member = staff.get(staff_id)
                 if member is None:
                     stats["unresolved_staff"] += 1
                     continue
-                service = services.get(str(row.get("serviceId") or ""))
+                service = services.get(service_id)
                 snapshot = str(row.get("serviceName") or "").strip()[:200]
                 if service is None:
                     stats["unresolved_service"] += 1
@@ -416,6 +435,7 @@ class Command(BaseCommand):
             "Imported appointments for {salon}: {created} created, "
             "{updated} updated, {unchanged} unchanged, "
             "{skipped} skipped, {unknown_state} unknown state, "
+            "{oversized_id} oversized id, "
             "{unresolved_client} "
             "unresolved client, {unresolved_staff} unresolved staff, "
             "{unresolved_service} unresolved service "

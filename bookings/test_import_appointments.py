@@ -387,3 +387,68 @@ class ImportAppointmentsTests(TestCase):
         appt = Appointment.objects.get(external_id="appt-x")
         self.assertEqual(appt.start, datetime(
             2026, 10, 3, 9, 0, tzinfo=dt_timezone.utc))
+
+    # TF-6: ids are never silently truncated; over-long ids are
+    # skipped and counted under oversized_id.
+
+    def test_oversized_appointment_id_skipped_and_counted(self):
+        long_id = "a" * 65
+        out = self.run_import(payload=[self._one_row(long_id)])
+        self.assertIn('"created": 0', out)
+        self.assertIn('"oversized_id": 1', out)
+        self.assertIn("1 oversized id", out)
+        self.assertEqual(Appointment.objects.count(), 0)
+        # No truncated row was stored under the 64-char prefix.
+        self.assertFalse(
+            Appointment.objects.filter(external_id=long_id[:64]).exists())
+
+    def test_oversized_ids_sharing_prefix_do_not_collide(self):
+        prefix = "b" * 64
+        payload = [self._one_row(prefix + "1"),
+                   self._one_row(prefix + "2")]
+        out = self.run_import(payload=payload)
+        self.assertIn('"oversized_id": 2', out)
+        self.assertEqual(Appointment.objects.count(), 0)
+
+    def test_oversized_lookup_ids_skipped_and_counted(self):
+        for field in ("clientId", "staffId", "serviceId"):
+            with self.subTest(field=field):
+                out = self.run_import(payload=[
+                    self._one_row(**{field: "x" * 65})])
+                self.assertIn('"created": 0', out)
+                self.assertIn('"oversized_id": 1', out)
+        self.assertEqual(Appointment.objects.count(), 0)
+
+    def test_at_limit_id_imports(self):
+        at_limit = "c" * 64
+        out = self.run_import(payload=[self._one_row(at_limit)])
+        self.assertIn('"created": 1', out)
+        self.assertIn('"oversized_id": 0', out)
+        self.assertEqual(
+            Appointment.objects.get(external_id=at_limit).external_id,
+            at_limit)
+
+    def test_normal_ids_unaffected(self):
+        out = self.run_import(payload=[self._one_row()])
+        self.assertIn('"created": 1', out)
+        self.assertIn('"oversized_id": 0', out)
+        self.assertTrue(
+            Appointment.objects.filter(external_id="appt-x").exists())
+
+    def test_int_appointment_id_normalised_to_str(self):
+        out = self.run_import(payload=[self._one_row(12345)])
+        self.assertIn('"created": 1', out)
+        appt = Appointment.objects.get(external_id="12345")
+        self.assertIsInstance(appt.external_id, str)
+
+    def test_reimport_idempotent_for_at_limit_and_oversized(self):
+        at_limit = "d" * 64
+        payload = [self._one_row(at_limit),
+                   self._one_row("e" * 65)]
+        self.run_import(payload=payload)
+        out = self.run_import(payload=payload)
+        self.assertIn('"created": 0', out)
+        self.assertIn('"updated": 0', out)
+        self.assertIn('"unchanged": 1', out)
+        self.assertIn('"oversized_id": 1', out)
+        self.assertEqual(Appointment.objects.count(), 1)
