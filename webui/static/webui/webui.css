@@ -1360,7 +1360,10 @@ button:focus-visible, a:focus-visible, select:focus-visible {
 .book-note{color:#6b6250;font-size:14px}
 .book-note a{color:#3f5a36;font-weight:650}
 .book-services{display:flex;flex-direction:column;gap:9px}
+.book-search{width:100%;box-sizing:border-box;padding:13px 15px;margin-bottom:12px;border:1px solid #e6ddc6;border-radius:13px;background:#fff;color:#1d2530;font:inherit;font-size:15px}
+.book-search:focus{outline:none;border-color:#3f5a36}
 .book-service{display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding:13px 15px;border:1px solid #e6ddc6;border-radius:13px;text-decoration:none;color:#1d2530;background:#fff}
+.book-service[hidden]{display:none}
 .book-service:hover{border-color:#3f5a36}
 .book-service-name{font-weight:650}
 .book-service-meta{color:#9a927e;font-size:13px;white-space:nowrap}
