@@ -41,7 +41,19 @@ from decimal import Decimal, InvalidOperation
 from django.core.management.base import BaseCommand, CommandError
 
 from catalog.models import Product, StockMovement
+from saloncore.dry_run import build_dry_run_report
 from saloncore.models import Salon
+
+# Source keys this importer actually maps (TF-12): every key read
+# by ``_mapped``, ``_stock_quantity`` or the identity/skip checks
+# in ``handle``. Any other source key (e.g. ``parentProductId``,
+# preserved only verbatim in ``payload``) is reported as unmapped
+# by --dry-run so nothing is silently dropped without being named.
+MAPPED_KEYS = frozenset({
+    "productId", "name", "code", "barcode", "price", "reorderCost",
+    "brandName", "categoryName", "type", "archived",
+    "quantityInStock",
+})
 
 
 def _money(value):
@@ -202,6 +214,12 @@ class Command(BaseCommand):
         parser.add_argument("path", help="Path to the products JSON export.")
         parser.add_argument("--salon", default="My Salon",
                             help="Salon name to import into.")
+        parser.add_argument(
+            "--dry-run", dest="dry_run", action="store_true",
+            default=False,
+            help="Report the source file's schema (field types, "
+                 "null/missing/empty counts, unmapped keys) as JSON "
+                 "and write nothing to the database.")
 
     def handle(self, *args, **options):
         try:
@@ -211,6 +229,12 @@ class Command(BaseCommand):
             raise CommandError(f"cannot read products export: {exc}")
         if not isinstance(records, list):
             raise CommandError("products export must be a JSON list")
+
+        if options.get("dry_run"):
+            report = build_dry_run_report(
+                records, MAPPED_KEYS, source_name=options["path"])
+            self.stdout.write(json.dumps(report, indent=2, sort_keys=True))
+            return
 
         salon, _ = Salon.objects.get_or_create(name=options["salon"])
         created = updated = unchanged = skipped = stocked = 0
