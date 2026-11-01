@@ -15,7 +15,7 @@ from bookings.models import Appointment, AppointmentNote, Break
 from checkout.models import Cashup, Payment, Receipt, Refund, Sale, SaleItem
 from catalog.models import Product, StockMovement
 from clients.models import Client, ClientNote
-from messaging.models import Campaign, ReminderSend
+from messaging.models import Campaign, CampaignSend, ReminderSend
 from saloncore.models import (
     PriceChange,
     Salon,
@@ -82,6 +82,7 @@ class ExportSalonDataTests(TestCase):
             "stock_movements": 0, "attendance_records": 0,
             "price_changes": 0, "refunds": 0, "breaks": 0, "cashups": 0,
             "receipts": 0, "reminder_sends": 0, "campaigns": 0,
+            "campaign_sends": 0,
         })
         for key, count in data["counts"].items():
             self.assertEqual(len(data[key]), count)
@@ -1110,3 +1111,73 @@ class ExportCampaignsTests(TestCase):
         data = self.run_export(salon="Other Salon")
         self.assertEqual(data["counts"]["campaigns"], 1)
         self.assertEqual(data["campaigns"][0]["salon_id"], other.id)
+
+
+class ExportCampaignSendsTests(TestCase):
+    """Campaign sends leg: export scoped through the campaign's salon."""
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Campaign Send Salon")
+        self.client = Client.objects.create(
+            salon=self.salon, first_name="Ada", last_name="Optin")
+        self.other_client = Client.objects.create(
+            salon=self.salon, first_name="Bob", last_name="Optin")
+        self.sent_at = datetime(2026, 10, 3, 17, 5, tzinfo=dt_timezone.utc)
+        self.campaign = Campaign.objects.create(
+            salon=self.salon, name="October Blast",
+            channel=Campaign.Channel.EMAIL, subject="Hi",
+            body="Blast body", status=Campaign.Status.SENT,
+            sent_at=self.sent_at)
+        self.send = CampaignSend.objects.create(
+            campaign=self.campaign, client=self.client, channel="email",
+            status="sent", sent_at=self.sent_at, detail="")
+        self.send2 = CampaignSend.objects.create(
+            campaign=self.campaign, client=self.other_client,
+            channel="email", status="sent",
+            sent_at=self.sent_at + timedelta(hours=1), detail="ref-456")
+
+    def run_export(self, **kwargs):
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        fh.close()
+        call_command("export_salon_data", fh.name,
+                     stdout=io.StringIO(), **kwargs)
+        with open(fh.name, encoding="utf-8") as exported:
+            return json.load(exported)
+
+    def test_export_emits_campaign_sends_with_all_fields(self):
+        data = self.run_export()
+        self.assertEqual(data["counts"]["campaign_sends"], 2)
+        by_client = {r["client_id"]: r for r in data["campaign_sends"]}
+        row = by_client[self.client.id]
+        self.assertEqual(row["id"], self.send.id)
+        self.assertEqual(row["campaign_id"], self.campaign.id)
+        self.assertEqual(row["channel"], "email")
+        self.assertEqual(row["status"], "sent")
+        self.assertEqual(row["sent_at"], self.sent_at.isoformat())
+        self.assertEqual(row["detail"], "")
+        other = by_client[self.other_client.id]
+        self.assertEqual(other["detail"], "ref-456")
+        self.assertEqual(
+            other["sent_at"],
+            (self.sent_at + timedelta(hours=1)).isoformat())
+
+    def test_salon_filter_scopes_campaign_sends_via_campaign(self):
+        other = Salon.objects.create(name="Other Salon")
+        other_client = Client.objects.create(
+            salon=other, first_name="Cid", last_name="Elsewhere")
+        other_campaign = Campaign.objects.create(
+            salon=other, name="Elsewhere Blast", channel="sms",
+            body="Offer", status=Campaign.Status.SENT,
+            sent_at=self.sent_at)
+        CampaignSend.objects.create(
+            campaign=other_campaign, client=other_client, channel="sms",
+            sent_at=self.sent_at)
+        data = self.run_export(salon="Campaign Send Salon")
+        self.assertEqual(data["counts"]["campaign_sends"], 2)
+        data = self.run_export(salon="Other Salon")
+        self.assertEqual(data["counts"]["campaign_sends"], 1)
+        self.assertEqual(
+            data["campaign_sends"][0]["campaign_id"], other_campaign.id)
+        self.assertEqual(
+            data["campaign_sends"][0]["client_id"], other_client.id)
