@@ -9,10 +9,10 @@ section list) and restores Salon, ServiceCategory, Service,
 StaffLevel, ServicePrice, Client, ClientNote, StaffMember,
 Appointment, AppointmentNote, Product, RosterPattern,
 ShiftOverride, Sale, SaleItem, Payment, StockMovement,
-AttendanceRecord, PriceChange, Refund and Break records. The ``products``,
+AttendanceRecord, PriceChange, Refund, Break and Cashup records. The ``products``,
 ``roster_patterns``, ``shift_overrides``, ``sales``, ``sale_items``,
 ``sale_payments``, ``stock_movements``, ``attendance_records``,
-``price_changes``, ``refunds`` and ``breaks`` sections are optional on read: an export
+``price_changes``, ``refunds``, ``breaks`` and ``cashups`` sections are optional on read: an export
 file written before they existed (no such section, no ``counts``
 entry for it) imports exactly as before, with the section
 treated as empty. Roster rows restore idempotently too:
@@ -137,6 +137,23 @@ and creates nothing twice:
   value is rejected in phase 1. ``paid`` is STRICT-parsed
   (TF-3): missing / null / non-bool is a named
   CommandError, never guessed.
+- Cashup         <- (salon, period_start, period_end,
+  created_at). A cashup is a snapshot, so restore never updates
+  an existing row: the natural key above is looked up with
+  ``get_or_create`` semantics — a cashup already restored is
+  returned untouched and a re-import never duplicates it;
+  ``tender_totals``, ``total`` and ``note`` are creation
+  defaults only. Its salon link resolves by the file-local
+  ``salon_id`` map; a link that resolves by neither fails
+  closed in phase 1. ``period_start``, ``period_end`` and
+  ``created_at`` must be timezone-explicit (TF-7): they are
+  identity anchors, required, and naive values are rejected
+  in phase 1. ``total`` is an exact string, parsed as Decimal,
+  never a float, and ``tender_totals`` must be a dict of
+  Decimal-parseable string values keyed by core
+  ``Payment.Method`` slugs — no provider concept. Restoring
+  ``created_at`` follows the refunds pattern: re-stamped once
+  at creation only, never on an existing row.
 
 No provider concepts: external ids are the generic fields the models
 already carry.
@@ -234,7 +251,7 @@ from django.utils.dateparse import parse_date, parse_datetime, parse_time
 from django.utils.timezone import is_naive
 
 from bookings.models import Appointment, AppointmentNote, Break
-from checkout.models import Payment, Refund, Sale, SaleItem
+from checkout.models import Cashup, Payment, Refund, Sale, SaleItem
 from catalog.models import Product, StockMovement
 from clients.models import Client, ClientNote
 from saloncore.dry_run import build_dry_run_reports
@@ -259,7 +276,7 @@ SECTIONS = (
     "appointments", "appointment_notes", "products",
     "roster_patterns", "shift_overrides",
     "sales", "sale_items", "sale_payments", "stock_movements",
-    "attendance_records", "price_changes", "refunds", "breaks",
+    "attendance_records", "price_changes", "refunds", "breaks", "cashups",
 )
 
 # Sections an older export file may legitimately lack entirely:
@@ -267,7 +284,7 @@ SECTIONS = (
 OPTIONAL_SECTIONS = ("products", "roster_patterns", "shift_overrides",
                      "sales", "sale_items", "sale_payments",
                      "stock_movements", "attendance_records",
-                     "price_changes", "refunds", "breaks")
+                     "price_changes", "refunds", "breaks", "cashups")
 
 # Every key the exporter emits (hence the importer may consume) per
 # section. Any other key in a record is unknown (TF-11).
@@ -331,6 +348,8 @@ KNOWN_KEYS = {
                 "created_at"},
     "breaks": {"id", "staff_member_id",
                "staff_member_external_id", "start", "end", "paid"},
+    "cashups": {"id", "salon_id", "period_start", "period_end",
+                "tender_totals", "total", "note", "created_at"},
 }
 
 TOP_LEVEL_KEYS = set(SECTIONS) | {"counts"}
@@ -489,6 +508,7 @@ _ID_FIELDS = {
     "refunds": ("id", "sale_id"),
     "breaks": ("id", "staff_member_id",
                "staff_member_external_id"),
+    "cashups": ("id", "salon_id"),
 }
 
 # (section, field) -> model whose external_id limit governs it.
@@ -708,6 +728,8 @@ def _validate(data):
         "refunds": ("id", "sale_id", "amount", "tender",
                     "created_at"),
         "breaks": ("id", "staff_member_id", "start", "end"),
+        "cashups": ("id", "salon_id", "period_start", "period_end",
+                    "total", "created_at"),
     }
     for section, fields in required.items():
         for row in data[section]:
@@ -983,6 +1005,37 @@ def _validate(data):
             _checked_datetime(
                 row[field], f"breaks {field} "
                 f"record id {row.get('id')!r}")
+    for row in data["cashups"]:
+        _check_ref(salon_ids, row["salon_id"], "salon")
+        for field in ("period_start", "period_end", "created_at"):
+            _checked_datetime(
+                row[field], f"cashups {field} "
+                f"record id {row.get('id')!r}")
+        try:
+            Decimal(str(row["total"]))
+        except (InvalidOperation, ValueError) as exc:
+            raise CommandError(
+                f"Bad cashups total: {row.get('total')!r}."
+            ) from exc
+        tender_totals = row.get("tender_totals", {})
+        if not isinstance(tender_totals, dict):
+            raise CommandError(
+                f"Bad cashups tender_totals: {tender_totals!r} "
+                f"is not an object.")
+        for key, value in tender_totals.items():
+            if key not in Payment.Method.values:
+                raise CommandError(
+                    f"Bad cashups tender_totals key: {key!r}.")
+            if not isinstance(value, str):
+                raise CommandError(
+                    f"Bad cashups tender_totals value: "
+                    f"{key!r}={value!r} is not a string.")
+            try:
+                Decimal(value)
+            except (InvalidOperation, ValueError) as exc:
+                raise CommandError(
+                    f"Bad cashups tender_totals value: "
+                    f"{key!r}={value!r}.") from exc
 
 
 def _ref(mapping, old_id, what):
@@ -1525,6 +1578,29 @@ class Command(BaseCommand):
                 end=_checked_datetime(row["end"], "breaks end"),
                 defaults={"paid": row["paid"]},
             )
+        for row in data["cashups"]:
+            period_start = _checked_datetime(
+                row["period_start"], "cashups period_start")
+            period_end = _checked_datetime(
+                row["period_end"], "cashups period_end")
+            created_at = _checked_datetime(
+                row["created_at"], "cashups created_at")
+            # Snapshot: get_or_create on the natural key — an
+            # already-restored cashup is returned untouched,
+            # never updated and never duplicated.
+            cashup, created = Cashup.objects.get_or_create(
+                salon=_ref(salons, row["salon_id"], "salon"),
+                period_start=period_start,
+                period_end=period_end,
+                created_at=created_at,
+                defaults={
+                    "tender_totals": row.get("tender_totals", {}),
+                    "total": Decimal(str(row["total"])),
+                    "note": row.get("note", ""),
+                },
+            )
+            if created:
+                _restore_created_at(cashup, row.get("created_at"))
 
         summary = ", ".join(
             f"{section}={len(data[section])}" for section in SECTIONS

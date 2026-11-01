@@ -67,6 +67,12 @@ fully export. This is part 1 of that test — the core records only:
   ``staff_member_external_id``, like attendance records;
   ``start`` / ``end`` are emitted as ISO-8601 with timezone
   via ``_dt`` and ``paid`` as a real boolean.
+- checkout: Cashup (a close-out snapshot of a period's takings,
+  scoped directly by its salon). Rows carry the salon reference
+  as the internal ``salon_id``; ``period_start`` /
+  ``period_end`` / ``created_at`` as ISO-8601 with timezone,
+  ``tender_totals`` verbatim (method slug -> total as string),
+  and ``total`` as an exact string (money never floats).
 
 The ``payload`` (whole source record, stored verbatim) is emitted
 for every section whose model carries one — clients, services,
@@ -87,7 +93,7 @@ import json
 from django.core.management.base import BaseCommand, CommandError
 
 from bookings.models import Appointment, AppointmentNote, Break
-from checkout.models import Payment, Refund, Sale, SaleItem
+from checkout.models import Cashup, Payment, Refund, Sale, SaleItem
 from catalog.models import Product, StockMovement
 from clients.models import Client, ClientNote
 from saloncore.models import (
@@ -111,7 +117,7 @@ def _dt(value):
 
 
 class Command(BaseCommand):
-    help = "Export salon core data (price book, clients, staff, appointments, products, sales, stock movements, attendance, price changes, refunds, breaks) to one JSON file."
+    help = "Export salon core data (price book, clients, staff, appointments, products, sales, stock movements, attendance, price changes, refunds, breaks, cashups) to one JSON file."
 
     def add_arguments(self, parser):
         parser.add_argument("output", help="Path of the JSON file to write.")
@@ -172,6 +178,7 @@ class Command(BaseCommand):
             staff_member_id__in=staff_ids).select_related("staff_member")
         breaks = Break.objects.filter(
             staff_member_id__in=staff_ids).select_related("staff_member")
+        cashups = Cashup.objects.filter(salon_id__in=salon_ids)
 
         data = {
             "salons": [
@@ -425,6 +432,17 @@ class Command(BaseCommand):
                     "paid": b.paid,
                 }
                 for b in breaks
+            ],
+            "cashups": [
+                {
+                    "id": c.id, "salon_id": c.salon_id,
+                    "period_start": _dt(c.period_start),
+                    "period_end": _dt(c.period_end),
+                    "tender_totals": c.tender_totals,
+                    "total": str(c.total), "note": c.note,
+                    "created_at": _dt(c.created_at),
+                }
+                for c in cashups
             ],
         }
         data["counts"] = {
