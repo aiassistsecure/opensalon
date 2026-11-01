@@ -30,11 +30,11 @@ RECORDS = [
 
 
 class ImportProductsTests(TestCase):
-    def _run(self):
+    def _run(self, records=RECORDS):
         fh = tempfile.NamedTemporaryFile(
             "w", suffix=".json", delete=False
         )
-        json.dump(RECORDS, fh)
+        json.dump(records, fh)
         fh.close()
         out = StringIO()
         call_command(
@@ -71,6 +71,51 @@ class ImportProductsTests(TestCase):
         shampoo = Product.objects.get(external_id="p-1")
         self.assertEqual(shampoo.current_stock, 6)
         self.assertEqual(StockMovement.objects.count(), 1)
+
+    def test_archived_string_false_imports_active(self):
+        # TF-2 regression: string "false" is truthy — the old
+        # ``not record.get("archived")`` made this product inactive.
+        self._run([{
+            "productId": "p-str-false", "name": "Live Product",
+            "price": 10.0, "archived": "false",
+        }])
+        self.assertTrue(
+            Product.objects.get(external_id="p-str-false").active)
+
+    def test_archived_string_true_imports_inactive(self):
+        self._run([{
+            "productId": "p-str-true", "name": "Dead Product",
+            "price": 10.0, "archived": "true",
+        }])
+        self.assertFalse(
+            Product.objects.get(external_id="p-str-true").active)
+
+    def test_archived_string_variants(self):
+        cases = [
+            ("False", True), ("TRUE", False), ("0", True),
+            ("1", False), ("no", True), ("yes", False),
+            (0, True), (1, False),
+        ]
+        records = [{
+            "productId": f"p-var-{i}", "name": f"Product {i}",
+            "price": 10.0, "archived": value,
+        } for i, (value, _e) in enumerate(cases)]
+        self._run(records)
+        for i, (_value, expected) in enumerate(cases):
+            self.assertEqual(
+                Product.objects.get(external_id=f"p-var-{i}").active,
+                expected)
+
+    def test_archived_junk_is_skipped_not_guessed(self):
+        for junk in ("maybe", "", None, 2):
+            with self.subTest(junk=junk):
+                out = self._run([{
+                    "productId": "p-junk", "name": "Junk Product",
+                    "price": 10.0, "archived": junk,
+                }])
+                self.assertIn("'created': 0", out)
+                self.assertIn("'skipped': 1", out)
+                self.assertEqual(Product.objects.count(), 0)
 
     def test_external_id_unique_when_present(self):
         self._run()

@@ -169,6 +169,37 @@ def _parse_bool(value, index, field):
     raise CommandError(f"Row {index}: {field} {value!r} is not a boolean.")
 
 
+_STRICT_TRUE_WORDS = {"true", "1", "yes"}
+_STRICT_FALSE_WORDS = {"false", "0", "no"}
+
+
+def _parse_archived(row, index):
+    """Strict ``archived`` parse for the JSON shape (TF-2).
+
+    A missing key means not archived (False). A present value must be
+    a real bool, the int 1/0, or one of the strings
+    "true"/"false"/"1"/"0"/"yes"/"no" (case-insensitive) — anything
+    else (junk strings, null, empty string, other numbers) raises
+    CommandError in phase 1, so it is never silently guessed the way
+    ``not row.get("archived")`` guessed (string "false" is truthy).
+    """
+    if "archived" not in row:
+        return False
+    value = row["archived"]
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in _STRICT_TRUE_WORDS:
+            return True
+        if text in _STRICT_FALSE_WORDS:
+            return False
+    raise CommandError(
+        f"Row {index}: archived {value!r} is not a boolean.")
+
+
 def _parse_csv_minutes(row, index, field):
     raw = row.get(field)
     try:
@@ -362,7 +393,7 @@ def _normalise_row(row, index, category_names, user_category):
         # The JSON shape carries no finishing segment: None means
         # phase 2 leaves the stored value (model default on create).
         "finishing_minutes": None,
-        "active": not row.get("archived", False),
+        "active": not _parse_archived(row, index),
         "base_amount": _decimal(row.get("price")),
         "level_prices": level_prices,
         "user_prices_count": user_prices_count,
