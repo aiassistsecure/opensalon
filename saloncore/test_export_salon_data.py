@@ -16,6 +16,7 @@ from checkout.models import Payment, Sale, SaleItem
 from catalog.models import Product, StockMovement
 from clients.models import Client, ClientNote
 from saloncore.models import (
+    PriceChange,
     Salon,
     Service,
     ServiceCategory,
@@ -78,6 +79,7 @@ class ExportSalonDataTests(TestCase):
             "roster_patterns": 0, "shift_overrides": 0,
             "sales": 0, "sale_items": 0, "sale_payments": 0,
             "stock_movements": 0, "attendance_records": 0,
+            "price_changes": 0,
         })
         for key, count in data["counts"].items():
             self.assertEqual(len(data[key]), count)
@@ -639,3 +641,73 @@ class ExportAttendanceRecordsTests(TestCase):
         self.assertEqual(
             data["attendance_records"][0]["staff_member_id"],
             other_staff.id)
+
+
+class ExportPriceChangesTests(TestCase):
+    """Price changes leg: export scoped via price -> service chain."""
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Audit Salon")
+        self.category = ServiceCategory.objects.create(
+            salon=self.salon, name="Color")
+        self.service = Service.objects.create(
+            category=self.category, name="Single Process",
+            external_id="svc-pc", service_minutes=45)
+        self.level = StaffLevel.objects.create(
+            salon=self.salon, name="Level 6", sort_order=6)
+        self.price = ServicePrice.objects.create(
+            service=self.service, staff_level=self.level,
+            amount=Decimal("85.00"))
+        self.rise = PriceChange.objects.create(
+            service_price=self.price, old_amount=Decimal("75.00"),
+            new_amount=Decimal("85.00"), changed_by="Manager",
+            note="Annual rise")
+        self.first = PriceChange.objects.create(
+            service_price=self.price, old_amount=None,
+            new_amount=Decimal("75.00"))
+
+    def run_export(self, **kwargs):
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        fh.close()
+        call_command("export_salon_data", fh.name,
+                     stdout=io.StringIO(), **kwargs)
+        with open(fh.name, encoding="utf-8") as exported:
+            return json.load(exported)
+
+    def test_export_emits_price_changes_with_all_fields(self):
+        data = self.run_export()
+        self.assertEqual(data["counts"]["price_changes"], 2)
+        by_new = {c["new_amount"]: c for c in data["price_changes"]}
+        rise = by_new["85.00"]
+        self.assertEqual(rise["id"], self.rise.id)
+        self.assertEqual(rise["service_price_id"], self.price.id)
+        self.assertEqual(rise["service_id"], self.service.id)
+        self.assertEqual(rise["service_external_id"], "svc-pc")
+        self.assertEqual(rise["staff_level_id"], self.level.id)
+        self.assertEqual(rise["old_amount"], "75.00")
+        self.assertIsInstance(rise["old_amount"], str)
+        self.assertEqual(rise["changed_by"], "Manager")
+        self.assertEqual(rise["note"], "Annual rise")
+        self.assertEqual(
+            rise["changed_at"], self.rise.changed_at.isoformat())
+        self.assertIsNone(by_new["75.00"]["old_amount"])
+
+    def test_salon_filter_scopes_price_changes_via_service(self):
+        other = Salon.objects.create(name="Other Salon")
+        other_category = ServiceCategory.objects.create(
+            salon=other, name="Color")
+        other_service = Service.objects.create(
+            category=other_category, name="Cut", service_minutes=30)
+        other_level = StaffLevel.objects.create(salon=other, name="L1")
+        other_price = ServicePrice.objects.create(
+            service=other_service, staff_level=other_level,
+            amount=Decimal("40.00"))
+        PriceChange.objects.create(
+            service_price=other_price, new_amount=Decimal("40.00"))
+        data = self.run_export(salon="Audit Salon")
+        self.assertEqual(data["counts"]["price_changes"], 2)
+        data = self.run_export(salon="Other Salon")
+        self.assertEqual(data["counts"]["price_changes"], 1)
+        self.assertEqual(
+            data["price_changes"][0]["service_price_id"], other_price.id)

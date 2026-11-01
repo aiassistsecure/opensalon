@@ -19,6 +19,7 @@ from checkout.models import Payment, Sale, SaleItem
 from catalog.models import Product, StockMovement
 from clients.models import Client, ClientNote
 from saloncore.models import (
+    PriceChange,
     Salon,
     Service,
     ServiceCategory,
@@ -812,7 +813,7 @@ class ImportSalonDataDryRunTests(TestCase):
             "appointments", "appointment_notes", "products",
             "roster_patterns", "shift_overrides", "sales",
             "sale_items", "sale_payments", "stock_movements",
-            "attendance_records"})
+            "attendance_records", "price_changes"})
         for section, report in reports.items():
             self.assertEqual(report["source"], section)
             self.assertEqual(
@@ -1591,3 +1592,136 @@ class ImportSalonDataAttendanceRecordsTests(TestCase):
         with self.assertRaises(CommandError):
             call_command("import_salon_data", path)
         self.assertEqual(AttendanceRecord.objects.count(), 0)
+
+
+class ImportSalonDataPriceChangesTests(TestCase):
+    """Price changes leg: round-trip preserves the audit trail.
+
+    Idempotency natural key: (service_price, changed_at,
+    old_amount, new_amount, changed_by, note) — append-only
+    history is get_or_create'd, never updated, never duplicated.
+    """
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Audit Restore Salon")
+        self.category = ServiceCategory.objects.create(
+            salon=self.salon, name="Color")
+        self.service = Service.objects.create(
+            category=self.category, name="Single Process",
+            external_id="svc-pc", service_minutes=45)
+        self.level = StaffLevel.objects.create(
+            salon=self.salon, name="Level 6", sort_order=6)
+        self.price = ServicePrice.objects.create(
+            service=self.service, staff_level=self.level,
+            amount=Decimal("85.00"))
+        self.rise = PriceChange.objects.create(
+            service_price=self.price, old_amount=Decimal("75.00"),
+            new_amount=Decimal("85.00"), changed_by="Manager",
+            note="Annual rise")
+        self.first = PriceChange.objects.create(
+            service_price=self.price, old_amount=None,
+            new_amount=Decimal("75.00"))
+
+    def temp_path(self):
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        fh.close()
+        return fh.name
+
+    def export_data(self):
+        path = self.temp_path()
+        call_command("export_salon_data", path, stdout=io.StringIO())
+        with open(path, encoding="utf-8") as fh:
+            return path, json.load(fh)
+
+    def write_data(self, path, data):
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+
+    def run_import(self, path):
+        out = io.StringIO()
+        call_command("import_salon_data", path, stdout=out)
+        return out.getvalue()
+
+    def test_round_trip_preserves_price_changes_exactly(self):
+        expected_times = sorted(
+            c.changed_at for c in (self.rise, self.first))
+        path, _ = self.export_data()
+        Salon.objects.all().delete()
+        self.assertEqual(PriceChange.objects.count(), 0)
+        out = self.run_import(path)
+        self.assertIn("price_changes=2", out)
+        self.assertIn("unknown_keys=none", out)
+        self.assertEqual(PriceChange.objects.count(), 2)
+        restored_price = ServicePrice.objects.get(
+            service__external_id="svc-pc")
+        by_new = {c.new_amount: c
+                  for c in restored_price.changes.all()}
+        rise = by_new[Decimal("85.00")]
+        self.assertEqual(rise.old_amount, Decimal("75.00"))
+        self.assertEqual(str(rise.new_amount), "85.00")
+        self.assertEqual(rise.changed_by, "Manager")
+        self.assertEqual(rise.note, "Annual rise")
+        self.assertIsNone(by_new[Decimal("75.00")].old_amount)
+        self.assertEqual(
+            sorted(c.changed_at for c in restored_price.changes.all()),
+            expected_times)
+
+    def test_reimport_price_changes_is_idempotent(self):
+        path, _ = self.export_data()
+        Salon.objects.all().delete()
+        self.run_import(path)
+        self.run_import(path)
+        self.assertEqual(PriceChange.objects.count(), 2)
+
+    def test_missing_price_changes_section_imports_as_before(self):
+        path, data = self.export_data()
+        del data["price_changes"]
+        del data["counts"]["price_changes"]
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        out = self.run_import(path)
+        self.assertIn("price_changes=0", out)
+        self.assertEqual(PriceChange.objects.count(), 0)
+        self.assertEqual(ServicePrice.objects.count(), 1)
+
+    def test_unknown_key_in_price_changes_named_not_dropped(self):
+        path, data = self.export_data()
+        data["price_changes"][0]["legacy_reason"] = "promo"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        out = self.run_import(path)
+        self.assertIn("price_changes.legacy_reason", out)
+        self.assertEqual(PriceChange.objects.count(), 2)
+
+    def test_dangling_price_ref_fails_closed_zero_writes(self):
+        path, data = self.export_data()
+        data["price_changes"][0]["service_price_id"] = 999999
+        data["price_changes"][0]["service_external_id"] = "nope"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError):
+            call_command("import_salon_data", path)
+        self.assertEqual(Salon.objects.count(), 0)
+        self.assertEqual(PriceChange.objects.count(), 0)
+
+    def test_naive_changed_at_fails_closed_zero_writes(self):
+        path, data = self.export_data()
+        data["price_changes"][0]["changed_at"] = "2026-10-03T09:00:00"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError):
+            call_command("import_salon_data", path)
+        self.assertEqual(Salon.objects.count(), 0)
+        self.assertEqual(PriceChange.objects.count(), 0)
+
+    def test_dry_run_reports_price_changes_and_writes_nothing(self):
+        path, _ = self.export_data()
+        Salon.objects.all().delete()
+        out = io.StringIO()
+        call_command("import_salon_data", path, dry_run=True, stdout=out)
+        reports = json.loads(out.getvalue())
+        self.assertEqual(reports["price_changes"]["record_count"], 2)
+        self.assertEqual(reports["price_changes"]["unmapped_keys"], [])
+        self.assertEqual(PriceChange.objects.count(), 0)
+        self.assertEqual(Salon.objects.count(), 0)

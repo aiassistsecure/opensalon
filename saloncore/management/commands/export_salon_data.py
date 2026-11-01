@@ -45,6 +45,15 @@ fully export. This is part 1 of that test — the core records only:
   reference as both the internal ``staff_member_id`` and the
   member's ``staff_member_external_id``, like roster rows;
   ``recorded_at`` is emitted as ISO-8601 with its timezone.
+- saloncore: PriceChange (the append-only price audit trail,
+  scoped through its service price's service -> category ->
+  salon chain). Rows carry the price reference as the internal
+  ``service_price_id`` plus the price's ``service_id`` /
+  ``service_external_id`` and ``staff_level_id`` so a restore
+  can re-anchor the change on the restored price; ``old_amount``
+  / ``new_amount`` are emitted as exact strings (money never
+  floats; ``old_amount`` is ``None`` when the change has none)
+  and ``changed_at`` as ISO-8601 with its timezone.
 
 The ``payload`` (whole source record, stored verbatim) is emitted
 for every section whose model carries one — clients, services,
@@ -69,6 +78,7 @@ from checkout.models import Payment, Sale, SaleItem
 from catalog.models import Product, StockMovement
 from clients.models import Client, ClientNote
 from saloncore.models import (
+    PriceChange,
     Salon,
     Service,
     ServiceCategory,
@@ -88,7 +98,7 @@ def _dt(value):
 
 
 class Command(BaseCommand):
-    help = "Export salon core data (price book, clients, staff, appointments, products, sales, stock movements, attendance) to one JSON file."
+    help = "Export salon core data (price book, clients, staff, appointments, products, sales, stock movements, attendance, price changes) to one JSON file."
 
     def add_arguments(self, parser):
         parser.add_argument("output", help="Path of the JSON file to write.")
@@ -111,6 +121,11 @@ class Command(BaseCommand):
         service_ids = list(services.values_list("id", flat=True))
         levels = StaffLevel.objects.filter(salon_id__in=salon_ids)
         prices = ServicePrice.objects.filter(service_id__in=service_ids)
+        price_ids = list(prices.values_list("id", flat=True))
+        price_changes = PriceChange.objects.filter(
+            service_price_id__in=price_ids).select_related(
+                "service_price", "service_price__service").order_by(
+                    "changed_at", "id")
         clients = Client.objects.filter(salon_id__in=salon_ids)
         client_ids = list(clients.values_list("id", flat=True))
         notes = ClientNote.objects.filter(client_id__in=client_ids)
@@ -356,6 +371,25 @@ class Command(BaseCommand):
                     "created_at": _dt(m.created_at),
                 }
                 for m in stock_movements
+            ],
+            "price_changes": [
+                {
+                    "id": c.id,
+                    "service_price_id": c.service_price_id,
+                    "service_id": c.service_price.service_id,
+                    "service_external_id": (
+                        c.service_price.service.external_id),
+                    "staff_level_id": c.service_price.staff_level_id,
+                    "old_amount": (
+                        str(c.old_amount)
+                        if c.old_amount is not None else None
+                    ),
+                    "new_amount": str(c.new_amount),
+                    "changed_by": c.changed_by,
+                    "changed_at": _dt(c.changed_at),
+                    "note": c.note,
+                }
+                for c in price_changes
             ],
         }
         data["counts"] = {

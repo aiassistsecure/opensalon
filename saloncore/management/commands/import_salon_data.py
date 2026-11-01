@@ -8,11 +8,11 @@ JSON format written by ``export_salon_data`` (see that command for the
 section list) and restores Salon, ServiceCategory, Service,
 StaffLevel, ServicePrice, Client, ClientNote, StaffMember,
 Appointment, AppointmentNote, Product, RosterPattern,
-ShiftOverride, Sale, SaleItem, Payment, StockMovement and
-AttendanceRecord records. The ``products``,
+ShiftOverride, Sale, SaleItem, Payment, StockMovement,
+AttendanceRecord and PriceChange records. The ``products``,
 ``roster_patterns``, ``shift_overrides``, ``sales``, ``sale_items``,
-``sale_payments``, ``stock_movements`` and ``attendance_records``
-sections are optional on read: an export
+``sale_payments``, ``stock_movements``, ``attendance_records``
+and ``price_changes`` sections are optional on read: an export
 file written before they existed (no such section, no ``counts``
 entry for it) imports exactly as before, with the section
 treated as empty. Roster rows restore idempotently too:
@@ -81,6 +81,26 @@ and creates nothing twice:
   identity anchor, so unlike a best-effort ``created_at`` it is
   required, and a naive value is rejected in phase 1, never
   guessed into a zone.
+- PriceChange    <- (service_price, changed_at, old_amount,
+  new_amount, changed_by, note). PriceChange is an append-only
+  audit trail, so restore never updates an existing row: the
+  natural key above is looked up with ``get_or_create``
+  semantics — a change already restored is returned untouched
+  and a re-import never duplicates history. Its price link
+  resolves by the price's service ``service_external_id`` plus
+  ``staff_level_id`` (the price's own identity) first, falling
+  back to the file-local ``service_price_id`` map; a link that
+  resolves by neither fails closed in phase 1. ``changed_at``
+  must be timezone-explicit (TF-7) for the same reason as
+  ``recorded_at``: it is the identity anchor, required, and a
+  naive value is rejected in phase 1. Amounts are exact
+  strings, parsed as Decimal, never floats. Restoring the
+  historical ``changed_at`` on a newly created row is the one
+  write past the model's append-only guard: creation stamps
+  ``auto_now_add``, so the importer re-stamps the exported
+  instant once, at creation only, through a plain queryset
+  update (``PriceChangeQuerySet.update`` blocks updates by
+  design, and no existing row is ever re-stamped).
   FOUNDING RULE: Payment's ``provider_reference`` is never
   imported or exported — it is a payment-provider identifier and
   provider-agnostic core carries none; if a file carries it, it
@@ -178,6 +198,7 @@ from decimal import Decimal, InvalidOperation
 
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
+from django.db.models.query import QuerySet as PlainQuerySet
 from django.utils.dateparse import parse_date, parse_datetime, parse_time
 from django.utils.timezone import is_naive
 
@@ -187,6 +208,7 @@ from catalog.models import Product, StockMovement
 from clients.models import Client, ClientNote
 from saloncore.dry_run import build_dry_run_reports
 from saloncore.models import (
+    PriceChange,
     Salon,
     Service,
     ServiceCategory,
@@ -206,14 +228,15 @@ SECTIONS = (
     "appointments", "appointment_notes", "products",
     "roster_patterns", "shift_overrides",
     "sales", "sale_items", "sale_payments", "stock_movements",
-    "attendance_records",
+    "attendance_records", "price_changes",
 )
 
 # Sections an older export file may legitimately lack entirely:
 # missing means empty, never an error (back-compat).
 OPTIONAL_SECTIONS = ("products", "roster_patterns", "shift_overrides",
                      "sales", "sale_items", "sale_payments",
-                     "stock_movements", "attendance_records")
+                     "stock_movements", "attendance_records",
+                     "price_changes")
 
 # Every key the exporter emits (hence the importer may consume) per
 # section. Any other key in a record is unknown (TF-11).
@@ -269,6 +292,10 @@ KNOWN_KEYS = {
     "attendance_records": {"id", "staff_member_id",
                            "staff_member_external_id", "event_type",
                            "recorded_at", "note"},
+    "price_changes": {"id", "service_price_id", "service_id",
+                      "service_external_id", "staff_level_id",
+                      "old_amount", "new_amount", "changed_by",
+                      "changed_at", "note"},
 }
 
 TOP_LEVEL_KEYS = set(SECTIONS) | {"counts"}
@@ -421,6 +448,8 @@ _ID_FIELDS = {
     "stock_movements": ("id", "product_id", "product_external_id"),
     "attendance_records": ("id", "staff_member_id",
                            "staff_member_external_id"),
+    "price_changes": ("id", "service_price_id", "service_id",
+                      "service_external_id", "staff_level_id"),
 }
 
 # (section, field) -> model whose external_id limit governs it.
@@ -455,6 +484,8 @@ _EXTERNAL_ID_LIMITS = {
         Product._meta.get_field("external_id").max_length,
     ("attendance_records", "staff_member_external_id"):
         StaffMember._meta.get_field("external_id").max_length,
+    ("price_changes", "service_external_id"):
+        Service._meta.get_field("external_id").max_length,
 }
 
 
@@ -509,6 +540,28 @@ def _check_appt_ref(ids, ext_ids, old_id, external_id, what):
     raise CommandError(
         f"Dangling reference: {what} id {old_id!r} / external_id "
         f"{external_id!r} not in the file.")
+
+
+def _check_price_ref(price_ids, price_pairs, row):
+    """PriceChange price-link check (phase 1).
+
+    The link resolves if the file-local ``service_price_id``
+    names a price row in the file, OR the composite price
+    identity — the price's service ``service_external_id`` plus
+    its ``staff_level_id`` — matches a price row in the file
+    (``price_pairs`` holds both spellings). Neither resolving
+    means dangling: fail closed, never fabricate a link.
+    """
+    if _norm_id(row.get("service_price_id")) in price_ids:
+        return
+    external_id = _norm_id(row.get("service_external_id"))
+    level_id = _norm_id(row.get("staff_level_id"))
+    if external_id and (external_id, level_id) in price_pairs:
+        return
+    raise CommandError(
+        f"Dangling reference: service_price id "
+        f"{row.get('service_price_id')!r} / service_external_id "
+        f"{row.get('service_external_id')!r} not in the file.")
 
 
 CREATED_AT_SECTIONS = (
@@ -609,6 +662,8 @@ def _validate(data):
                             "quantity_delta"),
         "attendance_records": ("id", "staff_member_id",
                                "event_type", "recorded_at"),
+        "price_changes": ("id", "service_price_id", "new_amount",
+                          "changed_at"),
     }
     for section, fields in required.items():
         for row in data[section]:
@@ -646,6 +701,19 @@ def _validate(data):
         row.get("external_id") for row in data["products"]
         if row.get("external_id")}
     sale_ids = {row["id"] for row in data["sales"]}
+    price_ids = {row["id"] for row in data["service_prices"]
+                 if "id" in row}
+    service_ext_by_id = {
+        row["id"]: row.get("external_id") for row in data["services"]}
+    # Composite price identities present in the file, in both the
+    # file-local service id spelling and the service external_id
+    # spelling, each paired with the price's staff_level_id.
+    price_pairs = set()
+    for row in data["service_prices"]:
+        price_pairs.add((row["service_id"], row["staff_level_id"]))
+        ext = service_ext_by_id.get(row["service_id"])
+        if ext:
+            price_pairs.add((ext, row["staff_level_id"]))
 
     for row in data["service_categories"]:
         _check_ref(salon_ids, row["salon_id"], "salon")
@@ -832,6 +900,21 @@ def _validate(data):
         _checked_datetime(
             row["recorded_at"], f"attendance_records recorded_at "
             f"record id {row.get('id')!r}")
+    for row in data["price_changes"]:
+        _check_price_ref(price_ids, price_pairs, row)
+        # changed_at is the idempotency anchor: required and
+        # timezone-explicit (TF-7), like attendance recorded_at.
+        _checked_datetime(
+            row["changed_at"], f"price_changes changed_at "
+            f"record id {row.get('id')!r}")
+        for field in ("old_amount", "new_amount"):
+            if row.get(field) is not None:
+                try:
+                    Decimal(str(row[field]))
+                except (InvalidOperation, ValueError) as exc:
+                    raise CommandError(
+                        f"Bad price_changes {field}: "
+                        f"{row.get(field)!r}.") from exc
 
 
 def _ref(mapping, old_id, what):
@@ -856,6 +939,26 @@ def _resolve_appt_ref(by_id, by_ext, row, id_field, ext_field, what):
     if external_id and external_id in by_ext:
         return by_ext[external_id]
     return _ref(by_id, _norm_id(row.get(id_field)), what)
+
+
+def _resolve_price_ref(prices, prices_by_pair, levels, services_by_ext,
+                       row):
+    """Resolve a PriceChange's price: external identity first.
+
+    The price's own identity is (service, staff_level): try the
+    price whose service matches ``service_external_id`` and whose
+    level matches ``staff_level_id``; fall back to the file-local
+    ``service_price_id`` map, like the other sections' parents.
+    """
+    external_id = _norm_id(row.get("service_external_id"))
+    service = services_by_ext.get(external_id) if external_id else None
+    level = levels.get(_norm_id(row.get("staff_level_id")))
+    if service is not None and level is not None:
+        price = prices_by_pair.get((service.pk, level.pk))
+        if price is not None:
+            return price
+    return _ref(prices, _norm_id(row.get("service_price_id")),
+                "service_price")
 
 
 def _restore_created_at(obj, raw):
@@ -963,6 +1066,8 @@ class Command(BaseCommand):
                     defaults=defaults)
             services[row["id"]] = obj
 
+        prices = {}
+        prices_by_pair = {}
         for row in data["service_prices"]:
             try:
                 amount = Decimal(str(row["amount"]))
@@ -970,7 +1075,7 @@ class Command(BaseCommand):
                 raise CommandError(
                     f"Bad service_prices amount: {row.get('amount')!r}."
                 ) from exc
-            ServicePrice.objects.update_or_create(
+            price_obj, _ = ServicePrice.objects.update_or_create(
                 service=_ref(services, row["service_id"], "service"),
                 staff_level=_ref(levels, row["staff_level_id"], "staff_level"),
                 defaults={
@@ -979,6 +1084,11 @@ class Command(BaseCommand):
                     "active": row["active"],
                 },
             )
+            if row.get("id") is not None:
+                prices[row["id"]] = price_obj
+            prices_by_pair[
+                (price_obj.service_id, price_obj.staff_level_id)
+            ] = price_obj
 
         clients = {}
         for row in data["clients"]:
@@ -1289,6 +1399,34 @@ class Command(BaseCommand):
                 event_type=row["event_type"],
                 defaults={"note": row.get("note", "")},
             )
+
+        for row in data["price_changes"]:
+            price = _resolve_price_ref(
+                prices, prices_by_pair, levels, services_by_ext, row)
+            changed_at = _checked_datetime(
+                row["changed_at"], "price_changes changed_at")
+            # Append-only history: get_or_create on the natural
+            # key — an already-restored change is returned
+            # untouched, never updated and never duplicated.
+            change, created = PriceChange.objects.get_or_create(
+                service_price=price,
+                changed_at=changed_at,
+                old_amount=(
+                    Decimal(str(row["old_amount"]))
+                    if row.get("old_amount") is not None else None),
+                new_amount=Decimal(str(row["new_amount"])),
+                changed_by=row.get("changed_by", ""),
+                note=row.get("note", ""),
+            )
+            if created and change.changed_at != changed_at:
+                # Creation stamped auto_now_add; re-stamp the
+                # exported instant once, at creation only, via a
+                # plain queryset (PriceChangeQuerySet.update is
+                # blocked by design — see the module docstring).
+                PlainQuerySet(
+                    model=PriceChange, using="default").filter(
+                        pk=change.pk).update(changed_at=changed_at)
+                change.changed_at = changed_at
 
         summary = ", ".join(
             f"{section}={len(data[section])}" for section in SECTIONS
