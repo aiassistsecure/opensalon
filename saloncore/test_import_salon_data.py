@@ -270,6 +270,61 @@ class ImportSalonDataTests(TestCase):
                     all(c == 0 for c in _counts().values()))
                 data[section][0][field] = original
 
+    def test_naive_created_at_rejected_with_zero_writes(self):
+        # TF-7: a naive created_at (no offset) must never be stored
+        # as-if-UTC under USE_TZ. Phase-1 CommandError, zero writes,
+        # for every section whose created_at is restored here.
+        path, data = self.load_export_data()
+        for section in ("salons", "clients", "client_notes"):
+            with self.subTest(section=section):
+                original = data[section][0]["created_at"]
+                data[section][0]["created_at"] = "2026-01-01T10:00:00"
+                self.write_data(path, data)
+                Salon.objects.all().delete()
+                with self.assertRaises(CommandError) as ctx:
+                    call_command("import_salon_data", path)
+                self.assertIn("created_at", str(ctx.exception))
+                self.assertIn(section, str(ctx.exception))
+                self.assertTrue(
+                    all(c == 0 for c in _counts().values()))
+                data[section][0]["created_at"] = original
+
+    def test_unparseable_created_at_rejected_with_zero_writes(self):
+        path, data = self.load_export_data()
+        data["clients"][0]["created_at"] = "not-a-datetime"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError) as ctx:
+            call_command("import_salon_data", path)
+        self.assertIn("created_at", str(ctx.exception))
+        self.assertTrue(all(c == 0 for c in _counts().values()))
+
+    def test_aware_created_at_restored_exactly(self):
+        path, data = self.load_export_data()
+        data["salons"][0]["created_at"] = "2020-03-04T05:06:07+00:00"
+        data["clients"][0]["created_at"] = "2021-06-07T08:09:10-04:00"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        self.run_import(path)
+        self.assertEqual(
+            Salon.objects.get().created_at,
+            datetime(2020, 3, 4, 5, 6, 7, tzinfo=dt_timezone.utc))
+        self.assertEqual(
+            Client.objects.get(external_id="cli-1").created_at,
+            datetime(2021, 6, 7, 8, 9, 10,
+                     tzinfo=dt_timezone(timedelta(hours=-4))))
+
+    def test_absent_created_at_still_imports(self):
+        # Absent is distinct from naive: nothing to restore, no error.
+        path, data = self.load_export_data()
+        for section in ("salons", "clients", "client_notes"):
+            data[section][0].pop("created_at", None)
+        self.write_data(path, data)
+        before = _counts()
+        Salon.objects.all().delete()
+        self.run_import(path)
+        self.assertEqual(_counts(), before)
+
     def test_dangling_reference_in_late_section_writes_nothing(self):
         # staff_members is the LAST section written; every earlier
         # section is valid. Pre-validation must still write zero rows.
@@ -428,6 +483,30 @@ class ImportAppointmentsTests(TestCase):
         with self.assertRaises(CommandError):
             call_command("import_salon_data", path)
         self.assertEqual(Appointment.objects.count(), 0)
+
+    def test_naive_appointment_datetimes_rejected_no_writes(self):
+        # TF-7 sibling paths: appointment created_at, note
+        # created_at, and appointment start/end are all datetimes
+        # restored by this command — naive values fail closed.
+        cases = [
+            ("appointments", "created_at"),
+            ("appointment_notes", "created_at"),
+            ("appointments", "start"),
+            ("appointments", "end"),
+        ]
+        path, data = self.load()
+        for section, field in cases:
+            with self.subTest(section=section, field=field):
+                original = data[section][0][field]
+                data[section][0][field] = "2026-11-02T14:00:00"
+                self.write(path, data)
+                Salon.objects.all().delete()
+                with self.assertRaises(CommandError) as ctx:
+                    call_command("import_salon_data", path)
+                self.assertIn(field, str(ctx.exception))
+                self.assertEqual(Salon.objects.count(), 0)
+                self.assertEqual(Appointment.objects.count(), 0)
+                data[section][0][field] = original
 
     def test_unknown_note_appointment_ref_fails_closed(self):
         path, data = self.load()

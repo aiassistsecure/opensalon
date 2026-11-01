@@ -67,6 +67,21 @@ number ``1``) is rejected rather than coerced — under plain Python
 truthiness ``"false"`` would silently restore as ``True``. A file
 that passes phase 1 therefore carries a real JSON boolean for every
 one of these fields, and phase 2 restores exactly that value.
+
+Timezone-explicit datetimes (TF-7): every datetime this command
+restores — ``created_at`` on salons, clients, client notes,
+appointments and appointment notes, plus appointment ``start`` /
+``end`` — must carry an explicit timezone offset. A naive value
+(e.g. ``2026-01-01T10:00:00`` with no offset) is rejected in
+phase 1 with a named ``CommandError`` and zero writes, never
+stored as-if-UTC under ``USE_TZ`` and never silently made aware:
+this command's restore contract is fail-closed validation
+(TF-3 precedent), so an ambiguous wall time fails the whole file
+rather than being guessed into the salon's timezone. An absent
+``created_at`` (missing / ``null`` / empty) is distinct from a
+naive one — there is simply no timestamp to restore, so it stays
+a best-effort skip; a present but unparseable ``created_at`` is
+likewise a phase-1 ``CommandError``, never a silent drop.
 """
 
 import json
@@ -75,6 +90,7 @@ from decimal import Decimal, InvalidOperation
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils.dateparse import parse_datetime
+from django.utils.timezone import is_naive
 
 from bookings.models import Appointment, AppointmentNote
 from clients.models import Client, ClientNote
@@ -182,6 +198,53 @@ def _check_appt_ref(ids, ext_ids, old_id, external_id, what):
         f"{external_id!r} not in the file.")
 
 
+CREATED_AT_SECTIONS = (
+    "salons", "clients", "client_notes", "appointments",
+    "appointment_notes",
+)
+
+
+def _checked_datetime(raw, label):
+    """Parse ``raw``, requiring an explicit timezone (TF-7).
+
+    Returns the aware datetime. Raises CommandError for a
+    non-string or unparseable value and for a naive value — a
+    datetime with no offset is never stored silently under USE_TZ.
+    """
+    if not isinstance(raw, str):
+        raise CommandError(
+            f"Bad datetime: {label}={raw!r} "
+            f"({type(raw).__name__}), not an ISO-8601 string.")
+    try:
+        parsed = parse_datetime(raw)
+    except (ValueError, TypeError) as exc:
+        raise CommandError(
+            f"Bad datetime: {label}={raw!r} cannot be parsed.") from exc
+    if parsed is None:
+        raise CommandError(
+            f"Bad datetime: {label}={raw!r} cannot be parsed.")
+    if is_naive(parsed):
+        raise CommandError(
+            f"Naive datetime: {label}={raw!r} has no timezone "
+            f"offset; datetimes must be timezone-explicit and a "
+            f"naive value is never stored or guessed into a zone.")
+    return parsed
+
+
+def _check_created_at(row, section):
+    """Phase-1 TF-7 check for one record's ``created_at``.
+
+    Absent (missing / null / empty) means no timestamp to restore
+    and is not an error; a present value must parse and be aware.
+    """
+    raw = row.get("created_at")
+    if raw is None or raw == "":
+        return
+    label = (
+        f"section {section!r} record id {row.get('id')!r} 'created_at'")
+    _checked_datetime(raw, label)
+
+
 def _validate(data):
     """Phase 1: validate the whole file; write nothing.
 
@@ -210,6 +273,10 @@ def _validate(data):
         for row in data[section]:
             for field in fields:
                 _check_bool(row, section, field)
+
+    for section in CREATED_AT_SECTIONS:
+        for row in data[section]:
+            _check_created_at(row, section)
 
     salon_ids = {row["id"] for row in data["salons"]}
     category_ids = {row["id"] for row in data["service_categories"]}
@@ -266,9 +333,9 @@ def _validate(data):
                 service_ids, service_ext_ids, row.get("service_id"),
                 row.get("service_external_id"), "service")
         for field in ("start", "end"):
-            if parse_datetime(str(row[field])) is None:
-                raise CommandError(
-                    f"Bad appointments {field}: {row[field]!r}.")
+            _checked_datetime(
+                row[field], f"appointments {field} "
+                f"record id {row.get('id')!r}")
         if row.get("price_override") is not None:
             try:
                 Decimal(str(row["price_override"]))
@@ -313,11 +380,17 @@ def _resolve_appt_ref(by_id, by_ext, row, id_field, ext_field, what):
 
 
 def _restore_created_at(obj, raw):
-    """Best-effort restore of an exported created_at timestamp."""
+    """Best-effort restore of an exported created_at timestamp.
+
+    Absent values skip; present values must already have passed
+    phase 1, and are re-checked here so a naive or unparseable
+    value can never reach the database even if validation changes.
+    """
     if not raw:
         return
-    parsed = parse_datetime(raw)
-    if parsed is not None and obj.created_at != parsed:
+    parsed = _checked_datetime(
+        raw, f"{type(obj).__name__} 'created_at'")
+    if obj.created_at != parsed:
         type(obj).objects.filter(pk=obj.pk).update(created_at=parsed)
         obj.created_at = parsed
 
@@ -488,8 +561,9 @@ class Command(BaseCommand):
                 "client": client, "staff_member": staff_member,
                 "service": service,
                 "service_name": row.get("service_name", ""),
-                "start": parse_datetime(str(row["start"])),
-                "end": parse_datetime(str(row["end"])),
+                "start": _checked_datetime(
+                    row["start"], "appointments start"),
+                "end": _checked_datetime(row["end"], "appointments end"),
                 "status": row.get("status", Appointment.Status.BOOKED),
                 "origin": row.get("origin", Appointment.Origin.UNKNOWN),
                 "price_override": (
