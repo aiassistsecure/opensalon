@@ -10,11 +10,11 @@ StaffLevel, ServicePrice, Client, ClientNote, StaffMember,
 Appointment, AppointmentNote, Product, RosterPattern,
 ShiftOverride, Sale, SaleItem, Payment, StockMovement,
 AttendanceRecord, PriceChange, Refund, Break, Cashup, Receipt,
-ReminderSend and Campaign records. The ``products``,
+ReminderSend, Campaign and CampaignSend records. The ``products``,
 ``roster_patterns``, ``shift_overrides``, ``sales``, ``sale_items``,
 ``sale_payments``, ``stock_movements``, ``attendance_records``,
 ``price_changes``, ``refunds``, ``breaks``, ``cashups``, ``receipts``,
-``reminder_sends`` and ``campaigns`` sections are optional on read: an export
+``reminder_sends``, ``campaigns`` and ``campaign_sends`` sections are optional on read: an export
 file written before they existed (no such section, no ``counts``
 entry for it) imports exactly as before, with the section
 treated as empty. Roster rows restore idempotently too:
@@ -215,6 +215,27 @@ and creates nothing twice:
   (creation stamps ``auto_now_add``); ``updated_at`` is a
   known key set by the model's ``auto_now`` on save, like
   salons and appointments.
+- CampaignSend <- (campaign, client) — the model's own
+  unique constraint (``uniq_campaign_send_per_client``).
+  CampaignSend is the per-recipient campaign send log, with
+  no salon link of its own, so restore runs after campaigns
+  and clients. Its campaign and client links both resolve
+  by the file-local ``campaign_id`` / ``client_id`` maps,
+  like reminder sends resolve their appointment and client;
+  a link that resolves by neither fails closed in phase 1.
+  Restore uses ``get_or_create`` on the natural key — a send
+  already restored is returned untouched and a re-import
+  never duplicates it; ``channel``, ``status``, ``sent_at``
+  and ``detail`` are creation defaults only, and ``detail``
+  is free-form send detail restored verbatim. ``sent_at``
+  must be timezone-explicit (TF-7): it is required, and a
+  naive value is rejected in phase 1. ``channel`` /
+  ``status`` must be the model's own values (channel uses
+  the campaign channel choices the model declares), rejected
+  in phase 1 otherwise. Restoring ``sent_at`` follows the
+  ``_restore_created_at`` pattern adapted to ``sent_at``
+  (``_restore_sent_at``): re-stamped once at creation only,
+  never on an existing row.
 
 No provider concepts: external ids are the generic fields the models
 already carry.
@@ -315,7 +336,7 @@ from bookings.models import Appointment, AppointmentNote, Break
 from checkout.models import Cashup, Payment, Receipt, Refund, Sale, SaleItem
 from catalog.models import Product, StockMovement
 from clients.models import Client, ClientNote
-from messaging.models import Campaign, ReminderSend
+from messaging.models import Campaign, CampaignSend, ReminderSend
 from saloncore.dry_run import build_dry_run_reports
 from saloncore.models import (
     PriceChange,
@@ -339,7 +360,7 @@ SECTIONS = (
     "roster_patterns", "shift_overrides",
     "sales", "sale_items", "sale_payments", "stock_movements",
     "attendance_records", "price_changes", "refunds", "breaks", "cashups",
-    "receipts", "reminder_sends", "campaigns",
+    "receipts", "reminder_sends", "campaigns", "campaign_sends",
 )
 
 # Sections an older export file may legitimately lack entirely:
@@ -348,7 +369,8 @@ OPTIONAL_SECTIONS = ("products", "roster_patterns", "shift_overrides",
                      "sales", "sale_items", "sale_payments",
                      "stock_movements", "attendance_records",
                      "price_changes", "refunds", "breaks", "cashups",
-                     "receipts", "reminder_sends", "campaigns")
+                     "receipts", "reminder_sends", "campaigns",
+                     "campaign_sends")
 
 # Every key the exporter emits (hence the importer may consume) per
 # section. Any other key in a record is unknown (TF-11).
@@ -421,6 +443,8 @@ KNOWN_KEYS = {
                        "channel", "status", "sent_at", "detail"},
     "campaigns": {"id", "salon_id", "name", "channel", "subject",
                   "body", "status", "sent_at", "created_at", "updated_at"},
+    "campaign_sends": {"id", "campaign_id", "client_id", "channel",
+                       "status", "sent_at", "detail"},
 }
 
 TOP_LEVEL_KEYS = set(SECTIONS) | {"counts"}
@@ -583,6 +607,7 @@ _ID_FIELDS = {
     "receipts": ("id", "sale_id"),
     "reminder_sends": ("id", "appointment_id", "client_id"),
     "campaigns": ("id", "salon_id"),
+    "campaign_sends": ("id", "campaign_id", "client_id"),
 }
 
 # (section, field) -> model whose external_id limit governs it.
@@ -809,6 +834,8 @@ def _validate(data):
                            "channel", "sent_at"),
         "campaigns": ("id", "salon_id", "name", "channel",
                       "created_at"),
+        "campaign_sends": ("id", "campaign_id", "client_id",
+                           "channel", "sent_at"),
     }
     for section, fields in required.items():
         for row in data[section]:
@@ -846,6 +873,7 @@ def _validate(data):
         row.get("external_id") for row in data["products"]
         if row.get("external_id")}
     sale_ids = {row["id"] for row in data["sales"]}
+    campaign_ids = {row["id"] for row in data["campaigns"]}
     price_ids = {row["id"] for row in data["service_prices"]
                  if "id" in row}
     service_ext_by_id = {
@@ -1177,6 +1205,21 @@ def _validate(data):
         # timezone-explicit (TF-7), like reminder_sends sent_at.
         _checked_datetime(
             row["created_at"], f"campaigns created_at "
+            f"record id {row.get('id')!r}")
+    for row in data["campaign_sends"]:
+        _check_ref(campaign_ids, row["campaign_id"], "campaign")
+        _check_ref(client_ids, row["client_id"], "client")
+        if row["channel"] not in Campaign.Channel.values:
+            raise CommandError(
+                f"Bad campaign_sends channel: {row['channel']!r}.")
+        if ("status" in row
+                and row["status"] not in CampaignSend.Status.values):
+            raise CommandError(
+                f"Bad campaign_sends status: {row['status']!r}.")
+        # sent_at is required and timezone-explicit (TF-7),
+        # like reminder_sends sent_at.
+        _checked_datetime(
+            row["sent_at"], f"campaign_sends sent_at "
             f"record id {row.get('id')!r}")
 
 
@@ -1822,6 +1865,7 @@ class Command(BaseCommand):
             if created:
                 _restore_sent_at(send, row.get("sent_at"))
 
+        campaigns = {}
         for row in data["campaigns"]:
             created_at = _checked_datetime(
                 row["created_at"], "campaigns created_at")
@@ -1849,6 +1893,28 @@ class Command(BaseCommand):
                 },
             )
             _restore_created_at(campaign, row.get("created_at"))
+            campaigns[row["id"]] = campaign
+
+        for row in data["campaign_sends"]:
+            sent_at = _checked_datetime(
+                row["sent_at"], "campaign_sends sent_at")
+            # Send log: get_or_create on the natural key — the
+            # model's (campaign, client) unique constraint. A
+            # send already restored is returned untouched,
+            # never updated and never duplicated.
+            send, created = CampaignSend.objects.get_or_create(
+                campaign=_ref(campaigns, row["campaign_id"], "campaign"),
+                client=_ref(clients, row["client_id"], "client"),
+                defaults={
+                    "channel": row["channel"],
+                    "status": row.get(
+                        "status", CampaignSend.Status.SENT),
+                    "sent_at": sent_at,
+                    "detail": row.get("detail", ""),
+                },
+            )
+            if created:
+                _restore_sent_at(send, row.get("sent_at"))
 
         summary = ", ".join(
             f"{section}={len(data[section])}" for section in SECTIONS

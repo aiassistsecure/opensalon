@@ -95,6 +95,14 @@ fully export. This is part 1 of that test — the core records only:
   SMS), and ``sent_at`` / ``created_at`` / ``updated_at`` as
   ISO-8601 with timezone via ``_dt`` (``sent_at`` is null for
   a draft).
+- messaging: CampaignSend (the per-recipient campaign send
+  log, scoped through its campaign's salon — CampaignSend
+  carries no salon link of its own). Rows carry the campaign
+  and client references as the internal ``campaign_id`` /
+  ``client_id``, like reminder sends carry their appointment
+  and client; ``detail`` is free-form send detail exported
+  verbatim, and ``sent_at`` as ISO-8601 with timezone via
+  ``_dt``.
 
 The ``payload`` (whole source record, stored verbatim) is emitted
 for every section whose model carries one — clients, services,
@@ -118,7 +126,7 @@ from bookings.models import Appointment, AppointmentNote, Break
 from checkout.models import Cashup, Payment, Receipt, Refund, Sale, SaleItem
 from catalog.models import Product, StockMovement
 from clients.models import Client, ClientNote
-from messaging.models import Campaign, ReminderSend
+from messaging.models import Campaign, CampaignSend, ReminderSend
 from saloncore.models import (
     PriceChange,
     Salon,
@@ -140,7 +148,7 @@ def _dt(value):
 
 
 class Command(BaseCommand):
-    help = "Export salon core data (price book, clients, staff, appointments, products, sales, stock movements, attendance, price changes, refunds, breaks, cashups, receipts, reminder sends, campaigns) to one JSON file."
+    help = "Export salon core data (price book, clients, staff, appointments, products, sales, stock movements, attendance, price changes, refunds, breaks, cashups, receipts, reminder sends, campaigns, campaign sends) to one JSON file."
 
     def add_arguments(self, parser):
         parser.add_argument("output", help="Path of the JSON file to write.")
@@ -206,6 +214,8 @@ class Command(BaseCommand):
         reminder_sends = ReminderSend.objects.filter(
             appointment_id__in=appointment_ids)
         campaigns = Campaign.objects.filter(salon_id__in=salon_ids)
+        campaign_sends = CampaignSend.objects.filter(
+            campaign__salon_id__in=salon_ids)
 
         data = {
             "salons": [
@@ -505,6 +515,15 @@ class Command(BaseCommand):
                     "updated_at": _dt(c.updated_at),
                 }
                 for c in campaigns
+            ],
+            "campaign_sends": [
+                {
+                    "id": s.id, "campaign_id": s.campaign_id,
+                    "client_id": s.client_id, "channel": s.channel,
+                    "status": s.status, "sent_at": _dt(s.sent_at),
+                    "detail": s.detail,
+                }
+                for s in campaign_sends
             ],
         }
         data["counts"] = {

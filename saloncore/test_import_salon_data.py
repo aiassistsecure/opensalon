@@ -18,7 +18,7 @@ from bookings.models import Appointment, AppointmentNote, Break
 from checkout.models import Cashup, Payment, Receipt, Refund, Sale, SaleItem
 from catalog.models import Product, StockMovement
 from clients.models import Client, ClientNote
-from messaging.models import Campaign, ReminderSend
+from messaging.models import Campaign, CampaignSend, ReminderSend
 from saloncore.models import (
     PriceChange,
     Salon,
@@ -880,7 +880,7 @@ class ImportSalonDataDryRunTests(TestCase):
             "appointments", "appointment_notes", "products",
             "roster_patterns", "shift_overrides", "sales",
             "sale_items", "sale_payments", "stock_movements",
-            "attendance_records", "price_changes", "refunds", "breaks", "cashups", "receipts", "reminder_sends", "campaigns"})
+            "attendance_records", "price_changes", "refunds", "breaks", "cashups", "receipts", "reminder_sends", "campaigns", "campaign_sends"})
         for section, report in reports.items():
             self.assertEqual(report["source"], section)
             self.assertEqual(
@@ -2681,4 +2681,144 @@ class ImportSalonDataCampaignsTests(TestCase):
         self.assertEqual(reports["campaigns"]["record_count"], 2)
         self.assertEqual(reports["campaigns"]["unmapped_keys"], [])
         self.assertEqual(Campaign.objects.count(), 0)
+        self.assertEqual(Salon.objects.count(), 0)
+
+
+class ImportSalonDataCampaignSendsTests(TestCase):
+    """Campaign sends leg: round-trip preserves the send log exactly.
+
+    Idempotency natural key: (campaign, client) — the model's
+    own unique constraint; a send is get_or_create'd on that
+    key, never duplicated.
+    """
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Campaign Send Restore")
+        self.client = Client.objects.create(
+            salon=self.salon, first_name="Ada", last_name="Optin")
+        self.other_client = Client.objects.create(
+            salon=self.salon, first_name="Bob", last_name="Optin")
+        self.sent_at = datetime(2026, 10, 3, 17, 5, tzinfo=dt_timezone.utc)
+        self.campaign = Campaign.objects.create(
+            salon=self.salon, name="October Blast",
+            channel=Campaign.Channel.EMAIL, subject="Hi",
+            body="Blast body", status=Campaign.Status.SENT,
+            sent_at=self.sent_at)
+        self.send = CampaignSend.objects.create(
+            campaign=self.campaign, client=self.client, channel="email",
+            status="sent", sent_at=self.sent_at, detail="")
+        self.send2 = CampaignSend.objects.create(
+            campaign=self.campaign, client=self.other_client,
+            channel="email", status="sent",
+            sent_at=self.sent_at + timedelta(hours=1), detail="ref-456")
+
+    def temp_path(self):
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        fh.close()
+        return fh.name
+
+    def export_data(self):
+        path = self.temp_path()
+        call_command("export_salon_data", path, stdout=io.StringIO())
+        with open(path, encoding="utf-8") as fh:
+            return path, json.load(fh)
+
+    def write_data(self, path, data):
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+
+    def run_import(self, path):
+        out = io.StringIO()
+        call_command("import_salon_data", path, stdout=out)
+        return out.getvalue()
+
+    def fail_closed(self, mutate):
+        path, data = self.export_data()
+        mutate(data)
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError):
+            call_command("import_salon_data", path)
+        self.assertEqual(Salon.objects.count(), 0)
+        self.assertEqual(CampaignSend.objects.count(), 0)
+
+    def test_round_trip_preserves_campaign_sends_exactly(self):
+        path, _ = self.export_data()
+        Salon.objects.all().delete()
+        self.assertEqual(CampaignSend.objects.count(), 0)
+        out = self.run_import(path)
+        self.assertIn("campaign_sends=2", out)
+        self.assertIn("unknown_keys=none", out)
+        self.assertEqual(CampaignSend.objects.count(), 2)
+        campaign = Campaign.objects.get()
+        by_client = {s.client.first_name: s
+                     for s in CampaignSend.objects.all()}
+        row = by_client["Ada"]
+        self.assertEqual(row.campaign, campaign)
+        self.assertEqual(row.channel, "email")
+        self.assertEqual(row.status, "sent")
+        self.assertEqual(row.sent_at, self.sent_at)
+        self.assertEqual(row.detail, "")
+        self.assertEqual(by_client["Bob"].detail, "ref-456")
+        self.assertEqual(
+            by_client["Bob"].sent_at, self.sent_at + timedelta(hours=1))
+
+    def test_reimport_campaign_sends_is_idempotent(self):
+        path, _ = self.export_data()
+        Salon.objects.all().delete()
+        self.run_import(path)
+        self.run_import(path)
+        self.assertEqual(CampaignSend.objects.count(), 2)
+
+    def test_missing_campaign_sends_section_imports_as_before(self):
+        path, data = self.export_data()
+        del data["campaign_sends"]
+        del data["counts"]["campaign_sends"]
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        out = self.run_import(path)
+        self.assertIn("campaign_sends=0", out)
+        self.assertEqual(CampaignSend.objects.count(), 0)
+        self.assertEqual(Salon.objects.count(), 1)
+
+    def test_unknown_key_in_campaign_sends_named_not_dropped(self):
+        path, data = self.export_data()
+        data["campaign_sends"][0]["legacy_code"] = "X"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        out = self.run_import(path)
+        self.assertIn("campaign_sends.legacy_code", out)
+        self.assertEqual(CampaignSend.objects.count(), 2)
+
+    def test_dangling_campaign_ref_fails_closed_zero_writes(self):
+        self.fail_closed(
+            lambda d: d["campaign_sends"][0].update(campaign_id=999999))
+
+    def test_dangling_client_ref_fails_closed_zero_writes(self):
+        self.fail_closed(
+            lambda d: d["campaign_sends"][0].update(client_id=999999))
+
+    def test_naive_sent_at_fails_closed_zero_writes(self):
+        self.fail_closed(
+            lambda d: d["campaign_sends"][0].update(
+                sent_at="2026-10-03T09:00:00"))
+
+    def test_bad_channel_fails_closed_zero_writes(self):
+        self.fail_closed(
+            lambda d: d["campaign_sends"][0].update(channel="pigeon"))
+
+    def test_bad_status_fails_closed_zero_writes(self):
+        self.fail_closed(
+            lambda d: d["campaign_sends"][0].update(status="queued"))
+
+    def test_dry_run_reports_campaign_sends_and_writes_nothing(self):
+        path, _ = self.export_data()
+        Salon.objects.all().delete()
+        out = io.StringIO()
+        call_command("import_salon_data", path, dry_run=True, stdout=out)
+        reports = json.loads(out.getvalue())
+        self.assertEqual(reports["campaign_sends"]["record_count"], 2)
+        self.assertEqual(reports["campaign_sends"]["unmapped_keys"], [])
+        self.assertEqual(CampaignSend.objects.count(), 0)
         self.assertEqual(Salon.objects.count(), 0)
