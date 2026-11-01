@@ -41,13 +41,18 @@ Mapping (one source of truth — this command is the only writer here):
   after start it is taken to fall on the following day (an
   overnight appointment).
 - State: ``BOOKED`` -> booked, ``CHECKED_IN`` -> arrived,
-  ``PAID`` -> completed; any other state maps to booked. (These are
-  the only states present in a verbatim extract.)
+  ``PAID`` -> completed. An unknown or missing state is never
+  guessed as booked: the record is skipped and counted under
+  ``unknown_state``.
 - The source ``price`` is not stored: Appointment carries no price —
   money lives in the checkout app.
 - Records flagged ``deleted`` and records without an
   ``appointmentId`` or with unparseable date/times are skipped and
-  counted under ``skipped``.
+  counted under ``skipped``. ``deleted`` is parsed strictly, never
+  by truthiness: a boolean passes through, the strings
+  ``true``/``false``/``1``/``0``/``yes``/``no`` (any case) parse,
+  a missing or null flag means not deleted, and any other value is
+  junk — the record is skipped and counted under ``skipped``.
 
 Idempotent: rows are written with ``update_or_create`` keyed by the
 source ``appointmentId`` stored on ``Appointment.external_id``, so
@@ -84,6 +89,35 @@ STATE_MAP = {
     "CHECKED_IN": Appointment.Status.ARRIVED,
     "PAID": Appointment.Status.COMPLETED,
 }
+
+_DELETED_TRUE_WORDS = {"true", "1", "yes"}
+_DELETED_FALSE_WORDS = {"false", "0", "no"}
+
+
+def _parse_deleted(row):
+    """Strict ``deleted`` flag for a record: True/False, or None if junk.
+
+    Booleans pass through; the strings ``true``/``false``/``1``/``0``/
+    ``yes``/``no`` (any case, surrounding whitespace ignored) and the
+    integers 1/0 parse. A missing or null flag means not deleted.
+    Anything else returns None so the caller skips and counts the
+    record instead of guessing by truthiness — the string ``"false"``
+    must never delete (skip) a real appointment.
+    """
+    if "deleted" not in row or row["deleted"] is None:
+        return False
+    value = row["deleted"]
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in _DELETED_TRUE_WORDS:
+            return True
+        if text in _DELETED_FALSE_WORDS:
+            return False
+    return None
 
 
 def _load_records(path):
@@ -200,6 +234,7 @@ class Command(BaseCommand):
         records = _load_records(options["path"])
         stats = dict.fromkeys(
             ["created", "updated", "skipped", "unchanged",
+             "unknown_state",
              "unresolved_client",
              "unresolved_staff", "unresolved_service",
              "imported_with_service_snapshot"], 0)
@@ -246,8 +281,19 @@ class Command(BaseCommand):
                 if total >= 1000 and seen % 500 == 0:
                     self.stdout.write(
                         f"  ... {seen} / {total} appointments processed")
-                if not isinstance(row, dict) or row.get("deleted"):
+                if not isinstance(row, dict):
                     stats["skipped"] += 1
+                    continue
+                deleted = _parse_deleted(row)
+                if deleted is None or deleted:
+                    stats["skipped"] += 1
+                    continue
+                raw_state = row.get("state")
+                status = STATE_MAP.get(
+                    raw_state.strip().upper()
+                    if isinstance(raw_state, str) else "")
+                if status is None:
+                    stats["unknown_state"] += 1
                     continue
                 external_id = str(row.get("appointmentId") or "")[:64]
                 start = _combine(row.get("appointmentDate"),
@@ -276,9 +322,6 @@ class Command(BaseCommand):
                     stats["imported_with_service_snapshot"] += 1
                 else:
                     snapshot = snapshot or service.name[:200]
-                status = STATE_MAP.get(
-                    str(row.get("state") or "").upper(),
-                    Appointment.Status.BOOKED)
                 current = existing.get(external_id)
                 if current is not None and (
                         current["client_id"] == client.id
@@ -353,7 +396,8 @@ class Command(BaseCommand):
         self.stdout.write(
             "Imported appointments for {salon}: {created} created, "
             "{updated} updated, {unchanged} unchanged, "
-            "{skipped} skipped, {unresolved_client} "
+            "{skipped} skipped, {unknown_state} unknown state, "
+            "{unresolved_client} "
             "unresolved client, {unresolved_staff} unresolved staff, "
             "{unresolved_service} unresolved service "
             "({imported_with_service_snapshot} of those imported with "
