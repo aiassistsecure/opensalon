@@ -12,7 +12,7 @@ from django.core.management import CommandError, call_command
 from django.test import TestCase
 
 from bookings.models import Appointment, AppointmentNote, Break
-from checkout.models import Cashup, Payment, Refund, Sale, SaleItem
+from checkout.models import Cashup, Payment, Receipt, Refund, Sale, SaleItem
 from catalog.models import Product, StockMovement
 from clients.models import Client, ClientNote
 from saloncore.models import (
@@ -80,6 +80,7 @@ class ExportSalonDataTests(TestCase):
             "sales": 0, "sale_items": 0, "sale_payments": 0,
             "stock_movements": 0, "attendance_records": 0,
             "price_changes": 0, "refunds": 0, "breaks": 0, "cashups": 0,
+            "receipts": 0,
         })
         for key, count in data["counts"].items():
             self.assertEqual(len(data[key]), count)
@@ -908,3 +909,62 @@ class ExportCashupsTests(TestCase):
         data = self.run_export(salon="Other Salon")
         self.assertEqual(data["counts"]["cashups"], 1)
         self.assertEqual(data["cashups"][0]["salon_id"], other.id)
+
+
+class ExportReceiptsTests(TestCase):
+    """Receipts leg: export scoped through the sale's salon."""
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Receipt Salon")
+        self.sale = Sale.objects.create(
+            salon=self.salon, status=Sale.Status.COMPLETED)
+        self.sent_at = datetime(2026, 10, 3, 17, 5, tzinfo=dt_timezone.utc)
+        self.receipt = Receipt.objects.create(
+            sale=self.sale, salon_name="Receipt Salon",
+            lines=[{"description": "Single Process", "kind": "service",
+                    "quantity": 1, "unit_price": "85.00",
+                    "line_total": "85.00"}],
+            total=Decimal("85.00"),
+            tender=[{"method": "cash", "amount": "85.00",
+                     "status": "completed"}],
+            recipient_email="ada@example.com", sent_at=self.sent_at)
+        self.sale2 = Sale.objects.create(
+            salon=self.salon, status=Sale.Status.COMPLETED)
+        self.receipt2 = Receipt.objects.create(
+            sale=self.sale2, total=Decimal("10.00"))
+
+    def run_export(self, **kwargs):
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        fh.close()
+        call_command("export_salon_data", fh.name,
+                     stdout=io.StringIO(), **kwargs)
+        with open(fh.name, encoding="utf-8") as exported:
+            return json.load(exported)
+
+    def test_export_emits_receipts_with_all_fields(self):
+        data = self.run_export()
+        self.assertEqual(data["counts"]["receipts"], 2)
+        by_total = {r["total"]: r for r in data["receipts"]}
+        row = by_total["85.00"]
+        self.assertEqual(row["id"], self.receipt.id)
+        self.assertEqual(row["sale_id"], self.sale.id)
+        self.assertEqual(row["salon_name"], "Receipt Salon")
+        self.assertEqual(row["lines"], self.receipt.lines)
+        self.assertIsInstance(row["total"], str)
+        self.assertEqual(row["tender"], self.receipt.tender)
+        self.assertEqual(row["recipient_email"], "ada@example.com")
+        self.assertEqual(row["issued_at"], self.receipt.issued_at.isoformat())
+        self.assertEqual(row["sent_at"], self.sent_at.isoformat())
+        self.assertIsNone(by_total["10.00"]["sent_at"])
+
+    def test_salon_filter_scopes_receipts_via_sale_salon(self):
+        other = Salon.objects.create(name="Other Salon")
+        other_sale = Sale.objects.create(
+            salon=other, status=Sale.Status.COMPLETED)
+        Receipt.objects.create(sale=other_sale, total=Decimal("9.00"))
+        data = self.run_export(salon="Receipt Salon")
+        self.assertEqual(data["counts"]["receipts"], 2)
+        data = self.run_export(salon="Other Salon")
+        self.assertEqual(data["counts"]["receipts"], 1)
+        self.assertEqual(data["receipts"][0]["sale_id"], other_sale.id)

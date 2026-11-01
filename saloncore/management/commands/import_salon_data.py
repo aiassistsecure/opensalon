@@ -9,10 +9,10 @@ section list) and restores Salon, ServiceCategory, Service,
 StaffLevel, ServicePrice, Client, ClientNote, StaffMember,
 Appointment, AppointmentNote, Product, RosterPattern,
 ShiftOverride, Sale, SaleItem, Payment, StockMovement,
-AttendanceRecord, PriceChange, Refund, Break and Cashup records. The ``products``,
+AttendanceRecord, PriceChange, Refund, Break, Cashup and Receipt records. The ``products``,
 ``roster_patterns``, ``shift_overrides``, ``sales``, ``sale_items``,
 ``sale_payments``, ``stock_movements``, ``attendance_records``,
-``price_changes``, ``refunds``, ``breaks`` and ``cashups`` sections are optional on read: an export
+``price_changes``, ``refunds``, ``breaks``, ``cashups`` and ``receipts`` sections are optional on read: an export
 file written before they existed (no such section, no ``counts``
 entry for it) imports exactly as before, with the section
 treated as empty. Roster rows restore idempotently too:
@@ -154,6 +154,26 @@ and creates nothing twice:
   ``Payment.Method`` slugs — no provider concept. Restoring
   ``created_at`` follows the refunds pattern: re-stamped once
   at creation only, never on an existing row.
+- Receipt        <- (sale). Receipt is an immutable snapshot
+  of a sale and carries a OneToOne to it, so the sale alone is
+  the natural key: restore uses ``get_or_create`` on the sale —
+  a receipt already restored is returned untouched, never
+  updated and never duplicated. Its sale link resolves by the
+  file-local ``sale_id`` map, like refunds (Sale carries no
+  external_id); a link that resolves by neither fails closed
+  in phase 1. ``issued_at`` and ``sent_at`` must be
+  timezone-explicit (TF-7) when present: ``issued_at`` is
+  required and a naive value is rejected in phase 1;
+  ``sent_at`` is nullable, so an absent/null value stays
+  unsent while a present naive value is still rejected.
+  ``total`` is an exact string, parsed as Decimal, never a
+  float, and ``lines`` / ``tender`` must be lists (the JSON
+  snapshots, money inside them as strings) — a non-list is
+  rejected in phase 1. Restoring ``issued_at`` follows the
+  ``_restore_created_at`` pattern adapted to ``issued_at``
+  (that helper only handles a ``created_at`` attribute, which
+  Receipt does not carry): re-stamped once at creation only,
+  never on an existing row.
 
 No provider concepts: external ids are the generic fields the models
 already carry.
@@ -251,7 +271,7 @@ from django.utils.dateparse import parse_date, parse_datetime, parse_time
 from django.utils.timezone import is_naive
 
 from bookings.models import Appointment, AppointmentNote, Break
-from checkout.models import Cashup, Payment, Refund, Sale, SaleItem
+from checkout.models import Cashup, Payment, Receipt, Refund, Sale, SaleItem
 from catalog.models import Product, StockMovement
 from clients.models import Client, ClientNote
 from saloncore.dry_run import build_dry_run_reports
@@ -277,6 +297,7 @@ SECTIONS = (
     "roster_patterns", "shift_overrides",
     "sales", "sale_items", "sale_payments", "stock_movements",
     "attendance_records", "price_changes", "refunds", "breaks", "cashups",
+    "receipts",
 )
 
 # Sections an older export file may legitimately lack entirely:
@@ -284,7 +305,7 @@ SECTIONS = (
 OPTIONAL_SECTIONS = ("products", "roster_patterns", "shift_overrides",
                      "sales", "sale_items", "sale_payments",
                      "stock_movements", "attendance_records",
-                     "price_changes", "refunds", "breaks", "cashups")
+                     "price_changes", "refunds", "breaks", "cashups", "receipts")
 
 # Every key the exporter emits (hence the importer may consume) per
 # section. Any other key in a record is unknown (TF-11).
@@ -350,6 +371,8 @@ KNOWN_KEYS = {
                "staff_member_external_id", "start", "end", "paid"},
     "cashups": {"id", "salon_id", "period_start", "period_end",
                 "tender_totals", "total", "note", "created_at"},
+    "receipts": {"id", "sale_id", "salon_name", "lines", "total",
+                 "tender", "recipient_email", "issued_at", "sent_at"},
 }
 
 TOP_LEVEL_KEYS = set(SECTIONS) | {"counts"}
@@ -509,6 +532,7 @@ _ID_FIELDS = {
     "breaks": ("id", "staff_member_id",
                "staff_member_external_id"),
     "cashups": ("id", "salon_id"),
+    "receipts": ("id", "sale_id"),
 }
 
 # (section, field) -> model whose external_id limit governs it.
@@ -730,6 +754,7 @@ def _validate(data):
         "breaks": ("id", "staff_member_id", "start", "end"),
         "cashups": ("id", "salon_id", "period_start", "period_end",
                     "total", "created_at"),
+        "receipts": ("id", "sale_id", "total", "issued_at"),
     }
     for section, fields in required.items():
         for row in data[section]:
@@ -1036,6 +1061,26 @@ def _validate(data):
                 raise CommandError(
                     f"Bad cashups tender_totals value: "
                     f"{key!r}={value!r}.") from exc
+    for row in data["receipts"]:
+        _check_ref(sale_ids, row["sale_id"], "sale")
+        _checked_datetime(
+            row["issued_at"], f"receipts issued_at "
+            f"record id {row.get('id')!r}")
+        if row.get("sent_at") is not None:
+            _checked_datetime(
+                row["sent_at"], f"receipts sent_at "
+                f"record id {row.get('id')!r}")
+        try:
+            Decimal(str(row["total"]))
+        except (InvalidOperation, ValueError) as exc:
+            raise CommandError(
+                f"Bad receipts total: {row.get('total')!r}."
+            ) from exc
+        for field in ("lines", "tender"):
+            if field in row and not isinstance(row[field], list):
+                raise CommandError(
+                    f"Bad receipts {field}: {row[field]!r} "
+                    f"is not a list.")
 
 
 def _ref(mapping, old_id, what):
@@ -1096,6 +1141,23 @@ def _restore_created_at(obj, raw):
     if obj.created_at != parsed:
         type(obj).objects.filter(pk=obj.pk).update(created_at=parsed)
         obj.created_at = parsed
+
+
+def _restore_issued_at(obj, raw):
+    """Receipt analogue of ``_restore_created_at`` for issued_at.
+
+    ``_restore_created_at`` only handles a ``created_at``
+    attribute, which Receipt does not carry, so this follows the
+    same pattern for ``issued_at``: absent skips, present values
+    were already phase-1 checked, and the exported instant is
+    re-stamped once, at creation only.
+    """
+    if not raw:
+        return
+    parsed = _checked_datetime(raw, "Receipt 'issued_at'")
+    if obj.issued_at != parsed:
+        type(obj).objects.filter(pk=obj.pk).update(issued_at=parsed)
+        obj.issued_at = parsed
 
 
 class Command(BaseCommand):
@@ -1601,6 +1663,27 @@ class Command(BaseCommand):
             )
             if created:
                 _restore_created_at(cashup, row.get("created_at"))
+
+        for row in data["receipts"]:
+            sent_at = (
+                _checked_datetime(row["sent_at"], "receipts sent_at")
+                if row.get("sent_at") is not None else None)
+            # Immutable snapshot, OneToOne on sale: get_or_create
+            # on the sale alone — an already-restored receipt is
+            # returned untouched, never updated/duplicated.
+            receipt, created = Receipt.objects.get_or_create(
+                sale=_ref(sales, row["sale_id"], "sale"),
+                defaults={
+                    "salon_name": row.get("salon_name", ""),
+                    "lines": row.get("lines", []),
+                    "total": Decimal(str(row["total"])),
+                    "tender": row.get("tender", []),
+                    "recipient_email": row.get("recipient_email", ""),
+                    "sent_at": sent_at,
+                },
+            )
+            if created:
+                _restore_issued_at(receipt, row.get("issued_at"))
 
         summary = ", ".join(
             f"{section}={len(data[section])}" for section in SECTIONS
