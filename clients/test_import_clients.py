@@ -373,6 +373,73 @@ class ImportClientsExternalIdLengthTests(TestCase):
             Client.objects.get().external_id, self.AT_LIMIT)
 
 
+class ImportClientsDryRunTests(TestCase):
+    """TF-12 wiring: --dry-run reports via saloncore.dry_run and
+    writes nothing; a normal import of the same fixture still works."""
+
+    # Record 1 carries a null email, an empty-string mobile and an
+    # unmapped key; record 2 omits email and mobile entirely, so the
+    # report's null / missing / empty_string counts are distinct.
+    FIXTURE = [
+        {
+            "clientId": "dry-1", "firstName": "Dry", "lastName": "Run",
+            "email": None, "mobile": "",
+            "legacySourceField": "not-mapped",
+            "notes": [{"body": "must not import", "author_name": "Desk"}],
+        },
+        {"clientId": "dry-2", "firstName": "Second", "lastName": "Row"},
+    ]
+
+    def run_dry(self, payload=None):
+        path = _write(self.FIXTURE if payload is None else payload)
+        out = io.StringIO()
+        call_command("import_clients", path, dry_run=True, stdout=out)
+        return path, json.loads(out.getvalue())
+
+    def test_dry_run_writes_nothing(self):
+        self.run_dry()
+        self.assertEqual(Client.objects.count(), 0)
+        self.assertEqual(ClientNote.objects.count(), 0)
+        self.assertEqual(Salon.objects.count(), 0)
+
+    def test_dry_run_report_names_unmapped_key(self):
+        path, report = self.run_dry()
+        self.assertEqual(report["source"], path)
+        self.assertEqual(report["record_count"], 2)
+        self.assertIn("legacySourceField", report["unmapped_keys"])
+        self.assertNotIn("legacySourceField", report["mapped_keys"])
+        for mapped in ("clientId", "firstName", "mobile",
+                       "emailMarketingConsent", "external_id",
+                       "first_name", "phone", "email_opt_in",
+                       "active", "payload", "notes"):
+            self.assertIn(mapped, report["mapped_keys"])
+        self.assertNotIn("IMPORT_SUMMARY", json.dumps(report))
+
+    def test_dry_run_distinguishes_null_missing_and_empty_string(self):
+        _, report = self.run_dry()
+        email = report["fields"]["email"]
+        self.assertEqual(email["null"], 1)        # record 1: None
+        self.assertEqual(email["missing"], 1)     # record 2: absent
+        self.assertEqual(email["empty_string"], 0)
+        mobile = report["fields"]["mobile"]
+        self.assertEqual(mobile["empty_string"], 1)  # record 1: ""
+        self.assertEqual(mobile["missing"], 1)       # record 2: absent
+        self.assertEqual(mobile["null"], 0)
+        first = report["fields"]["firstName"]
+        self.assertEqual(first["valued"], 2)
+        self.assertEqual(first["inferred_type"], "string")
+
+    def test_normal_import_of_same_fixture_still_works(self):
+        out = io.StringIO()
+        call_command(
+            "import_clients", _write(self.FIXTURE), stdout=out)
+        self.assertIn('"created": 2', out.getvalue())
+        self.assertEqual(Client.objects.count(), 2)
+        self.assertEqual(ClientNote.objects.count(), 1)
+        self.assertEqual(
+            Client.objects.get(external_id="dry-1").first_name, "Dry")
+
+
 class ImportClientsFileErrorTests(TestCase):
     def test_missing_file_raises_command_error(self):
         with self.assertRaises(CommandError):
