@@ -14,9 +14,13 @@ Facts and their one source of truth (nothing is stored here):
   payment records how a sale was settled, not what was sold, and
   pending/failed payments moved no money.
 * The kind split uses the model's real kinds: ``SERVICE`` items
-  are the service total and ``PRODUCT`` items are the retail
+  are the service total, ``PRODUCT`` items are the retail
   total (``retail`` is the reporting name for product sales, as
-  in :mod:`insights.services`).
+  in :mod:`insights.services`), and ``SERIES`` items are the
+  series total — the same three-way split as
+  :class:`insights.services.RevenueSplit`. The gross is the sum
+  of all three, so a sale containing series lines is never
+  understated.
 * Voided sales are excluded entirely — count, gross, and split.
   ``Sale.Status`` has no cancelled value, so voided is the only
   exclusion; every other status (open and completed) counts.
@@ -47,11 +51,11 @@ class DailySalesSummary:
 
     ``sales_count`` is the number of non-voided sales attributed
     to ``day``; ``gross_total`` is the sum of their item line
-    totals; ``service_total`` / ``retail_total`` are the gross
-    split by item kind (service vs product/retail), and
-    ``by_kind`` carries the same split keyed by the model's kind
-    slugs (``"service"`` / ``"product"``). An empty day is all
-    zeroes, never ``None``.
+    totals; ``service_total`` / ``retail_total`` / ``series_total``
+    are the gross split by item kind (service vs product/retail
+    vs series), and ``by_kind`` carries the same split keyed by
+    the model's kind slugs (``"service"`` / ``"product"`` /
+    ``"series"``). An empty day is all zeroes, never ``None``.
     """
 
     salon: object
@@ -60,6 +64,7 @@ class DailySalesSummary:
     gross_total: Decimal
     service_total: Decimal
     retail_total: Decimal
+    series_total: Decimal = _ZERO
     by_kind: dict = field(default_factory=dict)
     item_count: int = 0
 
@@ -111,11 +116,21 @@ class DailySalesSummary:
     def product(self):
         return self.retail_total
 
+    @property
+    def series(self):
+        return self.series_total
+
+    @property
+    def series_revenue(self):
+        return self.series_total
+
     def __getitem__(self, key):
         if key in ("service", SaleItem.Kind.SERVICE):
             return self.service_total
         if key in ("product", "retail", SaleItem.Kind.PRODUCT):
             return self.retail_total
+        if key in ("series", SaleItem.Kind.SERIES):
+            return self.series_total
         if key in ("gross_total", "total", "gross"):
             return self.gross_total
         if key in ("sales_count", "count", "total_sales"):
@@ -182,6 +197,7 @@ def daily_sales_summary(salon, day):
     by_kind = {
         SaleItem.Kind.SERVICE: _ZERO,
         SaleItem.Kind.PRODUCT: _ZERO,
+        SaleItem.Kind.SERIES: _ZERO,
     }
     item_count = 0
     for row in rows:
@@ -191,7 +207,8 @@ def daily_sales_summary(salon, day):
 
     service_total = by_kind[SaleItem.Kind.SERVICE]
     retail_total = by_kind[SaleItem.Kind.PRODUCT]
-    gross_total = (service_total + retail_total).quantize(_CENTS)
+    series_total = by_kind[SaleItem.Kind.SERIES]
+    gross_total = (service_total + retail_total + series_total).quantize(_CENTS)
     return DailySalesSummary(
         salon=salon,
         day=local_day,
@@ -199,6 +216,7 @@ def daily_sales_summary(salon, day):
         gross_total=gross_total,
         service_total=service_total,
         retail_total=retail_total,
+        series_total=series_total,
         by_kind=dict(by_kind),
         item_count=item_count,
     )
