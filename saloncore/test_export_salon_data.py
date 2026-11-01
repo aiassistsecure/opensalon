@@ -11,7 +11,7 @@ from decimal import Decimal
 from django.core.management import CommandError, call_command
 from django.test import TestCase
 
-from bookings.models import Appointment, AppointmentNote
+from bookings.models import Appointment, AppointmentNote, Break
 from checkout.models import Payment, Refund, Sale, SaleItem
 from catalog.models import Product, StockMovement
 from clients.models import Client, ClientNote
@@ -79,7 +79,7 @@ class ExportSalonDataTests(TestCase):
             "roster_patterns": 0, "shift_overrides": 0,
             "sales": 0, "sale_items": 0, "sale_payments": 0,
             "stock_movements": 0, "attendance_records": 0,
-            "price_changes": 0, "refunds": 0,
+            "price_changes": 0, "refunds": 0, "breaks": 0,
         })
         for key, count in data["counts"].items():
             self.assertEqual(len(data[key]), count)
@@ -796,3 +796,59 @@ class ExportRefundsTests(TestCase):
         self.assertEqual(data["counts"]["refunds"], 1)
         self.assertEqual(
             data["refunds"][0]["sale_id"], other_sale.id)
+
+
+class ExportBreaksTests(TestCase):
+    """Breaks leg: export scoped via the staff member's salon."""
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Break Salon")
+        self.staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Stylist One",
+            external_id="staff-a")
+        self.paid_break = Break.objects.create(
+            staff_member=self.staff,
+            start=datetime(2026, 10, 3, 12, 0, tzinfo=dt_timezone.utc),
+            end=datetime(2026, 10, 3, 12, 30, tzinfo=dt_timezone.utc),
+            paid=True)
+        self.unpaid_break = Break.objects.create(
+            staff_member=self.staff,
+            start=datetime(2026, 10, 3, 15, 0, tzinfo=dt_timezone.utc),
+            end=datetime(2026, 10, 3, 15, 15, tzinfo=dt_timezone.utc),
+            paid=False)
+
+    def run_export(self, **kwargs):
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        fh.close()
+        call_command("export_salon_data", fh.name,
+                     stdout=io.StringIO(), **kwargs)
+        with open(fh.name, encoding="utf-8") as exported:
+            return json.load(exported)
+
+    def test_export_emits_breaks_with_all_fields(self):
+        data = self.run_export()
+        self.assertEqual(data["counts"]["breaks"], 2)
+        by_start = {r["start"]: r for r in data["breaks"]}
+        row = by_start["2026-10-03T12:00:00+00:00"]
+        self.assertEqual(row["id"], self.paid_break.id)
+        self.assertEqual(row["staff_member_id"], self.staff.id)
+        self.assertEqual(row["staff_member_external_id"], "staff-a")
+        self.assertEqual(row["end"], "2026-10-03T12:30:00+00:00")
+        self.assertIs(row["paid"], True)
+        self.assertIs(by_start["2026-10-03T15:00:00+00:00"]["paid"], False)
+
+    def test_salon_filter_scopes_breaks_via_staff_member(self):
+        other = Salon.objects.create(name="Other Salon")
+        other_staff = StaffMember.objects.create(
+            salon=other, display_name="Other Stylist")
+        Break.objects.create(
+            staff_member=other_staff,
+            start=datetime(2026, 10, 3, 10, 0, tzinfo=dt_timezone.utc),
+            end=datetime(2026, 10, 3, 10, 15, tzinfo=dt_timezone.utc))
+        data = self.run_export(salon="Break Salon")
+        self.assertEqual(data["counts"]["breaks"], 2)
+        data = self.run_export(salon="Other Salon")
+        self.assertEqual(data["counts"]["breaks"], 1)
+        self.assertEqual(
+            data["breaks"][0]["staff_member_id"], other_staff.id)

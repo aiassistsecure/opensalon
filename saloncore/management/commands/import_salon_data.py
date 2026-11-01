@@ -9,10 +9,10 @@ section list) and restores Salon, ServiceCategory, Service,
 StaffLevel, ServicePrice, Client, ClientNote, StaffMember,
 Appointment, AppointmentNote, Product, RosterPattern,
 ShiftOverride, Sale, SaleItem, Payment, StockMovement,
-AttendanceRecord, PriceChange and Refund records. The ``products``,
+AttendanceRecord, PriceChange, Refund and Break records. The ``products``,
 ``roster_patterns``, ``shift_overrides``, ``sales``, ``sale_items``,
 ``sale_payments``, ``stock_movements``, ``attendance_records``,
-``price_changes`` and ``refunds`` sections are optional on read: an export
+``price_changes``, ``refunds`` and ``breaks`` sections are optional on read: an export
 file written before they existed (no such section, no ``counts``
 entry for it) imports exactly as before, with the section
 treated as empty. Roster rows restore idempotently too:
@@ -125,6 +125,18 @@ and creates nothing twice:
   price_changes pattern: creation stamps ``auto_now_add``, so
   the importer re-stamps the exported instant once, at
   creation only, and no existing row is ever re-stamped.
+- Break          <- (staff_member, start, end). Restore uses
+  ``get_or_create`` with ``paid`` as a default — a break
+  already restored is returned untouched and a re-import
+  never duplicates it. Its staff link resolves by
+  ``staff_member_external_id`` first, falling back to the
+  file-local ``staff_member_id`` map, like attendance; a
+  link that resolves by neither fails closed in phase 1.
+  ``start`` / ``end`` must be timezone-explicit (TF-7):
+  they are the identity anchor, required, and a naive
+  value is rejected in phase 1. ``paid`` is STRICT-parsed
+  (TF-3): missing / null / non-bool is a named
+  CommandError, never guessed.
 
 No provider concepts: external ids are the generic fields the models
 already carry.
@@ -221,7 +233,7 @@ from django.db.models.query import QuerySet as PlainQuerySet
 from django.utils.dateparse import parse_date, parse_datetime, parse_time
 from django.utils.timezone import is_naive
 
-from bookings.models import Appointment, AppointmentNote
+from bookings.models import Appointment, AppointmentNote, Break
 from checkout.models import Payment, Refund, Sale, SaleItem
 from catalog.models import Product, StockMovement
 from clients.models import Client, ClientNote
@@ -247,7 +259,7 @@ SECTIONS = (
     "appointments", "appointment_notes", "products",
     "roster_patterns", "shift_overrides",
     "sales", "sale_items", "sale_payments", "stock_movements",
-    "attendance_records", "price_changes", "refunds",
+    "attendance_records", "price_changes", "refunds", "breaks",
 )
 
 # Sections an older export file may legitimately lack entirely:
@@ -255,7 +267,7 @@ SECTIONS = (
 OPTIONAL_SECTIONS = ("products", "roster_patterns", "shift_overrides",
                      "sales", "sale_items", "sale_payments",
                      "stock_movements", "attendance_records",
-                     "price_changes", "refunds")
+                     "price_changes", "refunds", "breaks")
 
 # Every key the exporter emits (hence the importer may consume) per
 # section. Any other key in a record is unknown (TF-11).
@@ -317,6 +329,8 @@ KNOWN_KEYS = {
                       "changed_at", "note"},
     "refunds": {"id", "sale_id", "amount", "reason", "tender",
                 "created_at"},
+    "breaks": {"id", "staff_member_id",
+               "staff_member_external_id", "start", "end", "paid"},
 }
 
 TOP_LEVEL_KEYS = set(SECTIONS) | {"counts"}
@@ -399,6 +413,7 @@ BOOL_FIELDS = {
     "products": ("active",),
     "roster_patterns": ("active",),
     "shift_overrides": ("is_off",),
+    "breaks": ("paid",),
 }
 
 
@@ -472,6 +487,8 @@ _ID_FIELDS = {
     "price_changes": ("id", "service_price_id", "service_id",
                       "service_external_id", "staff_level_id"),
     "refunds": ("id", "sale_id"),
+    "breaks": ("id", "staff_member_id",
+               "staff_member_external_id"),
 }
 
 # (section, field) -> model whose external_id limit governs it.
@@ -508,6 +525,8 @@ _EXTERNAL_ID_LIMITS = {
         StaffMember._meta.get_field("external_id").max_length,
     ("price_changes", "service_external_id"):
         Service._meta.get_field("external_id").max_length,
+    ("breaks", "staff_member_external_id"):
+        StaffMember._meta.get_field("external_id").max_length,
 }
 
 
@@ -688,6 +707,7 @@ def _validate(data):
                           "changed_at"),
         "refunds": ("id", "sale_id", "amount", "tender",
                     "created_at"),
+        "breaks": ("id", "staff_member_id", "start", "end"),
     }
     for section, fields in required.items():
         for row in data[section]:
@@ -955,6 +975,14 @@ def _validate(data):
             raise CommandError(
                 f"Bad refunds amount: {row.get('amount')!r}."
             ) from exc
+    for row in data["breaks"]:
+        _check_appt_ref(
+            staff_ids, staff_ext_ids, row.get("staff_member_id"),
+            row.get("staff_member_external_id"), "staff_member")
+        for field in ("start", "end"):
+            _checked_datetime(
+                row[field], f"breaks {field} "
+                f"record id {row.get('id')!r}")
 
 
 def _ref(mapping, old_id, what):
@@ -1485,6 +1513,18 @@ class Command(BaseCommand):
                 # Creation stamped auto_now_add; re-stamp the
                 # exported instant once, at creation only.
                 _restore_created_at(refund, row.get("created_at"))
+
+        for row in data["breaks"]:
+            staff_member = _resolve_appt_ref(
+                staff_members, staff_by_ext, row,
+                "staff_member_id", "staff_member_external_id",
+                "staff_member")
+            Break.objects.get_or_create(
+                staff_member=staff_member,
+                start=_checked_datetime(row["start"], "breaks start"),
+                end=_checked_datetime(row["end"], "breaks end"),
+                defaults={"paid": row["paid"]},
+            )
 
         summary = ", ".join(
             f"{section}={len(data[section])}" for section in SECTIONS

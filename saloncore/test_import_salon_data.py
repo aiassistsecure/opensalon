@@ -14,7 +14,7 @@ from decimal import Decimal
 from django.core.management import CommandError, call_command
 from django.test import TestCase
 
-from bookings.models import Appointment, AppointmentNote
+from bookings.models import Appointment, AppointmentNote, Break
 from checkout.models import Payment, Refund, Sale, SaleItem
 from catalog.models import Product, StockMovement
 from clients.models import Client, ClientNote
@@ -871,7 +871,7 @@ class ImportSalonDataDryRunTests(TestCase):
             "appointments", "appointment_notes", "products",
             "roster_patterns", "shift_overrides", "sales",
             "sale_items", "sale_payments", "stock_movements",
-            "attendance_records", "price_changes", "refunds"})
+            "attendance_records", "price_changes", "refunds", "breaks"})
         for section, report in reports.items():
             self.assertEqual(report["source"], section)
             self.assertEqual(
@@ -1902,4 +1902,164 @@ class ImportSalonDataRefundsTests(TestCase):
         self.assertEqual(reports["refunds"]["record_count"], 2)
         self.assertEqual(reports["refunds"]["unmapped_keys"], [])
         self.assertEqual(Refund.objects.count(), 0)
+        self.assertEqual(Salon.objects.count(), 0)
+
+
+class ImportSalonDataBreaksTests(TestCase):
+    """Breaks leg: round-trip preserves breaks exactly.
+
+    Idempotency natural key: (staff_member, start, end) —
+    get_or_create with paid as a default, never duplicated.
+    """
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Break Restore Salon")
+        self.staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Stylist One",
+            external_id="staff-a")
+        self.paid_break = Break.objects.create(
+            staff_member=self.staff,
+            start=datetime(2026, 10, 3, 12, 0, tzinfo=dt_timezone.utc),
+            end=datetime(2026, 10, 3, 12, 30, tzinfo=dt_timezone.utc),
+            paid=True)
+        self.unpaid_break = Break.objects.create(
+            staff_member=self.staff,
+            start=datetime(2026, 10, 3, 15, 0, tzinfo=dt_timezone.utc),
+            end=datetime(2026, 10, 3, 15, 15, tzinfo=dt_timezone.utc),
+            paid=False)
+
+    def temp_path(self):
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        fh.close()
+        return fh.name
+
+    def export_data(self):
+        path = self.temp_path()
+        call_command("export_salon_data", path, stdout=io.StringIO())
+        with open(path, encoding="utf-8") as fh:
+            return path, json.load(fh)
+
+    def write_data(self, path, data):
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+
+    def run_import(self, path):
+        out = io.StringIO()
+        call_command("import_salon_data", path, stdout=out)
+        return out.getvalue()
+
+    def test_round_trip_preserves_breaks_exactly(self):
+        path, _ = self.export_data()
+        Salon.objects.all().delete()
+        self.assertEqual(Break.objects.count(), 0)
+        out = self.run_import(path)
+        self.assertIn("breaks=2", out)
+        self.assertIn("unknown_keys=none", out)
+        self.assertEqual(Break.objects.count(), 2)
+        restored = StaffMember.objects.get(external_id="staff-a")
+        by_start = {b.start: b for b in restored.breaks.all()}
+        paid = by_start[datetime(2026, 10, 3, 12, 0, tzinfo=dt_timezone.utc)]
+        self.assertEqual(paid.end, datetime(2026, 10, 3, 12, 30, tzinfo=dt_timezone.utc))
+        self.assertIs(paid.paid, True)
+        unpaid = by_start[datetime(2026, 10, 3, 15, 0, tzinfo=dt_timezone.utc)]
+        self.assertEqual(unpaid.end, datetime(2026, 10, 3, 15, 15, tzinfo=dt_timezone.utc))
+        self.assertIs(unpaid.paid, False)
+
+    def test_reimport_breaks_is_idempotent(self):
+        path, _ = self.export_data()
+        Salon.objects.all().delete()
+        self.run_import(path)
+        self.run_import(path)
+        self.assertEqual(Break.objects.count(), 2)
+
+    def test_missing_breaks_section_imports_as_before(self):
+        path, data = self.export_data()
+        del data["breaks"]
+        del data["counts"]["breaks"]
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        out = self.run_import(path)
+        self.assertIn("breaks=0", out)
+        self.assertEqual(Break.objects.count(), 0)
+        self.assertEqual(StaffMember.objects.count(), 1)
+
+    def test_unknown_key_in_breaks_named_not_dropped(self):
+        path, data = self.export_data()
+        data["breaks"][0]["legacy_code"] = "X"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        out = self.run_import(path)
+        self.assertIn("breaks.legacy_code", out)
+        self.assertEqual(Break.objects.count(), 2)
+
+    def test_dangling_staff_ref_fails_closed_zero_writes(self):
+        path, data = self.export_data()
+        data["breaks"][0]["staff_member_id"] = 999999
+        data["breaks"][0]["staff_member_external_id"] = "nope"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError):
+            call_command("import_salon_data", path)
+        self.assertEqual(Salon.objects.count(), 0)
+        self.assertEqual(Break.objects.count(), 0)
+
+    def test_naive_start_fails_closed_zero_writes(self):
+        path, data = self.export_data()
+        data["breaks"][0]["start"] = "2026-10-03T12:00:00"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError):
+            call_command("import_salon_data", path)
+        self.assertEqual(Salon.objects.count(), 0)
+        self.assertEqual(Break.objects.count(), 0)
+
+    def test_naive_end_fails_closed_zero_writes(self):
+        path, data = self.export_data()
+        data["breaks"][0]["end"] = "2026-10-03T12:30:00"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError):
+            call_command("import_salon_data", path)
+        self.assertEqual(Break.objects.count(), 0)
+
+    def test_non_bool_paid_fails_closed_zero_writes(self):
+        path, base = self.export_data()
+        for bad in ("true", 1, 0):
+            data = json.loads(json.dumps(base))
+            data["breaks"][0]["paid"] = bad
+            self.write_data(path, data)
+            Salon.objects.all().delete()
+            with self.assertRaises(CommandError):
+                call_command("import_salon_data", path)
+            self.assertEqual(Salon.objects.count(), 0)
+            self.assertEqual(Break.objects.count(), 0)
+
+    def test_missing_paid_fails_closed_zero_writes(self):
+        path, data = self.export_data()
+        del data["breaks"][0]["paid"]
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError):
+            call_command("import_salon_data", path)
+        self.assertEqual(Break.objects.count(), 0)
+
+    def test_null_paid_fails_closed_zero_writes(self):
+        path, data = self.export_data()
+        data["breaks"][0]["paid"] = None
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError):
+            call_command("import_salon_data", path)
+        self.assertEqual(Break.objects.count(), 0)
+
+    def test_dry_run_reports_breaks_and_writes_nothing(self):
+        path, _ = self.export_data()
+        Salon.objects.all().delete()
+        out = io.StringIO()
+        call_command("import_salon_data", path, dry_run=True, stdout=out)
+        reports = json.loads(out.getvalue())
+        self.assertEqual(reports["breaks"]["record_count"], 2)
+        self.assertEqual(reports["breaks"]["unmapped_keys"], [])
+        self.assertEqual(Break.objects.count(), 0)
         self.assertEqual(Salon.objects.count(), 0)
