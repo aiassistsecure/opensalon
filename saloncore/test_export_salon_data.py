@@ -119,6 +119,11 @@ class ExportSalonDataTests(TestCase):
         # clients, team, bookings, checkout, catalog, messaging,
         # onlinebooking, insights): the salon profile IS the Salon
         # record (name/timezone/currency), per webui's settings page.
+        self.salon.tagline = "Hair, beautifully."
+        self.salon.logo_url = "https://example.com/logo.png"
+        self.salon.primary_color = "#2F4A3C"
+        self.salon.accent_color = "#C9A227"
+        self.salon.save()
         self.salon.refresh_from_db()
         data, _ = self.run_export()
         row = data["salons"][0]
@@ -128,6 +133,10 @@ class ExportSalonDataTests(TestCase):
         self.assertEqual(row["name"], "Export Salon")
         self.assertEqual(row["timezone"], "America/New_York")
         self.assertEqual(row["currency"], "USD")
+        self.assertEqual(row["tagline"], "Hair, beautifully.")
+        self.assertEqual(row["logo_url"], "https://example.com/logo.png")
+        self.assertEqual(row["primary_color"], "#2F4A3C")
+        self.assertEqual(row["accent_color"], "#C9A227")
         self.assertEqual(row["created_at"],
                          self.salon.created_at.isoformat())
         self.assertEqual(row["updated_at"],

@@ -52,6 +52,45 @@ class SalonModelTests(TestCase):
         self.assertGreaterEqual(salon.updated_at, first_updated)
 
 
+class SalonBrandingModelTests(TestCase):
+    def test_branding_fields_default_blank(self):
+        salon = Salon.objects.create(name="Plain Salon")
+        salon.refresh_from_db()
+        self.assertEqual(salon.tagline, "")
+        self.assertEqual(salon.logo_url, "")
+        self.assertEqual(salon.primary_color, "")
+        self.assertEqual(salon.accent_color, "")
+
+    def test_branding_values_round_trip_through_save_and_load(self):
+        salon = Salon.objects.create(
+            name="Branded Salon",
+            tagline="Hair, beautifully.",
+            logo_url="https://example.com/logo.png",
+            primary_color="#2F4A3C",
+            accent_color="#C9A227",
+        )
+        salon.refresh_from_db()
+        self.assertEqual(salon.tagline, "Hair, beautifully.")
+        self.assertEqual(salon.logo_url, "https://example.com/logo.png")
+        self.assertEqual(salon.primary_color, "#2F4A3C")
+        self.assertEqual(salon.accent_color, "#C9A227")
+
+    def test_blank_and_valid_colors_pass_full_clean(self):
+        Salon(name="Blank Colors").full_clean()
+        Salon(
+            name="Valid Colors",
+            primary_color="#2f4a3c", accent_color="#C9A227",
+        ).full_clean()
+
+    def test_invalid_colors_rejected_by_full_clean(self):
+        for field in ("primary_color", "accent_color"):
+            for bad in ("2F4A3C", "#2F4A3", "#2F4A3CC", "#GGGGGG", "green"):
+                salon = Salon(name="Bad Color", **{field: bad})
+                with self.assertRaises(ValidationError) as ctx:
+                    salon.full_clean()
+                self.assertIn(field, ctx.exception.message_dict)
+
+
 class ServiceCategoryModelTests(TestCase):
     def setUp(self):
         self.salon = Salon.objects.create(name="Mint On The Avenue")

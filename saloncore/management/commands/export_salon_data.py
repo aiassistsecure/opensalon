@@ -203,7 +203,10 @@ class Command(BaseCommand):
             "salons": [
                 {
                     "id": s.id, "name": s.name, "timezone": s.timezone,
-                    "currency": s.currency,
+                    "currency": s.currency, "tagline": s.tagline,
+                    "logo_url": s.logo_url,
+                    "primary_color": s.primary_color,
+                    "accent_color": s.accent_color,
                     "created_at": _dt(s.created_at),
                     "updated_at": _dt(s.updated_at),
                 }

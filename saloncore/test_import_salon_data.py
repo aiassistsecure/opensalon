@@ -134,6 +134,10 @@ class ImportSalonDataTests(TestCase):
         # set first so a default could not masquerade as a restore.
         self.salon.timezone = "Europe/Paris"
         self.salon.currency = "EUR"
+        self.salon.tagline = "Hair, beautifully."
+        self.salon.logo_url = "https://example.com/logo.png"
+        self.salon.primary_color = "#2F4A3C"
+        self.salon.accent_color = "#C9A227"
         self.salon.save()
         created_at = Salon.objects.get().created_at
         path = self.export()
@@ -143,6 +147,10 @@ class ImportSalonDataTests(TestCase):
         self.assertEqual(salon.name, "Restore Salon")
         self.assertEqual(salon.timezone, "Europe/Paris")
         self.assertEqual(salon.currency, "EUR")
+        self.assertEqual(salon.tagline, "Hair, beautifully.")
+        self.assertEqual(salon.logo_url, "https://example.com/logo.png")
+        self.assertEqual(salon.primary_color, "#2F4A3C")
+        self.assertEqual(salon.accent_color, "#C9A227")
         self.assertEqual(salon.created_at, created_at)
 
     def test_reimport_salon_updates_self_fields_in_place(self):
