@@ -125,6 +125,64 @@ class ImportSalonDataTests(TestCase):
         self.assertFalse(staff.online_bookable)
         self.assertEqual(staff.staff_level.name, "Level 6")
 
+    def test_round_trip_restores_every_salon_self_field(self):
+        # Cycle 72: every carried Salon self-field round-trips with
+        # its full value — including currency, which the older
+        # round-trip test never asserted. Distinctive values are
+        # set first so a default could not masquerade as a restore.
+        self.salon.timezone = "Europe/Paris"
+        self.salon.currency = "EUR"
+        self.salon.save()
+        created_at = Salon.objects.get().created_at
+        path = self.export()
+        Salon.objects.all().delete()
+        self.run_import(path)
+        salon = Salon.objects.get()
+        self.assertEqual(salon.name, "Restore Salon")
+        self.assertEqual(salon.timezone, "Europe/Paris")
+        self.assertEqual(salon.currency, "EUR")
+        self.assertEqual(salon.created_at, created_at)
+
+    def test_reimport_salon_updates_self_fields_in_place(self):
+        # Idempotent re-import: changed self-fields update the SAME
+        # salon row (keyed by name) — no duplicate salon is created.
+        path = self.export()
+        Salon.objects.all().delete()
+        self.run_import(path)
+        first_pk = Salon.objects.get().pk
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        data["salons"][0]["timezone"] = "America/Chicago"
+        data["salons"][0]["currency"] = "CAD"
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        self.run_import(path)
+        self.assertEqual(Salon.objects.count(), 1)
+        salon = Salon.objects.get()
+        self.assertEqual(salon.pk, first_pk)
+        self.assertEqual(salon.timezone, "America/Chicago")
+        self.assertEqual(salon.currency, "CAD")
+
+    def test_salon_settings_section_is_named_as_dropped(self):
+        # There is no SalonSettings model in any app, so a file
+        # carrying a salon_settings section has no model home for
+        # it: TF-11 must name it as dropped (never silently drop,
+        # never invent fields to consume it), while the salons
+        # section itself imports exactly as before.
+        path = self.export()
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        data["salon_settings"] = [{"salon_id": data["salons"][0]["id"]}]
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        Salon.objects.all().delete()
+        out = self.run_import(path)
+        self.assertIn("IMPORT_DROPPED", out)
+        self.assertIn("unknown_sections=salon_settings", out)
+        self.assertEqual(Salon.objects.count(), 1)
+        self.assertEqual(Salon.objects.get().timezone,
+                         "America/New_York")
+
     def test_reimport_is_idempotent(self):
         path = self.export()
         Salon.objects.all().delete()
