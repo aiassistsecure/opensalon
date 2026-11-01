@@ -332,8 +332,9 @@ OPTIONAL_SECTIONS = ("products", "roster_patterns", "shift_overrides",
 # Every key the exporter emits (hence the importer may consume) per
 # section. Any other key in a record is unknown (TF-11).
 KNOWN_KEYS = {
-    "salons": {"id", "name", "timezone", "currency", "created_at",
-               "updated_at"},
+    "salons": {"id", "name", "timezone", "currency", "tagline",
+               "logo_url", "primary_color", "accent_color",
+               "created_at", "updated_at"},
     "service_categories": {"id", "salon_id", "name", "sort_order",
                            "active"},
     "services": {"id", "category_id", "external_id", "name",
@@ -1254,6 +1255,10 @@ class Command(BaseCommand):
                 defaults={
                     "timezone": row.get("timezone", "UTC"),
                     "currency": row.get("currency", "USD"),
+                    "tagline": row.get("tagline", ""),
+                    "logo_url": row.get("logo_url", ""),
+                    "primary_color": row.get("primary_color", ""),
+                    "accent_color": row.get("accent_color", ""),
                 },
             )
             _restore_created_at(obj, row.get("created_at"))

@@ -1,6 +1,7 @@
 import copy
 
 from django.core.exceptions import ValidationError
+from django.core.validators import RegexValidator
 from django.db import IntegrityError, models
 from django.db.models import Q
 
@@ -277,16 +278,37 @@ class StrictConstraints(models.Model):
         return exclude
 
 
+HEX_COLOR_VALIDATOR = RegexValidator(
+    regex=r"^#[0-9A-Fa-f]{6}$",
+    message="Enter a hex color in the form #RRGGBB (e.g. #2F4A3C).",
+)
+
+
 class Salon(models.Model):
     """A salon using OpenSalon.
 
     The root record of a salon's own data: its display name and the
     locale defaults (timezone, currency) that later features build on.
+    It also carries the salon's own branding — tagline, logo and
+    colors — so salon-branded surfaces (online booking above all)
+    render in the salon's identity, never a platform's. All branding
+    fields are optional: blank means the surface falls back to its
+    unbranded defaults.
     """
 
     name = models.CharField(max_length=200)
     timezone = models.CharField(max_length=64, default="UTC")
     currency = models.CharField(max_length=3, default="USD")
+    tagline = models.CharField(max_length=200, blank=True, default="")
+    logo_url = models.URLField(max_length=500, blank=True, default="")
+    primary_color = models.CharField(
+        max_length=7, blank=True, default="",
+        validators=[HEX_COLOR_VALIDATOR],
+    )
+    accent_color = models.CharField(
+        max_length=7, blank=True, default="",
+        validators=[HEX_COLOR_VALIDATOR],
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
