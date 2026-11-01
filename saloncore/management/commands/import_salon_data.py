@@ -96,16 +96,20 @@ become a different identity, and two overlong ids sharing a prefix
 would collide into one): it raises ``CommandError`` in phase 1
 naming the section and record, so the whole file writes zero rows.
 
+Payloads (verbatim retention): the ``payload`` field carried by
+``Service`` / ``Client`` / ``Appointment`` is a known key in those
+three sections and is restored verbatim when present — stored
+exactly as exported, never transformed. Sections whose models
+carry no payload (Salon, ServiceCategory, StaffLevel,
+ServicePrice, the notes and StaffMember — StaffMember has no
+``payload`` field) emit and consume none. An older export file
+without ``payload`` keys imports exactly as before: new records
+land with the model's empty default and nothing errors.
+
 Unknown sections / keys (TF-11): anything in the file this command
 does not consume — an unknown top-level section, or an unknown key
 inside a record of a known section (or inside ``counts``) — has no
-model home in the salon_data shape. The verbatim ``payload``
-retention used by the price-book / product importers lives only on
-``Service`` / ``Client`` / ``Appointment`` / ``Product`` and the
-salon_data exporter emits no ``payload`` at all, so there is no
-clean retention seam here covering every section (Salon,
-ServiceCategory, StaffLevel, ServicePrice, the notes and
-StaffMember carry no payload). Such data is therefore never
+model home in the salon_data shape. Such data is therefore never
 dropped silently: every unknown section and key is listed BY NAME
 in an ``IMPORT_DROPPED`` line in the import summary output (an
 explicit ``none`` when there is nothing dropped), while all known
@@ -156,13 +160,14 @@ KNOWN_KEYS = {
                            "active"},
     "services": {"id", "category_id", "external_id", "name",
                  "description", "service_minutes",
-                 "processing_minutes", "finishing_minutes", "active"},
+                 "processing_minutes", "finishing_minutes", "active",
+                 "payload"},
     "staff_levels": {"id", "salon_id", "name", "sort_order", "active"},
     "service_prices": {"id", "service_id", "staff_level_id", "amount",
                        "is_from", "active"},
     "clients": {"id", "salon_id", "external_id", "first_name",
                 "last_name", "email", "phone", "sms_opt_in",
-                "email_opt_in", "active", "created_at"},
+                "email_opt_in", "active", "created_at", "payload"},
     "client_notes": {"id", "client_id", "body", "author_name",
                      "created_at"},
     "staff_members": {"id", "salon_id", "external_id", "display_name",
@@ -172,7 +177,7 @@ KNOWN_KEYS = {
                      "staff_member_external_id", "service_id",
                      "service_external_id", "service_name", "start",
                      "end", "status", "origin", "price_override",
-                     "created_at", "updated_at"},
+                     "created_at", "updated_at", "payload"},
     "appointment_notes": {"id", "appointment_id", "body",
                           "author_name", "created_at"},
 }
@@ -655,6 +660,8 @@ class Command(BaseCommand):
                 "finishing_minutes": row.get("finishing_minutes", 0),
                 "active": row["active"],
             }
+            if "payload" in row:
+                defaults["payload"] = row["payload"]
             external_id = _norm_id(row.get("external_id")) or ""
             if external_id:
                 obj, _ = Service.objects.update_or_create(
@@ -693,6 +700,8 @@ class Command(BaseCommand):
                 "email_opt_in": row.get("email_opt_in", False),
                 "active": row["active"],
             }
+            if "payload" in row:
+                defaults["payload"] = row["payload"]
             salon = _ref(salons, row["salon_id"], "salon")
             external_id = _norm_id(row.get("external_id")) or ""
             if external_id:
@@ -771,6 +780,8 @@ class Command(BaseCommand):
                     if row.get("price_override") is not None else None
                 ),
             }
+            if "payload" in row:
+                defaults["payload"] = row["payload"]
             external_id = _norm_id(row.get("external_id")) or ""
             if external_id:
                 obj, _ = Appointment.objects.update_or_create(

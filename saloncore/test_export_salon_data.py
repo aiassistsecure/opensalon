@@ -248,3 +248,53 @@ class ExportAppointmentsTests(TestCase):
         data, _ = self.run_export(salon="Appt Salon")
         self.assertEqual(data["counts"]["appointments"], 2)
         self.assertEqual(data["counts"]["appointment_notes"], 2)
+
+
+class ExportPayloadTests(TestCase):
+    """Payload leg: export emits payloads verbatim where models carry one."""
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Payload Salon")
+        self.category = ServiceCategory.objects.create(
+            salon=self.salon, name="Color")
+        self.service_payload = {"z_key": 1, "a_key": {"nested": [1, 2]}}
+        self.service = Service.objects.create(
+            category=self.category, name="Single Process",
+            external_id="svc-p", service_minutes=45,
+            payload=self.service_payload)
+        self.client_payload = {"legacy": {"id": 7, "tags": ["x", "y"]}}
+        self.client = Client.objects.create(
+            salon=self.salon, first_name="Ada", last_name="Optin",
+            external_id="cli-p", payload=self.client_payload)
+        self.staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Stylist One",
+            external_id="staff-p")
+        self.start = datetime(2026, 11, 2, 14, 0,
+                              tzinfo=dt_timezone.utc)
+        self.appt_payload = {"price": "85.00", "source_ref": "r-1"}
+        self.appt = Appointment.objects.create(
+            client=self.client, staff_member=self.staff,
+            service=self.service, external_id="appt-p",
+            start=self.start, end=self.start + timedelta(minutes=45),
+            payload=self.appt_payload)
+
+    def run_export(self):
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        fh.close()
+        call_command("export_salon_data", fh.name, stdout=io.StringIO())
+        with open(fh.name, encoding="utf-8") as exported:
+            return json.load(exported)
+
+    def test_export_emits_payloads_for_clients_services_appointments(self):
+        data = self.run_export()
+        self.assertEqual(data["clients"][0]["payload"], self.client_payload)
+        self.assertEqual(data["services"][0]["payload"], self.service_payload)
+        self.assertEqual(
+            data["appointments"][0]["payload"], self.appt_payload)
+
+    def test_staff_members_section_has_no_payload(self):
+        # StaffMember carries no payload field — none is invented.
+        data = self.run_export()
+        self.assertNotIn("payload", data["staff_members"][0])
+        self.assertFalse(hasattr(StaffMember, "payload"))

@@ -19,6 +19,11 @@ fully export. This is part 1 of that test — the core records only:
   internal ``*_id`` (following the other sections) and the related
   record's ``*_external_id`` where that model carries one.
 
+The ``payload`` (whole source record, stored verbatim) is emitted
+for every section whose model carries one — clients, services and
+appointments — so a salon_data restore preserves it exactly.
+StaffMember carries no ``payload`` field, so its section emits none.
+
 No new models and no provider concepts: plain querysets turned into
 plain dicts, Decimals as strings and datetimes as ISO-8601 so the file
 round-trips losslessly through ``json.load``. Without ``--salon`` every
@@ -108,7 +113,7 @@ class Command(BaseCommand):
                     "service_minutes": s.service_minutes,
                     "processing_minutes": s.processing_minutes,
                     "finishing_minutes": s.finishing_minutes,
-                    "active": s.active,
+                    "active": s.active, "payload": s.payload,
                 }
                 for s in services
             ],
@@ -137,6 +142,7 @@ class Command(BaseCommand):
                     "sms_opt_in": c.sms_opt_in,
                     "email_opt_in": c.email_opt_in,
                     "active": c.active, "created_at": _dt(c.created_at),
+                    "payload": c.payload,
                 }
                 for c in clients
             ],
@@ -180,6 +186,7 @@ class Command(BaseCommand):
                     ),
                     "created_at": _dt(a.created_at),
                     "updated_at": _dt(a.updated_at),
+                    "payload": a.payload,
                 }
                 for a in appointments
             ],
