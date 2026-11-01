@@ -61,6 +61,12 @@ fully export. This is part 1 of that test — the core records only:
   (money never floats), ``tender`` is a core ``Payment.Method``
   slug (no provider concept), and ``created_at`` as ISO-8601
   with its timezone.
+- bookings: Break (a stylist's blocked-off time, scoped through
+  its staff member's salon). Rows carry the staff reference as
+  both the internal ``staff_member_id`` and the member's
+  ``staff_member_external_id``, like attendance records;
+  ``start`` / ``end`` are emitted as ISO-8601 with timezone
+  via ``_dt`` and ``paid`` as a real boolean.
 
 The ``payload`` (whole source record, stored verbatim) is emitted
 for every section whose model carries one — clients, services,
@@ -80,7 +86,7 @@ import json
 
 from django.core.management.base import BaseCommand, CommandError
 
-from bookings.models import Appointment, AppointmentNote
+from bookings.models import Appointment, AppointmentNote, Break
 from checkout.models import Payment, Refund, Sale, SaleItem
 from catalog.models import Product, StockMovement
 from clients.models import Client, ClientNote
@@ -105,7 +111,7 @@ def _dt(value):
 
 
 class Command(BaseCommand):
-    help = "Export salon core data (price book, clients, staff, appointments, products, sales, stock movements, attendance, price changes, refunds) to one JSON file."
+    help = "Export salon core data (price book, clients, staff, appointments, products, sales, stock movements, attendance, price changes, refunds, breaks) to one JSON file."
 
     def add_arguments(self, parser):
         parser.add_argument("output", help="Path of the JSON file to write.")
@@ -163,6 +169,8 @@ class Command(BaseCommand):
         sale_payments = Payment.objects.filter(sale_id__in=sale_ids)
         refunds = Refund.objects.filter(sale_id__in=sale_ids)
         attendance_records = AttendanceRecord.objects.filter(
+            staff_member_id__in=staff_ids).select_related("staff_member")
+        breaks = Break.objects.filter(
             staff_member_id__in=staff_ids).select_related("staff_member")
 
         data = {
@@ -407,6 +415,16 @@ class Command(BaseCommand):
                     "created_at": _dt(r.created_at),
                 }
                 for r in refunds
+            ],
+            "breaks": [
+                {
+                    "id": b.id,
+                    "staff_member_id": b.staff_member_id,
+                    "staff_member_external_id": b.staff_member.external_id,
+                    "start": _dt(b.start), "end": _dt(b.end),
+                    "paid": b.paid,
+                }
+                for b in breaks
             ],
         }
         data["counts"] = {
