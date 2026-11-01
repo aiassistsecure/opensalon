@@ -47,9 +47,12 @@ class DailySalesSummaryTests(TestCase):
         self.assertEqual(result.service_total, Decimal("0.00"))
         self.assertEqual(result.retail_total, Decimal("0.00"))
         self.assertEqual(result.product_total, Decimal("0.00"))
+        self.assertEqual(result.series_total, Decimal("0.00"))
+        self.assertEqual(result.series, Decimal("0.00"))
         self.assertEqual(
             result.by_kind,
-            {"service": Decimal("0.00"), "product": Decimal("0.00")},
+            {"service": Decimal("0.00"), "product": Decimal("0.00"),
+             "series": Decimal("0.00")},
         )
         self.assertEqual(result.item_count, 0)
         self.assertEqual(result.day, self.day)
@@ -70,6 +73,54 @@ class DailySalesSummaryTests(TestCase):
         self.assertEqual(result.by_kind["service"], Decimal("135.00"))
         self.assertEqual(result.by_kind["product"], Decimal("40.00"))
         self.assertEqual(result.item_count, 3)
+
+    def test_series_included_in_gross_and_split(self):
+        self._sale(self.salon, [("service", "85.00", 1),
+                                ("product", "20.00", 2),
+                                ("series", "100.00", 2)])
+        result = daily_sales_summary(self.salon, self.day)
+        self.assertEqual(result.sales_count, 1)
+        self.assertEqual(result.service_total, Decimal("85.00"))
+        self.assertEqual(result.retail_total, Decimal("40.00"))
+        self.assertEqual(result.series_total, Decimal("200.00"))
+        self.assertEqual(result.series, Decimal("200.00"))
+        self.assertEqual(result["series"], Decimal("200.00"))
+        self.assertEqual(result.by_kind["series"], Decimal("200.00"))
+        # Total is the full sum: service + retail + series.
+        self.assertEqual(result.gross_total, Decimal("325.00"))
+        self.assertEqual(
+            result.gross_total,
+            result.service_total + result.retail_total + result.series_total,
+        )
+        self.assertEqual(result.item_count, 3)
+
+    def test_series_only_sale_counts_fully(self):
+        self._sale(self.salon, [("series", "200.00", 1)])
+        result = daily_sales_summary(self.salon, self.day)
+        self.assertEqual(result.sales_count, 1)
+        self.assertEqual(result.gross_total, Decimal("200.00"))
+        self.assertEqual(result.series_total, Decimal("200.00"))
+        self.assertEqual(result.service_total, Decimal("0.00"))
+        self.assertEqual(result.retail_total, Decimal("0.00"))
+
+    def test_voided_series_sale_excluded(self):
+        self._sale(self.salon, [("series", "200.00", 1)])
+        self._sale(self.salon, [("series", "999.00", 1)],
+                   status=Sale.Status.VOIDED)
+        result = daily_sales_summary(self.salon, self.day)
+        self.assertEqual(result.sales_count, 1)
+        self.assertEqual(result.gross_total, Decimal("200.00"))
+        self.assertEqual(result.series_total, Decimal("200.00"))
+
+    def test_open_series_sale_follows_existing_scoping(self):
+        # Existing rule (unchanged): only voided sales are
+        # excluded; an open sale counts, series lines included.
+        self._sale(self.salon, [("series", "150.00", 1)],
+                   status=Sale.Status.OPEN, completed=False)
+        result = daily_sales_summary(self.salon, self.day)
+        self.assertEqual(result.sales_count, 1)
+        self.assertEqual(result.gross_total, Decimal("150.00"))
+        self.assertEqual(result.series_total, Decimal("150.00"))
 
     def test_cross_salon_isolation(self):
         self._sale(self.salon, [("service", "85.00", 1)])

@@ -29,6 +29,9 @@ Columns -- exactly the fields ``DailySalesSummary`` produces:
   as a string to two decimal places;
 * ``retail_total`` -- ``DailySalesSummary.retail_total``, as
   a string to two decimal places;
+* ``series_total`` -- ``DailySalesSummary.series_total``, as
+  a string to two decimal places (the series column, mirroring
+  the ``series`` column of the insights revenue-split export);
 * ``item_count`` -- ``DailySalesSummary.item_count``.
 
 Range semantics: ``date_from`` / ``date_to`` are inclusive
@@ -72,6 +75,7 @@ EXPORT_FIELDNAMES = [
     "gross_total",
     "service_total",
     "retail_total",
+    "series_total",
     "item_count",
 ]
 
@@ -104,6 +108,7 @@ def summary_export_row(summary):
         "gross_total": _money(summary.gross_total),
         "service_total": _money(summary.service_total),
         "retail_total": _money(summary.retail_total),
+        "series_total": _money(summary.series_total),
         "item_count": summary.item_count,
     }
 

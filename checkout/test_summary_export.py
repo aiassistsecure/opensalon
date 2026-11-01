@@ -70,6 +70,7 @@ class SummaryExportTests(TestCase):
             "service_total": str(
                 summary.service_total.quantize(Decimal("0.01"))),
             "retail_total": str(summary.retail_total.quantize(Decimal("0.01"))),
+            "series_total": str(summary.series_total.quantize(Decimal("0.01"))),
             "item_count": summary.item_count,
         }])
         self.assertEqual(summary.gross_total, Decimal("175.00"))
@@ -112,6 +113,7 @@ class SummaryExportTests(TestCase):
             self.assertEqual(row["gross_total"], "0.00")
             self.assertEqual(row["service_total"], "0.00")
             self.assertEqual(row["retail_total"], "0.00")
+            self.assertEqual(row["series_total"], "0.00")
             self.assertEqual(row["item_count"], 0)
         self.assertEqual(export_summary(self.salon, last, self.day), [])
         text = export_summary_csv(self.salon, last, self.day)
@@ -132,6 +134,32 @@ class SummaryExportTests(TestCase):
         parsed = _rows(export_summary_csv(self.salon, self.day))
         self.assertEqual([r["salon_id"] for r in parsed],
                          [str(self.salon.pk)])
+
+    def test_series_total_column_matches_service(self):
+        self.assertIn("series_total", EXPORT_FIELDNAMES)
+        self._sale(self.salon, [("service", "85.00", 1),
+                                ("product", "20.00", 2),
+                                ("series", "100.00", 2)])
+        summary = daily_sales_summary(self.salon, self.day)
+        rows = export_summary(self.salon, self.day)
+        self.assertEqual(rows[0]["series_total"], "200.00")
+        self.assertEqual(
+            Decimal(rows[0]["series_total"]), summary.series_total)
+        self.assertEqual(rows[0]["gross_total"], "325.00")
+        self.assertEqual(
+            Decimal(rows[0]["gross_total"]),
+            Decimal(rows[0]["service_total"])
+            + Decimal(rows[0]["retail_total"])
+            + Decimal(rows[0]["series_total"]),
+        )
+        parsed = _rows(export_summary_csv(self.salon, self.day))
+        self.assertEqual(parsed[0]["series_total"], "200.00")
+
+    def test_series_only_sale_exports_series_column(self):
+        self._sale(self.salon, [("series", "200.00", 1)])
+        rows = export_summary(self.salon, self.day)
+        self.assertEqual(rows[0]["series_total"], "200.00")
+        self.assertEqual(rows[0]["gross_total"], "200.00")
 
     def test_read_only_records_unchanged(self):
         self._sale(self.salon, [("service", "85.00", 1)])
