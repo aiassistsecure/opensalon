@@ -23,6 +23,13 @@ fully export. This is part 1 of that test — the core records only:
   staff member's salon). Both rows carry the staff reference as
   both the internal ``staff_member_id`` and the member's
   ``staff_member_external_id``, like appointments.
+- checkout: Sale, SaleItem (sale lines) and Payment (sale payments),
+  scoped through the sale's salon. Sale rows carry the client
+  reference as both ``client_id`` and ``client_external_id``; line
+  rows carry service/product references the same way. FOUNDING
+  RULE: Payment's ``provider_reference`` is NEVER exported — it is
+  a payment-provider identifier and provider-agnostic core carries
+  no provider identifiers, SDK fields, or provider names.
 - catalog: Product (retail products, scoped by salon like clients
   and staff). Stock is NOT exported: it is derived from
   StockMovement rows, never stored on Product, so there is no
@@ -48,6 +55,7 @@ import json
 from django.core.management.base import BaseCommand, CommandError
 
 from bookings.models import Appointment, AppointmentNote
+from checkout.models import Payment, Sale, SaleItem
 from catalog.models import Product
 from clients.models import Client, ClientNote
 from saloncore.models import (
@@ -65,7 +73,7 @@ def _dt(value):
 
 
 class Command(BaseCommand):
-    help = "Export salon core data (price book, clients, staff, appointments, products) to one JSON file."
+    help = "Export salon core data (price book, clients, staff, appointments, products, sales) to one JSON file."
 
     def add_arguments(self, parser):
         parser.add_argument("output", help="Path of the JSON file to write.")
@@ -107,6 +115,12 @@ class Command(BaseCommand):
             appointment_id__in=appointment_ids
         )
         products = Product.objects.filter(salon_id__in=salon_ids)
+        sales = Sale.objects.filter(
+            salon_id__in=salon_ids).select_related("client")
+        sale_ids = list(sales.values_list("id", flat=True))
+        sale_items = SaleItem.objects.filter(
+            sale_id__in=sale_ids).select_related("service", "product")
+        sale_payments = Payment.objects.filter(sale_id__in=sale_ids)
 
         data = {
             "salons": [
@@ -259,6 +273,47 @@ class Command(BaseCommand):
                     "payload": p.payload,
                 }
                 for p in products
+            ],
+            "sales": [
+                {
+                    "id": s.id, "salon_id": s.salon_id,
+                    "client_id": s.client_id,
+                    "client_external_id": (
+                        s.client.external_id if s.client else None),
+                    "status": s.status,
+                    "created_at": _dt(s.created_at),
+                    "completed_at": _dt(s.completed_at),
+                    "voided_at": _dt(s.voided_at),
+                    "void_reason": s.void_reason,
+                }
+                for s in sales
+            ],
+            "sale_items": [
+                {
+                    "id": i.id, "sale_id": i.sale_id, "kind": i.kind,
+                    "service_id": i.service_id,
+                    "service_external_id": (
+                        i.service.external_id if i.service else None),
+                    "product_id": i.product_id,
+                    "product_external_id": (
+                        i.product.external_id if i.product else None),
+                    "description": i.description,
+                    "quantity": i.quantity,
+                    "unit_price": str(i.unit_price),
+                }
+                for i in sale_items
+            ],
+            "sale_payments": [
+                {
+                    # provider_reference deliberately omitted:
+                    # provider-agnostic core exports no provider ids.
+                    "id": pay.id, "sale_id": pay.sale_id,
+                    "method": pay.method, "amount": str(pay.amount),
+                    "status": pay.status,
+                    "created_at": _dt(pay.created_at),
+                    "updated_at": _dt(pay.updated_at),
+                }
+                for pay in sale_payments
             ],
         }
         data["counts"] = {
