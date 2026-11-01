@@ -12,6 +12,7 @@ from django.core.management import CommandError, call_command
 from django.test import TestCase
 
 from bookings.models import Appointment, AppointmentNote
+from checkout.models import Payment, Sale, SaleItem
 from catalog.models import Product
 from clients.models import Client, ClientNote
 from saloncore.models import (
@@ -70,6 +71,7 @@ class ExportSalonDataTests(TestCase):
             "client_notes": 1, "staff_members": 1,
             "appointments": 0, "appointment_notes": 0, "products": 0,
             "roster_patterns": 0, "shift_overrides": 0,
+            "sales": 0, "sale_items": 0, "sale_payments": 0,
         })
         for key, count in data["counts"].items():
             self.assertEqual(len(data[key]), count)
@@ -430,3 +432,92 @@ class ExportRosterTests(TestCase):
         data = self.run_export(salon="Other Salon")
         self.assertEqual(data["counts"]["roster_patterns"], 1)
         self.assertEqual(data["counts"]["shift_overrides"], 1)
+
+
+class ExportSalesTests(TestCase):
+    """Sales leg: export emits sales, sale items and sale payments.
+
+    Provider-agnostic founding rule: Payment.provider_reference is
+    a provider identifier and must never appear in the export.
+    """
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Sales Salon")
+        self.category = ServiceCategory.objects.create(
+            salon=self.salon, name="Color")
+        self.service = Service.objects.create(
+            category=self.category, name="Single Process",
+            external_id="svc-s", service_minutes=45)
+        self.product = Product.objects.create(
+            salon=self.salon, name="Shampoo", price=Decimal("24.50"),
+            external_id="prod-s")
+        self.client = Client.objects.create(
+            salon=self.salon, first_name="Ada", last_name="Optin",
+            external_id="cli-s")
+        self.sale = Sale.objects.create(
+            salon=self.salon, client=self.client,
+            status=Sale.Status.COMPLETED)
+        self.item_service = SaleItem.objects.create(
+            sale=self.sale, kind=SaleItem.Kind.SERVICE,
+            service=self.service, description="Single Process",
+            quantity=1, unit_price=Decimal("85.00"))
+        self.item_product = SaleItem.objects.create(
+            sale=self.sale, kind=SaleItem.Kind.PRODUCT,
+            product=self.product, description="Shampoo",
+            quantity=2, unit_price=Decimal("24.50"))
+        self.payment = Payment.objects.create(
+            sale=self.sale, method=Payment.Method.CASH,
+            amount=Decimal("134.00"), status=Payment.Status.COMPLETED,
+            provider_reference="PROV-SECRET-1")
+        self.walkin = Sale.objects.create(salon=self.salon)
+
+    def run_export(self, **kwargs):
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        fh.close()
+        call_command("export_salon_data", fh.name,
+                     stdout=io.StringIO(), **kwargs)
+        with open(fh.name, encoding="utf-8") as exported:
+            raw = exported.read()
+        return json.loads(raw), raw
+
+    def test_export_emits_sales_sections_with_all_fields(self):
+        data, _ = self.run_export()
+        self.assertEqual(data["counts"]["sales"], 2)
+        self.assertEqual(data["counts"]["sale_items"], 2)
+        self.assertEqual(data["counts"]["sale_payments"], 1)
+        sale = next(s for s in data["sales"] if s["client_id"])
+        self.assertEqual(sale["salon_id"], self.salon.id)
+        self.assertEqual(sale["client_external_id"], "cli-s")
+        self.assertEqual(sale["status"], "completed")
+        self.assertEqual(sale["void_reason"], "")
+        walkin = next(s for s in data["sales"] if not s["client_id"])
+        self.assertIsNone(walkin["client_external_id"])
+        items = {i["kind"]: i for i in data["sale_items"]}
+        self.assertEqual(items["service"]["service_external_id"], "svc-s")
+        self.assertEqual(items["service"]["unit_price"], "85.00")
+        self.assertEqual(items["product"]["product_external_id"], "prod-s")
+        self.assertEqual(items["product"]["quantity"], 2)
+        pay = data["sale_payments"][0]
+        self.assertEqual(pay["sale_id"], self.sale.id)
+        self.assertEqual(pay["method"], "cash")
+        self.assertEqual(pay["amount"], "134.00")
+        self.assertEqual(pay["status"], "completed")
+
+    def test_export_never_carries_provider_reference(self):
+        data, raw = self.run_export()
+        self.assertNotIn("provider_reference", raw)
+        self.assertNotIn("PROV-SECRET-1", raw)
+        for row in data["sale_payments"]:
+            self.assertNotIn("provider_reference", row)
+
+    def test_salon_filter_scopes_sales(self):
+        other = Salon.objects.create(name="Other Salon")
+        Sale.objects.create(salon=other)
+        data, _ = self.run_export(salon="Sales Salon")
+        self.assertEqual(data["counts"]["sales"], 2)
+        self.assertEqual(data["counts"]["sale_items"], 2)
+        data, _ = self.run_export(salon="Other Salon")
+        self.assertEqual(data["counts"]["sales"], 1)
+        self.assertEqual(data["counts"]["sale_items"], 0)
+        self.assertEqual(data["counts"]["sale_payments"], 0)

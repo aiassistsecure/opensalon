@@ -15,6 +15,7 @@ from django.core.management import CommandError, call_command
 from django.test import TestCase
 
 from bookings.models import Appointment, AppointmentNote
+from checkout.models import Payment, Sale, SaleItem
 from catalog.models import Product
 from clients.models import Client, ClientNote
 from saloncore.models import (
@@ -804,7 +805,8 @@ class ImportSalonDataDryRunTests(TestCase):
             "salons", "service_categories", "services", "staff_levels",
             "service_prices", "clients", "client_notes", "staff_members",
             "appointments", "appointment_notes", "products",
-            "roster_patterns", "shift_overrides"})
+            "roster_patterns", "shift_overrides", "sales",
+            "sale_items", "sale_payments"})
         for section, report in reports.items():
             self.assertEqual(report["source"], section)
             self.assertEqual(
@@ -1197,3 +1199,143 @@ class ImportSalonDataRosterTests(TestCase):
         out = self.run_import(path)
         self.assertIn("roster_patterns.legacy_roster_code", out)
         self.assertEqual(RosterPattern.objects.count(), 2)
+
+
+class ImportSalonDataSalesTests(TestCase):
+    """Sales leg: salon_data round-trip preserves sales exactly.
+
+    Payment.provider_reference is omitted by the exporter, so a
+    restored payment carries the model default ("") — provider ids
+    never travel in salon_data (provider-agnostic founding rule).
+    """
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Sales Restore Salon")
+        self.category = ServiceCategory.objects.create(
+            salon=self.salon, name="Color")
+        self.service = Service.objects.create(
+            category=self.category, name="Single Process",
+            external_id="svc-s", service_minutes=45)
+        self.product = Product.objects.create(
+            salon=self.salon, name="Shampoo", price=Decimal("24.50"),
+            external_id="prod-s")
+        self.client = Client.objects.create(
+            salon=self.salon, first_name="Ada", last_name="Optin",
+            external_id="cli-s")
+        self.sale = Sale.objects.create(
+            salon=self.salon, client=self.client,
+            status=Sale.Status.COMPLETED)
+        SaleItem.objects.create(
+            sale=self.sale, kind=SaleItem.Kind.SERVICE,
+            service=self.service, description="Single Process",
+            quantity=1, unit_price=Decimal("85.00"))
+        SaleItem.objects.create(
+            sale=self.sale, kind=SaleItem.Kind.PRODUCT,
+            product=self.product, description="Shampoo",
+            quantity=2, unit_price=Decimal("24.50"))
+        Payment.objects.create(
+            sale=self.sale, method=Payment.Method.CASH,
+            amount=Decimal("134.00"), status=Payment.Status.COMPLETED,
+            provider_reference="PROV-SECRET-1")
+        Sale.objects.create(salon=self.salon)
+
+    def temp_path(self):
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        fh.close()
+        return fh.name
+
+    def export_data(self):
+        path = self.temp_path()
+        call_command("export_salon_data", path, stdout=io.StringIO())
+        with open(path, encoding="utf-8") as fh:
+            return path, json.load(fh)
+
+    def write_data(self, path, data):
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+
+    def run_import(self, path):
+        out = io.StringIO()
+        call_command("import_salon_data", path, stdout=out)
+        return out.getvalue()
+
+    def test_round_trip_preserves_sales_items_and_payments(self):
+        path, _ = self.export_data()
+        Salon.objects.all().delete()
+        self.assertEqual(Sale.objects.count(), 0)
+        out = self.run_import(path)
+        self.assertIn("sales=2", out)
+        self.assertIn("sale_items=2", out)
+        self.assertIn("sale_payments=1", out)
+        self.assertIn("unknown_keys=none", out)
+        self.assertEqual(Sale.objects.count(), 2)
+        sale = Sale.objects.get(status=Sale.Status.COMPLETED)
+        self.assertEqual(sale.salon.name, "Sales Restore Salon")
+        self.assertEqual(sale.client.external_id, "cli-s")
+        self.assertEqual(sale.total, Decimal("134.00"))
+        items = {i.kind: i for i in sale.items.all()}
+        self.assertEqual(items["service"].service.external_id, "svc-s")
+        self.assertEqual(items["service"].unit_price, Decimal("85.00"))
+        self.assertEqual(items["product"].product.external_id, "prod-s")
+        self.assertEqual(items["product"].quantity, 2)
+        pay = sale.payments.get()
+        self.assertEqual(pay.method, "cash")
+        self.assertEqual(pay.amount, Decimal("134.00"))
+        self.assertEqual(pay.status, "completed")
+        # Provider identifier did not travel.
+        self.assertEqual(pay.provider_reference, "")
+
+    def test_reimport_sales_is_idempotent(self):
+        path, _ = self.export_data()
+        Salon.objects.all().delete()
+        self.run_import(path)
+        self.run_import(path)
+        self.assertEqual(Sale.objects.count(), 2)
+        self.assertEqual(SaleItem.objects.count(), 2)
+        self.assertEqual(Payment.objects.count(), 1)
+
+    def test_missing_sales_sections_import_exactly_as_before(self):
+        path, data = self.export_data()
+        for section in ("sales", "sale_items", "sale_payments"):
+            del data[section]
+            del data["counts"][section]
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        out = self.run_import(path)
+        self.assertIn("sales=0", out)
+        self.assertIn("sale_items=0", out)
+        self.assertIn("sale_payments=0", out)
+        self.assertEqual(Sale.objects.count(), 0)
+
+    def test_provider_reference_in_file_named_dropped_not_imported(self):
+        path, data = self.export_data()
+        data["sale_payments"][0]["provider_reference"] = "PROV-X"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        out = self.run_import(path)
+        self.assertIn("sale_payments.provider_reference", out)
+        self.assertEqual(Payment.objects.get().provider_reference, "")
+
+    def test_bad_payment_amount_fails_closed_zero_writes(self):
+        # TF-3: money is Decimal parsed from its string spelling;
+        # a non-numeric amount fails phase 1 entirely.
+        path, data = self.export_data()
+        data["sale_payments"][0]["amount"] = "not-money"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError):
+            call_command("import_salon_data", path)
+        self.assertEqual(Salon.objects.count(), 0)
+        self.assertEqual(Sale.objects.count(), 0)
+        self.assertEqual(Payment.objects.count(), 0)
+
+    def test_dangling_sale_ref_fails_closed_zero_writes(self):
+        path, data = self.export_data()
+        data["sale_items"][0]["sale_id"] = 999999
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError):
+            call_command("import_salon_data", path)
+        self.assertEqual(Salon.objects.count(), 0)
+        self.assertEqual(Sale.objects.count(), 0)

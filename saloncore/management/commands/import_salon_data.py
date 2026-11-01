@@ -7,9 +7,10 @@ This is the restore side of the Exit Test: it consumes exactly the
 JSON format written by ``export_salon_data`` (see that command for the
 section list) and restores Salon, ServiceCategory, Service,
 StaffLevel, ServicePrice, Client, ClientNote, StaffMember,
-Appointment, AppointmentNote, Product, RosterPattern and
-ShiftOverride records. The ``products``, ``roster_patterns``
-and ``shift_overrides`` sections are optional on read: an export
+Appointment, AppointmentNote, Product, RosterPattern,
+ShiftOverride, Sale, SaleItem and Payment records. The ``products``,
+``roster_patterns``, ``shift_overrides``, ``sales``, ``sale_items``
+and ``sale_payments`` sections are optional on read: an export
 file written before they existed (no such section, no ``counts``
 entry for it) imports exactly as before, with the section
 treated as empty. Roster rows restore idempotently too:
@@ -51,6 +52,15 @@ and creates nothing twice:
 - Product          <- external_id when present, else
   (salon, name, sku, barcode). Stock is never imported: it is
   derived from StockMovement rows, not stored on Product.
+- Sale             <- (salon, client, created_at, completed_at,
+  voided_at); restored after products so sale lines can resolve
+  them. SaleItem <- (sale, kind, service, product, description);
+  Payment (sale_payments) <- (sale, method, created_at).
+  FOUNDING RULE: Payment's ``provider_reference`` is never
+  imported or exported — it is a payment-provider identifier and
+  provider-agnostic core carries none; if a file carries it, it
+  is an unknown key and TF-11 names it as dropped
+  (``sale_payments.provider_reference``).
 
 No provider concepts: external ids are the generic fields the models
 already carry.
@@ -147,6 +157,7 @@ from django.utils.dateparse import parse_date, parse_datetime, parse_time
 from django.utils.timezone import is_naive
 
 from bookings.models import Appointment, AppointmentNote
+from checkout.models import Payment, Sale, SaleItem
 from catalog.models import Product
 from clients.models import Client, ClientNote
 from saloncore.dry_run import build_dry_run_reports
@@ -164,11 +175,13 @@ SECTIONS = (
     "service_prices", "clients", "client_notes", "staff_members",
     "appointments", "appointment_notes", "products",
     "roster_patterns", "shift_overrides",
+    "sales", "sale_items", "sale_payments",
 )
 
 # Sections an older export file may legitimately lack entirely:
 # missing means empty, never an error (back-compat).
-OPTIONAL_SECTIONS = ("products", "roster_patterns", "shift_overrides")
+OPTIONAL_SECTIONS = ("products", "roster_patterns", "shift_overrides",
+                     "sales", "sale_items", "sale_payments")
 
 # Every key the exporter emits (hence the importer may consume) per
 # section. Any other key in a record is unknown (TF-11).
@@ -209,6 +222,15 @@ KNOWN_KEYS = {
     "shift_overrides": {"id", "staff_member_id",
                         "staff_member_external_id", "date", "is_off",
                         "start_time", "end_time"},
+    "sales": {"id", "salon_id", "client_id", "client_external_id",
+              "status", "created_at", "completed_at", "voided_at",
+              "void_reason"},
+    "sale_items": {"id", "sale_id", "kind", "service_id",
+                   "service_external_id", "product_id",
+                   "product_external_id", "description", "quantity",
+                   "unit_price"},
+    "sale_payments": {"id", "sale_id", "method", "amount", "status",
+                      "created_at", "updated_at"},
 }
 
 TOP_LEVEL_KEYS = set(SECTIONS) | {"counts"}
@@ -353,6 +375,11 @@ _ID_FIELDS = {
                         "staff_member_external_id"),
     "shift_overrides": ("id", "staff_member_id",
                         "staff_member_external_id"),
+    "sales": ("id", "salon_id", "client_id", "client_external_id"),
+    "sale_items": ("id", "sale_id", "service_id",
+                   "service_external_id", "product_id",
+                   "product_external_id"),
+    "sale_payments": ("id", "sale_id"),
 }
 
 # (section, field) -> model whose external_id limit governs it.
@@ -377,6 +404,12 @@ _EXTERNAL_ID_LIMITS = {
         StaffMember._meta.get_field("external_id").max_length,
     ("shift_overrides", "staff_member_external_id"):
         StaffMember._meta.get_field("external_id").max_length,
+    ("sales", "client_external_id"):
+        Client._meta.get_field("external_id").max_length,
+    ("sale_items", "service_external_id"):
+        Service._meta.get_field("external_id").max_length,
+    ("sale_items", "product_external_id"):
+        Product._meta.get_field("external_id").max_length,
 }
 
 
@@ -435,7 +468,7 @@ def _check_appt_ref(ids, ext_ids, old_id, external_id, what):
 
 CREATED_AT_SECTIONS = (
     "salons", "clients", "client_notes", "appointments",
-    "appointment_notes",
+    "appointment_notes", "sales", "sale_payments",
 )
 
 
@@ -523,6 +556,10 @@ def _validate(data):
         "roster_patterns": ("id", "staff_member_id", "weekday",
                             "start_time", "end_time"),
         "shift_overrides": ("id", "staff_member_id", "date"),
+        "sales": ("id", "salon_id", "status"),
+        "sale_items": ("id", "sale_id", "kind", "unit_price"),
+        "sale_payments": ("id", "sale_id", "method", "amount",
+                          "status"),
     }
     for section, fields in required.items():
         for row in data[section]:
@@ -555,6 +592,11 @@ def _validate(data):
     service_ext_ids = {
         row.get("external_id") for row in data["services"]
         if row.get("external_id")}
+    product_ids = {row["id"] for row in data["products"]}
+    product_ext_ids = {
+        row.get("external_id") for row in data["products"]
+        if row.get("external_id")}
+    sale_ids = {row["id"] for row in data["sales"]}
 
     for row in data["service_categories"]:
         _check_ref(salon_ids, row["salon_id"], "salon")
@@ -664,6 +706,61 @@ def _validate(data):
                 raise CommandError(
                     f"Bad products cost_price: "
                     f"{row.get('cost_price')!r}.") from exc
+    for row in data["sales"]:
+        _check_ref(salon_ids, row["salon_id"], "salon")
+        if (row.get("client_id") is not None
+                or row.get("client_external_id")):
+            _check_appt_ref(
+                client_ids, client_ext_ids, row.get("client_id"),
+                row.get("client_external_id"), "client")
+        if row["status"] not in Sale.Status.values:
+            raise CommandError(
+                f"Bad sales status: {row['status']!r}.")
+        for field in ("completed_at", "voided_at"):
+            if row.get(field) is not None:
+                _checked_datetime(
+                    row[field], f"sales {field} "
+                    f"record id {row.get('id')!r}")
+    for row in data["sale_items"]:
+        _check_ref(sale_ids, row["sale_id"], "sale")
+        if row["kind"] not in SaleItem.Kind.values:
+            raise CommandError(
+                f"Bad sale_items kind: {row['kind']!r}.")
+        if (row.get("service_id") is not None
+                or row.get("service_external_id")):
+            _check_appt_ref(
+                service_ids, service_ext_ids, row.get("service_id"),
+                row.get("service_external_id"), "service")
+        if (row.get("product_id") is not None
+                or row.get("product_external_id")):
+            _check_appt_ref(
+                product_ids, product_ext_ids, row.get("product_id"),
+                row.get("product_external_id"), "product")
+        quantity = row.get("quantity", 1)
+        if (not isinstance(quantity, int)
+                or isinstance(quantity, bool) or quantity < 1):
+            raise CommandError(
+                f"Bad sale_items quantity: {quantity!r}.")
+        try:
+            Decimal(str(row["unit_price"]))
+        except (InvalidOperation, ValueError) as exc:
+            raise CommandError(
+                f"Bad sale_items unit_price: "
+                f"{row.get('unit_price')!r}.") from exc
+    for row in data["sale_payments"]:
+        _check_ref(sale_ids, row["sale_id"], "sale")
+        if row["method"] not in Payment.Method.values:
+            raise CommandError(
+                f"Bad sale_payments method: {row['method']!r}.")
+        if row["status"] not in Payment.Status.values:
+            raise CommandError(
+                f"Bad sale_payments status: {row['status']!r}.")
+        try:
+            Decimal(str(row["amount"]))
+        except (InvalidOperation, ValueError) as exc:
+            raise CommandError(
+                f"Bad sale_payments amount: "
+                f"{row.get('amount')!r}.") from exc
 
 
 def _ref(mapping, old_id, what):
@@ -965,6 +1062,7 @@ class Command(BaseCommand):
                 },
             )
 
+        products = {}
         for row in data["products"]:
             defaults = {
                 "name": row["name"],
@@ -985,14 +1083,106 @@ class Command(BaseCommand):
             salon = _ref(salons, row["salon_id"], "salon")
             external_id = _norm_id(row.get("external_id")) or ""
             if external_id:
-                Product.objects.update_or_create(
+                obj, _ = Product.objects.update_or_create(
                     external_id=external_id,
                     defaults={**defaults, "salon": salon})
             else:
-                Product.objects.update_or_create(
+                obj, _ = Product.objects.update_or_create(
                     salon=salon, name=row["name"],
                     sku=defaults["sku"], barcode=defaults["barcode"],
                     defaults=defaults)
+            products[row["id"]] = obj
+
+        products_by_ext = _by_external(data["products"], products)
+
+        sales = {}
+        for row in data["sales"]:
+            if (row.get("client_id") is None
+                    and not row.get("client_external_id")):
+                client = None
+            else:
+                client = _resolve_appt_ref(
+                    clients, clients_by_ext, row,
+                    "client_id", "client_external_id", "client")
+            completed_at = (
+                _checked_datetime(row["completed_at"],
+                                    "sales completed_at")
+                if row.get("completed_at") is not None else None)
+            voided_at = (
+                _checked_datetime(row["voided_at"], "sales voided_at")
+                if row.get("voided_at") is not None else None)
+            # created_at is the identity anchor: parse it for the
+            # lookup before _restore_created_at fixes the stored row.
+            created_raw = row.get("created_at")
+            lookup_created = (
+                _checked_datetime(created_raw, "sales created_at")
+                if created_raw else None)
+            defaults = {
+                "status": row["status"],
+                "completed_at": completed_at,
+                "voided_at": voided_at,
+                "void_reason": row.get("void_reason", ""),
+            }
+            salon = _ref(salons, row["salon_id"], "salon")
+            if lookup_created is not None:
+                obj, _ = Sale.objects.update_or_create(
+                    salon=salon, client=client,
+                    created_at=lookup_created,
+                    completed_at=completed_at, voided_at=voided_at,
+                    defaults=defaults)
+            else:
+                obj, _ = Sale.objects.update_or_create(
+                    salon=salon, client=client, status=row["status"],
+                    completed_at=completed_at, voided_at=voided_at,
+                    defaults=defaults)
+            _restore_created_at(obj, created_raw)
+            sales[row["id"]] = obj
+
+        for row in data["sale_items"]:
+            service = None
+            if (row.get("service_id") is not None
+                    or row.get("service_external_id")):
+                service = _resolve_appt_ref(
+                    services, services_by_ext, row,
+                    "service_id", "service_external_id", "service")
+            product = None
+            if (row.get("product_id") is not None
+                    or row.get("product_external_id")):
+                product = _resolve_appt_ref(
+                    products, products_by_ext, row,
+                    "product_id", "product_external_id", "product")
+            SaleItem.objects.update_or_create(
+                sale=_ref(sales, row["sale_id"], "sale"),
+                kind=row["kind"], service=service, product=product,
+                description=row.get("description", ""),
+                defaults={
+                    "quantity": row.get("quantity", 1),
+                    "unit_price": Decimal(str(row["unit_price"])),
+                },
+            )
+
+        for row in data["sale_payments"]:
+            created_raw = row.get("created_at")
+            lookup_created = (
+                _checked_datetime(created_raw,
+                                  "sale_payments created_at")
+                if created_raw else None)
+            defaults = {
+                "amount": Decimal(str(row["amount"])),
+                "status": row["status"],
+            }
+            sale = _ref(sales, row["sale_id"], "sale")
+            if lookup_created is not None:
+                obj, _ = Payment.objects.update_or_create(
+                    sale=sale, method=row["method"],
+                    created_at=lookup_created, defaults=defaults)
+            else:
+                obj, _ = Payment.objects.update_or_create(
+                    sale=sale, method=row["method"],
+                    amount=defaults["amount"], status=row["status"],
+                    defaults={})
+            _restore_created_at(obj, created_raw)
+
 
         summary = ", ".join(
             f"{section}={len(data[section])}" for section in SECTIONS
