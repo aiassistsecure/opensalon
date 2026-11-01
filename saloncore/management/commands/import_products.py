@@ -58,6 +58,25 @@ def _parse_strict_bool(value):
     raise ValueError(f"archived {value!r} is not a boolean.")
 
 
+def _coerce_id_string(value):
+    """String form of an id / code / barcode scalar.
+
+    None/missing becomes "" (the caller's missing case). Ints and
+    other scalars import as ``str(value)`` — slicing an int raised
+    TypeError and aborted the whole import. A value that cannot be
+    stringified as an id (dict/list/tuple/set, or a bool) raises
+    ValueError so the caller counts the record as skipped — never
+    crashed on, never guessed.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bool) or isinstance(
+            value, (dict, list, tuple, set)):
+        raise ValueError(
+            f"id/code value {value!r} is not a stringifiable scalar.")
+    return str(value)
+
+
 def _mapped(record):
     """The mapped field set for one source product record."""
     price = _money(record.get("price"))
@@ -70,8 +89,8 @@ def _mapped(record):
     )
     return {
         "name": (record.get("name") or "")[:160],
-        "sku": (record.get("code") or "")[:64],
-        "barcode": (record.get("barcode") or "")[:64],
+        "sku": _coerce_id_string(record.get("code"))[:64],
+        "barcode": _coerce_id_string(record.get("barcode"))[:64],
         "price": price if price is not None else Decimal("0.00"),
         "active": not archived,
         "brand_name": (record.get("brandName") or "")[:120],
@@ -102,15 +121,25 @@ class Command(BaseCommand):
         salon, _ = Salon.objects.get_or_create(name=options["salon"])
         created = updated = unchanged = skipped = stocked = 0
         for record in records:
-            external_id = record.get("productId") or ""
+            if not isinstance(record, dict):
+                skipped += 1
+                continue
+            try:
+                external_id = _coerce_id_string(record.get("productId"))
+            except ValueError:
+                # Unstringifiable productId (e.g. dict/list): counted
+                # as skipped, never crashed on, never guessed.
+                skipped += 1
+                continue
             if not external_id or not record.get("name"):
                 skipped += 1
                 continue
             try:
                 fields = _mapped(record)
             except ValueError:
-                # Strict-bool failure (e.g. junk "archived"): counted
-                # as skipped, never guessed.
+                # Strict-bool failure (e.g. junk "archived") or an
+                # unstringifiable code/barcode: counted as skipped,
+                # never guessed.
                 skipped += 1
                 continue
             existing = Product.objects.filter(

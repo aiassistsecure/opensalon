@@ -117,6 +117,52 @@ class ImportProductsTests(TestCase):
                 self.assertIn("'skipped': 1", out)
                 self.assertEqual(Product.objects.count(), 0)
 
+    def test_int_ids_import_as_strings(self):
+        # TF-5 regression: int productId/code/barcode sliced with
+        # [:64] raised TypeError and aborted the whole import.
+        out = self._run([{
+            "productId": 101, "name": "Int Id Product",
+            "code": 11511, "barcode": 123456789012,
+            "price": 10.0, "archived": False,
+        }])
+        self.assertIn("'created': 1", out)
+        self.assertIn("'skipped': 0", out)
+        product = Product.objects.get(external_id="101")
+        self.assertIsInstance(product.external_id, str)
+        self.assertEqual(product.sku, "11511")
+        self.assertIsInstance(product.sku, str)
+        self.assertEqual(product.barcode, "123456789012")
+        self.assertIsInstance(product.barcode, str)
+
+    def test_dict_code_is_skipped_and_import_completes(self):
+        # TF-5: a dict-valued code cannot be stringified as an id —
+        # counted skipped, zero products, import completes.
+        out = self._run([{
+            "productId": "p-dict-code", "name": "Dict Code Product",
+            "code": {"bad": 1}, "barcode": "123",
+            "price": 10.0, "archived": False,
+        }])
+        self.assertIn("'created': 0", out)
+        self.assertIn("'skipped': 1", out)
+        self.assertEqual(Product.objects.count(), 0)
+
+    def test_unstringifiable_id_fields_are_skipped(self):
+        cases = [
+            {"productId": {"bad": 1}, "name": "Dict Id"},
+            {"productId": ["p-1"], "name": "List Id"},
+            {"productId": "p-ok-1", "name": "Dict Barcode",
+             "barcode": {"bad": 1}},
+            {"productId": "p-ok-2", "name": "List Code",
+             "code": ["11511"]},
+        ]
+        for record in cases:
+            with self.subTest(record=record):
+                record.setdefault("price", 10.0)
+                out = self._run([record])
+                self.assertIn("'created': 0", out)
+                self.assertIn("'skipped': 1", out)
+                self.assertEqual(Product.objects.count(), 0)
+
     def test_external_id_unique_when_present(self):
         self._run()
         with self.assertRaises(Exception):
