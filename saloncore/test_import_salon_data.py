@@ -16,7 +16,7 @@ from django.test import TestCase
 
 from bookings.models import Appointment, AppointmentNote
 from checkout.models import Payment, Sale, SaleItem
-from catalog.models import Product
+from catalog.models import Product, StockMovement
 from clients.models import Client, ClientNote
 from saloncore.models import (
     Salon,
@@ -806,7 +806,7 @@ class ImportSalonDataDryRunTests(TestCase):
             "service_prices", "clients", "client_notes", "staff_members",
             "appointments", "appointment_notes", "products",
             "roster_patterns", "shift_overrides", "sales",
-            "sale_items", "sale_payments"})
+            "sale_items", "sale_payments", "stock_movements"})
         for section, report in reports.items():
             self.assertEqual(report["source"], section)
             self.assertEqual(
@@ -1339,3 +1339,117 @@ class ImportSalonDataSalesTests(TestCase):
             call_command("import_salon_data", path)
         self.assertEqual(Salon.objects.count(), 0)
         self.assertEqual(Sale.objects.count(), 0)
+
+
+class ImportSalonDataStockMovementsTests(TestCase):
+    """Stock movements leg: round-trip preserves movements exactly.
+
+    Idempotency key: (product, kind, quantity_delta, note,
+    created_at) — created_at anchors otherwise identical rows.
+    """
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Stock Restore Salon")
+        self.product = Product.objects.create(
+            salon=self.salon, name="Shampoo", price=Decimal("24.50"),
+            external_id="prod-m")
+        StockMovement.objects.create(
+            product=self.product, kind=StockMovement.Kind.RECEIVE,
+            quantity_delta=10, note="Delivery")
+        StockMovement.objects.create(
+            product=self.product, kind=StockMovement.Kind.SALE,
+            quantity_delta=-1)
+
+    def temp_path(self):
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        fh.close()
+        return fh.name
+
+    def export_data(self):
+        path = self.temp_path()
+        call_command("export_salon_data", path, stdout=io.StringIO())
+        with open(path, encoding="utf-8") as fh:
+            return path, json.load(fh)
+
+    def write_data(self, path, data):
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+
+    def run_import(self, path):
+        out = io.StringIO()
+        call_command("import_salon_data", path, stdout=out)
+        return out.getvalue()
+
+    def test_round_trip_preserves_stock_movements(self):
+        path, _ = self.export_data()
+        Salon.objects.all().delete()
+        self.assertEqual(StockMovement.objects.count(), 0)
+        out = self.run_import(path)
+        self.assertIn("stock_movements=2", out)
+        self.assertIn("unknown_keys=none", out)
+        self.assertEqual(StockMovement.objects.count(), 2)
+        restored = Product.objects.get(external_id="prod-m")
+        self.assertEqual(restored.current_stock, 9)
+        by_kind = {m.kind: m for m in restored.stock_movements.all()}
+        self.assertEqual(by_kind["receive"].quantity_delta, 10)
+        self.assertEqual(by_kind["receive"].note, "Delivery")
+        self.assertEqual(by_kind["sale"].quantity_delta, -1)
+
+    def test_reimport_stock_movements_is_idempotent(self):
+        path, _ = self.export_data()
+        Salon.objects.all().delete()
+        self.run_import(path)
+        self.run_import(path)
+        self.assertEqual(StockMovement.objects.count(), 2)
+        self.assertEqual(
+            Product.objects.get(external_id="prod-m").current_stock, 9)
+
+    def test_missing_stock_movements_section_imports_as_before(self):
+        path, data = self.export_data()
+        del data["stock_movements"]
+        del data["counts"]["stock_movements"]
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        out = self.run_import(path)
+        self.assertIn("stock_movements=0", out)
+        self.assertEqual(StockMovement.objects.count(), 0)
+        self.assertEqual(Product.objects.count(), 1)
+
+    def test_unknown_key_in_stock_movements_named_not_dropped(self):
+        path, data = self.export_data()
+        data["stock_movements"][0]["legacy_bin"] = "B-2"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        out = self.run_import(path)
+        self.assertIn("stock_movements.legacy_bin", out)
+        self.assertEqual(StockMovement.objects.count(), 2)
+
+    def test_dangling_product_ref_fails_closed_zero_writes(self):
+        path, data = self.export_data()
+        data["stock_movements"][0]["product_id"] = 999999
+        data["stock_movements"][0]["product_external_id"] = "nope"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError):
+            call_command("import_salon_data", path)
+        self.assertEqual(Salon.objects.count(), 0)
+        self.assertEqual(StockMovement.objects.count(), 0)
+
+    def test_overlong_product_external_id_fails_closed(self):
+        path, data = self.export_data()
+        data["stock_movements"][0]["product_external_id"] = "x" * 65
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError):
+            call_command("import_salon_data", path)
+        self.assertEqual(StockMovement.objects.count(), 0)
+
+    def test_bad_quantity_delta_fails_closed_zero_writes(self):
+        path, data = self.export_data()
+        data["stock_movements"][0]["quantity_delta"] = 1.5
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError):
+            call_command("import_salon_data", path)
+        self.assertEqual(StockMovement.objects.count(), 0)

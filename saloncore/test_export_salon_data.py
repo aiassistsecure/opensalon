@@ -13,7 +13,7 @@ from django.test import TestCase
 
 from bookings.models import Appointment, AppointmentNote
 from checkout.models import Payment, Sale, SaleItem
-from catalog.models import Product
+from catalog.models import Product, StockMovement
 from clients.models import Client, ClientNote
 from saloncore.models import (
     Salon,
@@ -72,6 +72,7 @@ class ExportSalonDataTests(TestCase):
             "appointments": 0, "appointment_notes": 0, "products": 0,
             "roster_patterns": 0, "shift_overrides": 0,
             "sales": 0, "sale_items": 0, "sale_payments": 0,
+            "stock_movements": 0,
         })
         for key, count in data["counts"].items():
             self.assertEqual(len(data[key]), count)
@@ -521,3 +522,56 @@ class ExportSalesTests(TestCase):
         self.assertEqual(data["counts"]["sales"], 1)
         self.assertEqual(data["counts"]["sale_items"], 0)
         self.assertEqual(data["counts"]["sale_payments"], 0)
+
+
+class ExportStockMovementsTests(TestCase):
+    """Stock movements leg: export scoped via the product's salon."""
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Stock Salon")
+        self.product = Product.objects.create(
+            salon=self.salon, name="Shampoo", price=Decimal("24.50"),
+            external_id="prod-m")
+        self.receive = StockMovement.objects.create(
+            product=self.product, kind=StockMovement.Kind.RECEIVE,
+            quantity_delta=10, note="Delivery")
+        self.sale_move = StockMovement.objects.create(
+            product=self.product, kind=StockMovement.Kind.SALE,
+            quantity_delta=-1)
+
+    def run_export(self, **kwargs):
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        fh.close()
+        call_command("export_salon_data", fh.name,
+                     stdout=io.StringIO(), **kwargs)
+        with open(fh.name, encoding="utf-8") as exported:
+            return json.load(exported)
+
+    def test_export_emits_stock_movements_with_all_fields(self):
+        data = self.run_export()
+        self.assertEqual(data["counts"]["stock_movements"], 2)
+        by_kind = {m["kind"]: m for m in data["stock_movements"]}
+        recv = by_kind["receive"]
+        self.assertEqual(recv["product_id"], self.product.id)
+        self.assertEqual(recv["product_external_id"], "prod-m")
+        self.assertEqual(recv["quantity_delta"], 10)
+        self.assertIsInstance(recv["quantity_delta"], int)
+        self.assertEqual(recv["note"], "Delivery")
+        self.assertIsNotNone(recv["created_at"])
+        self.assertEqual(by_kind["sale"]["quantity_delta"], -1)
+        self.assertEqual(by_kind["sale"]["note"], "")
+
+    def test_salon_filter_scopes_stock_movements_via_product(self):
+        other = Salon.objects.create(name="Other Salon")
+        other_product = Product.objects.create(
+            salon=other, name="Gel", price=Decimal("9.00"))
+        StockMovement.objects.create(
+            product=other_product, kind=StockMovement.Kind.RECEIVE,
+            quantity_delta=5)
+        data = self.run_export(salon="Stock Salon")
+        self.assertEqual(data["counts"]["stock_movements"], 2)
+        data = self.run_export(salon="Other Salon")
+        self.assertEqual(data["counts"]["stock_movements"], 1)
+        self.assertEqual(
+            data["stock_movements"][0]["product_id"], other_product.id)

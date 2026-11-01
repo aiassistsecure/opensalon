@@ -8,9 +8,10 @@ JSON format written by ``export_salon_data`` (see that command for the
 section list) and restores Salon, ServiceCategory, Service,
 StaffLevel, ServicePrice, Client, ClientNote, StaffMember,
 Appointment, AppointmentNote, Product, RosterPattern,
-ShiftOverride, Sale, SaleItem and Payment records. The ``products``,
-``roster_patterns``, ``shift_overrides``, ``sales``, ``sale_items``
-and ``sale_payments`` sections are optional on read: an export
+ShiftOverride, Sale, SaleItem, Payment and StockMovement
+records. The ``products``,
+``roster_patterns``, ``shift_overrides``, ``sales``, ``sale_items``,
+``sale_payments`` and ``stock_movements`` sections are optional on read: an export
 file written before they existed (no such section, no ``counts``
 entry for it) imports exactly as before, with the section
 treated as empty. Roster rows restore idempotently too:
@@ -56,6 +57,15 @@ and creates nothing twice:
   voided_at); restored after products so sale lines can resolve
   them. SaleItem <- (sale, kind, service, product, description);
   Payment (sale_payments) <- (sale, method, created_at).
+- StockMovement    <- (product, kind, quantity_delta, note,
+  created_at) when ``created_at`` is present, else (product,
+  kind, quantity_delta, note). The model has no unique
+  constraint and no external_id of its own; created_at is the
+  anchor that distinguishes two otherwise identical movements,
+  exactly as for Sale/Payment. Its product link resolves by
+  ``product_external_id`` first, falling back to the file-local
+  ``product_id`` map; a link that resolves by neither fails
+  closed in phase 1.
   FOUNDING RULE: Payment's ``provider_reference`` is never
   imported or exported — it is a payment-provider identifier and
   provider-agnostic core carries none; if a file carries it, it
@@ -110,7 +120,7 @@ Faithful external ids (TF-6): every id this command consumes —
 file-local ``id`` values, every ``*_id`` reference (including
 ``category_id``), the ``external_id`` of the clients, staff_members,
 services, appointments and products sections, and appointments'
-``*_external_id`` link fields — is normalised to ``str`` in phase 1,
+and stock_movements' ``*_external_id`` link fields — is normalised to ``str`` in phase 1,
 so a numeric id and its string spelling (``123`` vs ``"123"``) are
 the same identity in every lookup, map and ``update_or_create`` key.
 An ``external_id`` / ``*_external_id`` longer than its model field's
@@ -158,7 +168,7 @@ from django.utils.timezone import is_naive
 
 from bookings.models import Appointment, AppointmentNote
 from checkout.models import Payment, Sale, SaleItem
-from catalog.models import Product
+from catalog.models import Product, StockMovement
 from clients.models import Client, ClientNote
 from saloncore.dry_run import build_dry_run_reports
 from saloncore.models import (
@@ -175,13 +185,14 @@ SECTIONS = (
     "service_prices", "clients", "client_notes", "staff_members",
     "appointments", "appointment_notes", "products",
     "roster_patterns", "shift_overrides",
-    "sales", "sale_items", "sale_payments",
+    "sales", "sale_items", "sale_payments", "stock_movements",
 )
 
 # Sections an older export file may legitimately lack entirely:
 # missing means empty, never an error (back-compat).
 OPTIONAL_SECTIONS = ("products", "roster_patterns", "shift_overrides",
-                     "sales", "sale_items", "sale_payments")
+                     "sales", "sale_items", "sale_payments",
+                     "stock_movements")
 
 # Every key the exporter emits (hence the importer may consume) per
 # section. Any other key in a record is unknown (TF-11).
@@ -231,6 +242,9 @@ KNOWN_KEYS = {
                    "unit_price"},
     "sale_payments": {"id", "sale_id", "method", "amount", "status",
                       "created_at", "updated_at"},
+    "stock_movements": {"id", "product_id", "product_external_id",
+                        "kind", "quantity_delta", "note",
+                        "created_at"},
 }
 
 TOP_LEVEL_KEYS = set(SECTIONS) | {"counts"}
@@ -380,6 +394,7 @@ _ID_FIELDS = {
                    "service_external_id", "product_id",
                    "product_external_id"),
     "sale_payments": ("id", "sale_id"),
+    "stock_movements": ("id", "product_id", "product_external_id"),
 }
 
 # (section, field) -> model whose external_id limit governs it.
@@ -409,6 +424,8 @@ _EXTERNAL_ID_LIMITS = {
     ("sale_items", "service_external_id"):
         Service._meta.get_field("external_id").max_length,
     ("sale_items", "product_external_id"):
+        Product._meta.get_field("external_id").max_length,
+    ("stock_movements", "product_external_id"):
         Product._meta.get_field("external_id").max_length,
 }
 
@@ -468,7 +485,7 @@ def _check_appt_ref(ids, ext_ids, old_id, external_id, what):
 
 CREATED_AT_SECTIONS = (
     "salons", "clients", "client_notes", "appointments",
-    "appointment_notes", "sales", "sale_payments",
+    "appointment_notes", "sales", "sale_payments", "stock_movements",
 )
 
 
@@ -560,6 +577,8 @@ def _validate(data):
         "sale_items": ("id", "sale_id", "kind", "unit_price"),
         "sale_payments": ("id", "sale_id", "method", "amount",
                           "status"),
+        "stock_movements": ("id", "product_id", "kind",
+                            "quantity_delta"),
     }
     for section, fields in required.items():
         for row in data[section]:
@@ -761,6 +780,17 @@ def _validate(data):
             raise CommandError(
                 f"Bad sale_payments amount: "
                 f"{row.get('amount')!r}.") from exc
+    for row in data["stock_movements"]:
+        _check_appt_ref(
+            product_ids, product_ext_ids, row.get("product_id"),
+            row.get("product_external_id"), "product")
+        if row["kind"] not in StockMovement.Kind.values:
+            raise CommandError(
+                f"Bad stock_movements kind: {row['kind']!r}.")
+        delta = row["quantity_delta"]
+        if not isinstance(delta, int) or isinstance(delta, bool):
+            raise CommandError(
+                f"Bad stock_movements quantity_delta: {delta!r}.")
 
 
 def _ref(mapping, old_id, what):
@@ -1183,6 +1213,27 @@ class Command(BaseCommand):
                     defaults={})
             _restore_created_at(obj, created_raw)
 
+        for row in data["stock_movements"]:
+            product = _resolve_appt_ref(
+                products, products_by_ext, row,
+                "product_id", "product_external_id", "product")
+            created_raw = row.get("created_at")
+            lookup_created = (
+                _checked_datetime(created_raw,
+                                  "stock_movements created_at")
+                if created_raw else None)
+            if lookup_created is not None:
+                obj, _ = StockMovement.objects.update_or_create(
+                    product=product, kind=row["kind"],
+                    quantity_delta=row["quantity_delta"],
+                    note=row.get("note", ""),
+                    created_at=lookup_created, defaults={})
+            else:
+                obj, _ = StockMovement.objects.update_or_create(
+                    product=product, kind=row["kind"],
+                    quantity_delta=row["quantity_delta"],
+                    note=row.get("note", ""), defaults={})
+            _restore_created_at(obj, created_raw)
 
         summary = ", ".join(
             f"{section}={len(data[section])}" for section in SECTIONS
