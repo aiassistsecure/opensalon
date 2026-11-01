@@ -19,6 +19,13 @@ Type-faithful mapping (the importer's fidelity rules):
 * ``quantityInStock`` must be an integer: a fractional or otherwise
   non-integer value is a counted skip, never truncated via
   ``int(...)`` (2.9 does not become 2);
+* ids / codes are never silently truncated (TF-6, mirroring
+  ``import_clients`` / ``import_appointments``): a ``productId``,
+  ``code`` or ``barcode`` longer than its model field limit makes
+  the record a counted skip under ``skipped_id_too_long`` — slicing
+  it would turn it into a DIFFERENT id and corrupt identity joins.
+  Non-identity labels (name / brand / category / type) keep the
+  clients-importer behaviour and are truncated to field length;
 * money parsing mirrors ``import_price_book._decimal`` exactly —
   ``Decimal(str(value))``, no local quantize — so the same input
   yields the same Decimal in both importers; cents rounding is
@@ -128,6 +135,34 @@ def _coerce_id_string(value):
     return str(value)
 
 
+_ID_LIMITS = {
+    field: Product._meta.get_field(field).max_length
+    for field in ("external_id", "sku", "barcode")
+}
+
+
+class _OverlongId(ValueError):
+    """An id / code value exceeds its model field limit (TF-6)."""
+
+
+def _checked_id_string(value, field):
+    """TF-5 string coercion plus TF-6 length check for ``field``.
+
+    Returns the coerced string unchanged when it fits; raises
+    ``_OverlongId`` naming the field when it is longer than the
+    field's limit, so the caller counts the record skipped under
+    ``skipped_id_too_long`` instead of slicing it into a
+    different id.
+    """
+    text = _coerce_id_string(value)
+    limit = _ID_LIMITS[field]
+    if len(text) > limit:
+        raise _OverlongId(
+            f"{field} value of {len(text)} characters exceeds "
+            f"the {limit}-character limit")
+    return text
+
+
 def _mapped(record):
     """The mapped field set for one source product record."""
     price = _money(record.get("price"))
@@ -147,8 +182,9 @@ def _mapped(record):
     )
     return {
         "name": (record.get("name") or "")[:160],
-        "sku": _coerce_id_string(record.get("code"))[:64],
-        "barcode": _coerce_id_string(record.get("barcode"))[:64],
+        "sku": _checked_id_string(record.get("code"), "sku"),
+        "barcode": _checked_id_string(
+            record.get("barcode"), "barcode"),
         "price": price,
         "active": not archived,
         "brand_name": (record.get("brandName") or "")[:120],
@@ -179,12 +215,21 @@ class Command(BaseCommand):
         salon, _ = Salon.objects.get_or_create(name=options["salon"])
         created = updated = unchanged = skipped = stocked = 0
         missing_price = 0
+        id_too_long = 0
         for record in records:
             if not isinstance(record, dict):
                 skipped += 1
                 continue
             try:
-                external_id = _coerce_id_string(record.get("productId"))
+                external_id = _checked_id_string(
+                    record.get("productId"), "external_id")
+            except _OverlongId:
+                # TF-6: over-long productId — counted skip naming
+                # the row via skipped_id_too_long, never a sliced
+                # (different) external_id.
+                skipped += 1
+                id_too_long += 1
+                continue
             except ValueError:
                 # Unstringifiable productId (e.g. dict/list): counted
                 # as skipped, never crashed on, never guessed.
@@ -202,6 +247,12 @@ class Command(BaseCommand):
                 # imported as 0.00.
                 skipped += 1
                 missing_price += 1
+                continue
+            except _OverlongId:
+                # TF-6: over-long code/barcode — counted skip under
+                # skipped_id_too_long, never silently truncated.
+                skipped += 1
+                id_too_long += 1
                 continue
             except ValueError:
                 # Strict-bool failure (e.g. junk "archived"), an
@@ -241,6 +292,7 @@ class Command(BaseCommand):
             f"products: {{'created': {created}, 'updated': {updated}, "
             f"'unchanged': {unchanged}, 'skipped': {skipped}, "
             f"'skipped_missing_price': {missing_price}, "
+            f"'skipped_id_too_long': {id_too_long}, "
             f"'opening_stock_movements': {stocked}, "
             f"'total': {len(records)}}}"
         )

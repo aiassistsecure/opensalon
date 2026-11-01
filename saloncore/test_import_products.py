@@ -266,3 +266,114 @@ class ImportProductsTests(TestCase):
                 salon=Salon.objects.get(name="Test Salon"),
                 external_id="p-1", name="Dupe", price=Decimal("1.00"),
             )
+
+
+class ImportProductsOverlongIdTests(TestCase):
+    """TF-6: over-long id/code fields are skipped+counted under
+    skipped_id_too_long, never silently truncated into a
+    different id — mirroring import_clients / import_appointments.
+    """
+
+    AT_LIMIT = "x" * 64
+    OVER_LIMIT = "x" * 65
+
+    def _run(self, records):
+        fh = tempfile.NamedTemporaryFile(
+            "w", suffix=".json", delete=False)
+        json.dump(records, fh)
+        fh.close()
+        out = StringIO()
+        call_command("import_products", fh.name,
+                     "--salon", "Test Salon", stdout=out)
+        return out.getvalue()
+
+    @staticmethod
+    def _row(**overrides):
+        row = {"productId": "p-tf6", "name": "TF6 Product",
+               "code": "11511", "barcode": "018084000001",
+               "price": 10.0, "archived": False}
+        row.update(overrides)
+        return row
+
+    def test_overlong_product_id_skipped_and_counted(self):
+        out = self._run([self._row(productId=self.OVER_LIMIT)])
+        self.assertIn("'created': 0", out)
+        self.assertIn("'skipped': 1", out)
+        self.assertIn("'skipped_id_too_long': 1", out)
+        self.assertEqual(Product.objects.count(), 0)
+        self.assertFalse(
+            Product.objects.filter(external_id=self.AT_LIMIT).exists())
+
+    def test_overlong_code_skipped_and_counted(self):
+        out = self._run([self._row(code=self.OVER_LIMIT)])
+        self.assertIn("'created': 0", out)
+        self.assertIn("'skipped_id_too_long': 1", out)
+        self.assertEqual(Product.objects.count(), 0)
+        self.assertFalse(
+            Product.objects.filter(sku=self.AT_LIMIT).exists())
+
+    def test_overlong_barcode_skipped_and_counted(self):
+        out = self._run([self._row(barcode=self.OVER_LIMIT)])
+        self.assertIn("'created': 0", out)
+        self.assertIn("'skipped_id_too_long': 1", out)
+        self.assertEqual(Product.objects.count(), 0)
+        self.assertFalse(
+            Product.objects.filter(barcode=self.AT_LIMIT).exists())
+
+    def test_overlong_ids_sharing_prefix_do_not_collide(self):
+        prefix = "y" * 64
+        out = self._run([
+            self._row(productId=prefix + "1"),
+            self._row(productId=prefix + "2"),
+        ])
+        self.assertIn("'skipped_id_too_long': 2", out)
+        self.assertEqual(Product.objects.count(), 0)
+
+    def test_overlong_row_does_not_block_normal_row(self):
+        out = self._run([
+            self._row(productId=self.OVER_LIMIT),
+            self._row(productId="p-normal"),
+        ])
+        self.assertIn("'created': 1", out)
+        self.assertIn("'skipped_id_too_long': 1", out)
+        self.assertTrue(
+            Product.objects.filter(external_id="p-normal").exists())
+
+    def test_at_limit_ids_import_exactly(self):
+        out = self._run([self._row(
+            productId=self.AT_LIMIT, code="c" * 64,
+            barcode="b" * 64)])
+        self.assertIn("'created': 1", out)
+        self.assertIn("'skipped_id_too_long': 0", out)
+        product = Product.objects.get(external_id=self.AT_LIMIT)
+        self.assertEqual(product.sku, "c" * 64)
+        self.assertEqual(product.barcode, "b" * 64)
+
+    def test_normal_rows_import_identically(self):
+        out = self._run([self._row()])
+        self.assertIn("'created': 1", out)
+        self.assertIn("'skipped_id_too_long': 0", out)
+        product = Product.objects.get(external_id="p-tf6")
+        self.assertEqual(product.sku, "11511")
+        self.assertEqual(product.barcode, "018084000001")
+
+    def test_tf5_int_coercion_unchanged(self):
+        # TF-5 behaviour is built on, not redone: int ids still
+        # coerce to strings and import.
+        out = self._run([self._row(
+            productId=101, code=11511, barcode=123456789012)])
+        self.assertIn("'created': 1", out)
+        self.assertIn("'skipped_id_too_long': 0", out)
+        product = Product.objects.get(external_id="101")
+        self.assertEqual(product.sku, "11511")
+        self.assertEqual(product.barcode, "123456789012")
+
+    def test_reimport_idempotent_for_at_limit_and_overlong(self):
+        rows = [self._row(productId=self.AT_LIMIT),
+                self._row(productId=self.OVER_LIMIT)]
+        self._run(rows)
+        out = self._run(rows)
+        self.assertIn("'created': 0", out)
+        self.assertIn("'unchanged': 1", out)
+        self.assertIn("'skipped_id_too_long': 1", out)
+        self.assertEqual(Product.objects.count(), 1)
