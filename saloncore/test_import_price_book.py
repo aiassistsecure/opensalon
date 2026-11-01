@@ -195,6 +195,62 @@ class ImportPriceBookTests(TestCase):
             call_command("import_price_book", fh.name)
 
 
+class ImportPriceBookStrictArchivedTests(TestCase):
+    """TF-2: JSON ``archived`` parses strictly, never by truthiness
+    (string "false" is truthy, so the old ``not row.get(...)``
+    inactivated live services)."""
+
+    def run_import(self, payload):
+        out = io.StringIO()
+        call_command("import_price_book", _write(payload),
+                     stdout=out)
+        return out.getvalue()
+
+    def row(self, **overrides):
+        row = {
+            "serviceId": "svc-x", "name": "Cut", "categoryName": "Hair",
+            "duration": 30, "price": 25.0,
+            "staffCategories": {"prices": []}, "userPrices": [],
+        }
+        row.update(overrides)
+        return row
+
+    def test_archived_string_false_imports_active(self):
+        self.run_import([self.row(archived="false")])
+        self.assertTrue(Service.objects.get(name="Cut").active)
+
+    def test_archived_string_true_imports_inactive(self):
+        self.run_import([self.row(archived="true")])
+        self.assertFalse(Service.objects.get(name="Cut").active)
+
+    def test_archived_string_variants(self):
+        cases = [
+            ("False", True), ("TRUE", False), ("0", True),
+            ("1", False), ("no", True), ("yes", False),
+            (0, True), (1, False),
+        ]
+        payload = [
+            self.row(serviceId=f"svc-{i}", name=f"Svc {i}",
+                     archived=value)
+            for i, (value, _expected) in enumerate(cases)
+        ]
+        self.run_import(payload)
+        for i, (_value, expected) in enumerate(cases):
+            self.assertEqual(
+                Service.objects.get(name=f"Svc {i}").active, expected)
+
+    def test_archived_missing_imports_active(self):
+        self.run_import([self.row()])
+        self.assertTrue(Service.objects.get(name="Cut").active)
+
+    def test_archived_junk_raises_and_writes_nothing(self):
+        for junk in ("maybe", "", None, 2):
+            with self.subTest(junk=junk):
+                with self.assertRaises(CommandError):
+                    self.run_import([self.row(archived=junk)])
+                self.assertEqual(Service.objects.count(), 0)
+
+
 class ImportPriceBookPreValidationTests(TestCase):
     """N-M20a validate-before-write: a bad row anywhere in the file
     raises CommandError in phase 1 and writes zero rows on any

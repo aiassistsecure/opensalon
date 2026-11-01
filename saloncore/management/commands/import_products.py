@@ -32,15 +32,48 @@ def _money(value):
         return None
 
 
+_STRICT_TRUE_WORDS = {"true", "1", "yes"}
+_STRICT_FALSE_WORDS = {"false", "0", "no"}
+
+
+def _parse_strict_bool(value):
+    """Strict bool parse, mirroring import_price_book's CSV parser.
+
+    Bool passthrough; int 1/0; or one of the strings
+    "true"/"false"/"1"/"0"/"yes"/"no" (case-insensitive). Anything
+    else raises ValueError — never guessed (string "false" is truthy,
+    so ``not record.get("archived")`` silently inactivated live
+    products).
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in _STRICT_TRUE_WORDS:
+            return True
+        if text in _STRICT_FALSE_WORDS:
+            return False
+    raise ValueError(f"archived {value!r} is not a boolean.")
+
+
 def _mapped(record):
     """The mapped field set for one source product record."""
     price = _money(record.get("price"))
+    # Missing "archived" means not archived; a present value must
+    # parse strictly (raises ValueError, counted as skipped by the
+    # caller) rather than being truthiness-guessed.
+    archived = (
+        _parse_strict_bool(record["archived"])
+        if "archived" in record else False
+    )
     return {
         "name": (record.get("name") or "")[:160],
         "sku": (record.get("code") or "")[:64],
         "barcode": (record.get("barcode") or "")[:64],
         "price": price if price is not None else Decimal("0.00"),
-        "active": not record.get("archived", False),
+        "active": not archived,
         "brand_name": (record.get("brandName") or "")[:120],
         "category_name": (record.get("categoryName") or "")[:120],
         "product_type": (record.get("type") or "")[:32],
@@ -73,7 +106,13 @@ class Command(BaseCommand):
             if not external_id or not record.get("name"):
                 skipped += 1
                 continue
-            fields = _mapped(record)
+            try:
+                fields = _mapped(record)
+            except ValueError:
+                # Strict-bool failure (e.g. junk "archived"): counted
+                # as skipped, never guessed.
+                skipped += 1
+                continue
             existing = Product.objects.filter(
                 salon=salon, external_id=external_id
             ).first()
