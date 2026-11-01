@@ -1396,8 +1396,29 @@
         var info = lanes[e.id];
         if (info) maxOverlap = Math.max(maxOverlap, info.overlap);
         var el = document.querySelector('.appt-block[data-appt="' + e.id + '"]');
-        if (!el || el.classList.contains("dragging")) return;
-        if (el.parentElement !== col) col.appendChild(el);
+        if (el && el.classList.contains("dragging")) return;
+        if (!el) {
+          /* Creation lives in the repaint now, not only in
+             the poll's reconcile. A block born in the model —
+             a click's provisional, a store record, a booking
+             reply — used to wait here for an element that only
+             syncFromModel would build, and syncFromModel runs
+             when a pack fetch lands: on a slow box the paint
+             inherited the fetch's seconds, which is the whole
+             "paint takes ten seconds" complaint in one line.
+             The repaint builds what the model holds, in the
+             same frame, from the same renderBlock the
+             reconcile uses — one block, born once (the birth
+             flag is spent inside renderBlock), and the poll
+             keeps only its reconcile duties: removals and
+             foreign news. */
+          el = renderBlock(e);
+          col.appendChild(el);
+          var openLabel = col.querySelector(".open-label");
+          if (openLabel) openLabel.remove();
+        } else if (el.parentElement !== col) {
+          col.appendChild(el);
+        }
         paintBlock(el, e, info);
       });
       factors.push(Math.min(3, maxOverlap));
