@@ -44,8 +44,11 @@ Mapping (one source of truth — this command is the only writer here):
   ``PAID`` -> completed. An unknown or missing state is never
   guessed as booked: the record is skipped and counted under
   ``unknown_state``.
-- The source ``price`` is not stored: Appointment carries no price —
-  money lives in the checkout app.
+- The source ``price`` is not mapped to a price field: Appointment
+  carries no price of its own — money lives in the checkout app.
+  The whole source record is preserved verbatim on
+  ``Appointment.payload`` (price and every other unmapped field
+  included), so nothing the source knew is dropped on import.
 - Records flagged ``deleted`` and records without an
   ``appointmentId`` or with unparseable date/times are skipped and
   counted under ``skipped``. ``deleted`` is parsed strictly, never
@@ -202,7 +205,7 @@ def _flush_appointments(batch):
                     "client": appt.client, "staff_member": appt.staff_member,
                     "service": appt.service, "service_name": appt.service_name,
                     "start": appt.start, "end": appt.end,
-                    "status": appt.status,
+                    "status": appt.status, "payload": appt.payload,
                 })
 
 
@@ -270,7 +273,7 @@ class Command(BaseCommand):
                 for row in Appointment.objects.exclude(external_id="")
                 .values("external_id", "client_id", "staff_member_id",
                         "service_id", "service_name", "start", "end",
-                        "status")
+                        "status", "payload")
             }
             batch = []
             pending = {}
@@ -322,6 +325,7 @@ class Command(BaseCommand):
                     stats["imported_with_service_snapshot"] += 1
                 else:
                     snapshot = snapshot or service.name[:200]
+                payload = dict(row)
                 current = existing.get(external_id)
                 if current is not None and (
                         current["client_id"] == client.id
@@ -331,7 +335,8 @@ class Command(BaseCommand):
                         and current["service_name"] == snapshot
                         and current["start"] == start
                         and current["end"] == end
-                        and current["status"] == status):
+                        and current["status"] == status
+                        and current.get("payload") == payload):
                     stats["unchanged"] += 1
                     dates.append(row.get("appointmentDate"))
                     continue
@@ -349,6 +354,7 @@ class Command(BaseCommand):
                         prior.start = start
                         prior.end = end
                         prior.status = status
+                        prior.payload = payload
                     else:
                         # Changed rows are rare; they keep the exact
                         # update-in-place path.
@@ -359,7 +365,7 @@ class Command(BaseCommand):
                                 "service": service,
                                 "service_name": snapshot,
                                 "start": start, "end": end,
-                                "status": status,
+                                "status": status, "payload": payload,
                             })
                     stats["updated"] += 1
                 else:
@@ -370,7 +376,7 @@ class Command(BaseCommand):
                         client=client, staff_member=member,
                         service=service, service_name=snapshot,
                         start=start, end=end, status=status,
-                        external_id=external_id)
+                        external_id=external_id, payload=payload)
                     batch.append(instance)
                     pending[external_id] = instance
                     stats["created"] += 1
@@ -384,7 +390,7 @@ class Command(BaseCommand):
                     "service_id": (
                         service.id if service is not None else None),
                     "service_name": snapshot, "start": start, "end": end,
-                    "status": status,
+                    "status": status, "payload": payload,
                 }
                 dates.append(row.get("appointmentDate"))
             if batch:

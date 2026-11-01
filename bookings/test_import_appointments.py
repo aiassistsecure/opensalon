@@ -178,6 +178,34 @@ class ImportAppointmentsTests(TestCase):
         self.assertIn('"created": 1', out)
         self.assertEqual(Appointment.objects.count(), 1)
 
+    # TF-9: the whole source record is retained verbatim in payload.
+
+    def test_payload_stores_source_record_verbatim(self):
+        row = self._one_row(
+            price=45.0, extraUnmappedField="kept-me",
+            nestedExtra={"channel": "phone", "flags": ["a", "b"]})
+        self.run_import(payload=[row])
+        appt = Appointment.objects.get(external_id="appt-x")
+        self.assertEqual(appt.payload, row)
+        self.assertEqual(appt.payload["price"], 45.0)
+        self.assertEqual(appt.payload["extraUnmappedField"], "kept-me")
+
+    def test_payload_set_for_record_without_extras(self):
+        row = self._one_row()
+        self.run_import(payload=[row])
+        appt = Appointment.objects.get(external_id="appt-x")
+        self.assertEqual(appt.payload, row)
+
+    def test_payload_updates_on_rerun_and_counts_as_change(self):
+        row = self._one_row(price=45.0, extraUnmappedField="before")
+        self.run_import(payload=[row])
+        changed = dict(row, price=50.0, extraUnmappedField="after")
+        out = self.run_import(payload=[changed])
+        self.assertIn('"updated": 1', out)
+        self.assertIn('"unchanged": 0', out)
+        appt = Appointment.objects.get(external_id="appt-x")
+        self.assertEqual(appt.payload, changed)
+
     def test_directory_input_reads_every_file(self):
         directory = tempfile.mkdtemp()
         for name, rows in (("2026-10.json", FIXTURE[:1]),
