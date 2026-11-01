@@ -112,6 +112,72 @@ class ImportAppointmentsTests(TestCase):
         self.assertEqual(Appointment.objects.get(
             external_id="appt-3").status, Appointment.Status.BOOKED)
 
+    def _one_row(self, appointment_id="appt-x", **overrides):
+        row = {"appointmentId": appointment_id, "clientId": "cli-1",
+               "staffId": "stf-1", "serviceId": "svc-1",
+               "appointmentDate": "2026-10-03",
+               "startTime": "09:00:00.000", "endTime": "09:45:00.000",
+               "state": "BOOKED", "deleted": False}
+        row.update(overrides)
+        return row
+
+    # TF-4: unknown/missing state is skipped + counted, never booked.
+
+    def test_unknown_state_skipped_and_counted_not_booked(self):
+        out = self.run_import(
+            payload=[self._one_row(state="SOMETHING_NEW")])
+        self.assertIn('"created": 0', out)
+        self.assertIn('"unknown_state": 1', out)
+        self.assertIn("1 unknown state", out)
+        self.assertEqual(Appointment.objects.count(), 0)
+
+    def test_missing_state_skipped_and_counted_not_booked(self):
+        row = self._one_row()
+        del row["state"]
+        out = self.run_import(payload=[row])
+        self.assertIn('"created": 0', out)
+        self.assertIn('"unknown_state": 1', out)
+        self.assertEqual(Appointment.objects.count(), 0)
+
+    def test_empty_state_skipped_and_counted_not_booked(self):
+        out = self.run_import(payload=[self._one_row(state="")])
+        self.assertIn('"created": 0', out)
+        self.assertIn('"unknown_state": 1', out)
+        self.assertEqual(Appointment.objects.count(), 0)
+
+    # TF-4: `deleted` is parsed strictly, never by truthiness.
+
+    def test_deleted_string_false_imports(self):
+        for word in ("false", "FALSE", "0", "no"):
+            with self.subTest(deleted=word):
+                out = self.run_import(payload=[self._one_row(
+                    appointment_id=f"appt-del-{word}", deleted=word)])
+                self.assertIn('"created": 1', out)
+        self.assertEqual(Appointment.objects.count(), 4)
+
+    def test_deleted_string_true_skips(self):
+        payload = [self._one_row(appointment_id=f"appt-del-{word}",
+                                 deleted=word)
+                   for word in ("true", "TRUE", "1", "yes")]
+        out = self.run_import(payload=payload)
+        self.assertIn('"created": 0', out)
+        self.assertIn('"skipped": 4', out)
+        self.assertEqual(Appointment.objects.count(), 0)
+
+    def test_deleted_junk_skips_and_is_counted(self):
+        out = self.run_import(
+            payload=[self._one_row(deleted="maybe")])
+        self.assertIn('"created": 0', out)
+        self.assertIn('"skipped": 1', out)
+        self.assertEqual(Appointment.objects.count(), 0)
+
+    def test_deleted_missing_flag_imports(self):
+        row = self._one_row()
+        del row["deleted"]
+        out = self.run_import(payload=[row])
+        self.assertIn('"created": 1', out)
+        self.assertEqual(Appointment.objects.count(), 1)
+
     def test_directory_input_reads_every_file(self):
         directory = tempfile.mkdtemp()
         for name, rows in (("2026-10.json", FIXTURE[:1]),
