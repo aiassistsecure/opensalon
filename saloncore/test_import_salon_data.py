@@ -754,3 +754,112 @@ class ImportSalonDataExternalIdTests(TestCase):
         self.assertEqual(appt.external_id, "appt-1")
         self.assertEqual(appt.client.external_id, "cli-1")
         self.assertEqual(appt.service.external_id, "svc-1")
+
+
+ALL_MODELS = (Salon, ServiceCategory, Service, StaffLevel, ServicePrice,
+              Client, ClientNote, StaffMember, Appointment,
+              AppointmentNote)
+
+
+def _dry_fixture():
+    """_minimal_data plus one note per note section (synthetic)."""
+    data = _minimal_data()
+    data["client_notes"] = [
+        {"id": 90, "client_id": 50, "body": "Prefers quiet.",
+         "author_name": "Front Desk",
+         "created_at": "2026-01-01T09:00:00+00:00"}]
+    data["appointment_notes"] = [
+        {"id": 91, "appointment_id": 70, "body": "Arrives early.",
+         "author_name": "Front Desk",
+         "created_at": "2026-01-01T09:00:00+00:00"}]
+    return data
+
+
+class ImportSalonDataDryRunTests(TestCase):
+    """TF-12: --dry-run reports per section, writes nothing."""
+
+    def write_data(self, data):
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        json.dump(data, fh)
+        fh.close()
+        return fh.name
+
+    def run_dry(self, data):
+        out = io.StringIO()
+        call_command("import_salon_data", self.write_data(data),
+                     dry_run=True, stdout=out)
+        return json.loads(out.getvalue())
+
+    def assert_all_zero(self):
+        for model in ALL_MODELS:
+            self.assertEqual(model.objects.count(), 0, model.__name__)
+
+    def test_dry_run_creates_zero_rows_in_every_model(self):
+        fixture = _dry_fixture()
+        reports = self.run_dry(fixture)
+        self.assert_all_zero()
+        self.assertEqual(set(reports), {
+            "salons", "service_categories", "services", "staff_levels",
+            "service_prices", "clients", "client_notes", "staff_members",
+            "appointments", "appointment_notes"})
+        for section, report in reports.items():
+            self.assertEqual(report["source"], section)
+            self.assertEqual(
+                report["record_count"], len(fixture[section]))
+
+    def test_dry_run_names_unmapped_key_planted_in_a_section(self):
+        data = _dry_fixture()
+        data["clients"][0]["legacy_loyalty_code"] = "GOLD-9"
+        data["salons"][0]["legacy_region"] = "north"
+        reports = self.run_dry(data)
+        self.assertIn("legacy_loyalty_code",
+                      reports["clients"]["unmapped_keys"])
+        self.assertIn("legacy_region",
+                      reports["salons"]["unmapped_keys"])
+        self.assertNotIn("legacy_loyalty_code",
+                         reports["services"]["unmapped_keys"])
+        self.assert_all_zero()
+
+    def test_dry_run_per_section_absence_counts_are_correct(self):
+        data = _dry_fixture()
+        # clients.email: "" (row 1) / null (row 2) / missing (row 3)
+        # / valued (row 4) — three distinct absence buckets.
+        base = data["clients"][0]
+        for i, email in ((51, None), (53, "ada2@example.com")):
+            row = dict(base, id=i, external_id=f"cli-{i}", email=email)
+            data["clients"].append(row)
+        row = dict(base, id=52, external_id="cli-52")
+        del row["email"]
+        data["clients"].append(row)
+        # services.description: "" on the only row; appointments
+        # price_override: explicit null on the only row.
+        reports = self.run_dry(data)
+        email = reports["clients"]["fields"]["email"]
+        self.assertEqual(
+            (email["null"], email["missing"], email["empty_string"],
+             email["valued"], email["present"]), (1, 1, 1, 1, 3))
+        desc = reports["services"]["fields"]["description"]
+        self.assertEqual(
+            (desc["null"], desc["missing"], desc["empty_string"]),
+            (0, 0, 1))
+        price = reports["appointments"]["fields"]["price_override"]
+        self.assertEqual(
+            (price["null"], price["missing"], price["empty_string"]),
+            (1, 0, 0))
+        self.assert_all_zero()
+
+    def test_normal_import_of_same_fixture_still_works(self):
+        data = _dry_fixture()
+        data["clients"][0]["legacy_loyalty_code"] = "GOLD-9"
+        path = self.write_data(data)
+        self.run_dry(data)
+        self.assert_all_zero()
+        out = io.StringIO()
+        call_command("import_salon_data", path, stdout=out)
+        self.assertIn("IMPORT_SUMMARY", out.getvalue())
+        self.assertIn("clients.legacy_loyalty_code", out.getvalue())
+        for model in ALL_MODELS:
+            self.assertEqual(model.objects.count(), 1, model.__name__)
+        self.assertEqual(Client.objects.get().external_id, "cli-1")
+        self.assertEqual(Appointment.objects.get().external_id, "appt-1")
