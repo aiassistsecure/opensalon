@@ -5,7 +5,7 @@ from django.test import TestCase
 from catalog.models import Product, StockMovement
 from checkout.models import Payment, Receipt, Sale, SaleItem
 from checkout.payments import CashProvider, ExternalTenderProvider, PaymentProvider, PaymentResult
-from checkout.sales import add_product_item, add_service_item, complete_sale, create_sale
+from checkout.sales import add_product_item, add_series_item, add_service_item, complete_sale, create_sale
 from checkout.void import void_sale
 from clients.models import Client
 from saloncore.models import Salon, Service, ServiceCategory
@@ -55,6 +55,38 @@ class SaleServiceTests(TestCase):
         other = Client.objects.create(salon=Salon.objects.create(name="Other"), first_name="A", last_name="B")
         with self.assertRaises(ValueError):
             create_sale(self.salon, client=other)
+
+    def test_series_item_totals_kind_persists_and_links_neither(self):
+        sale = create_sale(self.salon, client=self.client)
+        add_service_item(sale, Decimal("85.00"), service=self.service)
+        item = add_series_item(
+            sale, Decimal("200.00"), description="Blowout Series x4", quantity=1
+        )
+        self.assertEqual(item.kind, SaleItem.Kind.SERIES)
+        self.assertEqual(item.kind, "series")
+        self.assertIsNone(item.service)
+        self.assertIsNone(item.product)
+        self.assertEqual(item.description, "Blowout Series x4")
+        self.assertEqual(item.unit_price, Decimal("200.00"))
+        self.assertEqual(item.line_total, Decimal("200.00"))
+        self.assertEqual(sale.total, Decimal("285.00"))
+        item.refresh_from_db()
+        self.assertEqual(item.kind, "series")
+        self.assertIsNone(item.service_id)
+        self.assertIsNone(item.product_id)
+        with self.assertRaises(ValueError):
+            add_series_item(sale, 9.99, description="Float")  # float money rejected
+
+    def test_series_item_completes_without_moving_stock(self):
+        sale = create_sale(self.salon, client=self.client)
+        add_series_item(sale, Decimal("150.00"), description="Colour Series", quantity=2)
+        receipt = complete_sale(sale, CashProvider())
+        sale.refresh_from_db()
+        self.assertEqual(sale.status, Sale.Status.COMPLETED)
+        self.assertEqual(sale.payments.get().amount, Decimal("300.00"))
+        self.assertEqual(receipt.total, Decimal("300.00"))
+        self.assertEqual(receipt.lines[0]["kind"], "series")
+        self.assertEqual(StockMovement.objects.filter(kind=StockMovement.Kind.SALE).count(), 0)
 
     def test_completion_via_cash_builds_receipt_and_moves_stock(self):
         sale = self._stocked_sale()

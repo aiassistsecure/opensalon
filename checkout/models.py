@@ -55,7 +55,8 @@ class Sale(models.Model):
 
 
 class SaleItem(models.Model):
-    """One line on a sale: a service rendered or a product sold.
+    """One line on a sale: a service rendered, a product sold, or a
+    series/package sold.
 
     ``description`` and ``unit_price`` are snapshots taken at sale
     time, so later price-book or catalogue changes never rewrite a
@@ -66,6 +67,7 @@ class SaleItem(models.Model):
     class Kind(models.TextChoices):
         SERVICE = "service", "Service"
         PRODUCT = "product", "Product"
+        SERIES = "series", "Series"
 
     sale = models.ForeignKey(
         Sale, on_delete=models.CASCADE, related_name="items"
