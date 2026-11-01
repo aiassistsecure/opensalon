@@ -9,7 +9,8 @@ shares one source of truth:
 
 * :func:`create_sale` opens an ``OPEN`` sale for a salon, with an
   optional client of that same salon.
-* :func:`add_service_item` / :func:`add_product_item` append
+* :func:`add_service_item` / :func:`add_product_item` /
+  :func:`add_series_item` append
   snapshot lines to an open sale. Prices and descriptions are
   copied onto the item at add time, so later price-book or
   catalogue changes never rewrite the sale. Money is ``Decimal``
@@ -124,6 +125,24 @@ def add_product_item(sale, product, quantity=1, unit_price=None):
         unit_price=_money(
             product.price if unit_price is None else unit_price, "unit_price"
         ),
+    )
+
+
+def add_series_item(sale, unit_price, description="", quantity=1):
+    """Append a series/package line to an open ``sale`` and return it.
+
+    A series item links neither a service nor a product (both stay
+    null): ``description`` and ``unit_price`` are the snapshot, taken
+    at add time like every other line. It moves no stock — only
+    product lines do, at :func:`complete_sale` time.
+    """
+    _require_open(sale)
+    return SaleItem.objects.create(
+        sale=sale,
+        kind=SaleItem.Kind.SERIES,
+        description=description or "",
+        quantity=_quantity(quantity),
+        unit_price=_money(unit_price, "unit_price"),
     )
 
 

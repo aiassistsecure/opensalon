@@ -86,7 +86,8 @@ class SaleItemModelTests(TestCase):
 
     def test_kind_choices(self):
         self.assertEqual(
-            [c[0] for c in SaleItem.Kind.choices], ["service", "product"]
+            [c[0] for c in SaleItem.Kind.choices],
+            ["service", "product", "series"],
         )
 
     def test_quantity_defaults_to_one(self):
