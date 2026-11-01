@@ -18,11 +18,17 @@ fully export. This is part 1 of that test — the core records only:
   ``client`` / ``staff_member`` / ``service`` references as both the
   internal ``*_id`` (following the other sections) and the related
   record's ``*_external_id`` where that model carries one.
+- catalog: Product (retail products, scoped by salon like clients
+  and staff). Stock is NOT exported: it is derived from
+  StockMovement rows, never stored on Product, so there is no
+  stock field to emit — money fields (``price``, ``cost_price``)
+  are emitted exactly as stored, as strings.
 
 The ``payload`` (whole source record, stored verbatim) is emitted
-for every section whose model carries one — clients, services and
-appointments — so a salon_data restore preserves it exactly.
-StaffMember carries no ``payload`` field, so its section emits none.
+for every section whose model carries one — clients, services,
+appointments and products — so a salon_data restore preserves it
+exactly. StaffMember carries no ``payload`` field, so its section
+emits none.
 
 No new models and no provider concepts: plain querysets turned into
 plain dicts, Decimals as strings and datetimes as ISO-8601 so the file
@@ -37,6 +43,7 @@ import json
 from django.core.management.base import BaseCommand, CommandError
 
 from bookings.models import Appointment, AppointmentNote
+from catalog.models import Product
 from clients.models import Client, ClientNote
 from saloncore.models import (
     Salon,
@@ -53,7 +60,7 @@ def _dt(value):
 
 
 class Command(BaseCommand):
-    help = "Export salon core data (price book, clients, staff, appointments) to one JSON file."
+    help = "Export salon core data (price book, clients, staff, appointments, products) to one JSON file."
 
     def add_arguments(self, parser):
         parser.add_argument("output", help="Path of the JSON file to write.")
@@ -87,6 +94,7 @@ class Command(BaseCommand):
         appointment_notes = AppointmentNote.objects.filter(
             appointment_id__in=appointment_ids
         )
+        products = Product.objects.filter(salon_id__in=salon_ids)
 
         data = {
             "salons": [
@@ -197,6 +205,24 @@ class Command(BaseCommand):
                     "created_at": _dt(n.created_at),
                 }
                 for n in appointment_notes
+            ],
+            "products": [
+                {
+                    "id": p.id, "salon_id": p.salon_id,
+                    "external_id": p.external_id, "name": p.name,
+                    "sku": p.sku, "barcode": p.barcode,
+                    "price": str(p.price),
+                    "cost_price": (
+                        str(p.cost_price)
+                        if p.cost_price is not None else None
+                    ),
+                    "active": p.active,
+                    "brand_name": p.brand_name,
+                    "category_name": p.category_name,
+                    "product_type": p.product_type,
+                    "payload": p.payload,
+                }
+                for p in products
             ],
         }
         data["counts"] = {

@@ -7,7 +7,11 @@ This is the restore side of the Exit Test: it consumes exactly the
 JSON format written by ``export_salon_data`` (see that command for the
 section list) and restores Salon, ServiceCategory, Service,
 StaffLevel, ServicePrice, Client, ClientNote, StaffMember,
-Appointment and AppointmentNote records.
+Appointment, AppointmentNote and Product records. The
+``products`` section is optional on read: an export file written
+before it existed (no ``products`` section, no ``counts``
+entry for it) imports exactly as before, with the section
+treated as empty.
 
 The exporter's ``id`` values are file-local: foreign keys in the
 file refer to those ids, so the import builds old-id -> new-record
@@ -38,6 +42,9 @@ and creates nothing twice:
   closed in phase 1 — no link is ever fabricated.
 - AppointmentNote  <- (appointment, body, author_name), attached to
   the restored appointment its ``appointment_id`` names.
+- Product          <- external_id when present, else
+  (salon, name, sku, barcode). Stock is never imported: it is
+  derived from StockMovement rows, not stored on Product.
 
 No provider concepts: external ids are the generic fields the models
 already carry.
@@ -57,7 +64,7 @@ that do support transactions.
 
 Strict boolean types (TF-3): the boolean fields the exporter always
 carries — ``active`` (service_categories, services, staff_levels,
-service_prices, clients, staff_members), ``is_from``
+service_prices, clients, staff_members, products), ``is_from``
 (service_prices) and ``online_bookable`` (staff_members) — are
 validated in phase 1 and never guessed in phase 2. The three bad
 shapes are distinct, named errors: a missing key is not a value, an
@@ -86,7 +93,7 @@ likewise a phase-1 ``CommandError``, never a silent drop.
 Faithful external ids (TF-6): every id this command consumes —
 file-local ``id`` values, every ``*_id`` reference (including
 ``category_id``), the ``external_id`` of the clients, staff_members,
-services and appointments sections, and appointments'
+services, appointments and products sections, and appointments'
 ``*_external_id`` link fields — is normalised to ``str`` in phase 1,
 so a numeric id and its string spelling (``123`` vs ``"123"``) are
 the same identity in every lookup, map and ``update_or_create`` key.
@@ -97,9 +104,9 @@ would collide into one): it raises ``CommandError`` in phase 1
 naming the section and record, so the whole file writes zero rows.
 
 Payloads (verbatim retention): the ``payload`` field carried by
-``Service`` / ``Client`` / ``Appointment`` is a known key in those
-three sections and is restored verbatim when present — stored
-exactly as exported, never transformed. Sections whose models
+``Service`` / ``Client`` / ``Appointment`` / ``Product`` is a known
+key in those four sections and is restored verbatim when present —
+stored exactly as exported, never transformed. Sections whose models
 carry no payload (Salon, ServiceCategory, StaffLevel,
 ServicePrice, the notes and StaffMember — StaffMember has no
 ``payload`` field) emit and consume none. An older export file
@@ -134,6 +141,7 @@ from django.utils.dateparse import parse_datetime
 from django.utils.timezone import is_naive
 
 from bookings.models import Appointment, AppointmentNote
+from catalog.models import Product
 from clients.models import Client, ClientNote
 from saloncore.dry_run import build_dry_run_reports
 from saloncore.models import (
@@ -148,8 +156,12 @@ from team.models import StaffMember
 SECTIONS = (
     "salons", "service_categories", "services", "staff_levels",
     "service_prices", "clients", "client_notes", "staff_members",
-    "appointments", "appointment_notes",
+    "appointments", "appointment_notes", "products",
 )
+
+# Sections an older export file may legitimately lack entirely:
+# missing means empty, never an error (back-compat).
+OPTIONAL_SECTIONS = ("products",)
 
 # Every key the exporter emits (hence the importer may consume) per
 # section. Any other key in a record is unknown (TF-11).
@@ -180,6 +192,10 @@ KNOWN_KEYS = {
                      "created_at", "updated_at", "payload"},
     "appointment_notes": {"id", "appointment_id", "body",
                           "author_name", "created_at"},
+    "products": {"id", "salon_id", "external_id", "name", "sku",
+                 "barcode", "price", "cost_price", "active",
+                 "brand_name", "category_name", "product_type",
+                 "payload"},
 }
 
 TOP_LEVEL_KEYS = set(SECTIONS) | {"counts"}
@@ -224,11 +240,17 @@ def _load(path):
     if not isinstance(data, dict):
         raise CommandError("Import file must contain a JSON object.")
     for section in SECTIONS:
+        if section in OPTIONAL_SECTIONS and section not in data:
+            # Back-compat: a pre-products export has no section at
+            # all; it imports exactly as before, as an empty one.
+            data[section] = []
         if not isinstance(data.get(section), list):
             raise CommandError(f"Import file is missing section {section!r}.")
     counts = data.get("counts")
     if counts is not None:
         for section in SECTIONS:
+            if section in OPTIONAL_SECTIONS and section not in counts:
+                continue
             if counts.get(section) != len(data[section]):
                 raise CommandError(
                     f"counts[{section!r}]={counts.get(section)} disagrees "
@@ -253,6 +275,7 @@ BOOL_FIELDS = {
     "service_prices": ("is_from", "active"),
     "clients": ("active",),
     "staff_members": ("online_bookable", "active"),
+    "products": ("active",),
 }
 
 
@@ -310,6 +333,7 @@ _ID_FIELDS = {
                      "staff_member_external_id", "service_id",
                      "service_external_id"),
     "appointment_notes": ("id", "appointment_id"),
+    "products": ("id", "salon_id", "external_id"),
 }
 
 # (section, field) -> model whose external_id limit governs it.
@@ -328,6 +352,8 @@ _EXTERNAL_ID_LIMITS = {
         StaffMember._meta.get_field("external_id").max_length,
     ("appointments", "service_external_id"):
         Service._meta.get_field("external_id").max_length,
+    ("products", "external_id"):
+        Product._meta.get_field("external_id").max_length,
 }
 
 
@@ -450,6 +476,7 @@ def _validate(data):
         "appointments": ("id", "client_id", "staff_member_id",
                          "start", "end"),
         "appointment_notes": ("appointment_id", "body"),
+        "products": ("id", "salon_id", "name", "price"),
     }
     for section, fields in required.items():
         for row in data[section]:
@@ -541,6 +568,21 @@ def _validate(data):
                 f"Bad appointments origin: {row['origin']!r}.")
     for row in data["appointment_notes"]:
         _check_ref(appointment_ids, row["appointment_id"], "appointment")
+    for row in data["products"]:
+        _check_ref(salon_ids, row["salon_id"], "salon")
+        try:
+            Decimal(str(row["price"]))
+        except (InvalidOperation, ValueError) as exc:
+            raise CommandError(
+                f"Bad products price: {row.get('price')!r}."
+            ) from exc
+        if row.get("cost_price") is not None:
+            try:
+                Decimal(str(row["cost_price"]))
+            except (InvalidOperation, ValueError) as exc:
+                raise CommandError(
+                    f"Bad products cost_price: "
+                    f"{row.get('cost_price')!r}.") from exc
 
 
 def _ref(mapping, old_id, what):
@@ -807,6 +849,35 @@ class Command(BaseCommand):
                 defaults={},
             )
             _restore_created_at(obj, row.get("created_at"))
+
+        for row in data["products"]:
+            defaults = {
+                "name": row["name"],
+                "sku": row.get("sku", ""),
+                "barcode": row.get("barcode", ""),
+                "price": Decimal(str(row["price"])),
+                "cost_price": (
+                    Decimal(str(row["cost_price"]))
+                    if row.get("cost_price") is not None else None
+                ),
+                "active": row["active"],
+                "brand_name": row.get("brand_name", ""),
+                "category_name": row.get("category_name", ""),
+                "product_type": row.get("product_type", ""),
+            }
+            if "payload" in row:
+                defaults["payload"] = row["payload"]
+            salon = _ref(salons, row["salon_id"], "salon")
+            external_id = _norm_id(row.get("external_id")) or ""
+            if external_id:
+                Product.objects.update_or_create(
+                    external_id=external_id,
+                    defaults={**defaults, "salon": salon})
+            else:
+                Product.objects.update_or_create(
+                    salon=salon, name=row["name"],
+                    sku=defaults["sku"], barcode=defaults["barcode"],
+                    defaults=defaults)
 
         summary = ", ".join(
             f"{section}={len(data[section])}" for section in SECTIONS

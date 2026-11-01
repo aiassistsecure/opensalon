@@ -15,6 +15,7 @@ from django.core.management import CommandError, call_command
 from django.test import TestCase
 
 from bookings.models import Appointment, AppointmentNote
+from catalog.models import Product
 from clients.models import Client, ClientNote
 from saloncore.models import (
     Salon,
@@ -802,11 +803,11 @@ class ImportSalonDataDryRunTests(TestCase):
         self.assertEqual(set(reports), {
             "salons", "service_categories", "services", "staff_levels",
             "service_prices", "clients", "client_notes", "staff_members",
-            "appointments", "appointment_notes"})
+            "appointments", "appointment_notes", "products"})
         for section, report in reports.items():
             self.assertEqual(report["source"], section)
             self.assertEqual(
-                report["record_count"], len(fixture[section]))
+                report["record_count"], len(fixture.get(section, [])))
 
     def test_dry_run_names_unmapped_key_planted_in_a_section(self):
         data = _dry_fixture()
@@ -971,3 +972,121 @@ class ImportSalonDataPayloadTests(TestCase):
         self.assertEqual(Appointment.objects.count(), 1)
         self.assertEqual(
             Client.objects.get().payload, self.client_payload)
+
+
+class ImportSalonDataProductsTests(TestCase):
+    """Products leg: salon_data round-trip preserves products exactly."""
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Product Restore Salon")
+        self.payload = {"legacy": {"id": 11, "tags": ["retail"]}}
+        self.product = Product.objects.create(
+            salon=self.salon, name="Shampoo", sku="SKU-1",
+            barcode="012345678905", price=Decimal("24.50"),
+            cost_price=Decimal("10.25"), active=False,
+            external_id="prod-1", brand_name="BrandCo",
+            category_name="Hair Care", product_type="retail",
+            payload=self.payload)
+        self.plain = Product.objects.create(
+            salon=self.salon, name="Comb", price=Decimal("5.00"))
+
+    def temp_path(self):
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        fh.close()
+        return fh.name
+
+    def export_data(self):
+        path = self.temp_path()
+        call_command("export_salon_data", path, stdout=io.StringIO())
+        with open(path, encoding="utf-8") as fh:
+            return path, json.load(fh)
+
+    def write_data(self, path, data):
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+
+    def run_import(self, path):
+        out = io.StringIO()
+        call_command("import_salon_data", path, stdout=out)
+        return out.getvalue()
+
+    @staticmethod
+    def _digest(payload):
+        import hashlib
+        return hashlib.sha256(json.dumps(
+            payload, sort_keys=True).encode()).hexdigest()
+
+    def test_round_trip_preserves_all_product_fields_and_payload(self):
+        path, _ = self.export_data()
+        Salon.objects.all().delete()
+        self.assertEqual(Product.objects.count(), 0)
+        out = self.run_import(path)
+        self.assertIn("products=2", out)
+        self.assertIn("unknown_keys=none", out)
+        self.assertEqual(Product.objects.count(), 2)
+        restored = Product.objects.get(external_id="prod-1")
+        self.assertEqual(restored.salon.name, "Product Restore Salon")
+        self.assertEqual(restored.name, "Shampoo")
+        self.assertEqual(restored.sku, "SKU-1")
+        self.assertEqual(restored.barcode, "012345678905")
+        self.assertEqual(restored.price, Decimal("24.50"))
+        self.assertEqual(restored.cost_price, Decimal("10.25"))
+        self.assertFalse(restored.active)
+        self.assertEqual(restored.brand_name, "BrandCo")
+        self.assertEqual(restored.category_name, "Hair Care")
+        self.assertEqual(restored.product_type, "retail")
+        self.assertEqual(restored.payload, self.payload)
+        self.assertEqual(
+            self._digest(restored.payload), self._digest(self.payload))
+        plain = Product.objects.get(name="Comb")
+        self.assertEqual(plain.price, Decimal("5.00"))
+        self.assertIsNone(plain.cost_price)
+        self.assertEqual(plain.payload, {})
+
+    def test_reimport_products_is_idempotent_and_updates_in_place(self):
+        path, data = self.export_data()
+        Salon.objects.all().delete()
+        self.run_import(path)
+        self.run_import(path)
+        self.assertEqual(Product.objects.count(), 2)
+        row = next(p for p in data["products"]
+                   if p["external_id"] == "prod-1")
+        row["price"] = "26.00"
+        self.write_data(path, data)
+        self.run_import(path)
+        self.assertEqual(Product.objects.count(), 2)
+        self.assertEqual(
+            Product.objects.get(external_id="prod-1").price,
+            Decimal("26.00"))
+
+    def test_missing_products_section_imports_exactly_as_before(self):
+        path, data = self.export_data()
+        del data["products"]
+        del data["counts"]["products"]
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        out = self.run_import(path)
+        self.assertIn("IMPORT_SUMMARY", out)
+        self.assertIn("products=0", out)
+        self.assertEqual(Salon.objects.count(), 1)
+        self.assertEqual(Product.objects.count(), 0)
+
+    def test_unknown_key_in_products_named_not_dropped_silently(self):
+        path, data = self.export_data()
+        data["products"][0]["legacy_vendor_code"] = "V-9"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        out = self.run_import(path)
+        self.assertIn("products.legacy_vendor_code", out)
+        self.assertEqual(Product.objects.count(), 2)
+
+    def test_bad_product_price_fails_closed_with_zero_writes(self):
+        path, data = self.export_data()
+        data["products"][0]["price"] = "not-money"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError):
+            call_command("import_salon_data", path)
+        self.assertEqual(Salon.objects.count(), 0)
+        self.assertEqual(Product.objects.count(), 0)

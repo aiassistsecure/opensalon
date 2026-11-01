@@ -12,6 +12,7 @@ from django.core.management import CommandError, call_command
 from django.test import TestCase
 
 from bookings.models import Appointment, AppointmentNote
+from catalog.models import Product
 from clients.models import Client, ClientNote
 from saloncore.models import (
     Salon,
@@ -67,7 +68,7 @@ class ExportSalonDataTests(TestCase):
             "salons": 1, "service_categories": 1, "services": 1,
             "staff_levels": 1, "service_prices": 1, "clients": 2,
             "client_notes": 1, "staff_members": 1,
-            "appointments": 0, "appointment_notes": 0,
+            "appointments": 0, "appointment_notes": 0, "products": 0,
         })
         for key, count in data["counts"].items():
             self.assertEqual(len(data[key]), count)
@@ -298,3 +299,63 @@ class ExportPayloadTests(TestCase):
         data = self.run_export()
         self.assertNotIn("payload", data["staff_members"][0])
         self.assertFalse(hasattr(StaffMember, "payload"))
+
+
+class ExportProductsTests(TestCase):
+    """Products leg: export emits catalog.Product rows faithfully."""
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Product Salon")
+        self.payload = {"legacy": {"id": 11, "tags": ["retail"]}}
+        self.product = Product.objects.create(
+            salon=self.salon, name="Shampoo", sku="SKU-1",
+            barcode="012345678905", price=Decimal("24.50"),
+            cost_price=Decimal("10.25"), active=False,
+            external_id="prod-1", brand_name="BrandCo",
+            category_name="Hair Care", product_type="retail",
+            payload=self.payload)
+        self.plain = Product.objects.create(
+            salon=self.salon, name="Comb", price=Decimal("5.00"))
+
+    def run_export(self, **kwargs):
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        fh.close()
+        call_command("export_salon_data", fh.name,
+                     stdout=io.StringIO(), **kwargs)
+        with open(fh.name, encoding="utf-8") as exported:
+            return json.load(exported)
+
+    def test_export_emits_products_with_all_fields(self):
+        data = self.run_export()
+        self.assertEqual(data["counts"]["products"], 2)
+        self.assertEqual(len(data["products"]), 2)
+        by_ext = {p["external_id"]: p for p in data["products"]}
+        row = by_ext["prod-1"]
+        self.assertEqual(row["id"], self.product.id)
+        self.assertEqual(row["salon_id"], self.salon.id)
+        self.assertEqual(row["name"], "Shampoo")
+        self.assertEqual(row["sku"], "SKU-1")
+        self.assertEqual(row["barcode"], "012345678905")
+        self.assertEqual(row["price"], "24.50")
+        self.assertEqual(row["cost_price"], "10.25")
+        self.assertFalse(row["active"])
+        self.assertEqual(row["brand_name"], "BrandCo")
+        self.assertEqual(row["category_name"], "Hair Care")
+        self.assertEqual(row["product_type"], "retail")
+        self.assertEqual(row["payload"], self.payload)
+        plain = by_ext[""]
+        self.assertEqual(plain["name"], "Comb")
+        self.assertEqual(plain["price"], "5.00")
+        self.assertIsNone(plain["cost_price"])
+        self.assertEqual(plain["payload"], {})
+
+    def test_salon_filter_scopes_products(self):
+        other = Salon.objects.create(name="Other Salon")
+        Product.objects.create(
+            salon=other, name="Elsewhere Gel", price=Decimal("9.00"))
+        data = self.run_export(salon="Product Salon")
+        self.assertEqual(data["counts"]["products"], 2)
+        data = self.run_export(salon="Other Salon")
+        self.assertEqual(data["counts"]["products"], 1)
+        self.assertEqual(data["products"][0]["name"], "Elsewhere Gel")
