@@ -2,7 +2,12 @@
 
 Usage:
     python manage.py import_appointments PATH [--salon NAME]
-        [--timezone IANA_NAME]
+        [--timezone IANA_NAME] [--dry-run]
+
+With ``--dry-run`` the source is loaded exactly as below, then a
+JSON dry-run report (see ``saloncore.dry_run``) is printed to
+stdout and the command exits without writing anything — no salon
+is created or updated and no appointment is imported.
 
 PATH is one JSON file or a directory of monthly JSON files (the
 verbatim extract layout: one ``YYYY-MM.json`` per month); directory
@@ -94,8 +99,20 @@ from django.utils import timezone as dj_tz
 
 from bookings.models import Appointment
 from clients.models import Client
+from saloncore.dry_run import build_dry_run_report
 from saloncore.models import Salon, Service
 from team.models import StaffMember
+
+# Source keys this importer actually maps (reads to build an
+# Appointment). ``price`` is deliberately NOT in this set: it is
+# not mapped to any field (see module docstring) — it survives only
+# verbatim inside ``Appointment.payload`` — so a dry run names it
+# under ``unmapped_keys`` alongside any other unmapped source key.
+MAPPED_KEYS = frozenset({
+    "appointmentId", "clientId", "staffId", "serviceId",
+    "serviceName", "appointmentDate", "startTime", "endTime",
+    "state", "deleted",
+})
 
 STATE_MAP = {
     "BOOKED": Appointment.Status.BOOKED,
@@ -234,6 +251,12 @@ class Command(BaseCommand):
                                  "extract wall times are then interpreted "
                                  "in this timezone. Omit to keep the "
                                  "salon's existing timezone.")
+        parser.add_argument("--dry-run", action="store_true",
+                            help="Print a JSON dry-run report for the "
+                                 "source (record count, inferred types, "
+                                 "distinct null/missing/empty-string "
+                                 "counts, unmapped keys) and exit "
+                                 "without writing anything.")
 
     def handle(self, *args, **options):
         tz_name = (options.get("timezone") or "").strip() or None
@@ -245,6 +268,12 @@ class Command(BaseCommand):
                 raise CommandError(
                     f"Unknown timezone {tz_name!r}: {exc}") from exc
         records = _load_records(options["path"])
+        if options.get("dry_run"):
+            # Zero writes: report before any salon/appointment access.
+            report = build_dry_run_report(
+                records, MAPPED_KEYS, source_name=options["path"])
+            self.stdout.write(json.dumps(report, sort_keys=True))
+            return
         stats = dict.fromkeys(
             ["created", "updated", "skipped", "unchanged",
              "unknown_state", "oversized_id",

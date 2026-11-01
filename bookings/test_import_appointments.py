@@ -441,6 +441,7 @@ class ImportAppointmentsTests(TestCase):
         appt = Appointment.objects.get(external_id="12345")
         self.assertIsInstance(appt.external_id, str)
 
+
     def test_reimport_idempotent_for_at_limit_and_oversized(self):
         at_limit = "d" * 64
         payload = [self._one_row(at_limit),
@@ -452,3 +453,77 @@ class ImportAppointmentsTests(TestCase):
         self.assertIn('"unchanged": 1', out)
         self.assertIn('"oversized_id": 1', out)
         self.assertEqual(Appointment.objects.count(), 1)
+class DryRunImportAppointmentsTests(TestCase):
+    """TF-12 wiring: --dry-run reports via saloncore.dry_run, writes nothing."""
+
+    def setUp(self):
+        self.salon = Salon.objects.create(
+            name="My Salon", timezone="America/New_York")
+        self.client = Client.objects.create(
+            salon=self.salon, external_id="cli-1",
+            first_name="Test", last_name="Example")
+        self.staff = StaffMember.objects.create(
+            salon=self.salon, external_id="stf-1",
+            display_name="Stylist One")
+        category = ServiceCategory.objects.create(
+            salon=self.salon, name="Haircuts")
+        self.service = Service.objects.create(
+            category=category, external_id="svc-1", name="Haircut",
+            service_minutes=45)
+
+    def _row(self, appointment_id="appt-dr-1", **overrides):
+        row = {"appointmentId": appointment_id, "clientId": "cli-1",
+               "staffId": "stf-1", "serviceId": "svc-1",
+               "serviceName": "Haircut",
+               "appointmentDate": "2026-10-03",
+               "startTime": "09:00:00.000", "endTime": "09:45:00.000",
+               "state": "BOOKED", "deleted": False,
+               "legacyChannel": "phone"}
+        row.update(overrides)
+        return row
+
+    def run_dry_run(self, payload, **kwargs):
+        out = io.StringIO()
+        call_command("import_appointments", _write(payload),
+                     stdout=out, dry_run=True, **kwargs)
+        return json.loads(out.getvalue())
+
+    def test_dry_run_creates_zero_appointment_rows(self):
+        report = self.run_dry_run([self._row()], salon="Dry Run Salon")
+        self.assertEqual(report["record_count"], 1)
+        self.assertEqual(Appointment.objects.count(), 0)
+        self.assertFalse(Salon.objects.filter(name="Dry Run Salon").exists())
+        self.assertEqual(Salon.objects.count(), 1)
+
+    def test_dry_run_report_names_unmapped_key(self):
+        report = self.run_dry_run([self._row()])
+        self.assertIn("legacyChannel", report["unmapped_keys"])
+        self.assertNotIn("legacyChannel", report["mapped_keys"])
+        self.assertIn("appointmentId", report["mapped_keys"])
+
+    def test_dry_run_distinct_null_missing_empty_string_counts(self):
+        missing = self._row("appt-dr-2")
+        del missing["serviceName"]
+        payload = [self._row("appt-dr-1", serviceName=None),
+                   missing,
+                   self._row("appt-dr-3", serviceName="")]
+        report = self.run_dry_run(payload)
+        field = report["fields"]["serviceName"]
+        self.assertEqual(field["null"], 1)
+        self.assertEqual(field["missing"], 1)
+        self.assertEqual(field["empty_string"], 1)
+        self.assertEqual(field["present"], 2)
+        self.assertEqual(Appointment.objects.count(), 0)
+
+    def test_normal_import_of_same_fixture_still_works(self):
+        payload = [self._row()]
+        self.run_dry_run(payload)
+        self.assertEqual(Appointment.objects.count(), 0)
+        out = io.StringIO()
+        call_command("import_appointments", _write(payload), stdout=out)
+        self.assertIn('"created": 1', out.getvalue())
+        self.assertEqual(Appointment.objects.count(), 1)
+        self.assertTrue(
+            Appointment.objects.filter(external_id="appt-dr-1").exists())
+
+
