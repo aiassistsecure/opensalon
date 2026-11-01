@@ -15,7 +15,7 @@ from bookings.models import Appointment, AppointmentNote, Break
 from checkout.models import Cashup, Payment, Receipt, Refund, Sale, SaleItem
 from catalog.models import Product, StockMovement
 from clients.models import Client, ClientNote
-from messaging.models import ReminderSend
+from messaging.models import Campaign, ReminderSend
 from saloncore.models import (
     PriceChange,
     Salon,
@@ -81,7 +81,7 @@ class ExportSalonDataTests(TestCase):
             "sales": 0, "sale_items": 0, "sale_payments": 0,
             "stock_movements": 0, "attendance_records": 0,
             "price_changes": 0, "refunds": 0, "breaks": 0, "cashups": 0,
-            "receipts": 0, "reminder_sends": 0,
+            "receipts": 0, "reminder_sends": 0, "campaigns": 0,
         })
         for key, count in data["counts"].items():
             self.assertEqual(len(data[key]), count)
@@ -1044,3 +1044,69 @@ class ExportReminderSendsTests(TestCase):
             data["reminder_sends"][0]["appointment_id"], other_appt.id)
         self.assertEqual(
             data["reminder_sends"][0]["client_id"], other_client.id)
+
+
+class ExportCampaignsTests(TestCase):
+    """Campaigns leg: export scoped directly by salon."""
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Campaign Salon")
+        self.email = Campaign.objects.create(
+            salon=self.salon, name="November News",
+            channel=Campaign.Channel.EMAIL, subject="Hello",
+            body="News body", status=Campaign.Status.DRAFT)
+        self.sms = Campaign.objects.create(
+            salon=self.salon, name="November Offer",
+            channel=Campaign.Channel.SMS, subject="",
+            body="Offer body", status=Campaign.Status.DRAFT)
+
+    def run_export(self, **kwargs):
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        fh.close()
+        call_command("export_salon_data", fh.name,
+                     stdout=io.StringIO(), **kwargs)
+        with open(fh.name, encoding="utf-8") as exported:
+            return json.load(exported)
+
+    def test_export_emits_campaigns_with_all_fields(self):
+        data = self.run_export()
+        self.assertEqual(data["counts"]["campaigns"], 2)
+        by_channel = {r["channel"]: r for r in data["campaigns"]}
+        row = by_channel["email"]
+        self.assertEqual(row["id"], self.email.id)
+        self.assertEqual(row["salon_id"], self.salon.id)
+        self.assertEqual(row["name"], "November News")
+        self.assertEqual(row["subject"], "Hello")
+        self.assertEqual(row["body"], "News body")
+        self.assertEqual(row["status"], "draft")
+        self.assertEqual(
+            row["created_at"], self.email.created_at.isoformat())
+        self.assertEqual(
+            row["updated_at"], self.email.updated_at.isoformat())
+        self.assertEqual(by_channel["sms"]["subject"], "")
+        self.assertEqual(by_channel["sms"]["name"], "November Offer")
+
+    def test_export_emits_sent_at_for_sent_and_draft(self):
+        sent_at = datetime(2026, 10, 3, 9, 0, tzinfo=dt_timezone.utc)
+        Campaign.objects.create(
+            salon=self.salon, name="October Blast", channel="email",
+            subject="Hi", body="Blast", status=Campaign.Status.SENT,
+            sent_at=sent_at)
+        data = self.run_export()
+        by_name = {r["name"]: r for r in data["campaigns"]}
+        self.assertEqual(
+            by_name["October Blast"]["sent_at"], sent_at.isoformat())
+        self.assertEqual(by_name["October Blast"]["status"], "sent")
+        self.assertIsNone(by_name["November News"]["sent_at"])
+
+    def test_salon_filter_scopes_campaigns_by_salon(self):
+        other = Salon.objects.create(name="Other Salon")
+        Campaign.objects.create(
+            salon=other, name="Elsewhere", channel="email",
+            subject="Hi", body="Body")
+        data = self.run_export(salon="Campaign Salon")
+        self.assertEqual(data["counts"]["campaigns"], 2)
+        data = self.run_export(salon="Other Salon")
+        self.assertEqual(data["counts"]["campaigns"], 1)
+        self.assertEqual(data["campaigns"][0]["salon_id"], other.id)
