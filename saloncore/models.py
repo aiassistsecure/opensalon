@@ -336,6 +336,15 @@ class Service(StrictConstraints):
     processing_minutes = models.PositiveIntegerField(default=0)
     finishing_minutes = models.PositiveIntegerField(default=0)
     active = models.BooleanField(default=True)
+    # Whole source record preserved verbatim (TF-10), mirroring
+    # bookings.Appointment.payload, catalog Product.payload and
+    # clients Client.payload: fields with no mapped column here
+    # are retained in ``payload``, never dropped on import. The
+    # payload lives on Service (not ServicePrice) because the
+    # importer consumes one source record per service; per-level
+    # prices are derived from inside that record. Empty dict for
+    # services created directly in OpenSalon.
+    payload = models.JSONField(default=dict, blank=True)
 
     class Meta:
         ordering = ["category", "name"]
