@@ -863,3 +863,111 @@ class ImportSalonDataDryRunTests(TestCase):
             self.assertEqual(model.objects.count(), 1, model.__name__)
         self.assertEqual(Client.objects.get().external_id, "cli-1")
         self.assertEqual(Appointment.objects.get().external_id, "appt-1")
+
+
+class ImportSalonDataPayloadTests(TestCase):
+    """Payload leg: salon_data round-trip preserves payloads verbatim."""
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Payload Restore Salon")
+        self.category = ServiceCategory.objects.create(
+            salon=self.salon, name="Color")
+        self.service_payload = {"z_key": 1, "a_key": {"nested": [1, 2]}}
+        self.service = Service.objects.create(
+            category=self.category, name="Single Process",
+            external_id="svc-p", service_minutes=45,
+            payload=self.service_payload)
+        self.level = StaffLevel.objects.create(
+            salon=self.salon, name="Level 6")
+        ServicePrice.objects.create(
+            service=self.service, staff_level=self.level,
+            amount=Decimal("85.00"))
+        self.client_payload = {"legacy": {"id": 7, "tags": ["x", "y"]}}
+        self.client = Client.objects.create(
+            salon=self.salon, external_id="cli-p", first_name="Ada",
+            last_name="Optin", payload=self.client_payload)
+        self.staff = StaffMember.objects.create(
+            salon=self.salon, external_id="staff-p",
+            display_name="Stylist One", staff_level=self.level)
+        self.start = datetime(2026, 11, 2, 14, 0,
+                              tzinfo=dt_timezone.utc)
+        self.appt_payload = {"price": "85.00", "source_ref": "r-1"}
+        self.appt = Appointment.objects.create(
+            client=self.client, staff_member=self.staff,
+            service=self.service, external_id="appt-p",
+            start=self.start, end=self.start + timedelta(minutes=45),
+            payload=self.appt_payload)
+
+    def temp_path(self):
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        fh.close()
+        return fh.name
+
+    def export_data(self):
+        path = self.temp_path()
+        call_command("export_salon_data", path, stdout=io.StringIO())
+        with open(path, encoding="utf-8") as fh:
+            return path, json.load(fh)
+
+    def write_data(self, path, data):
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+
+    def run_import(self, path):
+        out = io.StringIO()
+        call_command("import_salon_data", path, stdout=out)
+        return out.getvalue()
+
+    @staticmethod
+    def _digest(payload):
+        import hashlib
+        return hashlib.sha256(json.dumps(
+            payload, sort_keys=True).encode()).hexdigest()
+
+    def test_round_trip_preserves_payloads_exactly(self):
+        path, _ = self.export_data()
+        Salon.objects.all().delete()
+        out = self.run_import(path)
+        # Payload is known, not dropped.
+        self.assertIn("unknown_keys=none", out)
+        self.assertEqual(Client.objects.count(), 1)
+        self.assertEqual(Service.objects.count(), 1)
+        self.assertEqual(Appointment.objects.count(), 1)
+        client = Client.objects.get(external_id="cli-p")
+        service = Service.objects.get(external_id="svc-p")
+        appt = Appointment.objects.get(external_id="appt-p")
+        self.assertEqual(client.payload, self.client_payload)
+        self.assertEqual(service.payload, self.service_payload)
+        self.assertEqual(appt.payload, self.appt_payload)
+        self.assertEqual(
+            self._digest(client.payload), self._digest(self.client_payload))
+        self.assertEqual(
+            self._digest(service.payload),
+            self._digest(self.service_payload))
+        self.assertEqual(
+            self._digest(appt.payload), self._digest(self.appt_payload))
+
+    def test_export_without_payload_keys_imports_cleanly_as_before(self):
+        path, data = self.export_data()
+        for section in ("clients", "services", "appointments"):
+            for row in data[section]:
+                row.pop("payload", None)
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        out = self.run_import(path)
+        self.assertIn("IMPORT_SUMMARY", out)
+        self.assertIn("unknown_keys=none", out)
+        self.assertEqual(Client.objects.get().payload, {})
+        self.assertEqual(Service.objects.get().payload, {})
+        self.assertEqual(Appointment.objects.get().payload, {})
+
+    def test_reimport_with_payload_updates_in_place(self):
+        path, _ = self.export_data()
+        Salon.objects.all().delete()
+        self.run_import(path)
+        self.run_import(path)
+        self.assertEqual(Client.objects.count(), 1)
+        self.assertEqual(Appointment.objects.count(), 1)
+        self.assertEqual(
+            Client.objects.get().payload, self.client_payload)
