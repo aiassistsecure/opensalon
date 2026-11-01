@@ -67,9 +67,10 @@
   {% else %}
   <section class="book-card">
     <h2 class="book-h">Choose a service</h2>
+    <input type="search" id="bookSearch" class="book-search" placeholder="Search services…" autocomplete="off" aria-label="Search services">
     <div class="book-services">
       {% for row in services %}
-      <a class="book-service" href="?service={{ row.service.pk }}">
+      <a class="book-service" href="?service={{ row.service.pk }}" data-name="{{ row.service.name|lower }}">
         <span class="book-service-name">{{ row.service.name }}</span>
         <span class="book-service-meta">{{ row.minutes }} min{% if row.from_label %} · from {{ row.from_label }}{% endif %}</span>
       </a>
@@ -77,7 +78,36 @@
       <p class="book-note">No services are bookable online yet.</p>
       {% endfor %}
     </div>
+    <p class="book-note" id="bookNoMatch" hidden>No services match your search.</p>
   </section>
+  <script>
+  /* The menu is the whole bookable list — a real salon's
+     runs near a hundred services — so the guest filters it
+     in place as they type. Purely local: every token of the
+     query must appear in the service's name, matching rows
+     stay, the rest hide, and an empty result says so
+     plainly instead of leaving a blank card. */
+  (function () {
+    var input = document.getElementById("bookSearch");
+    if (!input) return;
+    var rows = Array.prototype.slice.call(
+      document.querySelectorAll(".book-service[data-name]")
+    );
+    var noMatch = document.getElementById("bookNoMatch");
+    input.addEventListener("input", function () {
+      var tokens = input.value.toLowerCase().split(/\s+/).filter(Boolean);
+      var shown = 0;
+      rows.forEach(function (row) {
+        var hit = tokens.every(function (t) {
+          return row.getAttribute("data-name").indexOf(t) !== -1;
+        });
+        row.hidden = !hit;
+        if (hit) shown += 1;
+      });
+      if (noMatch) noMatch.hidden = shown !== 0;
+    });
+  })();
+  </script>
   {% endif %}
 </main>
 </body>

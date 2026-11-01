@@ -154,3 +154,29 @@ class BookingPageTests(TestCase):
     def test_done_without_a_booking_redirects(self):
         response = self.client.get(reverse("webui:book_done"))
         self.assertEqual(response.status_code, 302)
+
+    def test_menu_carries_service_search(self):
+        # A real menu runs near a hundred services: the guest
+        # filters it in place. The search box, the per-row
+        # match key, and the empty-result note all render with
+        # the menu; the filtering itself is pinned below.
+        response = self.client.get(reverse("webui:book"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'id="bookSearch"')
+        self.assertContains(response, 'data-name="signature cut"')
+        self.assertContains(response, 'id="bookNoMatch"')
+
+    def test_search_filter_and_its_hidden_rule_are_pinned(self):
+        from pathlib import Path
+
+        root = Path(__file__).parent
+        template = (root / "templates" / "webui" / "book.html").read_text()
+        css = (root / "static" / "webui" / "webui.css").read_text()
+        # Every token must match the row's name; rows hide via
+        # the hidden attribute...
+        self.assertIn("tokens.every", template)
+        self.assertIn("row.hidden = !hit", template)
+        # ...which only bites because the stylesheet says so —
+        # .book-service is display:flex, which would otherwise
+        # override the hidden attribute's own display:none.
+        self.assertIn(".book-service[hidden]{display:none}", css)
