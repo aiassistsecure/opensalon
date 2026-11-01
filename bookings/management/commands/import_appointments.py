@@ -37,7 +37,11 @@ Mapping (one source of truth — this command is the only writer here):
   salon timezone is UTC, behaviour is unchanged. ``--timezone``
   sets ``Salon.timezone`` (creating the salon with it if needed)
   before importing, so a salon still on the UTC default can be
-  corrected in the same run that imports its book. If end is not
+  corrected in the same run that imports its book. A missing or
+  empty stored timezone falls back to UTC; a non-empty stored
+  timezone that is not a valid IANA name raises ``CommandError``
+  before any appointment is written (fail closed) instead of
+  silently importing wall times as UTC. If end is not
   after start it is taken to fall on the following day (an
   overnight appointment).
 - State: ``BOOKED`` -> booked, ``CHECKED_IN`` -> arrived,
@@ -252,10 +256,19 @@ class Command(BaseCommand):
             if tz_override is not None:
                 tz = tz_override
             else:
-                try:
-                    tz = ZoneInfo(salon.timezone)
-                except Exception:
+                stored_tz = (salon.timezone or "").strip()
+                if not stored_tz:
                     tz = ZoneInfo("UTC")
+                else:
+                    try:
+                        tz = ZoneInfo(stored_tz)
+                    except Exception as exc:
+                        raise CommandError(
+                            f"Salon {salon.name!r} has an invalid stored "
+                            f"timezone {stored_tz!r}: {exc}. Fix "
+                            "Salon.timezone (or pass --timezone with a "
+                            "valid IANA name) before importing; no "
+                            "appointments were imported.") from exc
             clients = {c.external_id: c for c in
                        Client.objects.filter(salon=salon)
                        .exclude(external_id="")}

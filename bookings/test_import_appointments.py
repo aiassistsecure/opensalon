@@ -357,3 +357,33 @@ class ImportAppointmentsTests(TestCase):
         self.salon.refresh_from_db()
         self.assertEqual(self.salon.timezone, "America/New_York")
         self.assertEqual(Appointment.objects.count(), 0)
+
+    # TF-7b: an invalid STORED Salon.timezone fails closed.
+
+    def test_invalid_stored_timezone_raises_and_imports_nothing(self):
+        self.salon.timezone = "Not/AZone"
+        self.salon.save(update_fields=["timezone"])
+        with self.assertRaises(CommandError) as ctx:
+            self.run_import(payload=FIXTURE[:1])
+        self.assertIn("Not/AZone", str(ctx.exception))
+        self.assertEqual(Appointment.objects.count(), 0)
+        self.salon.refresh_from_db()
+        self.assertEqual(self.salon.timezone, "Not/AZone")
+
+    def test_valid_stored_timezone_imports_with_correct_conversion(self):
+        # setUp salon stores America/New_York; 2026-10-03 is EDT
+        # (UTC-4), so 09:00 local wall time is 13:00 UTC.
+        self.run_import(payload=[self._one_row()])
+        appt = Appointment.objects.get(external_id="appt-x")
+        self.assertEqual(appt.start, datetime(
+            2026, 10, 3, 13, 0, tzinfo=dt_timezone.utc))
+        self.assertEqual(appt.end, datetime(
+            2026, 10, 3, 13, 45, tzinfo=dt_timezone.utc))
+
+    def test_empty_stored_timezone_keeps_utc_default(self):
+        self.salon.timezone = ""
+        self.salon.save(update_fields=["timezone"])
+        self.run_import(payload=[self._one_row()])
+        appt = Appointment.objects.get(external_id="appt-x")
+        self.assertEqual(appt.start, datetime(
+            2026, 10, 3, 9, 0, tzinfo=dt_timezone.utc))
