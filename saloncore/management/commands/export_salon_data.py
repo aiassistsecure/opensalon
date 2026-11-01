@@ -12,6 +12,12 @@ fully export. This is part 1 of that test — the core records only:
 - clients: Client (including the ``sms_opt_in`` / ``email_opt_in``
   flags) and ClientNote (persistent client record notes).
 - team: StaffMember (including the ``online_bookable`` toggle).
+- bookings: Appointment and AppointmentNote (appointment-only
+  notes; a separate model from ClientNote — the two kinds never
+  blur). Appointment rows carry their own ``external_id`` plus the
+  ``client`` / ``staff_member`` / ``service`` references as both the
+  internal ``*_id`` (following the other sections) and the related
+  record's ``*_external_id`` where that model carries one.
 
 No new models and no provider concepts: plain querysets turned into
 plain dicts, Decimals as strings and datetimes as ISO-8601 so the file
@@ -25,6 +31,7 @@ import json
 
 from django.core.management.base import BaseCommand, CommandError
 
+from bookings.models import Appointment, AppointmentNote
 from clients.models import Client, ClientNote
 from saloncore.models import (
     Salon,
@@ -41,7 +48,7 @@ def _dt(value):
 
 
 class Command(BaseCommand):
-    help = "Export salon core data (price book, clients, staff) to one JSON file."
+    help = "Export salon core data (price book, clients, staff, appointments) to one JSON file."
 
     def add_arguments(self, parser):
         parser.add_argument("output", help="Path of the JSON file to write.")
@@ -68,6 +75,13 @@ class Command(BaseCommand):
         client_ids = list(clients.values_list("id", flat=True))
         notes = ClientNote.objects.filter(client_id__in=client_ids)
         staff = StaffMember.objects.filter(salon_id__in=salon_ids)
+        appointments = Appointment.objects.filter(
+            client_id__in=client_ids
+        ).select_related("client", "staff_member", "service")
+        appointment_ids = list(appointments.values_list("id", flat=True))
+        appointment_notes = AppointmentNote.objects.filter(
+            appointment_id__in=appointment_ids
+        )
 
         data = {
             "salons": [
@@ -144,6 +158,38 @@ class Command(BaseCommand):
                     "active": m.active,
                 }
                 for m in staff
+            ],
+            "appointments": [
+                {
+                    "id": a.id,
+                    "external_id": a.external_id,
+                    "client_id": a.client_id,
+                    "client_external_id": a.client.external_id,
+                    "staff_member_id": a.staff_member_id,
+                    "staff_member_external_id": a.staff_member.external_id,
+                    "service_id": a.service_id,
+                    "service_external_id": (
+                        a.service.external_id if a.service else None
+                    ),
+                    "service_name": a.service_name,
+                    "start": _dt(a.start), "end": _dt(a.end),
+                    "status": a.status, "origin": a.origin,
+                    "price_override": (
+                        str(a.price_override)
+                        if a.price_override is not None else None
+                    ),
+                    "created_at": _dt(a.created_at),
+                    "updated_at": _dt(a.updated_at),
+                }
+                for a in appointments
+            ],
+            "appointment_notes": [
+                {
+                    "id": n.id, "appointment_id": n.appointment_id,
+                    "body": n.body, "author_name": n.author_name,
+                    "created_at": _dt(n.created_at),
+                }
+                for n in appointment_notes
             ],
         }
         data["counts"] = {
