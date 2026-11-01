@@ -26,19 +26,15 @@ class RevenueSplit:
 
     ``service`` sums line totals of ``SaleItem.Kind.SERVICE`` items,
     ``retail`` sums ``SaleItem.Kind.PRODUCT`` items (retail is the
-    insights name for product sales), and ``total`` is their sum.
+    insights name for product sales), ``series`` sums
+    ``SaleItem.Kind.SERIES`` items, and ``total`` is their sum.
     ``start_date`` / ``end_date`` are the inclusive window bounds in
     the salon's timezone.
-
-    There is deliberately no ``series`` field: ``SaleItem.Kind``
-    defines only ``SERVICE`` and ``PRODUCT``, so a series category
-    is not representable in the current checkout models. Adding one
-    here would report a permanently-zero category as if it were
-    measured; it belongs with a future ``SaleItem.Kind`` addition.
     """
 
     service: Decimal
     retail: Decimal
+    series: Decimal
     total: Decimal
     start_date: date
     end_date: date
@@ -73,7 +69,11 @@ def last_7_days_revenue_split(salon, *, today=None):
         sale__salon=salon,
         sale__status=Sale.Status.COMPLETED,
     )
-    totals = {SaleItem.Kind.SERVICE: ZERO, SaleItem.Kind.PRODUCT: ZERO}
+    totals = {
+        SaleItem.Kind.SERVICE: ZERO,
+        SaleItem.Kind.PRODUCT: ZERO,
+        SaleItem.Kind.SERIES: ZERO,
+    }
     start_dt = datetime.combine(start_date, time.min, tzinfo=tz)
     end_dt = datetime.combine(today + timedelta(days=1), time.min, tzinfo=tz)
     in_window = items.filter(
@@ -93,10 +93,12 @@ def last_7_days_revenue_split(salon, *, today=None):
 
     service = totals[SaleItem.Kind.SERVICE]
     retail = totals[SaleItem.Kind.PRODUCT]
+    series = totals[SaleItem.Kind.SERIES]
     return RevenueSplit(
         service=service,
         retail=retail,
-        total=service + retail,
+        series=series,
+        total=service + retail + series,
         start_date=start_date,
         end_date=today,
         days=7,
@@ -340,9 +342,10 @@ def busiest_days_by_revenue(salon, since, until):
     appointment count is not necessarily the busiest by takings.
 
     Note on categories: revenue here is the all-kinds total, as in
-    :func:`busiest_days`. A series category cannot be split out —
-    ``SaleItem.Kind`` defines only ``SERVICE`` and ``PRODUCT``, so
-    no sale item can represent a series sale in current models.
+    :func:`busiest_days` — service, product, and series items all
+    count toward it. The per-kind breakdown (including the series
+    category) is :func:`last_7_days_revenue_split`'s, not this
+    function's.
     """
     entries = busiest_days(salon, since, until)
     entries.sort(key=lambda entry: (-entry.revenue, entry.weekday))
