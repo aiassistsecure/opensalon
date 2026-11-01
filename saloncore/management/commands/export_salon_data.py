@@ -54,6 +54,13 @@ fully export. This is part 1 of that test — the core records only:
   / ``new_amount`` are emitted as exact strings (money never
   floats; ``old_amount`` is ``None`` when the change has none)
   and ``changed_at`` as ISO-8601 with its timezone.
+- checkout: Refund (the append-only record of money returned
+  against a sale, scoped through its sale's salon). Rows carry
+  the sale reference as the internal ``sale_id``, like sale
+  items and payments; ``amount`` is emitted as an exact string
+  (money never floats), ``tender`` is a core ``Payment.Method``
+  slug (no provider concept), and ``created_at`` as ISO-8601
+  with its timezone.
 
 The ``payload`` (whole source record, stored verbatim) is emitted
 for every section whose model carries one — clients, services,
@@ -74,7 +81,7 @@ import json
 from django.core.management.base import BaseCommand, CommandError
 
 from bookings.models import Appointment, AppointmentNote
-from checkout.models import Payment, Sale, SaleItem
+from checkout.models import Payment, Refund, Sale, SaleItem
 from catalog.models import Product, StockMovement
 from clients.models import Client, ClientNote
 from saloncore.models import (
@@ -98,7 +105,7 @@ def _dt(value):
 
 
 class Command(BaseCommand):
-    help = "Export salon core data (price book, clients, staff, appointments, products, sales, stock movements, attendance, price changes) to one JSON file."
+    help = "Export salon core data (price book, clients, staff, appointments, products, sales, stock movements, attendance, price changes, refunds) to one JSON file."
 
     def add_arguments(self, parser):
         parser.add_argument("output", help="Path of the JSON file to write.")
@@ -154,6 +161,7 @@ class Command(BaseCommand):
         sale_items = SaleItem.objects.filter(
             sale_id__in=sale_ids).select_related("service", "product")
         sale_payments = Payment.objects.filter(sale_id__in=sale_ids)
+        refunds = Refund.objects.filter(sale_id__in=sale_ids)
         attendance_records = AttendanceRecord.objects.filter(
             staff_member_id__in=staff_ids).select_related("staff_member")
 
@@ -390,6 +398,15 @@ class Command(BaseCommand):
                     "note": c.note,
                 }
                 for c in price_changes
+            ],
+            "refunds": [
+                {
+                    "id": r.id, "sale_id": r.sale_id,
+                    "amount": str(r.amount), "reason": r.reason,
+                    "tender": r.tender,
+                    "created_at": _dt(r.created_at),
+                }
+                for r in refunds
             ],
         }
         data["counts"] = {

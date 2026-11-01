@@ -9,10 +9,10 @@ section list) and restores Salon, ServiceCategory, Service,
 StaffLevel, ServicePrice, Client, ClientNote, StaffMember,
 Appointment, AppointmentNote, Product, RosterPattern,
 ShiftOverride, Sale, SaleItem, Payment, StockMovement,
-AttendanceRecord and PriceChange records. The ``products``,
+AttendanceRecord, PriceChange and Refund records. The ``products``,
 ``roster_patterns``, ``shift_overrides``, ``sales``, ``sale_items``,
-``sale_payments``, ``stock_movements``, ``attendance_records``
-and ``price_changes`` sections are optional on read: an export
+``sale_payments``, ``stock_movements``, ``attendance_records``,
+``price_changes`` and ``refunds`` sections are optional on read: an export
 file written before they existed (no such section, no ``counts``
 entry for it) imports exactly as before, with the section
 treated as empty. Roster rows restore idempotently too:
@@ -106,6 +106,25 @@ and creates nothing twice:
   provider-agnostic core carries none; if a file carries it, it
   is an unknown key and TF-11 names it as dropped
   (``sale_payments.provider_reference``).
+- Refund         <- (sale, amount, reason, tender, created_at).
+  Refund is an append-only record of money returned, so restore
+  never updates an existing row: the natural key above is
+  looked up with ``get_or_create`` semantics — a refund
+  already restored is returned untouched and a re-import never
+  duplicates it. Its sale link resolves by the file-local
+  ``sale_id`` map, like sale items and payments (Sale carries
+  no external_id); a link that resolves by neither fails
+  closed in phase 1. ``created_at`` must be
+  timezone-explicit (TF-7) for the same reason as
+  ``changed_at`` / ``recorded_at``: it is the identity anchor,
+  required, and a naive value is rejected in phase 1.
+  ``amount`` is an exact string, parsed as Decimal, never a
+  float, and ``tender`` is a core ``Payment.Method`` slug —
+  no provider concept. Restoring the historical
+  ``created_at`` on a newly created row follows the
+  price_changes pattern: creation stamps ``auto_now_add``, so
+  the importer re-stamps the exported instant once, at
+  creation only, and no existing row is ever re-stamped.
 
 No provider concepts: external ids are the generic fields the models
 already carry.
@@ -203,7 +222,7 @@ from django.utils.dateparse import parse_date, parse_datetime, parse_time
 from django.utils.timezone import is_naive
 
 from bookings.models import Appointment, AppointmentNote
-from checkout.models import Payment, Sale, SaleItem
+from checkout.models import Payment, Refund, Sale, SaleItem
 from catalog.models import Product, StockMovement
 from clients.models import Client, ClientNote
 from saloncore.dry_run import build_dry_run_reports
@@ -228,7 +247,7 @@ SECTIONS = (
     "appointments", "appointment_notes", "products",
     "roster_patterns", "shift_overrides",
     "sales", "sale_items", "sale_payments", "stock_movements",
-    "attendance_records", "price_changes",
+    "attendance_records", "price_changes", "refunds",
 )
 
 # Sections an older export file may legitimately lack entirely:
@@ -236,7 +255,7 @@ SECTIONS = (
 OPTIONAL_SECTIONS = ("products", "roster_patterns", "shift_overrides",
                      "sales", "sale_items", "sale_payments",
                      "stock_movements", "attendance_records",
-                     "price_changes")
+                     "price_changes", "refunds")
 
 # Every key the exporter emits (hence the importer may consume) per
 # section. Any other key in a record is unknown (TF-11).
@@ -296,6 +315,8 @@ KNOWN_KEYS = {
                       "service_external_id", "staff_level_id",
                       "old_amount", "new_amount", "changed_by",
                       "changed_at", "note"},
+    "refunds": {"id", "sale_id", "amount", "reason", "tender",
+                "created_at"},
 }
 
 TOP_LEVEL_KEYS = set(SECTIONS) | {"counts"}
@@ -450,6 +471,7 @@ _ID_FIELDS = {
                            "staff_member_external_id"),
     "price_changes": ("id", "service_price_id", "service_id",
                       "service_external_id", "staff_level_id"),
+    "refunds": ("id", "sale_id"),
 }
 
 # (section, field) -> model whose external_id limit governs it.
@@ -664,6 +686,8 @@ def _validate(data):
                                "event_type", "recorded_at"),
         "price_changes": ("id", "service_price_id", "new_amount",
                           "changed_at"),
+        "refunds": ("id", "sale_id", "amount", "tender",
+                    "created_at"),
     }
     for section, fields in required.items():
         for row in data[section]:
@@ -915,6 +939,22 @@ def _validate(data):
                     raise CommandError(
                         f"Bad price_changes {field}: "
                         f"{row.get(field)!r}.") from exc
+    for row in data["refunds"]:
+        _check_ref(sale_ids, row["sale_id"], "sale")
+        if row["tender"] not in Payment.Method.values:
+            raise CommandError(
+                f"Bad refunds tender: {row['tender']!r}.")
+        # created_at is the idempotency anchor: required and
+        # timezone-explicit (TF-7), like price_changes changed_at.
+        _checked_datetime(
+            row["created_at"], f"refunds created_at "
+            f"record id {row.get('id')!r}")
+        try:
+            Decimal(str(row["amount"]))
+        except (InvalidOperation, ValueError) as exc:
+            raise CommandError(
+                f"Bad refunds amount: {row.get('amount')!r}."
+            ) from exc
 
 
 def _ref(mapping, old_id, what):
@@ -1427,6 +1467,24 @@ class Command(BaseCommand):
                     model=PriceChange, using="default").filter(
                         pk=change.pk).update(changed_at=changed_at)
                 change.changed_at = changed_at
+
+        for row in data["refunds"]:
+            created_at = _checked_datetime(
+                row["created_at"], "refunds created_at")
+            # Append-only: get_or_create on the natural key —
+            # an already-restored refund is returned untouched,
+            # never updated and never duplicated.
+            refund, created = Refund.objects.get_or_create(
+                sale=_ref(sales, row["sale_id"], "sale"),
+                amount=Decimal(str(row["amount"])),
+                reason=row.get("reason", ""),
+                tender=row["tender"],
+                created_at=created_at,
+            )
+            if created:
+                # Creation stamped auto_now_add; re-stamp the
+                # exported instant once, at creation only.
+                _restore_created_at(refund, row.get("created_at"))
 
         summary = ", ".join(
             f"{section}={len(data[section])}" for section in SECTIONS
