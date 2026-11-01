@@ -59,6 +59,18 @@ Mapping (one source of truth — this command is the only writer here):
   as opted out, and must opt in again inside OpenSalon.
 - Records flagged ``archived``, ``deleted`` or ``banned`` are skipped
   and counted, never imported (not even as inactive).
+- Boolean fields (all consents, ``active``, ``archived`` / ``deleted``
+  / ``banned``) are parsed strictly, never with bare ``bool()`` /
+  truthiness: a real bool passes through, the strings ``"true"`` /
+  ``"false"`` / ``"1"`` / ``"0"`` / ``"yes"`` / ``"no"``
+  (case-insensitive) and the ints ``1`` / ``0`` are parsed, a missing
+  key / ``None`` / empty string falls back to the field's conservative
+  default (``False`` for consents and skip flags, ``True`` for
+  ``active``), and any other value makes the row a counted skip --
+  it is never silently coerced to ``True``. This matters because
+  ``bool("false")`` is ``True`` in Python: string consents from a
+  JSON/CSV-flavoured export would otherwise opt non-consenting
+  clients in.
 
 Idempotent: rows are written with ``update_or_create`` keyed by
 (salon, external_id), so re-running updates in place and never
@@ -157,6 +169,52 @@ def _text(row, key, limit):
     return str(value).strip()[:limit] if value else ""
 
 
+_TRUE_STRINGS = frozenset({"true", "1", "yes"})
+_FALSE_STRINGS = frozenset({"false", "0", "no"})
+
+
+class _InvalidBool(ValueError):
+    """A present boolean field held a value that is not a boolean."""
+
+
+def _strict_bool(value, default, field):
+    """Parse one boolean field strictly; never use truthiness.
+
+    Bool passes through; ``"true"/"false"/"1"/"0"/"yes"/"no"``
+    (case-insensitive, whitespace ignored) and ints ``1``/``0`` parse;
+    ``None`` / empty string fall back to ``default`` (absence-like
+    values, matching the CSV ``_parse_bool`` in import_price_book,
+    whose false words include ``""``). Anything else raises
+    ``_InvalidBool`` so the caller can skip and count the row --
+    a junk consent must never silently become ``True``.
+    """
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, int):
+        if value in (0, 1):
+            return value == 1
+        raise _InvalidBool(f"{field} {value!r} is not a boolean")
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if not text:
+            return default
+        if text in _TRUE_STRINGS:
+            return True
+        if text in _FALSE_STRINGS:
+            return False
+        raise _InvalidBool(f"{field} {value!r} is not a boolean")
+    raise _InvalidBool(f"{field} {value!r} is not a boolean")
+
+
+def _bool_field(row, key, default, field=None):
+    """Strict bool for ``row[key]``; a missing key yields ``default``."""
+    if key not in row:
+        return default
+    return _strict_bool(row.get(key), default, field or key)
+
+
 def _flush_clients(batch):
     """Write a batch of new clients in one multi-row insert.
 
@@ -244,41 +302,57 @@ class Command(BaseCommand):
                 if not isinstance(row, dict):
                     stats["skipped"] += 1
                     continue
-                if row.get("archived") or row.get("deleted") or row.get("banned"):
+                try:
+                    if (_bool_field(row, "archived", False)
+                            or _bool_field(row, "deleted", False)
+                            or _bool_field(row, "banned", False)):
+                        stats["skipped"] += 1
+                        continue
+                    if _is_export_shape(row):
+                        # Export shape: external_id is the ONLY identity;
+                        # the internal numeric ``id`` must never become it.
+                        external_id = _text(row, "external_id", 64)
+                        if not external_id:
+                            stats["skipped"] += 1
+                            continue
+                        defaults = {
+                            "first_name": _text(row, "first_name", 80),
+                            "last_name": _text(row, "last_name", 80),
+                            "email": _text(row, "email", 254),
+                            "phone": _text(row, "phone", 32),
+                            "email_opt_in": _bool_field(
+                                row, "email_opt_in", False),
+                            "sms_opt_in": _bool_field(
+                                row, "sms_opt_in", False),
+                            "active": _bool_field(row, "active", True),
+                        }
+                    else:
+                        external_id = (
+                            _text(row, "clientId", 64)
+                            or _text(row, "id", 64))
+                        if not external_id:
+                            stats["skipped"] += 1
+                            continue
+                        defaults = {
+                            "first_name": _text(row, "firstName", 80),
+                            "last_name": _text(row, "lastName", 80),
+                            "email": _text(row, "email", 254),
+                            "phone": _text(row, "mobile", 32),
+                            "email_opt_in": _bool_field(
+                                row, "emailMarketingConsent", False)
+                            and _bool_field(
+                                row, "emailReminderConsent", False),
+                            "sms_opt_in": _bool_field(
+                                row, "smsMarketingConsent", False)
+                            and _bool_field(
+                                row, "smsReminderConsent", False),
+                            "active": True,
+                        }
+                except _InvalidBool:
+                    # Junk boolean (e.g. an unparseable consent):
+                    # counted skip, never a silent True / opt-in.
                     stats["skipped"] += 1
                     continue
-                if _is_export_shape(row):
-                    # Export shape: external_id is the ONLY identity;
-                    # the internal numeric ``id`` must never become it.
-                    external_id = _text(row, "external_id", 64)
-                    if not external_id:
-                        stats["skipped"] += 1
-                        continue
-                    defaults = {
-                        "first_name": _text(row, "first_name", 80),
-                        "last_name": _text(row, "last_name", 80),
-                        "email": _text(row, "email", 254),
-                        "phone": _text(row, "phone", 32),
-                        "email_opt_in": bool(row.get("email_opt_in")),
-                        "sms_opt_in": bool(row.get("sms_opt_in")),
-                        "active": bool(row.get("active", True)),
-                    }
-                else:
-                    external_id = _text(row, "clientId", 64) or _text(row, "id", 64)
-                    if not external_id:
-                        stats["skipped"] += 1
-                        continue
-                    defaults = {
-                        "first_name": _text(row, "firstName", 80),
-                        "last_name": _text(row, "lastName", 80),
-                        "email": _text(row, "email", 254),
-                        "phone": _text(row, "mobile", 32),
-                        "email_opt_in": bool(row.get("emailMarketingConsent"))
-                        and bool(row.get("emailReminderConsent")),
-                        "sms_opt_in": bool(row.get("smsMarketingConsent"))
-                        and bool(row.get("smsReminderConsent")),
-                        "active": True,
-                    }
                 notes = row.get("notes")
                 if isinstance(notes, list) and notes:
                     notes_by_external_id.setdefault(
