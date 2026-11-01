@@ -103,6 +103,7 @@ from decimal import Decimal, InvalidOperation
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
+from saloncore.dry_run import build_dry_run_reports
 from saloncore.models import (
     PriceChange,
     Salon,
@@ -113,6 +114,23 @@ from saloncore.models import (
 )
 
 BASE_LEVEL_DEFAULT = "Base"
+
+#: Source keys this importer maps, per input shape (TF-12 dry run).
+JSON_MAPPED_KEYS = {
+    "serviceId", "id", "name", "categoryName", "categoryId",
+    "duration", "gapTime", "price", "archived",
+    "internetDescription", "description", "staffCategories",
+    "userPrices",
+}
+CSV_MAPPED_KEYS = {
+    "service_name", "category_name", "description", "external_id",
+    "service_minutes", "processing_minutes", "finishing_minutes",
+    "service_active", "staff_level_name", "amount", "is_from",
+    "price_active", "payload",
+}
+STAFF_MAPPED_KEYS = {
+    "staffCategoryName", "staffCategoryId", "userId", "staffId",
+}
 
 _EXTERNAL_ID_LIMIT = Service._meta.get_field("external_id").max_length
 _LEVEL_NAME_LIMIT = StaffLevel._meta.get_field("name").max_length
@@ -526,6 +544,10 @@ class Command(BaseCommand):
                                  "staff-category ids to level names.")
         parser.add_argument("--base-level", default=BASE_LEVEL_DEFAULT,
                             help="Staff level name the base price attaches to.")
+        parser.add_argument("--dry-run", action="store_true",
+                            help="Report per-file field types, null / "
+                                 "missing / empty-string counts and "
+                                 "unmapped keys as JSON; write nothing.")
 
     def handle(self, *args, **options):
         # Phase 1: validate + normalise the whole file, pre-resolving
@@ -533,8 +555,13 @@ class Command(BaseCommand):
         # here raises CommandError and changes nothing on any backend.
         pre_skipped = 0
         if _is_csv_import(options["path"]):
-            plans, pre_skipped = _normalise_csv_rows(
-                _load_csv_rows(options["path"]))
+            csv_rows = _load_csv_rows(options["path"])
+            if options["dry_run"]:
+                self.stdout.write(json.dumps(build_dry_run_reports(
+                    {options["path"]: (csv_rows, CSV_MAPPED_KEYS)}),
+                    sort_keys=True))
+                return
+            plans, pre_skipped = _normalise_csv_rows(csv_rows)
         else:
             data = _load_json(options["path"], "services")
             if isinstance(data, dict):
@@ -543,9 +570,22 @@ class Command(BaseCommand):
                 raise CommandError(
                     "Services file must be a JSON list of services.")
 
-            category_names, user_category = {}, {}
+            staff = None
             if options["staff"]:
                 staff = _load_json(options["staff"], "staff")
+            if options["dry_run"]:
+                record_sets = {
+                    options["path"]: (data, JSON_MAPPED_KEYS)}
+                if options["staff"]:
+                    record_sets[options["staff"]] = (
+                        staff if isinstance(staff, list) else [],
+                        STAFF_MAPPED_KEYS)
+                self.stdout.write(json.dumps(
+                    build_dry_run_reports(record_sets), sort_keys=True))
+                return
+
+            category_names, user_category = {}, {}
+            if options["staff"]:
                 for row in staff if isinstance(staff, list) else []:
                     if not isinstance(row, dict):
                         continue
