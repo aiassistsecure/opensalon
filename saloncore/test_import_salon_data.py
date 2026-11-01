@@ -174,6 +174,100 @@ class ImportSalonDataTests(TestCase):
         # Validate-before-write: not even the salons were restored.
         self.assertTrue(all(c == 0 for c in _counts().values()))
 
+    def load_export_data(self):
+        path = self.export()
+        with open(path, encoding="utf-8") as fh:
+            return path, json.load(fh)
+
+    def write_data(self, path, data):
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+
+    def test_explicit_boolean_values_restore_exactly(self):
+        # TF-3: explicit False stays False and explicit True stays
+        # True — nothing is re-guessed from a default on restore.
+        path, data = self.load_export_data()
+        data["services"][0]["active"] = False
+        data["service_categories"][0]["active"] = False
+        data["staff_levels"][0]["active"] = False
+        data["service_prices"][0]["is_from"] = False
+        data["service_prices"][0]["active"] = False
+        data["clients"][0]["active"] = False
+        data["staff_members"][0]["online_bookable"] = True
+        data["staff_members"][0]["active"] = False
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        self.run_import(path)
+        self.assertFalse(Service.objects.get().active)
+        self.assertFalse(ServiceCategory.objects.get().active)
+        self.assertFalse(StaffLevel.objects.get().active)
+        price = ServicePrice.objects.get()
+        self.assertFalse(price.is_from)
+        self.assertFalse(price.active)
+        self.assertFalse(Client.objects.get(external_id="cli-1").active)
+        staff = StaffMember.objects.get()
+        self.assertTrue(staff.online_bookable)
+        self.assertFalse(staff.active)
+
+    def test_bad_boolean_rejected_in_validation_with_zero_writes(self):
+        # TF-3: string "false" must never become True, explicit null
+        # is not a boolean, and 1 is not a boolean either. Every bad
+        # shape is a phase-1 CommandError, so zero rows are written.
+        cases = [
+            ("services", "active", "false"),
+            ("services", "active", None),
+            ("service_categories", "active", "false"),
+            ("service_categories", "active", None),
+            ("staff_levels", "active", "false"),
+            ("staff_levels", "active", None),
+            ("service_prices", "is_from", "false"),
+            ("service_prices", "is_from", None),
+            ("service_prices", "active", "true"),
+            ("service_prices", "active", 1),
+            ("clients", "active", "false"),
+            ("clients", "active", None),
+            ("staff_members", "online_bookable", "false"),
+            ("staff_members", "online_bookable", None),
+            ("staff_members", "active", "false"),
+            ("staff_members", "active", None),
+        ]
+        path, data = self.load_export_data()
+        for section, field, bad in cases:
+            with self.subTest(section=section, field=field, bad=bad):
+                original = data[section][0][field]
+                data[section][0][field] = bad
+                self.write_data(path, data)
+                Salon.objects.all().delete()
+                with self.assertRaises(CommandError) as ctx:
+                    call_command("import_salon_data", path)
+                self.assertIn(field, str(ctx.exception))
+                self.assertIn(section, str(ctx.exception))
+                self.assertTrue(
+                    all(c == 0 for c in _counts().values()))
+                data[section][0][field] = original
+
+    def test_missing_boolean_rejected_not_guessed(self):
+        # TF-3: a missing boolean key is distinct from an explicit
+        # value — it is a named phase-1 error, never silently
+        # replaced with a guessed default.
+        cases = [
+            ("services", "active"),
+            ("service_prices", "is_from"),
+            ("staff_members", "online_bookable"),
+        ]
+        path, data = self.load_export_data()
+        for section, field in cases:
+            with self.subTest(section=section, field=field):
+                original = data[section][0].pop(field)
+                self.write_data(path, data)
+                Salon.objects.all().delete()
+                with self.assertRaises(CommandError) as ctx:
+                    call_command("import_salon_data", path)
+                self.assertIn(field, str(ctx.exception))
+                self.assertTrue(
+                    all(c == 0 for c in _counts().values()))
+                data[section][0][field] = original
+
     def test_dangling_reference_in_late_section_writes_nothing(self):
         # staff_members is the LAST section written; every earlier
         # section is valid. Pre-validation must still write zero rows.
