@@ -73,6 +73,10 @@ class Appointment(StrictConstraints):
     price_override = models.DecimalField(
         max_digits=10, decimal_places=2, null=True, blank=True
     )
+    # Whole source record preserved verbatim (DYOR section 9),
+    # so fields with no mapped column here — the source ``price``
+    # included — are retained, never dropped on import.
+    payload = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
