@@ -25,6 +25,7 @@ Columns are only fields the service's rows actually carry:
   appears as a row exactly as the service returns it.
 - ``service_revenue``: the row's service revenue.
 - ``retail_revenue``: the row's retail (product) revenue.
+- ``series_revenue``: the row's series revenue.
 - ``total``: the row's total revenue.
 
 Money is rendered as a string to two decimal places, never
@@ -49,6 +50,7 @@ STAFF_REVENUE_FIELDNAMES = [
     "staff_name",
     "service_revenue",
     "retail_revenue",
+    "series_revenue",
     "total",
 ]
 
@@ -93,6 +95,7 @@ def export_staff_revenue_csv(salon, start, end, **kwargs):
             "staff_name": row.display_name,
             "service_revenue": _money(row.service_revenue),
             "retail_revenue": _money(row.retail_revenue),
+            "series_revenue": _money(row.series_revenue),
             "total": _money(row.total),
         })
     return buffer.getvalue()

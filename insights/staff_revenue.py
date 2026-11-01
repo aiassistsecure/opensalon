@@ -29,9 +29,12 @@ at *sale level* through its appointment:
   sale), it is attributed only when the candidates name exactly
   one distinct staff member; zero or several means unattributed.
 * An attributed sale contributes *all* its items to that staff
-  member: service items to ``service_revenue`` and product items
+  member: service items to ``service_revenue``, product items
   to ``retail_revenue`` (retail is the insights name for product
-  sales). ``sale_count`` counts each attributed sale once.
+  sales), and series items to ``series_revenue``. ``sale_count``
+  counts each attributed sale once. A sale with no service-linked
+  item (retail-only or series-only) follows the single-staff
+  rule below.
 * Anything else — no client, no candidate appointment, a service
   mismatch, or an ambiguous retail-only day — is bucketed as
   unattributed, never guessed.
@@ -58,14 +61,16 @@ class StaffRevenue:
     ``staff`` is the ``StaffMember`` (``None`` for the
     unattributed bucket, whose ``display_name`` is
     ``"Unattributed"``). Amounts are Decimal; ``total`` is
-    ``service_revenue + retail_revenue`` and ``sale_count`` is
-    the number of completed sales attributed to this row.
+    ``service_revenue + retail_revenue + series_revenue`` and
+    ``sale_count`` is the number of completed sales attributed
+    to this row.
     """
 
     staff: StaffMember | None
     display_name: str
     service_revenue: Decimal
     retail_revenue: Decimal
+    series_revenue: Decimal
     total: Decimal
     sale_count: int
 
@@ -80,6 +85,10 @@ class StaffRevenue:
     @property
     def retail(self):
         return self.retail_revenue
+
+    @property
+    def series(self):
+        return self.series_revenue
 
 
 def _attribute_staff(sale, items, *, salon, tz, cache):
@@ -167,7 +176,7 @@ def revenue_by_staff(salon, start, end):
     for item in items:
         by_sale.setdefault(item.sale_id, (item.sale, []))[1].append(item)
 
-    # key: staff pk or None -> [staff, service, retail, sale_count]
+    # key: staff pk or None -> [staff, service, retail, series, count]
     buckets = {}
     cache = {}
     for sale, sale_items in by_sale.values():
@@ -175,17 +184,19 @@ def revenue_by_staff(salon, start, end):
             sale, sale_items, salon=salon, tz=tz, cache=cache,
         )
         key = staff.pk if staff is not None else None
-        bucket = buckets.setdefault(key, [staff, ZERO, ZERO, 0])
+        bucket = buckets.setdefault(key, [staff, ZERO, ZERO, ZERO, 0])
         for item in sale_items:
             if item.kind == SaleItem.Kind.SERVICE:
                 bucket[1] += item.line_total
             elif item.kind == SaleItem.Kind.PRODUCT:
                 bucket[2] += item.line_total
-        bucket[3] += 1
+            elif item.kind == SaleItem.Kind.SERIES:
+                bucket[3] += item.line_total
+        bucket[4] += 1
 
     rows = []
-    for staff, service, retail, count in buckets.values():
-        total = service + retail
+    for staff, service, retail, series, count in buckets.values():
+        total = service + retail + series
         if staff is None and total == ZERO:
             continue
         rows.append(StaffRevenue(
@@ -196,6 +207,7 @@ def revenue_by_staff(salon, start, end):
             ),
             service_revenue=service,
             retail_revenue=retail,
+            series_revenue=series,
             total=total,
             sale_count=count,
         ))
