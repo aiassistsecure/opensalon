@@ -1,0 +1,84 @@
+{% load static %}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Book — {{ salon.name|default:"Salon" }}</title>
+<link rel="stylesheet" href="{% static 'webui/webui.css' %}?v={{ asset_v }}">
+</head>
+<body class="book-body">
+<main class="book-wrap">
+  <header class="book-head">
+    <div class="book-brand">{{ salon.name }}</div>
+    <div class="book-sub">Online booking</div>
+  </header>
+  {% if not salon %}
+  <p class="book-note">Booking isn't available right now.</p>
+  {% elif chosen_start %}
+  <section class="book-card">
+    <h2 class="book-h">Your details</h2>
+    <p class="book-pick">{{ service.name }} with {{ chosen_staff }}<br>{{ chosen_start|date:"l, F j" }} at {{ chosen_start|date:"g:i A" }}</p>
+    <form method="post" action="{% url 'webui:book_confirm' %}" class="set-form">
+      {% csrf_token %}
+      <input type="hidden" name="service" value="{{ service.pk }}">
+      <input type="hidden" name="staff" value="{{ chosen_staff.pk }}">
+      <input type="hidden" name="day" value="{{ day|date:'Y-m-d' }}">
+      <input type="hidden" name="time" value="{{ chosen_start|date:'H:i' }}">
+      <label>First name
+        <input type="text" name="first_name" required autocomplete="given-name">
+      </label>
+      <label>Last name
+        <input type="text" name="last_name" autocomplete="family-name">
+      </label>
+      <label>Mobile phone
+        <input type="tel" name="phone" required autocomplete="tel">
+      </label>
+      <label>Email (optional)
+        <input type="email" name="email" autocomplete="email">
+      </label>
+      <label>Anything we should know? (optional)
+        <input type="text" name="note" maxlength="500">
+      </label>
+      <button type="submit" class="btn-primary">Confirm booking</button>
+    </form>
+    <p class="book-note"><a href="?service={{ service.pk }}&amp;day={{ day|date:'Y-m-d' }}">Choose a different time</a></p>
+  </section>
+  {% elif service %}
+  <section class="book-card">
+    <h2 class="book-h">{{ service.name }}</h2>
+    <div class="book-days">
+      {% for d in days %}
+      <a class="book-day{% if d == day %} active{% endif %}" href="?service={{ service.pk }}&amp;day={{ d|date:'Y-m-d' }}">{{ d|date:"D" }}<b>{{ d|date:"j" }}</b></a>
+      {% endfor %}
+    </div>
+    {% if taken %}<p class="set-error">That time was just taken — please pick another.</p>{% endif %}
+    {% for section in sections %}
+    <h3 class="book-staff">{{ section.staff }}</h3>
+    <div class="book-times">
+      {% for t in section.starts %}
+      <a class="book-time" href="?service={{ service.pk }}&amp;day={{ day|date:'Y-m-d' }}&amp;staff={{ section.staff.pk }}&amp;time={{ t|date:'H:i' }}">{{ t|date:"g:i A" }}</a>
+      {% endfor %}
+    </div>
+    {% empty %}
+    <p class="book-note">No open times on {{ day|date:"l, F j" }} — try another day.</p>
+    {% endfor %}
+    <p class="book-note"><a href="{% url 'webui:book' %}">Choose a different service</a></p>
+  </section>
+  {% else %}
+  <section class="book-card">
+    <h2 class="book-h">Choose a service</h2>
+    <div class="book-services">
+      {% for row in services %}
+      <a class="book-service" href="?service={{ row.service.pk }}">
+        <span class="book-service-name">{{ row.service.name }}</span>
+        <span class="book-service-meta">{{ row.minutes }} min{% if row.from_label %} · from {{ row.from_label }}{% endif %}</span>
+      </a>
+      {% empty %}
+      <p class="book-note">No services are bookable online yet.</p>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+</main>
+</body>
+</html>
