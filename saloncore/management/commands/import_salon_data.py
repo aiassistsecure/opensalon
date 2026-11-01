@@ -6,7 +6,8 @@ Usage:
 This is the restore side of the Exit Test: it consumes exactly the
 JSON format written by ``export_salon_data`` (see that command for the
 section list) and restores Salon, ServiceCategory, Service,
-StaffLevel, ServicePrice, Client, ClientNote and StaffMember records.
+StaffLevel, ServicePrice, Client, ClientNote, StaffMember,
+Appointment and AppointmentNote records.
 
 The exporter's ``id`` values are file-local: foreign keys in the
 file refer to those ids, so the import builds old-id -> new-record
@@ -29,6 +30,14 @@ and creates nothing twice:
 - ClientNote       <- (client, body, author_name)
 - StaffMember      <- (salon, external_id) when present, else
   (salon, display_name)
+- Appointment      <- external_id when present, else
+  (client, staff_member, start, end). Its client / staff_member /
+  service links resolve by the related record's ``*_external_id``
+  first, falling back to the file-local ``*_id`` map (the same maps
+  the other sections use); a link that resolves by neither fails
+  closed in phase 1 — no link is ever fabricated.
+- AppointmentNote  <- (appointment, body, author_name), attached to
+  the restored appointment its ``appointment_id`` names.
 
 No provider concepts: external ids are the generic fields the models
 already carry.
@@ -67,6 +76,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils.dateparse import parse_datetime
 
+from bookings.models import Appointment, AppointmentNote
 from clients.models import Client, ClientNote
 from saloncore.models import (
     Salon,
@@ -80,6 +90,7 @@ from team.models import StaffMember
 SECTIONS = (
     "salons", "service_categories", "services", "staff_levels",
     "service_prices", "clients", "client_notes", "staff_members",
+    "appointments", "appointment_notes",
 )
 
 
@@ -155,6 +166,22 @@ def _check_ref(ids, old_id, what):
             f"Dangling reference: {what} id {old_id!r} not in the file.")
 
 
+def _check_appt_ref(ids, ext_ids, old_id, external_id, what):
+    """Appointment link check: external_id first, file id fallback.
+
+    The link resolves if EITHER identifier names a record present
+    in the file; if neither does, the reference is dangling and the
+    whole file fails closed — a link is never fabricated.
+    """
+    if external_id and external_id in ext_ids:
+        return
+    if old_id in ids:
+        return
+    raise CommandError(
+        f"Dangling reference: {what} id {old_id!r} / external_id "
+        f"{external_id!r} not in the file.")
+
+
 def _validate(data):
     """Phase 1: validate the whole file; write nothing.
 
@@ -170,7 +197,10 @@ def _validate(data):
         "service_prices": ("service_id", "staff_level_id", "amount"),
         "clients": ("id", "salon_id", "first_name", "last_name"),
         "client_notes": ("client_id", "body"),
-        "staff_members": ("salon_id", "display_name"),
+        "staff_members": ("id", "salon_id", "display_name"),
+        "appointments": ("id", "client_id", "staff_member_id",
+                         "start", "end"),
+        "appointment_notes": ("appointment_id", "body"),
     }
     for section, fields in required.items():
         for row in data[section]:
@@ -186,6 +216,17 @@ def _validate(data):
     level_ids = {row["id"] for row in data["staff_levels"]}
     service_ids = {row["id"] for row in data["services"]}
     client_ids = {row["id"] for row in data["clients"]}
+    staff_ids = {row["id"] for row in data["staff_members"]}
+    appointment_ids = {row["id"] for row in data["appointments"]}
+    client_ext_ids = {
+        row.get("external_id") for row in data["clients"]
+        if row.get("external_id")}
+    staff_ext_ids = {
+        row.get("external_id") for row in data["staff_members"]
+        if row.get("external_id")}
+    service_ext_ids = {
+        row.get("external_id") for row in data["services"]
+        if row.get("external_id")}
 
     for row in data["service_categories"]:
         _check_ref(salon_ids, row["salon_id"], "salon")
@@ -210,6 +251,41 @@ def _validate(data):
         _check_ref(salon_ids, row["salon_id"], "salon")
         if row.get("staff_level_id") is not None:
             _check_ref(level_ids, row["staff_level_id"], "staff_level")
+    for row in data["appointments"]:
+        _check_appt_ref(
+            client_ids, client_ext_ids, row.get("client_id"),
+            row.get("client_external_id"), "client")
+        _check_appt_ref(
+            staff_ids, staff_ext_ids, row.get("staff_member_id"),
+            row.get("staff_member_external_id"), "staff_member")
+        # service is nullable: both refs absent/None is the honest
+        # off-book case; any ref present must resolve by one of them.
+        if (row.get("service_id") is not None
+                or row.get("service_external_id")):
+            _check_appt_ref(
+                service_ids, service_ext_ids, row.get("service_id"),
+                row.get("service_external_id"), "service")
+        for field in ("start", "end"):
+            if parse_datetime(str(row[field])) is None:
+                raise CommandError(
+                    f"Bad appointments {field}: {row[field]!r}.")
+        if row.get("price_override") is not None:
+            try:
+                Decimal(str(row["price_override"]))
+            except (InvalidOperation, ValueError) as exc:
+                raise CommandError(
+                    f"Bad appointments price_override: "
+                    f"{row.get('price_override')!r}.") from exc
+        if ("status" in row
+                and row["status"] not in Appointment.Status.values):
+            raise CommandError(
+                f"Bad appointments status: {row['status']!r}.")
+        if ("origin" in row
+                and row["origin"] not in Appointment.Origin.values):
+            raise CommandError(
+                f"Bad appointments origin: {row['origin']!r}.")
+    for row in data["appointment_notes"]:
+        _check_ref(appointment_ids, row["appointment_id"], "appointment")
 
 
 def _ref(mapping, old_id, what):
@@ -219,6 +295,21 @@ def _ref(mapping, old_id, what):
         raise CommandError(
             f"Dangling reference: {what} id {old_id!r} not in the file."
         ) from None
+
+
+def _by_external(rows, mapping):
+    return {
+        row["external_id"]: mapping[row["id"]]
+        for row in rows if row.get("external_id")
+    }
+
+
+def _resolve_appt_ref(by_id, by_ext, row, id_field, ext_field, what):
+    """Resolve an appointment link: external_id first, id fallback."""
+    external_id = row.get(ext_field)
+    if external_id and external_id in by_ext:
+        return by_ext[external_id]
+    return _ref(by_id, row.get(id_field), what)
 
 
 def _restore_created_at(obj, raw):
@@ -351,6 +442,7 @@ class Command(BaseCommand):
             )
             _restore_created_at(obj, row.get("created_at"))
 
+        staff_members = {}
         for row in data["staff_members"]:
             defaults = {
                 "display_name": row["display_name"],
@@ -364,12 +456,72 @@ class Command(BaseCommand):
             salon = _ref(salons, row["salon_id"], "salon")
             external_id = row.get("external_id") or ""
             if external_id:
-                StaffMember.objects.update_or_create(
+                obj, _ = StaffMember.objects.update_or_create(
                     salon=salon, external_id=external_id, defaults=defaults)
             else:
-                StaffMember.objects.update_or_create(
+                obj, _ = StaffMember.objects.update_or_create(
                     salon=salon, display_name=row["display_name"],
                     defaults=defaults)
+            staff_members[row["id"]] = obj
+
+        clients_by_ext = _by_external(data["clients"], clients)
+        staff_by_ext = _by_external(data["staff_members"], staff_members)
+        services_by_ext = _by_external(data["services"], services)
+
+        appointments = {}
+        for row in data["appointments"]:
+            client = _resolve_appt_ref(
+                clients, clients_by_ext, row,
+                "client_id", "client_external_id", "client")
+            staff_member = _resolve_appt_ref(
+                staff_members, staff_by_ext, row,
+                "staff_member_id", "staff_member_external_id",
+                "staff_member")
+            if (row.get("service_id") is None
+                    and not row.get("service_external_id")):
+                service = None
+            else:
+                service = _resolve_appt_ref(
+                    services, services_by_ext, row,
+                    "service_id", "service_external_id", "service")
+            defaults = {
+                "client": client, "staff_member": staff_member,
+                "service": service,
+                "service_name": row.get("service_name", ""),
+                "start": parse_datetime(str(row["start"])),
+                "end": parse_datetime(str(row["end"])),
+                "status": row.get("status", Appointment.Status.BOOKED),
+                "origin": row.get("origin", Appointment.Origin.UNKNOWN),
+                "price_override": (
+                    Decimal(str(row["price_override"]))
+                    if row.get("price_override") is not None else None
+                ),
+            }
+            external_id = row.get("external_id") or ""
+            if external_id:
+                obj, _ = Appointment.objects.update_or_create(
+                    external_id=external_id, defaults=defaults)
+            else:
+                obj, _ = Appointment.objects.update_or_create(
+                    client=client, staff_member=staff_member,
+                    start=defaults["start"], end=defaults["end"],
+                    defaults={
+                        k: v for k, v in defaults.items()
+                        if k not in ("client", "staff_member",
+                                     "start", "end")
+                    })
+            _restore_created_at(obj, row.get("created_at"))
+            appointments[row["id"]] = obj
+
+        for row in data["appointment_notes"]:
+            obj, _ = AppointmentNote.objects.update_or_create(
+                appointment=_ref(
+                    appointments, row["appointment_id"], "appointment"),
+                body=row["body"],
+                author_name=row.get("author_name", ""),
+                defaults={},
+            )
+            _restore_created_at(obj, row.get("created_at"))
 
         summary = ", ".join(
             f"{section}={len(data[section])}" for section in SECTIONS

@@ -8,11 +8,13 @@ restored records match on counts and key fields.
 import io
 import json
 import tempfile
+from datetime import datetime, timedelta, timezone as dt_timezone
 from decimal import Decimal
 
 from django.core.management import CommandError, call_command
 from django.test import TestCase
 
+from bookings.models import Appointment, AppointmentNote
 from clients.models import Client, ClientNote
 from saloncore.models import (
     Salon,
@@ -281,3 +283,159 @@ class ImportSalonDataTests(TestCase):
         with self.assertRaises(CommandError):
             call_command("import_salon_data", path)
         self.assertTrue(all(c == 0 for c in _counts().values()))
+
+
+class ImportAppointmentsTests(TestCase):
+    """EXP-APPT-b: appointments + appointment notes restore."""
+
+    def setUp(self):
+        self.salon = Salon.objects.create(
+            name="Appt Restore Salon", timezone="America/New_York")
+        self.category = ServiceCategory.objects.create(
+            salon=self.salon, name="Color")
+        self.service = Service.objects.create(
+            category=self.category, name="Single Process",
+            external_id="svc-1", service_minutes=45)
+        self.level = StaffLevel.objects.create(
+            salon=self.salon, name="Level 6")
+        ServicePrice.objects.create(
+            service=self.service, staff_level=self.level,
+            amount=Decimal("85.00"))
+        self.client = Client.objects.create(
+            salon=self.salon, external_id="cli-1",
+            first_name="Ada", last_name="Optin")
+        self.staff = StaffMember.objects.create(
+            salon=self.salon, external_id="staff-1",
+            display_name="Stylist One", staff_level=self.level)
+        self.start = datetime(2026, 11, 2, 14, 0,
+                              tzinfo=dt_timezone.utc)
+        self.appt = Appointment.objects.create(
+            client=self.client, staff_member=self.staff,
+            service=self.service, external_id="appt-1",
+            start=self.start, end=self.start + timedelta(minutes=45),
+            status=Appointment.Status.CONFIRMED,
+            origin=Appointment.Origin.PHONE,
+            price_override=Decimal("80.00"))
+        self.orphan = Appointment.objects.create(
+            client=self.client, staff_member=self.staff, service=None,
+            service_name="Off-book Service",
+            start=self.start + timedelta(days=1),
+            end=self.start + timedelta(days=1, minutes=30))
+        AppointmentNote.objects.create(
+            appointment=self.appt, body="Allergic to ammonia.",
+            author_name="Front Desk")
+        AppointmentNote.objects.create(
+            appointment=self.appt, body="Arrives early.")
+
+    def temp_path(self):
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        fh.close()
+        return fh.name
+
+    def load(self):
+        path = self.temp_path()
+        call_command("export_salon_data", path, stdout=io.StringIO())
+        with open(path, encoding="utf-8") as fh:
+            return path, json.load(fh)
+
+    def write(self, path, data):
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+
+    def run_import(self, path):
+        out = io.StringIO()
+        call_command("import_salon_data", path, stdout=out)
+        return out.getvalue()
+
+    def test_round_trip_appointments_and_notes(self):
+        path, _ = self.load()
+        Salon.objects.all().delete()
+        self.assertEqual(Appointment.objects.count(), 0)
+        out = self.run_import(path)
+        self.assertIn("appointments=2", out)
+        self.assertIn("appointment_notes=2", out)
+        self.assertEqual(Appointment.objects.count(), 2)
+        self.assertEqual(AppointmentNote.objects.count(), 2)
+        appt = Appointment.objects.get(external_id="appt-1")
+        self.assertEqual(appt.client.external_id, "cli-1")
+        self.assertEqual(appt.staff_member.external_id, "staff-1")
+        self.assertEqual(appt.service.external_id, "svc-1")
+        self.assertEqual(appt.start, self.start)
+        self.assertEqual(appt.end, self.start + timedelta(minutes=45))
+        self.assertEqual(appt.status, "confirmed")
+        self.assertEqual(appt.origin, "phone")
+        self.assertEqual(appt.price_override, Decimal("80.00"))
+        orphan = Appointment.objects.get(service_name="Off-book Service")
+        self.assertIsNone(orphan.service)
+        self.assertIsNone(orphan.price_override)
+        bodies = set(appt.notes.values_list("body", flat=True))
+        self.assertEqual(bodies, {"Allergic to ammonia.", "Arrives early."})
+        note = appt.notes.get(body="Allergic to ammonia.")
+        self.assertEqual(note.author_name, "Front Desk")
+
+    def test_reimport_appointments_is_idempotent(self):
+        path, _ = self.load()
+        Salon.objects.all().delete()
+        self.run_import(path)
+        self.run_import(path)
+        self.assertEqual(Appointment.objects.count(), 2)
+        self.assertEqual(AppointmentNote.objects.count(), 2)
+
+    def test_links_resolve_by_external_id_when_id_corrupt(self):
+        path, data = self.load()
+        for row in data["appointments"]:
+            row["client_id"] = 999999
+            row["staff_member_id"] = 999999
+            row["service_id"] = 999999 if row["service_id"] else None
+        self.write(path, data)
+        Salon.objects.all().delete()
+        self.run_import(path)
+        appt = Appointment.objects.get(external_id="appt-1")
+        self.assertEqual(appt.client.external_id, "cli-1")
+        self.assertEqual(appt.service.external_id, "svc-1")
+
+    def test_links_fall_back_to_file_id_when_external_unknown(self):
+        path, data = self.load()
+        for row in data["appointments"]:
+            row["client_external_id"] = "no-such-client"
+            row["staff_member_external_id"] = "no-such-staff"
+            row["service_external_id"] = (
+                "no-such-service" if row["service_id"] else None)
+        self.write(path, data)
+        Salon.objects.all().delete()
+        self.run_import(path)
+        self.assertEqual(Appointment.objects.count(), 2)
+
+    def test_unknown_client_reference_fails_closed_no_writes(self):
+        path, data = self.load()
+        data["appointments"][0]["client_id"] = 999999
+        data["appointments"][0]["client_external_id"] = "no-such"
+        self.write(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError) as ctx:
+            call_command("import_salon_data", path)
+        self.assertIn("client", str(ctx.exception))
+        self.assertEqual(Salon.objects.count(), 0)
+        self.assertEqual(Appointment.objects.count(), 0)
+
+    def test_unknown_service_reference_fails_closed(self):
+        path, data = self.load()
+        data["appointments"][0]["service_id"] = 999999
+        data["appointments"][0]["service_external_id"] = "no-such"
+        self.write(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError):
+            call_command("import_salon_data", path)
+        self.assertEqual(Appointment.objects.count(), 0)
+
+    def test_unknown_note_appointment_ref_fails_closed(self):
+        path, data = self.load()
+        data["appointment_notes"][0]["appointment_id"] = 999999
+        self.write(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError) as ctx:
+            call_command("import_salon_data", path)
+        self.assertIn("appointment", str(ctx.exception))
+        self.assertEqual(Appointment.objects.count(), 0)
+        self.assertEqual(Salon.objects.count(), 0)
