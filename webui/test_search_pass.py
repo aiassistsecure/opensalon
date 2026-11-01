@@ -70,6 +70,49 @@ class SearchPassTests(TestCase):
     def test_booking_search_by_phone_digits(self):
         self.assertEqual(self.booking_search("5550100"), ["Krystal Evans"])
 
+    def test_phone_search_reaches_past_the_area_code_funnel(self):
+        # The measured failure on the real book: thousands of
+        # phones share one area code, and the old search only
+        # digit-compared the first few hundred substring
+        # candidates alphabetically — 43% of real clients were
+        # unreachable by their own number. Zed sorts last; his
+        # number must still find him, and rank him first.
+        for i in range(250):
+            SalonClient.objects.create(
+                salon=self.salon,
+                first_name=f"Filler{i:03d}",
+                last_name="Aardvark",
+                phone=f"1407555{i:04d}",
+            )
+        SalonClient.objects.create(
+            salon=self.salon,
+            first_name="Zed",
+            last_name="Zulu",
+            phone="14075550999",
+        )
+        results = self.booking_search("4075550999")
+        self.assertEqual(results[0], "Zed Zulu")
+
+    def test_a_nameless_email_match_never_outranks_the_named_person(self):
+        # The founder's own case: a record whose name fields are
+        # empty (its email carries both tokens) ranked FIRST for
+        # "Mark Evans", ahead of the man himself. A nameless
+        # record is a last resort now; the named exact match leads.
+        SalonClient.objects.create(
+            salon=self.salon,
+            first_name="Mark",
+            last_name="Evans Sr",
+            email="mark@fbojets.example",
+        )
+        SalonClient.objects.create(
+            salon=self.salon,
+            first_name="",
+            last_name="",
+            email="mark.evans@example.com",
+        )
+        results = self.booking_search("Mark Evans")
+        self.assertEqual(results[0], "Mark Evans Sr")
+
     def test_full_name_ranks_first_past_a_common_surname(self):
         # Nine other Evanses sort ahead of Krystal by first name;
         # typing her full name must still put HER first — the exact
