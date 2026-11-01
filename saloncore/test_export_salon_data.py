@@ -5,11 +5,13 @@ Synthetic records only — no real salon/client data.
 import io
 import json
 import tempfile
+from datetime import datetime, timedelta, timezone as dt_timezone
 from decimal import Decimal
 
 from django.core.management import CommandError, call_command
 from django.test import TestCase
 
+from bookings.models import Appointment, AppointmentNote
 from clients.models import Client, ClientNote
 from saloncore.models import (
     Salon,
@@ -65,6 +67,7 @@ class ExportSalonDataTests(TestCase):
             "salons": 1, "service_categories": 1, "services": 1,
             "staff_levels": 1, "service_prices": 1, "clients": 2,
             "client_notes": 1, "staff_members": 1,
+            "appointments": 0, "appointment_notes": 0,
         })
         for key, count in data["counts"].items():
             self.assertEqual(len(data[key]), count)
@@ -121,3 +124,127 @@ class ExportSalonDataTests(TestCase):
         Salon.objects.all().delete()
         data, _ = self.run_export()
         self.assertTrue(all(count == 0 for count in data["counts"].values()))
+
+
+class ExportAppointmentsTests(TestCase):
+    """EXP-APPT-a: appointments + appointment notes in the export.
+
+    AppointmentNote is a separate bookings model (notes do NOT live
+    on Appointment itself), so it exports as its own section.
+    """
+
+    def setUp(self):
+        self.salon = Salon.objects.create(
+            name="Appt Salon", timezone="America/New_York", currency="USD")
+        self.category = ServiceCategory.objects.create(
+            salon=self.salon, name="Color", sort_order=1)
+        self.service = Service.objects.create(
+            category=self.category, name="Single Process",
+            external_id="svc-9", service_minutes=45)
+        self.level = StaffLevel.objects.create(
+            salon=self.salon, name="Level 6", sort_order=6)
+        ServicePrice.objects.create(
+            service=self.service, staff_level=self.level,
+            amount=Decimal("85.00"), is_from=True)
+        self.client = Client.objects.create(
+            salon=self.salon, first_name="Ada", last_name="Optin",
+            external_id="cli-9")
+        self.staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Stylist One",
+            external_id="staff-9", staff_level=self.level)
+        self.start = datetime(2026, 11, 2, 14, 0, tzinfo=dt_timezone.utc)
+        self.appt = Appointment.objects.create(
+            client=self.client, staff_member=self.staff,
+            service=self.service, external_id="appt-1",
+            start=self.start, end=self.start + timedelta(minutes=45),
+            status=Appointment.Status.CONFIRMED,
+            origin=Appointment.Origin.PHONE,
+            price_override=Decimal("80.00"))
+        self.orphan = Appointment.objects.create(
+            client=self.client, staff_member=self.staff, service=None,
+            service_name="Off-book Service",
+            start=self.start + timedelta(days=1),
+            end=self.start + timedelta(days=1, minutes=30),
+            status=Appointment.Status.BOOKED)
+        self.note = AppointmentNote.objects.create(
+            appointment=self.appt, body="Allergic to ammonia.",
+            author_name="Front Desk")
+        AppointmentNote.objects.create(
+            appointment=self.appt, body="Arrives early.")
+
+    def run_export(self, **kwargs):
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        fh.close()
+        out = io.StringIO()
+        call_command("export_salon_data", fh.name, stdout=out, **kwargs)
+        with open(fh.name, encoding="utf-8") as exported:
+            return json.load(exported), out.getvalue()
+
+    def test_appointment_sections_present_with_counts(self):
+        data, _ = self.run_export()
+        self.assertEqual(data["counts"]["appointments"], 2)
+        self.assertEqual(data["counts"]["appointment_notes"], 2)
+        self.assertEqual(len(data["appointments"]), 2)
+        self.assertEqual(len(data["appointment_notes"]), 2)
+
+    def test_appointment_field_values(self):
+        data, _ = self.run_export()
+        by_ext = {a["external_id"]: a for a in data["appointments"]}
+        appt = by_ext["appt-1"]
+        self.assertEqual(appt["id"], self.appt.id)
+        self.assertEqual(appt["client_id"], self.client.id)
+        self.assertEqual(appt["client_external_id"], "cli-9")
+        self.assertEqual(appt["staff_member_id"], self.staff.id)
+        self.assertEqual(appt["staff_member_external_id"], "staff-9")
+        self.assertEqual(appt["service_id"], self.service.id)
+        self.assertEqual(appt["service_external_id"], "svc-9")
+        self.assertEqual(appt["start"], self.start.isoformat())
+        self.assertEqual(
+            appt["end"], (self.start + timedelta(minutes=45)).isoformat())
+        self.assertEqual(appt["status"], "confirmed")
+        self.assertEqual(appt["origin"], "phone")
+        self.assertEqual(appt["price_override"], "80.00")
+        orphan = by_ext[""]
+        self.assertIsNone(orphan["service_id"])
+        self.assertIsNone(orphan["service_external_id"])
+        self.assertEqual(orphan["service_name"], "Off-book Service")
+        self.assertIsNone(orphan["price_override"])
+
+    def test_appointment_note_field_values(self):
+        data, _ = self.run_export()
+        bodies = {n["body"] for n in data["appointment_notes"]}
+        self.assertEqual(bodies, {"Allergic to ammonia.", "Arrives early."})
+        note = next(
+            n for n in data["appointment_notes"]
+            if n["body"] == "Allergic to ammonia.")
+        self.assertEqual(note["id"], self.note.id)
+        self.assertEqual(note["appointment_id"], self.appt.id)
+        self.assertEqual(note["author_name"], "Front Desk")
+
+    def test_preexisting_sections_unchanged(self):
+        data, _ = self.run_export()
+        self.assertEqual(data["counts"]["salons"], 1)
+        self.assertEqual(data["counts"]["service_categories"], 1)
+        self.assertEqual(data["counts"]["services"], 1)
+        self.assertEqual(data["counts"]["staff_levels"], 1)
+        self.assertEqual(data["counts"]["service_prices"], 1)
+        self.assertEqual(data["counts"]["clients"], 1)
+        self.assertEqual(data["counts"]["client_notes"], 0)
+        self.assertEqual(data["counts"]["staff_members"], 1)
+        self.assertEqual(data["services"][0]["external_id"], "svc-9")
+        self.assertEqual(data["clients"][0]["external_id"], "cli-9")
+        self.assertEqual(data["staff_members"][0]["external_id"], "staff-9")
+
+    def test_salon_filter_excludes_other_salons_appointments(self):
+        other = Salon.objects.create(name="Other Salon")
+        other_client = Client.objects.create(
+            salon=other, first_name="Eve", last_name="Elsewhere")
+        other_staff = StaffMember.objects.create(
+            salon=other, display_name="Other Stylist")
+        Appointment.objects.create(
+            client=other_client, staff_member=other_staff, service=None,
+            start=self.start, end=self.start + timedelta(minutes=30))
+        data, _ = self.run_export(salon="Appt Salon")
+        self.assertEqual(data["counts"]["appointments"], 2)
+        self.assertEqual(data["counts"]["appointment_notes"], 2)
