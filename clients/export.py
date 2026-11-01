@@ -17,6 +17,12 @@ Notes: only persistent client record notes (``ClientNote``) are
 included. Appointment-only notes live in the bookings app and are
 never included here -- the two note kinds never blur.
 
+Payload: when the client carries a verbatim source record in
+``Client.payload`` (non-empty), it is included under ``payload``
+so the source record round-trips through ``import_clients``
+(which restores an export record's ``payload`` as-is). A client
+with no payload exports exactly as before -- no ``payload`` key.
+
 Backend only: no views, templates, or UI.
 """
 from clients.models import ClientNote
@@ -35,13 +41,14 @@ def export_client(client):
     exactly as stored (``sms_opt_in`` / ``email_opt_in``), and the
     client's persistent record notes in chronological order
     (oldest first). A client with no notes exports ``"notes": []``.
-    All datetimes are ISO-8601 strings.
+    The verbatim ``payload`` is included only when present
+    (non-empty). All datetimes are ISO-8601 strings.
     """
     if client.pk is None:
         notes = ClientNote.objects.none()
     else:
         notes = client.notes.order_by("created_at", "id")
-    return {
+    record = {
         "id": client.id,
         "salon_id": client.salon_id,
         "external_id": client.external_id,
@@ -64,3 +71,7 @@ def export_client(client):
             for note in notes
         ],
     }
+    payload = getattr(client, "payload", None)
+    if payload:
+        record["payload"] = payload
+    return record

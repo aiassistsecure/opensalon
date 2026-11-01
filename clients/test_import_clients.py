@@ -12,6 +12,7 @@ from django.core.management import CommandError, call_command
 from django.test import TestCase
 from django.utils import timezone
 
+from clients.export_all import export_all_clients
 from clients.models import Client, ClientNote
 from saloncore.models import Salon
 
@@ -196,6 +197,92 @@ class ImportClientsNaiveDatetimeTests(TestCase):
             note.created_at,
             datetime.datetime(2026, 1, 15, 10, 0,
                               tzinfo=datetime.timezone.utc))
+
+
+class ImportClientsPayloadTests(TestCase):
+    """TF-10: the verbatim source record is retained in payload."""
+
+    def run_import(self, payload, **kwargs):
+        out = io.StringIO()
+        call_command("import_clients", _write(payload), stdout=out, **kwargs)
+        return out.getvalue()
+
+    def test_phorest_payload_stored_verbatim(self):
+        row = {
+            "clientId": "cli-p1", "firstName": "Pay", "lastName": "Load",
+            "email": "pay.load@example.com", "mobile": "555-0300",
+            "emailMarketingConsent": True, "emailReminderConsent": True,
+            "extraUnmappedField": "kept-me",
+            "nestedExtra": {"channel": "phone", "flags": ["a", "b"]},
+        }
+        self.run_import([row])
+        client = Client.objects.get(external_id="cli-p1")
+        self.assertEqual(client.payload, row)
+        self.assertEqual(client.payload["extraUnmappedField"], "kept-me")
+
+    def test_phorest_payload_set_without_extras(self):
+        row = {"clientId": "cli-p2", "firstName": "Plain",
+               "lastName": "Row", "mobile": "555-0301"}
+        self.run_import([row])
+        self.assertEqual(
+            Client.objects.get(external_id="cli-p2").payload, row)
+
+    def test_export_shape_payload_restored_verbatim(self):
+        original = {"clientId": "cli-orig", "firstName": "Orig",
+                    "customSourceField": {"deep": [1, 2, 3]}}
+        row = {
+            "external_id": "cli-p3", "first_name": "Export",
+            "last_name": "Shape", "email": "export.shape@example.com",
+            "phone": "555-0302", "email_opt_in": True,
+            "sms_opt_in": False, "active": True, "payload": original,
+        }
+        self.run_import([row])
+        client = Client.objects.get(external_id="cli-p3")
+        # Restored as-is, never re-wrapped in the export row.
+        self.assertEqual(client.payload, original)
+
+    def test_export_shape_without_payload_imports_with_empty_payload(self):
+        row = {
+            "external_id": "cli-p4", "first_name": "No",
+            "last_name": "Payload", "email": "", "phone": "555-0303",
+            "email_opt_in": False, "sms_opt_in": False, "active": True,
+        }
+        out = self.run_import([row])
+        self.assertIn('"created": 1', out)
+        client = Client.objects.get(external_id="cli-p4")
+        self.assertFalse(client.payload)
+
+    def test_payload_change_on_rerun_counts_as_update(self):
+        row = {"clientId": "cli-p5", "firstName": "Before",
+               "lastName": "Change", "mobile": "555-0304",
+               "extraUnmappedField": "before"}
+        self.run_import([row])
+        out = self.run_import([row])
+        self.assertIn('"unchanged": 1', out)
+        changed = dict(row, extraUnmappedField="after")
+        out = self.run_import([changed])
+        self.assertIn('"updated": 1', out)
+        self.assertEqual(
+            Client.objects.get(external_id="cli-p5").payload, changed)
+
+    def test_payload_survives_export_and_reimport_round_trip(self):
+        row = {
+            "clientId": "cli-p6", "firstName": "Round", "lastName": "Trip",
+            "email": "round.trip@example.com", "mobile": "555-0305",
+            "emailMarketingConsent": True, "emailReminderConsent": True,
+            "smsMarketingConsent": True, "smsReminderConsent": True,
+            "extraUnmappedField": "kept-me",
+        }
+        self.run_import([row], salon="Source Salon")
+        source = Salon.objects.get(name="Source Salon")
+        records = export_all_clients(salon=source)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["payload"], row)
+        out = self.run_import(records, salon="Target Salon")
+        self.assertIn('"created": 1', out)
+        imported = Client.objects.get(
+            salon__name="Target Salon", external_id="cli-p6")
+        self.assertEqual(imported.payload, row)
 
 
 class ImportClientsFileErrorTests(TestCase):

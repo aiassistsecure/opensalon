@@ -97,6 +97,22 @@ class ExportClientTests(TestCase):
             {"id", "client_id", "body", "author_name", "created_at"},
         )
 
+    def test_payload_included_when_present(self):
+        payload = {"clientId": "ext-42", "extraUnmappedField": "kept-me",
+                   "nested": {"flags": ["a", "b"]}}
+        self.client.payload = payload
+        self.client.save()
+        self.client.refresh_from_db()
+        data = export_client(self.client)
+        self.assertEqual(data["payload"], payload)
+        self.assertEqual(json.loads(json.dumps(data)), data)
+
+    def test_payload_omitted_when_absent(self):
+        # setUp client was created without a payload (default empty).
+        data = export_client(self.client)
+        self.assertNotIn("payload", data)
+        self.assertEqual(json.loads(json.dumps(data)), data)
+
     def test_other_clients_notes_not_included(self):
         other = Client.objects.create(
             salon=self.salon, first_name="Bob", last_name="Adams"

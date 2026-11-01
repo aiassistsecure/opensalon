@@ -62,6 +62,15 @@ Mapping (one source of truth — this command is the only writer here):
   consent to it. What cannot be represented: the marketing-vs-reminder
   distinction itself; a client who consented to reminders only imports
   as opted out, and must opt in again inside OpenSalon.
+- The whole source record is preserved verbatim on
+  ``Client.payload`` (mirroring ``Appointment.payload``), so fields
+  with no mapped column are retained, never dropped. For the
+  Phorest shape the payload is the entire source row. For the
+  export shape, a record's own ``payload`` value (when it is a
+  dict) IS the preserved source record and is restored as-is --
+  never re-wrapped in the export row -- so an export -> import
+  round-trip returns the payload unchanged; an export-shape
+  record carrying no ``payload`` imports with an empty payload.
 - Records flagged ``archived``, ``deleted`` or ``banned`` are skipped
   and counted, never imported (not even as inactive).
 - Boolean fields (all consents, ``active``, ``archived`` / ``deleted``
@@ -309,6 +318,7 @@ def _flush_clients(batch):
                     "email_opt_in": client.email_opt_in,
                     "sms_opt_in": client.sms_opt_in,
                     "active": client.active,
+                    "payload": client.payload,
                 })
 
 
@@ -343,7 +353,8 @@ class Command(BaseCommand):
                 for row in Client.objects.filter(salon=salon)
                 .exclude(external_id="")
                 .values("external_id", "first_name", "last_name", "email",
-                        "phone", "email_opt_in", "sms_opt_in", "active")
+                        "phone", "email_opt_in", "sms_opt_in", "active",
+                        "payload")
             }
             batch = []
             pending = {}
@@ -379,6 +390,13 @@ class Command(BaseCommand):
                             "sms_opt_in": _bool_field(
                                 row, "sms_opt_in", False),
                             "active": _bool_field(row, "active", True),
+                            # Export shape: the row's own ``payload``
+                            # is the verbatim source record (see
+                            # docstring); restore it, never re-wrap.
+                            "payload": (
+                                dict(row["payload"])
+                                if isinstance(row.get("payload"), dict)
+                                else {}),
                         }
                     else:
                         external_id = (
@@ -401,6 +419,7 @@ class Command(BaseCommand):
                             and _bool_field(
                                 row, "smsReminderConsent", False),
                             "active": True,
+                            "payload": dict(row),
                         }
                 except _InvalidBool:
                     # Junk boolean (e.g. an unparseable consent):
