@@ -2,6 +2,14 @@
 
 Usage:
     python manage.py import_staff staff.json [--salon NAME]
+    python manage.py import_staff staff.json --dry-run
+
+With ``--dry-run`` the file is loaded exactly as for a real import
+but NOTHING is written (no salon, staff member or staff level
+rows): a JSON dry-run report from ``saloncore.dry_run`` is
+printed to stdout instead -- per-key inferred types, distinct
+null / missing / empty-string counts, and the source keys this
+importer does not map -- and the command exits 0.
 
 The input is a JSON list of staff objects in the source system's own
 shape: ``staffId``, ``firstName`` and ``lastName`` (a single ``name``
@@ -51,8 +59,17 @@ import json
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
+from saloncore.dry_run import build_dry_run_report
 from saloncore.models import Salon, StaffLevel
 from team.models import StaffMember
+
+# Every source key this importer actually maps. Anything else in a
+# source record is reported as unmapped by --dry-run so nothing is
+# silently dropped without being named first.
+MAPPED_KEYS = frozenset({
+    "staffId", "id", "firstName", "lastName", "name",
+    "displayName", "staffCategoryName", "hideFromOnlineBookings",
+})
 
 
 def _load_json(path):
@@ -85,6 +102,10 @@ class Command(BaseCommand):
         parser.add_argument("path", help="Path to the staff JSON export.")
         parser.add_argument("--salon", default="My Salon",
                             help="Salon name to import into (created if missing).")
+        parser.add_argument(
+            "--dry-run", action="store_true",
+            help="Print a JSON dry-run report (saloncore.dry_run) for "
+                 "the source file and write nothing.")
 
     def handle(self, *args, **options):
         data = _load_json(options["path"])
@@ -92,6 +113,14 @@ class Command(BaseCommand):
             data = data.get("staff", data.get("staffMembers", []))
         if not isinstance(data, list):
             raise CommandError("Staff file must be a JSON list of staff.")
+
+        if options["dry_run"]:
+            # Zero writes: report before any salon/staff lookup or
+            # creation, then return (exit 0).
+            report = build_dry_run_report(
+                data, MAPPED_KEYS, source_name=options["path"])
+            self.stdout.write(json.dumps(report, indent=2, sort_keys=True))
+            return
 
         stats = dict.fromkeys(
             ["created", "updated", "skipped", "levels_linked"], 0)
