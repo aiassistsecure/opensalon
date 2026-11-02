@@ -39,7 +39,13 @@ from bookings.daybook import blocks_for_day as feed_blocks_for_day
 from bookings.models import Appointment, AppointmentNote, Break
 from clients.models import Client, ClientNote
 from saloncore.models import Salon, Service, ServiceCategory, ServicePrice, StaffLevel
-from team.models import AttendanceRecord, RosterPattern, StaffMember, ShiftOverride
+from team.models import (
+    AttendanceRecord,
+    RosterPattern,
+    StaffMember,
+    StaffNotification,
+    ShiftOverride,
+)
 from team.roster_week import roster_week as build_roster_week
 
 # The day book window: 8:00 to 20:00 salon-local.
@@ -1017,9 +1023,21 @@ def _do_status(appt, target):
     allowed = {s for s, _label, _p in _STATUS_ACTIONS.get(appt.status, [])}
     if target not in allowed:
         return f"cannot move {appt.status} to {target}"
+    previous = appt.status
     appt.status = target
     appt.updated_at = timezone.now()
     appt.save(update_fields=["status", "updated_at"])
+    # Check-in is its own moment, and it speaks: the moment a
+    # guest is checked in, the stylist's account is told their
+    # client has arrived. One ping per arrival — an undo and a
+    # fresh check-in is a new arrival, and pings again.
+    if target == Appointment.Status.ARRIVED and previous in (
+        Appointment.Status.BOOKED,
+        Appointment.Status.CONFIRMED,
+    ):
+        StaffNotification.objects.create(
+            staff_member=appt.staff_member, appointment=appt, kind="arrived"
+        )
     return None
 
 
@@ -1518,6 +1536,129 @@ def _amount_for(appt, prices, base_level_id):
 
 def _first_salon():
     return Salon.objects.order_by("id").first()
+
+
+# ---- accounts: email + PIN, no passwords (founder, 2026-11-02) ----
+#
+# KISS by design: email says who you are, the time-clock PIN is
+# the key, 2FA comes later. Identity is a StaffMember in the
+# session — nothing more. The desk's day book keeps working
+# signed-out exactly as the pilot runs today; an account is a
+# new door (the stylist's own day, their arrival pings), never
+# a lock on the old ones. A signed-in account also names the
+# salon: one deployment can hold many salons, and every record
+# stays fenced to its own — the fence is the account, not a
+# tenancy subsystem.
+
+def current_member(request):
+    """The signed-in staff member, or None."""
+    pk = request.session.get("staff_member_id")
+    if not pk:
+        return None
+    return StaffMember.objects.filter(pk=pk, active=True).first()
+
+
+def sign_in(request):
+    error = ""
+    if request.method == "POST":
+        email = (request.POST.get("email") or "").strip()
+        pin = (request.POST.get("pin") or "").strip()
+        member = (
+            StaffMember.objects.filter(
+                email__iexact=email, pin=pin, active=True
+            )
+            .exclude(pin="")
+            .first()
+            if email and pin
+            else None
+        )
+        if member is not None:
+            request.session["staff_member_id"] = member.pk
+            return redirect("webui:my_day")
+        error = "That email and PIN don't match an account — check both and try again."
+    return render(request, "webui/signin.html", {"error": error})
+
+
+def sign_out(request):
+    request.session.pop("staff_member_id", None)
+    return redirect("webui:daybook")
+
+
+def my_day(request):
+    """The stylist's own day: arrival pings first, then the book.
+
+    Signed-in only — the account is the door. Unseen arrival
+    pings show once at the top and are stamped seen by the
+    showing; below them, today's appointments in start order,
+    each with its Start service button while the guest is
+    checked in. Starting a service is the member's own act on
+    their own appointment, through the same transition table
+    the desk obeys.
+    """
+    member = current_member(request)
+    if member is None:
+        return redirect("webui:sign_in")
+    salon = member.salon
+    tz = _tz(salon)
+    today = timezone.now().astimezone(tz).date()
+
+    if request.method == "POST" and request.POST.get("action") == "start":
+        appt = Appointment.objects.filter(
+            pk=request.POST.get("appointment"), staff_member=member
+        ).first()
+        if appt is not None:
+            _do_status(appt, Appointment.Status.IN_SERVICE)
+        return redirect("webui:my_day")
+
+    unseen = list(
+        StaffNotification.objects.filter(
+            staff_member=member, seen_at__isnull=True
+        )
+        .select_related("appointment__client", "appointment__service")
+        .order_by("-created_at")
+    )
+    arrivals = [
+        {
+            "client": (
+                f"{n.appointment.client.first_name} "
+                f"{n.appointment.client.last_name}"
+            ).strip(),
+            "service": n.appointment.service_name
+            or (n.appointment.service.name if n.appointment.service else ""),
+            "time": _fmt_time(n.appointment.start.astimezone(tz).time()),
+        }
+        for n in unseen
+    ]
+    if unseen:
+        StaffNotification.objects.filter(
+            pk__in=[n.pk for n in unseen]
+        ).update(seen_at=timezone.now())
+
+    day_start = datetime.datetime.combine(today, datetime.time.min, tzinfo=tz)
+    day_end = day_start + datetime.timedelta(days=1)
+    todays = (
+        Appointment.objects.filter(
+            staff_member=member, start__gte=day_start, start__lt=day_end
+        )
+        .select_related("client", "service")
+        .order_by("start")
+    )
+    rows = [
+        {
+            "pk": a.pk,
+            "time": _fmt_time(a.start.astimezone(tz).time()),
+            "client": f"{a.client.first_name} {a.client.last_name}".strip(),
+            "service": a.service_name or (a.service.name if a.service else ""),
+            "status_label": _STATUS_LABELS.get(a.status, a.status),
+            "can_start": a.status == Appointment.Status.ARRIVED,
+        }
+        for a in todays
+    ]
+    return render(
+        request,
+        "webui/myday.html",
+        {"member": member, "arrivals": arrivals, "rows": rows, "today": today},
+    )
 
 
 def day_book_book_options(request):
@@ -2449,6 +2590,40 @@ def team(request):
                     member.pin = pin
                     member.save(update_fields=["pin"])
                     message = f"PIN set for {member.display_name}."
+        elif action == "set_email":
+            member = StaffMember.objects.filter(
+                pk=request.POST.get("member"), salon=salon, active=True
+            ).first()
+            email = (request.POST.get("email") or "").strip()
+            if member is None:
+                message = "Pick a team member first."
+            elif email == "":
+                member.email = ""
+                member.save(update_fields=["email"])
+                message = (
+                    f"{member.display_name}'s account email is cleared — "
+                    "they can't sign in until one is set."
+                )
+            elif "@" not in email or "." not in email.rsplit("@", 1)[-1]:
+                message = "That doesn't look like an email address."
+            else:
+                holder = (
+                    StaffMember.objects.filter(email__iexact=email, active=True)
+                    .exclude(pk=member.pk)
+                    .first()
+                )
+                if holder is not None:
+                    message = (
+                        f"That email is already {holder.display_name}'s — "
+                        "an email names one account."
+                    )
+                else:
+                    member.email = email
+                    member.save(update_fields=["email"])
+                    message = (
+                        f"Account email set for {member.display_name} — "
+                        "they sign in with it plus their PIN."
+                    )
         elif action == "services":
             from team.capabilities import set_member_services
 

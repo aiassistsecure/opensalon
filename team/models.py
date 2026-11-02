@@ -41,6 +41,11 @@ class StaffMember(StrictConstraints):
     # clock until one is set. Non-blank PINs are unique per salon
     # (constraint below), so a PIN always names exactly one person.
     pin = models.CharField(max_length=8, blank=True, default="")
+    # The account's name, in the founder's KISS shape (2026-11-02):
+    # email says who you are, the PIN above is the key — no
+    # passwords, 2FA later. Blank means no account sign-in yet;
+    # the member still clocks in by PIN alone.
+    email = models.EmailField(blank=True, default="")
 
     class Meta:
         ordering = ["display_name"]
@@ -221,3 +226,33 @@ class ShiftOverride(StrictConstraints):
         if self.is_off:
             return f"{self.staff_member} off {self.date}"
         return f"{self.staff_member} {self.date} {self.start_time}-{self.end_time}"
+
+
+class StaffNotification(StrictConstraints):
+    """A ping in one staff member's account inbox.
+
+    Born in the desk's status machinery: when a guest is checked
+    in, the stylist's account is told their client has arrived
+    (kind="arrived"). The row is the whole mechanism — the
+    stylist's My Day page reads unseen rows, shows them once,
+    and stamps seen_at. No transport, no vendor: an account
+    fact, like everything else in the book.
+    """
+
+    staff_member = models.ForeignKey(
+        StaffMember, on_delete=models.CASCADE, related_name="notifications"
+    )
+    appointment = models.ForeignKey(
+        "bookings.Appointment",
+        on_delete=models.CASCADE,
+        related_name="staff_notifications",
+    )
+    kind = models.CharField(max_length=20, default="arrived")
+    created_at = models.DateTimeField(auto_now_add=True)
+    seen_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.kind} → {self.staff_member} ({self.appointment})"

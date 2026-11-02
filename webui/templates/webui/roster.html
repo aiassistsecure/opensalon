@@ -94,6 +94,16 @@
       <button type="submit" class="btn-dark">Set</button>
       {% if member.pin %}<button type="submit" class="btn-ghost" name="pin" value="">Clear</button>{% endif %}
     </form>
+    <form method="post" class="pin-form">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="set_email">
+      <input type="hidden" name="member" value="{{ member.pk }}">
+      <input type="email" name="email" class="fsel pin-input" autocomplete="off"
+             placeholder="Account email" aria-label="Account email for {{ member.display_name }}"
+             value="{{ member.email }}">
+      <button type="submit" class="btn-dark">Set email</button>
+      {% if member.email %}<button type="submit" class="btn-ghost" name="email" value="">Clear</button>{% endif %}
+    </form>
   </div>
   {% empty %}
   <p class="roster-empty">No team members yet.</p>
