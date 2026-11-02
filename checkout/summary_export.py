@@ -32,7 +32,13 @@ Columns -- exactly the fields ``DailySalesSummary`` produces:
 * ``series_total`` -- ``DailySalesSummary.series_total``, as
   a string to two decimal places (the series column, mirroring
   the ``series`` column of the insights revenue-split export);
-* ``item_count`` -- ``DailySalesSummary.item_count``.
+* ``item_count`` -- ``DailySalesSummary.item_count``;
+* ``discount_total`` -- ``DailySalesSummary.discount_total``,
+  as a string to two decimal places (every recorded discount:
+  per-line plus whole-sale; appended after the original
+  columns so existing consumers keep their column order);
+* ``net_total`` -- ``DailySalesSummary.net_total``, as a
+  string to two decimal places (gross less discounts).
 
 Range semantics: ``date_from`` / ``date_to`` are inclusive
 whole local days in the salon's timezone (``Salon.timezone``,
@@ -77,6 +83,8 @@ EXPORT_FIELDNAMES = [
     "retail_total",
     "series_total",
     "item_count",
+    "discount_total",
+    "net_total",
 ]
 
 _CENTS = Decimal("0.01")
@@ -110,6 +118,8 @@ def summary_export_row(summary):
         "retail_total": _money(summary.retail_total),
         "series_total": _money(summary.series_total),
         "item_count": summary.item_count,
+        "discount_total": _money(summary.discount_total),
+        "net_total": _money(summary.net_total),
     }
 
 
