@@ -4,7 +4,9 @@ Backend only, read-only. Exit Principle: renders
 :mod:`checkout.prior_refund_report` as dicts and as CSV built from
 that same list; every value verbatim from the service. Rows: totals
 (tender/day empty), then per-tender, then per-day (paired with
-``prior_day``), each for refund_count and total. Money = Decimal
+``prior_day``), then per-day per-tender (both ``tender`` and ``day``
+set, from each day entry's ``by_tender`` / ``counts_by_tender``),
+each for refund_count and total. Money = Decimal
 strings to two places, counts = integers, None percent = empty.
 """
 import csv
@@ -64,6 +66,13 @@ def export_prior_refund_report(salon, start=None, end=None, **kwargs):
         rows += [prior_refund_report_export_row(
             name, "", entry.day, entry.prior_day, getattr(entry, name),
             result) for name in FIGURES]
+    for entry in result.day_entries:
+        for tender in entry.by_tender:
+            rows += [prior_refund_report_export_row(
+                name, tender, entry.day, entry.prior_day,
+                entry.counts_by_tender[tender] if name == "refund_count"
+                else entry.by_tender[tender], result)
+                for name in FIGURES]
     return rows
 
 

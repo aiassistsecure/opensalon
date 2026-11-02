@@ -108,6 +108,57 @@ class PriorRefundReportTests(TestCase):
         self.assertTrue(all(e.total.current == Decimal("0.00")
                             for e in r.day_entries[3:]))
 
+    def test_by_day_by_tender_deltas(self):
+        r = prior_refund_report(self.salon, START, END)
+        cur = refund_totals(self.salon, START, END)
+        pri = refund_totals(self.salon, P_START, P_END)
+        for entry, c_day, p_day in zip(r.day_entries, cur.days, pri.days):
+            self.assertEqual(list(entry.by_tender), ["cash", "external"])
+            self.assertEqual(list(entry.counts_by_tender),
+                             ["cash", "external"])
+            for slug in ("cash", "external"):
+                amount = entry.by_tender[slug]
+                self.assertEqual(
+                    (amount.current, amount.prior),
+                    (c_day.by_tender[slug], p_day.by_tender[slug]))
+                self.assertEqual(
+                    amount.delta, amount.current - amount.prior)
+                count = entry.counts_by_tender[slug]
+                self.assertEqual(
+                    (count.current, count.prior),
+                    (c_day.counts_by_tender[slug],
+                     p_day.counts_by_tender[slug]))
+                self.assertEqual(count.delta, count.current - count.prior)
+            self.assertEqual(entry["cash"], entry.by_tender["cash"])
+        d0, d1, d2 = r.day_entries[:3]
+        cash0 = d0.by_tender["cash"]
+        self.assertEqual((cash0.current, cash0.prior, cash0.delta,
+                          cash0.percent_change),
+                         (Decimal("50.00"), Decimal("20.00"),
+                          Decimal("30.00"), Decimal("150.00")))
+        self.assertEqual((d0.counts_by_tender["cash"].current,
+                          d0.counts_by_tender["cash"].prior,
+                          d0.counts_by_tender["cash"].delta), (1, 1, 0))
+        self.assertEqual((d0.by_tender["external"].current,
+                          d0.by_tender["external"].delta),
+                         (Decimal("0.00"), Decimal("0.00")))
+        self.assertEqual((d1.by_tender["cash"].delta,
+                          d1.by_tender["external"].delta),
+                         (Decimal("25.00"), Decimal("30.00")))
+        self.assertIsNone(d1.by_tender["external"].percent_change)
+        self.assertEqual((d1.counts_by_tender["cash"].delta,
+                          d1.counts_by_tender["external"].delta), (1, 1))
+        ext2 = d2.by_tender["external"]
+        self.assertEqual((ext2.current, ext2.prior, ext2.delta,
+                          ext2.percent_change),
+                         (Decimal("0.00"), Decimal("10.00"),
+                          Decimal("-10.00"), Decimal("-100.00")))
+        self.assertEqual(d2.counts_by_tender["external"].delta, -1)
+        self.assertTrue(all(
+            e.by_tender["cash"].delta == Decimal("0.00")
+            and e.counts_by_tender["external"].delta == 0
+            for e in r.day_entries[3:]))
+
     def test_prior_zero_and_empty_window(self):
         empty = prior_refund_report(self.salon, D(2026, 6, 1), D(2026, 6, 7))
         self.assertEqual((empty.total.current, empty.total.prior), (Decimal("0.00"), Decimal("0.00")))
@@ -131,7 +182,8 @@ class PriorRefundReportTests(TestCase):
     def test_csv_rows_match_service(self):
         rows = export_prior_refund_report(self.salon, START, END)
         self.assertEqual([list(r) for r in rows], [EXPORT_FIELDNAMES] * len(rows))
-        self.assertEqual(len(rows), 20)  # 2 totals + 2x2 tenders + 7x2 days
+        # 2 totals + 2x2 tenders + 7x2 days + 7 days x 2 tenders x 2 figures
+        self.assertEqual(len(rows), 48)
         self.assertEqual([r["figure"] for r in rows[:2]], ["refund_count", "total"])
         self.assertTrue(all(r["tender"] == "" and r["day"] == "" for r in rows[:2]))
         self.assertEqual((rows[0]["current"], rows[0]["prior"], rows[0]["delta"]), ("3", "2", "1"))
@@ -139,12 +191,35 @@ class PriorRefundReportTests(TestCase):
                           rows[1]["percent_change"]), ("105.00", "30.00", "75.00", "250.00"))
         cash_total = [r for r in rows if r["tender"] == "cash" and r["figure"] == "total"][0]
         self.assertEqual((cash_total["current"], cash_total["prior"]), ("75.00", "20.00"))
-        day_rows = [r for r in rows if r["day"]]
+        day_rows = [r for r in rows if r["day"] and r["tender"] == ""]
         self.assertEqual(len(day_rows), 14)
         self.assertEqual((day_rows[0]["day"], day_rows[0]["prior_day"]),
                          (START.isoformat(), P_START.isoformat()))
         self.assertEqual(day_rows[1]["percent_change"], "150.00")
         self.assertEqual(day_rows[3]["percent_change"], "")  # day1 total, prior zero
+        day_tender = [r for r in rows if r["day"] and r["tender"]]
+        self.assertEqual(len(day_tender), 28)
+        self.assertEqual(
+            {(r["day"], r["tender"]) for r in day_tender},
+            {((START + TD(days=i)).isoformat(), t)
+             for i in range(7) for t in ("cash", "external")})
+        cash_d0 = [r for r in day_tender if r["day"] == START.isoformat()
+                   and r["tender"] == "cash" and r["figure"] == "total"][0]
+        self.assertEqual((cash_d0["current"], cash_d0["prior"],
+                          cash_d0["delta"], cash_d0["percent_change"],
+                          cash_d0["prior_day"]),
+                         ("50.00", "20.00", "30.00", "150.00",
+                          P_START.isoformat()))
+        cash_d0_n = [r for r in day_tender if r["day"] == START.isoformat()
+                     and r["tender"] == "cash"
+                     and r["figure"] == "refund_count"][0]
+        self.assertEqual((cash_d0_n["current"], cash_d0_n["prior"],
+                          cash_d0_n["delta"]), ("1", "1", "0"))
+        ext_d2 = [r for r in day_tender
+                  if r["day"] == (START + TD(days=2)).isoformat()
+                  and r["tender"] == "external" and r["figure"] == "total"][0]
+        self.assertEqual((ext_d2["current"], ext_d2["prior"],
+                          ext_d2["delta"]), ("0.00", "10.00", "-10.00"))
         text = export_prior_refund_report_csv(self.salon, START, END)
         self.assertEqual(text.splitlines()[0], ",".join(EXPORT_FIELDNAMES))
         parsed = list(csv.DictReader(io.StringIO(text)))

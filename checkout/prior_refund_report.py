@@ -5,8 +5,11 @@ Backend only, read-only. Built ON TOP of :mod:`checkout.refund_report`
 twice); nothing is recomputed here. Distinct from
 :mod:`insights.prior_refunds_net` (headline figure only): this prior
 compares the per-tender and per-day breakdowns. Prior = immediately
-preceding equal-length window. By-day rows pair offset-aligned days.
-Each figure: current/prior/delta/percent_change (Decimal, 2dp,
+preceding equal-length window. By-day rows pair offset-aligned days,
+and each paired day also carries ``by_tender`` amount deltas and
+``counts_by_tender`` count deltas for that day pair, taken verbatim
+from ``refund_report``'s own per-day ``RefundsByDay`` dicts for both
+windows. Each figure: current/prior/delta/percent_change (Decimal, 2dp,
 ROUND_HALF_UP), None when prior is zero. By-tender = union of both
 windows' keys, zero-filled. Missing salon or reversed/missing window
 raises ValueError. Provider-agnostic: core tender slugs only.
@@ -85,15 +88,24 @@ class PriorRefundTenderEntry:
 
 @dataclass(frozen=True)
 class PriorRefundDayEntry:
-    """One current day paired with its prior-window counterpart."""
+    """One current day paired with its prior-window counterpart.
+
+    ``by_tender`` maps tender slug to that day pair's refund-amount
+    delta and ``counts_by_tender`` to its refund-count delta, both
+    verbatim from the two days' ``RefundsByDay`` dicts (union of
+    tender slugs, zero-filled).
+    """
     day: object = None
     prior_day: object = None
     refund_count: MetricDelta = None
     total: MetricDelta = None
+    by_tender: dict = field(default_factory=dict)
+    counts_by_tender: dict = field(default_factory=dict)
     @property
     def date(self): return self.day
     @property
     def prior_date(self): return self.prior_day
+    def __getitem__(self, tender): return self.by_tender[tender]
 
 
 @dataclass(frozen=True)
@@ -167,12 +179,23 @@ def prior_refund_report(salon, start=None, end=None, **kwargs):
         refund_count=_count_delta(
             "refund_count", current.counts_by_tender.get(s, 0),
             prior.counts_by_tender.get(s, 0))) for s in slugs]
-    day_entries = [PriorRefundDayEntry(
-        day=cur.day, prior_day=pri.day,
-        refund_count=_count_delta("refund_count", cur.refund_count,
-                                  pri.refund_count),
-        total=_money_delta("total", cur.total, pri.total))
-        for cur, pri in zip(current.days, prior.days)]
+    def _day_entry(cur, pri):
+        slugs = list(cur.by_tender) + [
+            s for s in pri.by_tender if s not in cur.by_tender]
+        return PriorRefundDayEntry(
+            day=cur.day, prior_day=pri.day,
+            refund_count=_count_delta("refund_count", cur.refund_count,
+                                      pri.refund_count),
+            total=_money_delta("total", cur.total, pri.total),
+            by_tender={s: _money_delta(
+                "total", cur.by_tender.get(s, _ZERO),
+                pri.by_tender.get(s, _ZERO)) for s in slugs},
+            counts_by_tender={s: _count_delta(
+                "refund_count", cur.counts_by_tender.get(s, 0),
+                pri.counts_by_tender.get(s, 0)) for s in slugs})
+
+    day_entries = [_day_entry(cur, pri)
+                   for cur, pri in zip(current.days, prior.days)]
     return PriorRefundReport(
         salon=salon, start=current.date_from, end=current.date_to,
         prior_start=prior.date_from, prior_end=prior.date_to,
