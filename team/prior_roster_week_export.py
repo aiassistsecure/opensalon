@@ -3,12 +3,17 @@
 Backend only, read-only, built ON TOP of :mod:`team.prior_roster_week`
 — figures verbatim. Rows: the salon total first
 (``section="total"``), then one row per staff member
-(``section="staff"``), then one row per weekday
-(``section="weekday"``; ``date`` is the current week's day,
-``prior_date`` its prior-week counterpart, ``weekday`` Monday=0).
-Weekday rows carry ``total_minutes`` + ``working_staff``; their
-``working_days`` columns are empty, as are staff/total rows'
-``working_staff`` columns. Percent changes render to two
+(``section="staff"``), then one row per staff member per
+weekday (``section="staff_weekday"``; that member's
+``total_minutes`` delta for the weekday plus the
+``current_is_working`` / ``prior_is_working`` pair), then one
+row per weekday (``section="weekday"``; ``date`` is the
+current week's day, ``prior_date`` its prior-week
+counterpart, ``weekday`` Monday=0). Weekday rows carry
+``total_minutes`` + ``working_staff``; their ``working_days``
+columns are empty, as are staff/total rows' ``working_staff``
+columns. The ``is_working`` columns are populated only on
+``staff_weekday`` rows. Percent changes render to two
 places; ``None`` empty.
 """
 import csv
@@ -28,7 +33,8 @@ PRIOR_ROSTER_WEEK_EXPORT_FIELDNAMES = (
      "prior_week_end", "section", "staff_member_id", "staff_name",
      "weekday", "weekday_name", "date", "prior_date"]
     + [n for m in _ALL_METRICS for n in
-       (f"current_{m}", f"prior_{m}", f"{m}_delta", f"{m}_percent_change")])
+       (f"current_{m}", f"prior_{m}", f"{m}_delta", f"{m}_percent_change")]
+    + ["current_is_working", "prior_is_working"])
 PRIOR_ROSTER_WEEK_FIELDNAMES = PRIOR_ROSTER_WEEK_EXPORT_FIELDNAMES
 EXPORT_FIELDNAMES = PRIOR_ROSTER_WEEK_EXPORT_FIELDNAMES
 
@@ -63,11 +69,20 @@ def _rows(result):
                 row[f"prior_{m}"] = ""
                 row[f"{m}_delta"] = ""
                 row[f"{m}_percent_change"] = ""
+        if section == "staff_weekday":
+            row["current_is_working"] = bool(source.current_is_working)
+            row["prior_is_working"] = bool(source.prior_is_working)
+        else:
+            row["current_is_working"] = ""
+            row["prior_is_working"] = ""
         return row
 
     rows = [build("total", "", "", None, result, _METRICS)]
     rows += [build("staff", s.staff_member_id, s.staff_name, None, s,
                    _METRICS) for s in result.by_staff]
+    rows += [build("staff_weekday", s.staff_member_id, s.staff_name, w, w,
+                   ["total_minutes"])
+             for s in result.by_staff for w in s.by_weekday]
     rows += [build("weekday", "", "", w, w, _WEEKDAY_METRICS)
              for w in result.by_weekday]
     return rows

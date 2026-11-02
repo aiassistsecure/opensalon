@@ -155,9 +155,9 @@ class PriorRosterWeekTests(TestCase):
         self._book()
         rows = export_prior_roster_week(self.salon, MONDAY)
         self.assertEqual(list(rows[0].keys()), PRIOR_ROSTER_WEEK_EXPORT_FIELDNAMES)
-        self.assertEqual((len(rows), rows[0]["staff_name"], rows[0]["current_total_minutes"]), (11, "", 1680))
+        self.assertEqual((len(rows), rows[0]["staff_name"], rows[0]["current_total_minutes"]), (32, "", 1680))
         self.assertEqual([row["section"] for row in rows],
-                         ["total"] + ["staff"] * 3 + ["weekday"] * 7)
+                         ["total"] + ["staff"] * 3 + ["staff_weekday"] * 21 + ["weekday"] * 7)
         mon = next(row for row in rows if row["section"] == "weekday" and row["weekday_name"] == "Monday")
         self.assertEqual((mon["weekday"], mon["date"], mon["prior_date"],
                           mon["current_total_minutes"], mon["prior_total_minutes"],
@@ -175,6 +175,99 @@ class PriorRosterWeekTests(TestCase):
                          ("1680", "75.00", PRIOR_MONDAY.isoformat(), "33.33"))
         two = next(r for r in parsed if r["staff_name"] == "Stylist Two")
         self.assertEqual((two["prior_total_minutes"], two["total_minutes_percent_change"]), ("0", ""))
+
+    def test_per_staff_by_weekday_deltas(self):
+        self._book()
+        r = prior_roster_week_report(self.salon, MONDAY)
+        one = r.for_staff(self.one)
+        self.assertEqual([w.weekday for w in one.by_weekday], list(range(7)))
+        self.assertEqual(one.weekdays, one.by_weekday)
+        mon = one.for_weekday(0)
+        self.assertIs(mon, one.for_weekday("monday"))
+        # One Mon: current pattern 480; prior override 240 — both working.
+        self.assertEqual((mon.day, mon.prior_day), (MONDAY, PRIOR_MONDAY))
+        self.assertEqual((mon.total_minutes.current, mon.total_minutes.prior,
+                          mon.total_minutes.delta, mon.total_minutes.percent_change),
+                         (480, 240, 240, Decimal("100.00")))
+        self.assertEqual((mon.current_is_working, mon.prior_is_working), (True, True))
+        self.assertEqual(mon.is_working, (True, True))
+        self.assertEqual((mon.current.total_minutes, mon.prior.total_minutes), (480, 240))
+        wed = one.for_weekday("Wednesday")
+        self.assertEqual((wed.total_minutes.current, wed.total_minutes.prior,
+                          wed.total_minutes.delta, wed.is_working), (240, 240, 0, (True, True)))
+        sat = one.for_weekday(5)
+        self.assertEqual((sat.total_minutes.current, sat.total_minutes.prior,
+                          sat.is_working), (0, 0, (False, False)))
+        self.assertIsNone(sat.total_minutes.percent_change)
+        # Two Mon: rostered now, off in the prior week — the appeared day.
+        two_mon = r.for_staff(self.two).for_weekday(0)
+        self.assertEqual((two_mon.total_minutes.current, two_mon.total_minutes.prior,
+                          two_mon.is_working), (480, 0, (True, False)))
+        self.assertIsNone(two_mon.total_minutes.percent_change)
+        # Per-staff weekday minutes sum back to that member's totals.
+        for s in r.by_staff:
+            self.assertEqual(sum(w.total_minutes.current for w in s.by_weekday),
+                             s.total_minutes.current)
+            self.assertEqual(sum(w.total_minutes.prior for w in s.by_weekday),
+                             s.total_minutes.prior)
+            self.assertEqual(sum(1 for w in s.by_weekday if w.current_is_working),
+                             s.working_days.current)
+        d = one.as_dict()["by_weekday"]
+        self.assertEqual((len(d), d[0]["weekday_name"], d[0]["total_minutes"]["delta"],
+                          d[0]["is_working"]), (7, "Monday", 240,
+                                                {"current": True, "prior": True}))
+
+    def test_per_staff_by_weekday_disappeared_day(self):
+        self._book()
+        # Three's Tuesday disappears in the CURRENT week only.
+        ShiftOverride.objects.create(staff_member=self.three, date=MONDAY + datetime.timedelta(days=1),
+            is_off=True)
+        r = prior_roster_week_report(self.salon, MONDAY)
+        tue = r.for_staff(self.three).for_weekday(1)
+        self.assertEqual((tue.total_minutes.current, tue.total_minutes.prior,
+                          tue.total_minutes.delta, tue.total_minutes.percent_change),
+                         (0, 480, -480, Decimal("-100.00")))
+        self.assertEqual(tue.is_working, (False, True))
+        # The salon-level Tuesday still shows Three's loss, no one else's.
+        self.assertEqual(r.for_weekday(1).total_minutes.delta, -480)
+
+    def test_per_staff_by_weekday_empty_salon(self):
+        empty = Salon.objects.create(name="Empty", timezone="UTC")
+        r = prior_roster_week_report(empty, MONDAY)
+        self.assertEqual(r.by_staff, ())
+        member = StaffMember.objects.create(salon=empty, display_name="Solo")
+        r = prior_roster_week_report(empty, MONDAY)
+        solo = r.for_staff(member)
+        self.assertEqual(len(solo.by_weekday), 7)
+        for w in solo.by_weekday:
+            self.assertEqual((w.total_minutes.current, w.total_minutes.prior,
+                              w.is_working), (0, 0, (False, False)))
+
+    def test_export_staff_weekday_rows(self):
+        self._book()
+        rows = export_prior_roster_week(self.salon, MONDAY)
+        sw = [row for row in rows if row["section"] == "staff_weekday"]
+        self.assertEqual(len(sw), 21)
+        self.assertEqual(rows[0]["current_is_working"], "")
+        one_mon = next(row for row in sw if row["staff_name"] == "Stylist One"
+                       and row["weekday_name"] == "Monday")
+        self.assertEqual((one_mon["weekday"], one_mon["date"], one_mon["prior_date"],
+                          one_mon["current_total_minutes"], one_mon["prior_total_minutes"],
+                          one_mon["total_minutes_delta"], one_mon["total_minutes_percent_change"],
+                          one_mon["current_is_working"], one_mon["prior_is_working"],
+                          one_mon["current_working_days"], one_mon["current_working_staff"]),
+                         (0, MONDAY.isoformat(), PRIOR_MONDAY.isoformat(),
+                          480, 240, 240, "100.00", True, True, "", ""))
+        two_mon = next(row for row in sw if row["staff_name"] == "Stylist Two"
+                       and row["weekday_name"] == "Monday")
+        self.assertEqual((two_mon["current_is_working"], two_mon["prior_is_working"]),
+                         (True, False))
+        parsed = list(csv.DictReader(io.StringIO(
+            export_prior_roster_week_csv(self.salon, MONDAY))))
+        parsed_one_mon = next(row for row in parsed if row["section"] == "staff_weekday"
+                              and row["staff_name"] == "Stylist One" and row["weekday"] == "0")
+        self.assertEqual((parsed_one_mon["current_is_working"],
+                          parsed_one_mon["prior_is_working"]), ("True", "True"))
 
     def test_command_stdout_file_and_errors(self):
         self._book()
