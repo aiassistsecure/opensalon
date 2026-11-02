@@ -1396,15 +1396,18 @@ class ImportSalonDataSalesTests(TestCase):
             external_id="cli-s")
         self.sale = Sale.objects.create(
             salon=self.salon, client=self.client,
-            status=Sale.Status.COMPLETED)
+            status=Sale.Status.COMPLETED,
+            discount_amount=Decimal("10.00"))
         SaleItem.objects.create(
             sale=self.sale, kind=SaleItem.Kind.SERVICE,
             service=self.service, description="Single Process",
-            quantity=1, unit_price=Decimal("85.00"))
+            quantity=1, unit_price=Decimal("85.00"),
+            discount_amount=Decimal("5.00"))
         SaleItem.objects.create(
             sale=self.sale, kind=SaleItem.Kind.PRODUCT,
             product=self.product, description="Shampoo",
-            quantity=2, unit_price=Decimal("24.50"))
+            quantity=2, unit_price=Decimal("24.50"),
+            discount_amount=Decimal("4.90"))
         Payment.objects.create(
             sale=self.sale, method=Payment.Method.CASH,
             amount=Decimal("134.00"), status=Payment.Status.COMPLETED,
@@ -1445,12 +1448,17 @@ class ImportSalonDataSalesTests(TestCase):
         sale = Sale.objects.get(status=Sale.Status.COMPLETED)
         self.assertEqual(sale.salon.name, "Sales Restore Salon")
         self.assertEqual(sale.client.external_id, "cli-s")
-        self.assertEqual(sale.total, Decimal("134.00"))
+        self.assertEqual(sale.discount_amount, Decimal("10.00"))
+        self.assertEqual(sale.total, Decimal("114.10"))
         items = {i.kind: i for i in sale.items.all()}
         self.assertEqual(items["service"].service.external_id, "svc-s")
         self.assertEqual(items["service"].unit_price, Decimal("85.00"))
+        self.assertEqual(
+            items["service"].discount_amount, Decimal("5.00"))
         self.assertEqual(items["product"].product.external_id, "prod-s")
         self.assertEqual(items["product"].quantity, 2)
+        self.assertEqual(
+            items["product"].discount_amount, Decimal("4.90"))
         pay = sale.payments.get()
         self.assertEqual(pay.method, "cash")
         self.assertEqual(pay.amount, Decimal("134.00"))
@@ -1466,6 +1474,61 @@ class ImportSalonDataSalesTests(TestCase):
         self.assertEqual(Sale.objects.count(), 2)
         self.assertEqual(SaleItem.objects.count(), 2)
         self.assertEqual(Payment.objects.count(), 1)
+        sale = Sale.objects.get(status=Sale.Status.COMPLETED)
+        self.assertEqual(sale.discount_amount, Decimal("10.00"))
+        self.assertEqual(
+            {i.kind: i.discount_amount for i in sale.items.all()},
+            {"service": Decimal("5.00"), "product": Decimal("4.90")})
+
+    def test_missing_discount_amount_imports_as_zero(self):
+        path, data = self.export_data()
+        for row in data["sales"]:
+            del row["discount_amount"]
+        for row in data["sale_items"]:
+            del row["discount_amount"]
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        self.run_import(path)
+        sale = Sale.objects.get(status=Sale.Status.COMPLETED)
+        self.assertEqual(sale.discount_amount, Decimal("0.00"))
+        for item in sale.items.all():
+            self.assertEqual(item.discount_amount, Decimal("0.00"))
+
+    def test_negative_sale_discount_fails_closed_zero_writes(self):
+        path, data = self.export_data()
+        sale = next(
+            s for s in data["sales"] if s["status"] == "completed")
+        sale["discount_amount"] = "-1.00"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError):
+            call_command("import_salon_data", path)
+        self.assertEqual(Salon.objects.count(), 0)
+        self.assertEqual(Sale.objects.count(), 0)
+        self.assertEqual(SaleItem.objects.count(), 0)
+
+    def test_negative_sale_item_discount_fails_closed_zero_writes(self):
+        path, data = self.export_data()
+        data["sale_items"][0]["discount_amount"] = "-0.01"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError):
+            call_command("import_salon_data", path)
+        self.assertEqual(Salon.objects.count(), 0)
+        self.assertEqual(Sale.objects.count(), 0)
+        self.assertEqual(SaleItem.objects.count(), 0)
+
+    def test_bad_sale_discount_fails_closed_zero_writes(self):
+        path, data = self.export_data()
+        sale = next(
+            s for s in data["sales"] if s["status"] == "completed")
+        sale["discount_amount"] = "not-money"
+        self.write_data(path, data)
+        Salon.objects.all().delete()
+        with self.assertRaises(CommandError):
+            call_command("import_salon_data", path)
+        self.assertEqual(Salon.objects.count(), 0)
+        self.assertEqual(Sale.objects.count(), 0)
 
     def test_missing_sales_sections_import_exactly_as_before(self):
         path, data = self.export_data()

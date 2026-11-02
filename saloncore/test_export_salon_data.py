@@ -516,15 +516,18 @@ class ExportSalesTests(TestCase):
             external_id="cli-s")
         self.sale = Sale.objects.create(
             salon=self.salon, client=self.client,
-            status=Sale.Status.COMPLETED)
+            status=Sale.Status.COMPLETED,
+            discount_amount=Decimal("10.00"))
         self.item_service = SaleItem.objects.create(
             sale=self.sale, kind=SaleItem.Kind.SERVICE,
             service=self.service, description="Single Process",
-            quantity=1, unit_price=Decimal("85.00"))
+            quantity=1, unit_price=Decimal("85.00"),
+            discount_amount=Decimal("5.00"))
         self.item_product = SaleItem.objects.create(
             sale=self.sale, kind=SaleItem.Kind.PRODUCT,
             product=self.product, description="Shampoo",
-            quantity=2, unit_price=Decimal("24.50"))
+            quantity=2, unit_price=Decimal("24.50"),
+            discount_amount=Decimal("4.90"))
         self.payment = Payment.objects.create(
             sale=self.sale, method=Payment.Method.CASH,
             amount=Decimal("134.00"), status=Payment.Status.COMPLETED,
@@ -550,14 +553,18 @@ class ExportSalesTests(TestCase):
         self.assertEqual(sale["salon_id"], self.salon.id)
         self.assertEqual(sale["client_external_id"], "cli-s")
         self.assertEqual(sale["status"], "completed")
+        self.assertEqual(sale["discount_amount"], "10.00")
         self.assertEqual(sale["void_reason"], "")
         walkin = next(s for s in data["sales"] if not s["client_id"])
         self.assertIsNone(walkin["client_external_id"])
+        self.assertEqual(walkin["discount_amount"], "0.00")
         items = {i["kind"]: i for i in data["sale_items"]}
         self.assertEqual(items["service"]["service_external_id"], "svc-s")
         self.assertEqual(items["service"]["unit_price"], "85.00")
+        self.assertEqual(items["service"]["discount_amount"], "5.00")
         self.assertEqual(items["product"]["product_external_id"], "prod-s")
         self.assertEqual(items["product"]["quantity"], 2)
+        self.assertEqual(items["product"]["discount_amount"], "4.90")
         pay = data["sale_payments"][0]
         self.assertEqual(pay["sale_id"], self.sale.id)
         self.assertEqual(pay["method"], "cash")

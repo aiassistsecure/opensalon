@@ -65,7 +65,14 @@ and creates nothing twice:
 - Sale             <- (salon, client, created_at, completed_at,
   voided_at); restored after products so sale lines can resolve
   them. SaleItem <- (sale, kind, service, product, description);
-  Payment (sale_payments) <- (sale, method, created_at).
+  Payment (sale_payments) <- (sale, method, created_at). Sale and
+  SaleItem each carry ``discount_amount`` as an exact string,
+  parsed as Decimal, never a float, restored as a default so a
+  re-import updates it in place; the key is optional for
+  back-compat (an older file without it restores ``0.00``), and
+  a present value that does not parse or is negative fails
+  closed in phase 1 with zero writes — the model's discount
+  fields are never negative.
 - StockMovement    <- (product, kind, quantity_delta, note,
   created_at) when ``created_at`` is present, else (product,
   kind, quantity_delta, note). The model has no unique
@@ -420,12 +427,12 @@ KNOWN_KEYS = {
                         "staff_member_external_id", "date", "is_off",
                         "start_time", "end_time"},
     "sales": {"id", "salon_id", "client_id", "client_external_id",
-              "status", "created_at", "completed_at", "voided_at",
-              "void_reason"},
+              "status", "discount_amount", "created_at",
+              "completed_at", "voided_at", "void_reason"},
     "sale_items": {"id", "sale_id", "kind", "service_id",
                    "service_external_id", "product_id",
                    "product_external_id", "description", "quantity",
-                   "unit_price"},
+                   "unit_price", "discount_amount"},
     "sale_payments": {"id", "sale_id", "method", "amount", "status",
                       "created_at", "updated_at"},
     "stock_movements": {"id", "product_id", "product_external_id",
@@ -1041,6 +1048,17 @@ def _validate(data):
         if row["status"] not in Sale.Status.values:
             raise CommandError(
                 f"Bad sales status: {row['status']!r}.")
+        if "discount_amount" in row:
+            try:
+                discount = Decimal(str(row["discount_amount"]))
+            except (InvalidOperation, ValueError) as exc:
+                raise CommandError(
+                    f"Bad sales discount_amount: "
+                    f"{row.get('discount_amount')!r}.") from exc
+            if discount < 0:
+                raise CommandError(
+                    f"Bad sales discount_amount: "
+                    f"{row.get('discount_amount')!r} is negative.")
         for field in ("completed_at", "voided_at"):
             if row.get(field) is not None:
                 _checked_datetime(
@@ -1072,6 +1090,17 @@ def _validate(data):
             raise CommandError(
                 f"Bad sale_items unit_price: "
                 f"{row.get('unit_price')!r}.") from exc
+        if "discount_amount" in row:
+            try:
+                discount = Decimal(str(row["discount_amount"]))
+            except (InvalidOperation, ValueError) as exc:
+                raise CommandError(
+                    f"Bad sale_items discount_amount: "
+                    f"{row.get('discount_amount')!r}.") from exc
+            if discount < 0:
+                raise CommandError(
+                    f"Bad sale_items discount_amount: "
+                    f"{row.get('discount_amount')!r} is negative.")
     for row in data["sale_payments"]:
         _check_ref(sale_ids, row["sale_id"], "sale")
         if row["method"] not in Payment.Method.values:
@@ -1678,6 +1707,10 @@ class Command(BaseCommand):
                 if created_raw else None)
             defaults = {
                 "status": row["status"],
+                "discount_amount": (
+                    Decimal(str(row["discount_amount"]))
+                    if row.get("discount_amount") is not None
+                    else Decimal("0.00")),
                 "completed_at": completed_at,
                 "voided_at": voided_at,
                 "void_reason": row.get("void_reason", ""),
@@ -1717,6 +1750,10 @@ class Command(BaseCommand):
                 defaults={
                     "quantity": row.get("quantity", 1),
                     "unit_price": Decimal(str(row["unit_price"])),
+                    "discount_amount": (
+                        Decimal(str(row["discount_amount"]))
+                        if row.get("discount_amount") is not None
+                        else Decimal("0.00")),
                 },
             )
 
