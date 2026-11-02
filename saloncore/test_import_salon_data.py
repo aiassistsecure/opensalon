@@ -979,7 +979,7 @@ class ImportSalonDataDryRunTests(TestCase):
             "appointments", "appointment_notes", "products",
             "roster_patterns", "shift_overrides", "sales",
             "sale_items", "sale_payments", "stock_movements",
-            "attendance_records", "price_changes", "refunds", "breaks", "cashups", "receipts", "reminder_sends", "campaigns", "campaign_sends"})
+            "attendance_records", "price_changes", "refunds", "breaks", "cashups", "receipts", "reminder_sends", "campaigns", "campaign_sends", "staff_notifications"})
         for section, report in reports.items():
             self.assertEqual(report["source"], section)
             self.assertEqual(

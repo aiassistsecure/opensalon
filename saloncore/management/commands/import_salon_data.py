@@ -10,12 +10,13 @@ StaffLevel, ServicePrice, Client, ClientNote, StaffMember,
 StaffService, Appointment, AppointmentNote, Product, RosterPattern,
 ShiftOverride, Sale, SaleItem, Payment, StockMovement,
 AttendanceRecord, PriceChange, Refund, Break, Cashup, Receipt,
-ReminderSend, Campaign and CampaignSend records. The ``products``,
+ReminderSend, Campaign, CampaignSend and StaffNotification
+records. The ``products``,
 ``roster_patterns``, ``shift_overrides``, ``sales``, ``sale_items``,
 ``sale_payments``, ``stock_movements``, ``attendance_records``,
 ``price_changes``, ``refunds``, ``breaks``, ``cashups``, ``receipts``,
-``reminder_sends``, ``campaigns``, ``campaign_sends`` and
-``staff_services`` sections are optional on read: an export
+``reminder_sends``, ``campaigns``, ``campaign_sends``,
+``staff_services`` and ``staff_notifications`` sections are optional on read: an export
 file written before they existed (no such section, no ``counts``
 entry for it) imports exactly as before, with the section
 treated as empty. Roster rows restore idempotently too:
@@ -262,6 +263,26 @@ and creates nothing twice:
   ``_restore_created_at`` pattern adapted to ``sent_at``
   (``_restore_sent_at``): re-stamped once at creation only,
   never on an existing row.
+- StaffNotification <- (staff_member, appointment, kind,
+  created_at). A ping in one staff member's account inbox,
+  with no salon link of its own, so restore runs after staff
+  members and appointments. Its staff and appointment links
+  both resolve by the related record's ``*_external_id``
+  first, falling back to the file-local ``*_id`` maps, like
+  staff services resolve their links; a link that resolves
+  by neither fails closed in phase 1. Restore uses
+  ``update_or_create`` on the natural key — a ping already
+  restored is updated in place and a re-import never
+  duplicates it; ``seen_at`` is a default updated in place
+  (a ping seen since the export restores as seen).
+  ``created_at`` must be timezone-explicit (TF-7): it is
+  part of the identity, required, and a naive value is
+  rejected in phase 1; ``seen_at`` is nullable, so an
+  absent/null value stays unseen while a present naive
+  value is still rejected. Restoring ``created_at``
+  follows the sales pattern: parsed for the lookup, then
+  re-stamped once via ``_restore_created_at`` (creation
+  stamps ``auto_now_add``).
 
 No provider concepts: external ids are the generic fields the models
 already carry.
@@ -378,6 +399,7 @@ from team.models import (
     RosterPattern,
     ShiftOverride,
     StaffMember,
+    StaffNotification,
     StaffService,
 )
 
@@ -390,6 +412,7 @@ SECTIONS = (
     "sales", "sale_items", "sale_payments", "stock_movements",
     "attendance_records", "price_changes", "refunds", "breaks", "cashups",
     "receipts", "reminder_sends", "campaigns", "campaign_sends",
+    "staff_notifications",
 )
 
 # Sections an older export file may legitimately lack entirely:
@@ -399,7 +422,8 @@ OPTIONAL_SECTIONS = ("products", "roster_patterns", "shift_overrides",
                      "stock_movements", "attendance_records",
                      "price_changes", "refunds", "breaks", "cashups",
                      "receipts", "reminder_sends", "campaigns",
-                     "campaign_sends", "staff_services")
+                     "campaign_sends", "staff_services",
+                     "staff_notifications")
 
 # Every key the exporter emits (hence the importer may consume) per
 # section. Any other key in a record is unknown (TF-11).
@@ -478,6 +502,11 @@ KNOWN_KEYS = {
                   "body", "status", "sent_at", "created_at", "updated_at"},
     "campaign_sends": {"id", "campaign_id", "client_id", "channel",
                        "status", "sent_at", "detail"},
+    "staff_notifications": {"id", "staff_member_id",
+                            "staff_member_external_id",
+                            "appointment_id",
+                            "appointment_external_id", "kind",
+                            "created_at", "seen_at"},
 }
 
 TOP_LEVEL_KEYS = set(SECTIONS) | {"counts"}
@@ -645,6 +674,10 @@ _ID_FIELDS = {
     "reminder_sends": ("id", "appointment_id", "client_id"),
     "campaigns": ("id", "salon_id"),
     "campaign_sends": ("id", "campaign_id", "client_id"),
+    "staff_notifications": ("id", "staff_member_id",
+                            "staff_member_external_id",
+                            "appointment_id",
+                            "appointment_external_id"),
 }
 
 # (section, field) -> model whose external_id limit governs it.
@@ -687,6 +720,10 @@ _EXTERNAL_ID_LIMITS = {
         StaffMember._meta.get_field("external_id").max_length,
     ("staff_services", "service_external_id"):
         Service._meta.get_field("external_id").max_length,
+    ("staff_notifications", "staff_member_external_id"):
+        StaffMember._meta.get_field("external_id").max_length,
+    ("staff_notifications", "appointment_external_id"):
+        Appointment._meta.get_field("external_id").max_length,
 }
 
 
@@ -878,6 +915,9 @@ def _validate(data):
                       "created_at"),
         "campaign_sends": ("id", "campaign_id", "client_id",
                            "channel", "sent_at"),
+        "staff_notifications": ("id", "staff_member_id",
+                                "appointment_id", "kind",
+                                "created_at"),
     }
     for section, fields in required.items():
         for row in data[section]:
@@ -909,6 +949,9 @@ def _validate(data):
         if row.get("external_id")}
     service_ext_ids = {
         row.get("external_id") for row in data["services"]
+        if row.get("external_id")}
+    appointment_ext_ids = {
+        row.get("external_id") for row in data["appointments"]
         if row.get("external_id")}
     product_ids = {row["id"] for row in data["products"]}
     product_ext_ids = {
@@ -1320,6 +1363,23 @@ def _validate(data):
         _checked_datetime(
             row["sent_at"], f"campaign_sends sent_at "
             f"record id {row.get('id')!r}")
+    for row in data["staff_notifications"]:
+        _check_appt_ref(
+            staff_ids, staff_ext_ids, row.get("staff_member_id"),
+            row.get("staff_member_external_id"), "staff_member")
+        _check_appt_ref(
+            appointment_ids, appointment_ext_ids,
+            row.get("appointment_id"),
+            row.get("appointment_external_id"), "appointment")
+        # created_at is part of the identity: required and
+        # timezone-explicit (TF-7), like campaign_sends sent_at.
+        _checked_datetime(
+            row["created_at"], f"staff_notifications created_at "
+            f"record id {row.get('id')!r}")
+        if row.get("seen_at") is not None:
+            _checked_datetime(
+                row["seen_at"], f"staff_notifications seen_at "
+                f"record id {row.get('id')!r}")
 
 
 def _ref(mapping, old_id, what):
@@ -2037,6 +2097,34 @@ class Command(BaseCommand):
             )
             if created:
                 _restore_sent_at(send, row.get("sent_at"))
+
+        appointments_by_ext = _by_external(data["appointments"],
+                                           appointments)
+        for row in data["staff_notifications"]:
+            staff_member = _resolve_appt_ref(
+                staff_members, staff_by_ext, row,
+                "staff_member_id", "staff_member_external_id",
+                "staff_member")
+            appointment = _resolve_appt_ref(
+                appointments, appointments_by_ext, row,
+                "appointment_id", "appointment_external_id",
+                "appointment")
+            created_at = _checked_datetime(
+                row["created_at"], "staff_notifications created_at")
+            seen_at = (
+                _checked_datetime(
+                    row["seen_at"], "staff_notifications seen_at")
+                if row.get("seen_at") is not None else None)
+            # Mutable inbox state: update_or_create on the
+            # natural key — a ping already restored is updated
+            # in place (seen_at follows the export), never
+            # duplicated (sales pattern for created_at below).
+            note, _ = StaffNotification.objects.update_or_create(
+                staff_member=staff_member, appointment=appointment,
+                kind=row["kind"], created_at=created_at,
+                defaults={"seen_at": seen_at},
+            )
+            _restore_created_at(note, row.get("created_at"))
 
         summary = ", ".join(
             f"{section}={len(data[section])}" for section in SECTIONS
