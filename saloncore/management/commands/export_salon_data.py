@@ -28,7 +28,9 @@ fully export. This is part 1 of that test — the core records only:
 - checkout: Sale, SaleItem (sale lines) and Payment (sale payments),
   scoped through the sale's salon. Sale rows carry the client
   reference as both ``client_id`` and ``client_external_id``; line
-  rows carry service/product references the same way. FOUNDING
+  rows carry service/product references the same way. Sale and
+  line rows each carry their recorded ``discount_amount`` as an
+  exact string (money never floats). FOUNDING
   RULE: Payment's ``provider_reference`` is NEVER exported — it is
   a payment-provider identifier and provider-agnostic core carries
   no provider identifiers, SDK fields, or provider names.
@@ -381,6 +383,7 @@ class Command(BaseCommand):
                     "client_external_id": (
                         s.client.external_id if s.client else None),
                     "status": s.status,
+                    "discount_amount": str(s.discount_amount),
                     "created_at": _dt(s.created_at),
                     "completed_at": _dt(s.completed_at),
                     "voided_at": _dt(s.voided_at),
@@ -400,6 +403,7 @@ class Command(BaseCommand):
                     "description": i.description,
                     "quantity": i.quantity,
                     "unit_price": str(i.unit_price),
+                    "discount_amount": str(i.discount_amount),
                 }
                 for i in sale_items
             ],
