@@ -2,7 +2,7 @@ import csv
 import io
 import os
 import tempfile
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -78,6 +78,118 @@ class PriorAttachCategoryTests(TestCase):
         self.assertEqual(r.current, direct)
         self.assertEqual(r.current.attach_rate, direct.attach_rate)
 
+    def test_attach_daily_offset_aligned_and_verbatim(self):
+        self._seed()
+        r = prior_period_attach_rate(self.salon, START, END)
+        self.assertEqual(len(r.daily), 7)
+        self.assertEqual(r.per_day, r.daily)
+        self.assertEqual(r.by_day, r.daily)
+        self.assertEqual([d.offset for d in r.daily], list(range(7)))
+        self.assertEqual(set(r.by_offset), set(range(7)))
+        # Verbatim from the source's own daily series, both windows.
+        direct = retail_attach_rate(self.salon, days=7, end_date=END)
+        prior_direct = retail_attach_rate(
+            self.salon, days=7, end_date=date(2026, 11, 1))
+        self.assertEqual([d.current for d in r.daily],
+                         list(direct.daily))
+        self.assertEqual([d.prior for d in r.daily],
+                         list(prior_direct.daily))
+        day0, day2 = r.by_offset[0], r.by_offset[2]
+        self.assertEqual((day0.current_date, day0.prior_date),
+                         (START, date(2026, 10, 26)))
+        self.assertEqual((day2.date, day2.current_date, day2.prior_date),
+                         (CUR, CUR, PRI))
+        # Seeded sales all land on offset 2 in both windows.
+        for comp, want in (
+            (day2.service_sales, ("3", "3", "0", "0.00")),
+            (day2.attached_sales, ("1", "1", "0", "0.00")),
+            (day2.retail_revenue, ("50.00", "25.00", "25.00", "100.00")),
+            (day2.service_revenue, ("250.00", "240.00", "10.00", "4.17")),
+        ):
+            self.assertEqual(
+                (comp.current, comp.prior, comp.delta,
+                 comp.percent_change),
+                tuple(Decimal(v) for v in want))
+        self.assertEqual(set(day2.deltas), {
+            "service_sales", "attached_sales", "retail_revenue",
+            "service_revenue"})
+        # attach_rate follows from the compared counts on the days.
+        self.assertEqual(day2.current_attach_rate, Decimal("0.3333"))
+        self.assertEqual(day2.prior_attach_rate, Decimal("0.3333"))
+        self.assertEqual(day2.current.attach_rate,
+                         day2.current_attach_rate)
+        # Zero-filled day: figures zero, percent None (prior zero).
+        self.assertEqual(
+            (day0.service_sales.current, day0.service_sales.prior,
+             day0.service_sales.delta), (Decimal("0"),) * 3)
+        self.assertIsNone(day0.retail_revenue.percent_change)
+        # Daily deltas reconcile with the window totals.
+        for name in ("service_sales", "attached_sales"):
+            self.assertEqual(
+                sum(getattr(d, name).current for d in r.daily),
+                getattr(r, name).current)
+            self.assertEqual(
+                sum(getattr(d, name).prior for d in r.daily),
+                getattr(r, name).prior)
+        for name in ("retail_revenue", "service_revenue"):
+            self.assertEqual(
+                sum((getattr(d, name).current for d in r.daily),
+                    Decimal("0.00")), getattr(r, name).current)
+
+    def test_attach_daily_zero_filled_for_empty_salon(self):
+        r = prior_period_attach_rate(self.other, START, END)
+        self.assertEqual(len(r.daily), 7)
+        self.assertEqual([d.current_date for d in r.daily],
+                         [START + timedelta(days=i) for i in range(7)])
+        self.assertEqual([d.prior_date for d in r.daily],
+                         [date(2026, 10, 26) + timedelta(days=i)
+                          for i in range(7)])
+        self.assertTrue(all(
+            (d.service_sales.current, d.attached_sales.prior,
+             d.retail_revenue.delta, d.service_revenue.delta)
+            == (Decimal("0"), Decimal("0"), Decimal("0.00"),
+                Decimal("0.00"))
+            and d.service_sales.percent_change is None
+            for d in r.daily))
+
+    def test_attach_daily_csv_rows_and_command(self):
+        self._seed()
+        text = export_prior_attach_csv(self.salon, START, END)
+        self.assertEqual(list(csv.reader(io.StringIO(text)))[0],
+                         PRIOR_ATTACH_FIELDNAMES)
+        rows = list(csv.DictReader(io.StringIO(text)))
+        self.assertEqual(len(rows), 10 + 7 * 4)
+        summary, daily = rows[:10], rows[10:]
+        self.assertTrue(all(
+            (x["offset"], x["current_date"], x["prior_date"])
+            == ("", "", "") for x in summary))
+        self.assertEqual([x["metric"] for x in daily],
+                         [f"daily_{n}" for _ in range(7) for n in (
+                             "service_sales", "attached_sales",
+                             "retail_revenue", "service_revenue")])
+        by_key = {(x["metric"], x["offset"]): x for x in daily}
+        svc = by_key[("daily_service_sales", "2")]
+        self.assertEqual(
+            (svc["current"], svc["prior"], svc["delta"],
+             svc["percent_change"], svc["current_date"],
+             svc["prior_date"]),
+            ("3", "3", "0", "0.00", "2026-11-04", "2026-10-28"))
+        ret = by_key[("daily_retail_revenue", "2")]
+        self.assertEqual(
+            (ret["current"], ret["prior"], ret["delta"],
+             ret["percent_change"]), ("50.00", "25.00", "25.00",
+                                       "100.00"))
+        self.assertEqual(
+            by_key[("daily_service_revenue", "0")][
+                "percent_change"], "")  # zero prior -> empty
+        out = io.StringIO()
+        call_command("export_prior_attach_category",
+                     salon_id=self.salon.pk, kind="attach",
+                     start_date="2026-11-02", end_date="2026-11-08",
+                     stdout=out)
+        self.assertIn("daily_retail_revenue", out.getvalue())
+        self.assertIn("2026-10-28", out.getvalue())
+
     def test_attach_missing_metrics_deltas_and_csv(self):
         self._seed()
         # Current extras: product-only, attached, unattached sales.
@@ -125,7 +237,8 @@ class PriorAttachCategoryTests(TestCase):
                              Decimal(getattr(prior_direct, name)))
         text = export_prior_attach_csv(self.salon, START, END)
         rows = {x["metric"]: x for x in csv.DictReader(io.StringIO(text))}
-        self.assertEqual(len(rows), 10)
+        # 10 summary metrics + 4 distinct daily_<metric> names.
+        self.assertEqual(len(rows), 14)
         self.assertEqual(
             (rows["unattached_service_sales"]["current"],
              rows["unattached_service_sales"]["prior"],
