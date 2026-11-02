@@ -1392,6 +1392,11 @@ button:focus-visible, a:focus-visible, select:focus-visible {
 .book-group{margin-bottom:6px}
 .book-group[hidden]{display:none}
 .book-cat{font-size:12.5px;font-weight:750;letter-spacing:.09em;text-transform:uppercase;color:#9a7b2d;margin:18px 2px 9px}
+.book-doors{display:flex;flex-direction:column;gap:9px}
+.book-catdoor{display:flex;justify-content:space-between;align-items:baseline;gap:12px;width:100%;padding:15px;border:1px solid #e6ddc6;border-radius:13px;background:#fff;color:#1d2530;font:inherit;text-align:left;cursor:pointer}
+.book-catdoor:hover{border-color:#3f5a36}
+.book-catdoor-name{font-weight:700;font-size:16px}
+.book-catdoor-meta{color:#9a7b2d;font-size:13px;white-space:nowrap}
 .book-back{background:none;border:0;padding:0 0 10px;font:inherit;font-size:14px;font-weight:650;color:#3f5a36;cursor:pointer}
 .book-day{font:inherit;cursor:pointer}
 .book-loading{animation:bookPulse 1.1s ease-in-out infinite}
