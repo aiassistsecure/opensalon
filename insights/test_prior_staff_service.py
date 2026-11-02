@@ -125,6 +125,160 @@ class PriorStaffServiceTests(TestCase):
         self.assertIsNone(colour.prior)
         self.assertEqual(colour.current_quantity, 1)
 
+    def _seed_duration(self):
+        # Cut (45 min): current qty 2 x 60.00, prior qty 1 x 45.00.
+        cur = self._sale(date(2026, 11, 5), self.client)
+        self._item(cur, SaleItem.Kind.SERVICE, "60.00", self.cut,
+                   quantity=2)
+        pri = self._sale(date(2026, 10, 29), self.client)
+        self._item(pri, SaleItem.Kind.SERVICE, "45.00", self.cut)
+        # Colour (30 min): only in current.
+        cur2 = self._sale(date(2026, 11, 6))
+        self._item(cur2, SaleItem.Kind.SERVICE, "60.00", self.colour)
+
+    def test_service_duration_and_revenue_per_hour_deltas(self):
+        self._seed_duration()
+        r = prior_period_service_revenue(self.salon, START, END)
+        by_name = {x.service_name: x for x in r}
+        cut = by_name["Haircut"]
+        # Verbatim from the source rows for both windows.
+        src_cur = {x.service_name: x for x in
+                   revenue_by_service(self.salon, START, END)}
+        src_pri = {x.service_name: x for x in revenue_by_service(
+            self.salon, PRIOR_START, date(2026, 11, 1))}
+        self.assertEqual(
+            cut.total_duration_minutes.current,
+            Decimal(src_cur["Haircut"].total_duration_minutes))
+        self.assertEqual(
+            cut.revenue_per_hour.current,
+            src_cur["Haircut"].revenue_per_hour)
+        self.assertEqual(
+            cut.revenue_per_hour.prior,
+            src_pri["Haircut"].revenue_per_hour)
+        self.assertEqual(
+            (cut.total_duration_minutes.current,
+             cut.total_duration_minutes.prior,
+             cut.total_duration_minutes.delta,
+             cut.total_duration_minutes.percent_change),
+            (Decimal("90"), Decimal("45"), Decimal("45"),
+             Decimal("100.00")))
+        self.assertEqual(
+            (cut.revenue_per_hour.current, cut.revenue_per_hour.prior,
+             cut.revenue_per_hour.delta,
+             cut.revenue_per_hour.percent_change),
+            (Decimal("80.00"), Decimal("60.00"), Decimal("20.00"),
+             Decimal("33.33")))
+        # line_count is a raw pair: 1 line each side, unlike qty 2/1.
+        self.assertEqual((cut.current_line_count, cut.prior_line_count,
+                          cut.line_count_delta), (1, 1, 0))
+        self.assertEqual((cut.current_quantity, cut.prior_quantity),
+                         (2, 1))
+        self.assertFalse(hasattr(cut, "duration_minutes"))
+        colour = by_name["Colour"]
+        self.assertEqual(
+            (colour.total_duration_minutes.current,
+             colour.total_duration_minutes.prior,
+             colour.total_duration_minutes.delta),
+            (Decimal("30"), Decimal("0"), Decimal("30")))
+        self.assertIsNone(
+            colour.total_duration_minutes.percent_change)
+        # No per-hour figure for a period with no sale: honest None.
+        self.assertIsNone(colour.revenue_per_hour)
+        self.assertEqual(colour.current.revenue_per_hour,
+                         Decimal("120.00"))
+        self.assertEqual((colour.current_line_count,
+                          colour.prior_line_count), (1, 0))
+
+    def test_service_revenue_per_hour_none_when_duration_unknown(self):
+        consult = Service.objects.create(
+            category=self.cut.category, name="Consult",
+            service_minutes=0)
+        self._item(self._sale(date(2026, 11, 5)),
+                   SaleItem.Kind.SERVICE, "50.00", consult)
+        self._item(self._sale(date(2026, 10, 29)),
+                   SaleItem.Kind.SERVICE, "25.00", consult)
+        SaleItem.objects.create(
+            sale=self._sale(date(2026, 11, 5)),
+            kind=SaleItem.Kind.SERVICE, quantity=1,
+            unit_price=Decimal("40.00"), description="Mystery")
+        SaleItem.objects.create(
+            sale=self._sale(date(2026, 10, 29)),
+            kind=SaleItem.Kind.SERVICE, quantity=1,
+            unit_price=Decimal("20.00"), description="Mystery")
+        r = prior_period_service_revenue(self.salon, START, END)
+        by_name = {x.service_name: x for x in r}
+        for name in ("Consult", "Mystery"):
+            row = by_name[name]
+            self.assertIsNone(row.current.revenue_per_hour)
+            self.assertIsNone(row.prior.revenue_per_hour)
+            self.assertIsNone(row.revenue_per_hour)
+            self.assertIsNone(row.total_duration_minutes)
+            self.assertEqual((row.current_line_count,
+                              row.prior_line_count), (1, 1))
+
+    def test_service_csv_duration_and_revenue_per_hour_columns(self):
+        self._seed_duration()
+        consult = Service.objects.create(
+            category=self.cut.category, name="Consult",
+            service_minutes=0)
+        self._item(self._sale(date(2026, 11, 5)),
+                   SaleItem.Kind.SERVICE, "50.00", consult)
+        self._item(self._sale(date(2026, 10, 29)),
+                   SaleItem.Kind.SERVICE, "25.00", consult)
+        text = export_prior_service_csv(self.salon, START, END)
+        self.assertEqual(list(csv.reader(io.StringIO(text)))[0],
+                         PRIOR_SERVICE_FIELDNAMES)
+        rows = {x["service_name"]: x
+                for x in csv.DictReader(io.StringIO(text))}
+        cut = rows["Haircut"]
+        self.assertEqual(
+            (cut["current_total_duration_minutes"],
+             cut["prior_total_duration_minutes"],
+             cut["total_duration_minutes_delta"],
+             cut["total_duration_minutes_percent_change"]),
+            ("90", "45", "45", "100.00"))
+        self.assertEqual(
+            (cut["current_revenue_per_hour"],
+             cut["prior_revenue_per_hour"],
+             cut["revenue_per_hour_delta"],
+             cut["revenue_per_hour_percent_change"]),
+            ("80.00", "60.00", "20.00", "33.33"))
+        self.assertEqual((cut["current_line_count"],
+                          cut["prior_line_count"]), ("1", "1"))
+        colour = rows["Colour"]
+        self.assertEqual(
+            (colour["current_total_duration_minutes"],
+             colour["prior_total_duration_minutes"],
+             colour["total_duration_minutes_delta"],
+             colour["total_duration_minutes_percent_change"]),
+            ("30", "0", "30", ""))
+        self.assertEqual(
+            (colour["current_revenue_per_hour"],
+             colour["prior_revenue_per_hour"],
+             colour["revenue_per_hour_delta"],
+             colour["revenue_per_hour_percent_change"]),
+            ("120.00", "", "", ""))
+        consult_row = rows["Consult"]
+        self.assertEqual(
+            (consult_row["current_total_duration_minutes"],
+             consult_row["prior_total_duration_minutes"],
+             consult_row["total_duration_minutes_delta"],
+             consult_row["current_revenue_per_hour"],
+             consult_row["prior_revenue_per_hour"],
+             consult_row["revenue_per_hour_delta"]),
+            ("", "", "", "", "", ""))
+        self.assertEqual((consult_row["current_line_count"],
+                          consult_row["prior_line_count"]), ("1", "1"))
+        # The export command's service output follows automatically.
+        out = io.StringIO()
+        call_command("export_prior_staff_service",
+                     salon_id=self.salon.pk, kind="service",
+                     start_date="2026-11-02", end_date="2026-11-08",
+                     stdout=out)
+        self.assertIn("current_total_duration_minutes",
+                      out.getvalue())
+        self.assertIn("revenue_per_hour_delta", out.getvalue())
+
     def test_zero_prior_percent_none_and_reversed_raises(self):
         self._item(self._sale(date(2026, 11, 5)),
                    SaleItem.Kind.SERVICE, "80.00", self.cut)

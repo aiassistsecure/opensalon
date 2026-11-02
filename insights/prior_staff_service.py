@@ -17,6 +17,23 @@ Rows order by current total descending, then name ascending.
 The CSV helpers follow :mod:`insights.prior_period_export`:
 they render a comparison verbatim (Exit Principle), money and
 percentages to two decimal places, ``None`` percent as empty.
+
+Per-service rows also compare the duration figures of
+:mod:`insights.service_revenue`, taken verbatim from its rows
+for both windows (no new counting path): ``total_duration_minutes``
+as a count delta (``Decimal(int)``, house convention) and
+``revenue_per_hour`` as a money delta. Both deltas are ``None``
+when either window's figure is ``None`` — a service with zero
+or unknown duration has no honest total or per-hour figure, and
+a row present in only one period has no per-hour figure for the
+missing period — never faked as zero; the verbatim rows remain
+on ``current`` / ``prior``. ``line_count`` is carried as a raw
+current/prior int pair alongside the quantity/sale_count pairs.
+``duration_minutes`` itself is NOT compared: it is the linked
+service's current ``total_minutes``, the same value for both
+windows by construction, so its delta would be structurally
+zero; ``total_duration_minutes`` (duration x the window's own
+quantity) is the honest per-window figure.
 """
 import csv
 import io
@@ -61,6 +78,49 @@ class StaffPriorDelta:
         return self.current_sale_count - self.prior_sale_count
 
 
+def _count_delta(component, current, prior):
+    return _delta(component, Decimal(current), Decimal(prior))
+
+
+def _total_duration_delta(current, prior):
+    """Count delta for ``total_duration_minutes``, or ``None``.
+
+    A missing row counts as zero only when the other window's
+    verbatim total is known (its duration is known); when either
+    window's total is ``None`` (zero/unknown duration) there is
+    no honest delta, so the comparison is ``None``.
+    """
+    if current is not None:
+        cur = current.total_duration_minutes
+    else:
+        cur = 0 if prior is not None and \
+            prior.total_duration_minutes is not None else None
+    if prior is not None:
+        pri = prior.total_duration_minutes
+    else:
+        pri = 0 if current is not None and \
+            current.total_duration_minutes is not None else None
+    if cur is None or pri is None:
+        return None
+    return _count_delta("total_duration_minutes", cur, pri)
+
+
+def _revenue_per_hour_delta(current, prior):
+    """Money delta for ``revenue_per_hour``, or ``None``.
+
+    ``None`` when either window's verbatim per-hour figure is
+    ``None`` (zero/unknown duration, or the row is absent from
+    that window so no time was sold there) — never faked.
+    """
+    if current is None or prior is None:
+        return None
+    if current.revenue_per_hour is None \
+            or prior.revenue_per_hour is None:
+        return None
+    return _delta("revenue_per_hour", current.revenue_per_hour,
+                  prior.revenue_per_hour)
+
+
 @dataclass(frozen=True)
 class ServicePriorDelta:
     """One service row in both periods, with its change."""
@@ -74,10 +134,18 @@ class ServicePriorDelta:
     prior_quantity: int
     current_sale_count: int
     prior_sale_count: int
+    total_duration_minutes: ComponentDelta | None = None
+    revenue_per_hour: ComponentDelta | None = None
+    current_line_count: int = 0
+    prior_line_count: int = 0
 
     @property
     def name(self):
         return self.service_name
+
+    @property
+    def line_count_delta(self):
+        return self.current_line_count - self.prior_line_count
 
 
 class _Comparison(list):
@@ -176,6 +244,10 @@ def prior_period_service_revenue(salon, start_date=None, end_date=None,
             prior_quantity=p.quantity if p else 0,
             current_sale_count=c.sale_count if c else 0,
             prior_sale_count=p.sale_count if p else 0,
+            total_duration_minutes=_total_duration_delta(c, p),
+            revenue_per_hour=_revenue_per_hour_delta(c, p),
+            current_line_count=c.line_count if c else 0,
+            prior_line_count=p.line_count if p else 0,
         ))
     rows.sort(key=lambda r: (-r.revenue.current, r.service_name))
     return PriorServiceComparison(
@@ -196,6 +268,12 @@ PRIOR_SERVICE_FIELDNAMES = [
     "prior_start_date", "prior_end_date", "current", "prior",
     "delta", "percent_change", "current_quantity", "prior_quantity",
     "current_sale_count", "prior_sale_count",
+    "current_line_count", "prior_line_count",
+    "current_total_duration_minutes", "prior_total_duration_minutes",
+    "total_duration_minutes_delta",
+    "total_duration_minutes_percent_change",
+    "current_revenue_per_hour", "prior_revenue_per_hour",
+    "revenue_per_hour_delta", "revenue_per_hour_percent_change",
 ]
 
 
@@ -205,6 +283,14 @@ def _money(value):
 
 def _pct(value):
     return "" if value is None else str(Decimal(value).quantize(_CENTS))
+
+
+def _money_or_empty(value):
+    return "" if value is None else _money(value)
+
+
+def _count_or_empty(value):
+    return "" if value is None else str(int(Decimal(value)))
 
 
 def _write(rows, fieldnames):
@@ -244,14 +330,42 @@ def export_prior_service_csv(salon, start_date=None, end_date=None,
     """Return the per-service prior-period comparison as a CSV string."""
     result = prior_period_service_revenue(
         salon, start_date, end_date, **kwargs)
-    return _write([{
-        "service_name": r.service_name, **_bounds(result),
-        "current": _money(r.revenue.current),
-        "prior": _money(r.revenue.prior),
-        "delta": _money(r.revenue.delta),
-        "percent_change": _pct(r.revenue.percent_change),
-        "current_quantity": r.current_quantity,
-        "prior_quantity": r.prior_quantity,
-        "current_sale_count": r.current_sale_count,
-        "prior_sale_count": r.prior_sale_count,
-    } for r in result], PRIOR_SERVICE_FIELDNAMES)
+    def service_row(r):
+        duration = r.total_duration_minutes
+        per_hour = r.revenue_per_hour
+        return {
+            "service_name": r.service_name, **_bounds(result),
+            "current": _money(r.revenue.current),
+            "prior": _money(r.revenue.prior),
+            "delta": _money(r.revenue.delta),
+            "percent_change": _pct(r.revenue.percent_change),
+            "current_quantity": r.current_quantity,
+            "prior_quantity": r.prior_quantity,
+            "current_sale_count": r.current_sale_count,
+            "prior_sale_count": r.prior_sale_count,
+            "current_line_count": r.current_line_count,
+            "prior_line_count": r.prior_line_count,
+            "current_total_duration_minutes": _count_or_empty(
+                duration.current if duration else None),
+            "prior_total_duration_minutes": _count_or_empty(
+                duration.prior if duration else None),
+            "total_duration_minutes_delta": _count_or_empty(
+                duration.delta if duration else None),
+            "total_duration_minutes_percent_change": _pct(
+                duration.percent_change if duration else None),
+            # When the per-hour delta is None, render the verbatim
+            # per-window figures (empty where a side has none).
+            "current_revenue_per_hour": _money_or_empty(
+                per_hour.current if per_hour else
+                r.current.revenue_per_hour if r.current else None),
+            "prior_revenue_per_hour": _money_or_empty(
+                per_hour.prior if per_hour else
+                r.prior.revenue_per_hour if r.prior else None),
+            "revenue_per_hour_delta": _money_or_empty(
+                per_hour.delta if per_hour else None),
+            "revenue_per_hour_percent_change": _pct(
+                per_hour.percent_change if per_hour else None),
+        }
+
+    return _write([service_row(r) for r in result],
+                  PRIOR_SERVICE_FIELDNAMES)
