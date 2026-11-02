@@ -6,7 +6,7 @@ built from that same list, so the formats can never disagree;
 every value comes verbatim from the service. One row per
 figure, in order: ``sales_count``, ``gross_total``,
 ``discount_total``, ``net_total``, ``service_total``,
-``retail_total``, ``series_total``. Money renders as Decimal
+``retail_total``, ``series_total``, ``item_count``. Money renders as Decimal
 strings to two places, counts as integers, and a ``None``
 percent change (zero prior) renders empty. Lines end ``"\\n"``.
 """
@@ -23,7 +23,7 @@ __all__ = ["EXPORT_FIELDNAMES", "export_prior_daily_sales",
 EXPORT_FIELDNAMES = ["salon_id", "date", "prior_date", "figure",
                      "current", "prior", "delta", "percent_change"]
 _CENTS = Decimal("0.01")
-_COUNTS = ("sales_count",)
+_COUNTS = ("sales_count", "item_count")
 
 
 def _money(value):
