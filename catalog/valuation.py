@@ -4,8 +4,8 @@ Backend only — no views, templates, or UI.
 
 Valuation basis — stated honestly: ``Product`` carries exactly one
 money field, ``price``, which is the product's selling (retail)
-price. There is no cost / wholesale price field on the model (and
-this service adds none), so the value computed here is **retail
+price. The model also carries ``cost_price`` (since migration
+0003), but this service does not use it, so the value here is **retail
 value** — what the on-hand stock would sell for at current prices —
 not cost value, and it must not be reported as cost, margin, or
 profit.
