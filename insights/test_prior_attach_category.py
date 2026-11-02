@@ -78,6 +78,85 @@ class PriorAttachCategoryTests(TestCase):
         self.assertEqual(r.current, direct)
         self.assertEqual(r.current.attach_rate, direct.attach_rate)
 
+    def test_attach_missing_metrics_deltas_and_csv(self):
+        self._seed()
+        # Current extras: product-only, attached, unattached sales.
+        self._sale(CUR, [(P, "30.00", None)])
+        self._sale(CUR, [(S, "60.00", self.cut), (P, "20.00", None)])
+        self._sale(CUR, [(S, "80.00", self.cut)])
+        # Prior extras: two product-only sales.
+        self._sale(PRI, [(P, "10.00", None)])
+        self._sale(PRI, [(P, "15.00", None)])
+        r = prior_period_attach_rate(self.salon, START, END)
+        self.assertEqual(
+            (r.unattached_service_sales.current,
+             r.unattached_service_sales.prior,
+             r.unattached_service_sales.delta,
+             r.unattached_service_sales.percent_change),
+            (Decimal("3"), Decimal("2"), Decimal("1"),
+             Decimal("50.00")))
+        self.assertEqual(
+            (r.product_only_sales.current, r.product_only_sales.prior,
+             r.product_only_sales.delta,
+             r.product_only_sales.percent_change),
+            (Decimal("1"), Decimal("2"), Decimal("-1"),
+             Decimal("-50.00")))
+        self.assertEqual(
+            (r.total_completed_sales.current,
+             r.total_completed_sales.prior,
+             r.total_completed_sales.delta,
+             r.total_completed_sales.percent_change),
+            (Decimal("6"), Decimal("5"), Decimal("1"),
+             Decimal("20.00")))
+        self.assertEqual(
+            (r.retail_quantity.current, r.retail_quantity.prior,
+             r.retail_quantity.delta, r.retail_quantity.percent_change),
+            (Decimal("2"), Decimal("1"), Decimal("1"),
+             Decimal("100.00")))
+        # Verbatim from the source service for both windows.
+        direct = retail_attach_rate(self.salon, days=7, end_date=END)
+        prior_direct = retail_attach_rate(
+            self.salon, days=7, end_date=date(2026, 11, 1))
+        for name in ("unattached_service_sales", "product_only_sales",
+                     "total_completed_sales", "retail_quantity"):
+            self.assertEqual(getattr(r, name).current,
+                             Decimal(getattr(direct, name)))
+            self.assertEqual(getattr(r, name).prior,
+                             Decimal(getattr(prior_direct, name)))
+        text = export_prior_attach_csv(self.salon, START, END)
+        rows = {x["metric"]: x for x in csv.DictReader(io.StringIO(text))}
+        self.assertEqual(len(rows), 10)
+        self.assertEqual(
+            (rows["unattached_service_sales"]["current"],
+             rows["unattached_service_sales"]["prior"],
+             rows["unattached_service_sales"]["delta"],
+             rows["unattached_service_sales"]["percent_change"]),
+            ("3", "2", "1", "50.00"))
+        self.assertEqual(
+            (rows["product_only_sales"]["current"],
+             rows["product_only_sales"]["delta"]), ("1", "-1"))
+        self.assertEqual(rows["total_completed_sales"]["current"], "6")
+        self.assertEqual(rows["retail_quantity"]["current"], "2")
+        out = io.StringIO()
+        call_command("export_prior_attach_category",
+                     salon_id=self.salon.pk, kind="attach",
+                     start_date="2026-11-02", end_date="2026-11-08",
+                     stdout=out)
+        self.assertIn("retail_quantity", out.getvalue())
+        self.assertIn("product_only_sales", out.getvalue())
+
+    def test_attach_retail_quantity_counts_units_not_lines(self):
+        sale = self._sale(CUR, [(S, "100.00", self.cut),
+                                (P, "10.00", None)])
+        SaleItem.objects.filter(sale=sale, kind=P).update(quantity=3)
+        self._sale(PRI, [(S, "100.00", self.cut), (P, "10.00", None)])
+        r = prior_period_attach_rate(self.salon, START, END)
+        self.assertEqual(
+            (r.retail_quantity.current, r.retail_quantity.prior,
+             r.retail_quantity.delta, r.retail_quantity.percent_change),
+            (Decimal("3"), Decimal("1"), Decimal("2"),
+             Decimal("200.00")))
+
     def test_category_delta_and_single_period_rows(self):
         self._seed()
         r = prior_period_category_mix(self.salon, START, END)

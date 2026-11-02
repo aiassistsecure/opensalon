@@ -52,6 +52,10 @@ class AttachPriorComparison:
     service_revenue: ComponentDelta
     retail_revenue: ComponentDelta
     total_retail_revenue: ComponentDelta
+    unattached_service_sales: ComponentDelta
+    product_only_sales: ComponentDelta
+    total_completed_sales: ComponentDelta
+    retail_quantity: ComponentDelta
 
     @property
     def previous(self):
@@ -161,6 +165,19 @@ def prior_period_attach_rate(salon, start_date=None, end_date=None,
         total_retail_revenue=_delta(
             "total_retail_revenue", current.total_retail_revenue,
             prior.total_retail_revenue),
+        unattached_service_sales=_count_delta(
+            "unattached_service_sales",
+            current.unattached_service_sales,
+            prior.unattached_service_sales),
+        product_only_sales=_count_delta(
+            "product_only_sales", current.product_only_sales,
+            prior.product_only_sales),
+        total_completed_sales=_count_delta(
+            "total_completed_sales", current.total_completed_sales,
+            prior.total_completed_sales),
+        retail_quantity=_count_delta(
+            "retail_quantity", current.retail_quantity,
+            prior.retail_quantity),
     )
 
 
@@ -217,8 +234,13 @@ PRIOR_CATEGORY_FIELDNAMES = [
 _ATTACH_METRICS = (
     "service_sales", "attached_sales", "attach_rate_percent",
     "service_revenue", "retail_revenue", "total_retail_revenue",
+    "unattached_service_sales", "product_only_sales",
+    "total_completed_sales", "retail_quantity",
 )
-_COUNT_METRICS = ("service_sales", "attached_sales")
+_COUNT_METRICS = (
+    "service_sales", "attached_sales", "unattached_service_sales",
+    "product_only_sales", "total_completed_sales", "retail_quantity",
+)
 
 
 def _money(value):
