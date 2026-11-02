@@ -170,20 +170,19 @@ class BookingPageTests(TestCase):
         self.assertContains(response, 'data-name="signature cut"')
         self.assertContains(response, 'id="bookNoMatch"')
 
-    def test_search_filter_and_its_hidden_rule_are_pinned(self):
+    def test_search_gathers_matches_and_restores_the_doors(self):
         from pathlib import Path
 
         root = Path(__file__).parent
         template = (root / "templates" / "webui" / "book.html").read_text()
-        css = (root / "static" / "webui" / "webui.css").read_text()
-        # Every token must match the row's name; rows hide via
-        # the hidden attribute...
+        # Every token must match the row's name; matches are
+        # gathered into the lobby's results area (the buttons
+        # move — one button, one truth, wherever it stands),
+        # and clearing the box rehomes them behind the doors.
         self.assertIn("tokens.every", template)
-        self.assertIn("row.hidden = !hit", template)
-        # ...which only bites because the stylesheet says so —
-        # .book-service is display:flex, which would otherwise
-        # override the hidden attribute's own display:none.
-        self.assertIn(".book-service[hidden]{display:none}", css)
+        self.assertIn("results.appendChild(row)", template)
+        self.assertIn("function rehome()", template)
+        self.assertIn('id="searchResults"', template)
 
     def test_menu_groups_services_by_category(self):
         from saloncore.models import Service, ServiceCategory
@@ -215,8 +214,9 @@ class BookingPageTests(TestCase):
         # page; the toast stack stands ready; a confirm bounce
         # can resume at the times room.
         for marker in (
-            'id="roomMenu"', 'id="roomTimes"', 'id="roomDetails"',
-            'id="roomDone"', 'id="bookToasts"',
+            'id="roomMenu"', 'id="roomCategory"', 'id="roomTimes"',
+            'id="roomDetails"', 'id="roomDone"', 'id="bookToasts"',
+            'id="catDoors"', 'id="serviceBank"',
         ):
             self.assertContains(response, marker)
         template = (
@@ -226,9 +226,41 @@ class BookingPageTests(TestCase):
         # by go(), over rooms shown and hidden in place.
         self.assertIn("EDGES", template)
         self.assertIn("function go(edge)", template)
+        self.assertIn("pickCategory", template)
         self.assertIn("pickService", template)
         self.assertIn("booked", template)
         self.assertIn("function toast(", template)
+
+    def test_lobby_shows_category_doors_not_the_whole_menu(self):
+        # The first layer is doors and a search box: each
+        # category renders as one door carrying its service
+        # count, and the service buttons themselves wait in
+        # the bank for a room to borrow them.
+        response = self.client.get(reverse("webui:book"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "book-catdoor")
+        self.assertContains(response, 'data-cat="0"')
+        self.assertContains(response, "1 service")
+        self.assertContains(response, 'id="catServices"')
+
+    def test_slot_loads_drop_stale_responses(self):
+        # The stale-name bug the founder hit: pick a service,
+        # back out, pick another — the first fetch could land
+        # last and repaint the room with the previous service.
+        # Every fetch carries its birth request number and a
+        # superseded response is dropped; the heading is set
+        # from the tapped button before any fetch lands.
+        from pathlib import Path
+
+        template = (
+            Path(__file__).parent / "templates" / "webui" / "book.html"
+        ).read_text()
+        self.assertIn("var req = ++state.req", template)
+        self.assertIn("if (req !== state.req) return;", template)
+        self.assertIn(
+            'room("timesService").textContent = nameEl.textContent',
+            template,
+        )
 
     def test_confirm_json_mode_answers_instead_of_redirecting(self):
         payload = {

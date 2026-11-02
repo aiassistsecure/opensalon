@@ -20,30 +20,56 @@
        page. Navigation walks the edge table below — rooms are
        shown and hidden in place with depth motion, never
        fetched as pages. The only network edges are data:
-       the slot grid for a chosen service, and the confirm. -->
+       the slot grid for a chosen service, and the confirm.
+       The menu is two rooms deep on purpose: the lobby shows
+       only categories and a name search — a real menu runs
+       near a hundred services, and nobody should have to
+       scroll all of them to find one. A category door opens
+       the category room, which holds just that category's
+       services; searching gathers the matches into the lobby
+       instead. Every service button is rendered once, in the
+       bank below, and the rooms borrow them by moving the
+       nodes — one button, one truth, wherever it stands. -->
   <section class="book-card book-room" id="roomMenu">
     <h2 class="book-h">Choose a service</h2>
-    <input type="search" id="bookSearch" class="book-search" placeholder="Search services…" autocomplete="off" aria-label="Search services">
+    <input type="search" id="bookSearch" class="book-search" placeholder="Search services by name…" autocomplete="off" aria-label="Search services by name">
+    <div id="catDoors" class="book-doors">
+      {% for group in groups %}
+      <button type="button" class="book-catdoor" data-cat="{{ forloop.counter0 }}" data-catname="{{ group.name|default:'More services' }}">
+        <span class="book-catdoor-name">{{ group.name|default:"More services" }}</span>
+        <span class="book-catdoor-meta">{{ group.rows|length }} service{{ group.rows|length|pluralize }} ›</span>
+      </button>
+      {% empty %}
+      <p class="book-note">No services are bookable online yet.</p>
+      {% endfor %}
+    </div>
+    <div id="searchResults" class="book-services" hidden></div>
+    <p class="book-note" id="bookNoMatch" hidden>No services match your search.</p>
+  </section>
+
+  <section class="book-card book-room" id="roomCategory" hidden>
+    <button type="button" class="book-back" data-go="backToCats">← All categories</button>
+    <h2 class="book-h" id="catTitle">Category</h2>
+    <div id="catServices" class="book-services"></div>
+  </section>
+
+  <div id="serviceBank" hidden>
     {% for group in groups %}
-    <div class="book-group">
-      {% if group.name %}<h3 class="book-cat">{{ group.name }}</h3>{% endif %}
+    <div class="book-group" data-group="{{ forloop.counter0 }}">
       <div class="book-services">
         {% for row in group.rows %}
-        <button type="button" class="book-service" data-pick="{{ row.service.pk }}" data-name="{{ row.service.name|lower }}">
+        <button type="button" class="book-service" data-pick="{{ row.service.pk }}" data-name="{{ row.service.name|lower }}" data-home="{{ forloop.parentloop.counter0 }}">
           <span class="book-service-name">{{ row.service.name }}</span>
           <span class="book-service-meta">{{ row.minutes }} min{% if row.from_label %} · from {{ row.from_label }}{% endif %}</span>
         </button>
         {% endfor %}
       </div>
     </div>
-    {% empty %}
-    <p class="book-note">No services are bookable online yet.</p>
     {% endfor %}
-    <p class="book-note" id="bookNoMatch" hidden>No services match your search.</p>
-  </section>
+  </div>
 
   <section class="book-card book-room" id="roomTimes" hidden>
-    <button type="button" class="book-back" data-go="backToMenu">← All services</button>
+    <button type="button" class="book-back" id="timesBack">← All services</button>
     <h2 class="book-h" id="timesService">Choose a time</h2>
     <div class="book-days" id="timesDays"></div>
     <p class="book-note book-loading" id="timesLoading">Finding open times…</p>
@@ -94,11 +120,18 @@
   /* The edge table: every way a guest can move through the
      enclave, named once. go() walks an edge — the room behind
      recedes, the room ahead arrives — and nothing else in the
-     page knows how rooms change. */
+     page knows how rooms change. The room that recedes is
+     the one the guest is actually standing in (currentRoom):
+     a pick can start from the lobby's search results or from
+     a category room, and the edge names the destination, not
+     the one true origin. */
   var EDGES = {
-    pickService: { from: "roomMenu", to: "roomTimes" },
+    pickCategory: { from: "roomMenu", to: "roomCategory" },
+    backToCats: { from: "roomCategory", to: "roomMenu" },
+    pickService: { from: "roomCategory", to: "roomTimes" },
+    backToCategory: { from: "roomTimes", to: "roomCategory" },
+    backToLobby: { from: "roomTimes", to: "roomMenu" },
     pickTime: { from: "roomTimes", to: "roomDetails" },
-    backToMenu: { from: "roomTimes", to: "roomMenu" },
     backToTimes: { from: "roomDetails", to: "roomTimes" },
     booked: { from: "roomDetails", to: "roomDone" },
     again: { from: "roomDone", to: "roomMenu" }
@@ -108,8 +141,9 @@
   function go(edge) {
     var e = EDGES[edge];
     if (!e) return;
-    var from = room(e.from), to = room(e.to);
+    var to = room(e.to);
     if (e.to === "roomDone" || e.from === "roomDone") {
+      var fromDone = room(e.from);
       if (e.to === "roomDone") {
         to.hidden = false;
         requestAnimationFrame(function () {
@@ -117,12 +151,13 @@
         });
       } else {
         to.hidden = false;
-        from.classList.remove("open");
-        setTimeout(function () { from.hidden = true; }, 240);
+        fromDone.classList.remove("open");
+        setTimeout(function () { fromDone.hidden = true; }, 240);
       }
       currentRoom = e.to;
       return;
     }
+    var from = room(currentRoom);
     from.classList.add("room-leave");
     setTimeout(function () {
       from.hidden = true;
@@ -148,51 +183,114 @@
     }, 4600);
   }
 
-  /* The menu search: purely local, every token must appear in
-     the service's name; a category group hides when nothing
-     inside it survives, and an empty result says so plainly. */
+  /* The bank: every service button lives in its category's
+     group in #serviceBank, and the rooms borrow buttons by
+     moving them. rehome() puts every button back; a room
+     then gathers the ones it shows. A button's data-home is
+     its group, so no button is ever lost or duplicated. */
+  var bankGroups = Array.prototype.slice.call(
+    document.querySelectorAll("#serviceBank .book-group")
+  );
+  var allRows = Array.prototype.slice.call(
+    document.querySelectorAll(".book-service[data-pick]")
+  );
+  function rehome() {
+    allRows.forEach(function (row) {
+      var group = bankGroups[+row.getAttribute("data-home")];
+      if (group) group.querySelector(".book-services").appendChild(row);
+    });
+  }
+  function openCategory(idx, name) {
+    rehome();
+    var host = room("catServices");
+    var group = bankGroups[idx];
+    if (group) {
+      Array.prototype.slice.call(
+        group.querySelectorAll(".book-service")
+      ).forEach(function (row) { host.appendChild(row); });
+    }
+    state.catName = name;
+    room("catTitle").textContent = name;
+    go("pickCategory");
+  }
+  document.querySelectorAll(".book-catdoor").forEach(function (door) {
+    door.addEventListener("click", function () {
+      openCategory(
+        +door.getAttribute("data-cat"), door.getAttribute("data-catname")
+      );
+    });
+  });
+
+  /* The lobby search: purely local, every token must appear
+     in the service's name. Typing swaps the category doors
+     for the gathered matches; clearing the box puts the
+     doors back. An empty result says so plainly. */
   (function () {
     var input = document.getElementById("bookSearch");
     if (!input) return;
-    var rows = Array.prototype.slice.call(
-      document.querySelectorAll(".book-service[data-name]")
-    );
-    var groups = Array.prototype.slice.call(
-      document.querySelectorAll(".book-group")
-    );
+    var doors = room("catDoors");
+    var results = room("searchResults");
     var noMatch = document.getElementById("bookNoMatch");
     input.addEventListener("input", function () {
       var tokens = input.value.toLowerCase().split(/\s+/).filter(Boolean);
+      if (!tokens.length) {
+        rehome();
+        doors.hidden = false;
+        results.hidden = true;
+        if (noMatch) noMatch.hidden = true;
+        return;
+      }
+      rehome();
       var shown = 0;
-      rows.forEach(function (row) {
+      allRows.forEach(function (row) {
         var hit = tokens.every(function (t) {
           return row.getAttribute("data-name").indexOf(t) !== -1;
         });
-        row.hidden = !hit;
-        if (hit) shown += 1;
+        if (hit) { results.appendChild(row); shown += 1; }
       });
-      groups.forEach(function (group) {
-        group.hidden = !group.querySelector(".book-service:not([hidden])");
-      });
+      doors.hidden = true;
+      results.hidden = false;
       if (noMatch) noMatch.hidden = shown !== 0;
     });
   })();
+  function resetMenu() {
+    var input = room("bookSearch");
+    if (input) input.value = "";
+    rehome();
+    room("catDoors").hidden = false;
+    room("searchResults").hidden = true;
+    room("bookNoMatch").hidden = true;
+  }
 
   /* The journey itself: pick a service (one data fetch for
      the whole fortnight), walk days inside the room, pick a
      time, confirm — the answer comes back as data and the
      page speaks it: a toast, a step back, or the door to the
-     done room. Nothing a guest does here ends in silence. */
+     done room. Nothing a guest does here ends in silence.
+     State law: the newest pick is the only truth. Every
+     slot fetch carries the request number it was born with,
+     and a response that lands after a newer pick is dropped
+     on the floor — a slow fetch for the last service must
+     never repaint this service's room (the lag that left a
+     stale name on the times room after backing out and
+     picking another service). The heading is set from the
+     button the guest actually tapped, immediately, so the
+     room names their pick before any fetch lands. */
   var SLOTS_URL = "{% url 'webui:book_slots' %}";
-  var state = { serviceId: null, payload: null, dayIdx: 0 };
+  var state = {
+    serviceId: null, payload: null, dayIdx: 0,
+    req: 0, viaSearch: false, catName: ""
+  };
 
   function loadSlots(serviceId, then) {
+    var req = ++state.req;
     room("timesLoading").hidden = false;
     room("timesSections").innerHTML = "";
     room("timesDays").innerHTML = "";
     fetch(SLOTS_URL + "?service=" + serviceId, { headers: { "Accept": "application/json" } })
       .then(function (r) { return r.json(); })
       .then(function (payload) {
+        if (req !== state.req) return;
         state.payload = payload;
         state.dayIdx = 0;
         for (var i = 0; i < payload.days.length; i++) {
@@ -205,6 +303,7 @@
         if (then) then();
       })
       .catch(function () {
+        if (req !== state.req) return;
         room("timesLoading").hidden = true;
         toast("Open times couldn't load — check your connection and try again.", true);
       });
@@ -263,17 +362,35 @@
       day.label + " at " + start.label;
     go("pickTime");
   }
-  document.querySelectorAll(".book-service[data-pick]").forEach(function (btn) {
-    btn.addEventListener("click", function () {
-      state.serviceId = btn.getAttribute("data-pick");
-      go("pickService");
-      loadSlots(state.serviceId);
-    });
+  /* One delegated ear for every service button, wherever a
+     room has gathered it — the bank, a category, the search
+     results all speak through the same pick. */
+  document.addEventListener("click", function (ev) {
+    var btn = ev.target;
+    while (btn && !(btn.getAttribute && btn.getAttribute("data-pick"))) {
+      btn = btn.parentElement;
+    }
+    if (!btn) return;
+    state.serviceId = btn.getAttribute("data-pick");
+    state.viaSearch = !!btn.closest("#searchResults");
+    var nameEl = btn.querySelector(".book-service-name");
+    if (nameEl) room("timesService").textContent = nameEl.textContent;
+    room("timesBack").textContent = state.viaSearch
+      ? "← All services"
+      : "← " + (state.catName || "All services");
+    go("pickService");
+    loadSlots(state.serviceId);
+  });
+  room("timesBack").addEventListener("click", function () {
+    go(state.viaSearch ? "backToLobby" : "backToCategory");
   });
   document.querySelectorAll("[data-go]").forEach(function (btn) {
     btn.addEventListener("click", function () { go(btn.getAttribute("data-go")); });
   });
-  room("againBtn").addEventListener("click", function () { go("again"); });
+  room("againBtn").addEventListener("click", function () {
+    resetMenu();
+    go("again");
+  });
 
   var form = room("bookForm");
   form.addEventListener("submit", function (ev) {
