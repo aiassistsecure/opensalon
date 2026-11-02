@@ -274,10 +274,16 @@
      the service's own duration, past starts dropped — so
      the times room paints in the same gesture: no fetch to
      wait on, and nothing stale to drop, because a pick is a
-     computation, not a request. The one re-read is
-     refreshAvailability(), after a confirm answers "taken":
-     the picture changed under the guest, so it loads once
-     more and the room re-sorts. The heading is set from the
+     computation, not a request. Two events keep the picture
+     honest after it loads: a confirm that lands a booking
+     cuts the booked span out of the picture on the spot
+     (consumeBookedSpan — the slot the guest just took goes
+     dark in this page, exactly as a fresh load would paint
+     it, instead of staying lit for a second walk through
+     the flow), and a confirm that answers "taken" re-reads
+     the picture once (refreshAvailability): the picture
+     changed under the guest, so it loads once more and the
+     room re-sorts. The heading is set from the
      button the guest actually tapped, immediately, so the
      room names their pick before anything else moves. */
   var AVAIL_URL = "{% url 'webui:book_availability' %}";
@@ -415,6 +421,32 @@
       })
       .catch(function () { if (then) then(); });
   }
+  /* Cut the just-booked span out of the resident picture.
+     The server's answer makes the booking real — fresh or
+     "already yours", the span is occupied either way — and
+     the picture must agree before the guest can pick again:
+     a slot that stays lit after it is taken lets the whole
+     confirm walk run a second time for a time that is no
+     longer there (founder, 2026-11-02). Span surgery mirrors
+     the server's subtract: an overlap splits a span, a cover
+     drops it, an empty remainder disappears. */
+  function consumeBookedSpan(fd) {
+    if (!AVAIL || !AVAIL.free) return;
+    var svc = AVAIL.services[String(fd.get("service"))];
+    if (!svc) return;
+    var day = fd.get("day"), staffId = String(fd.get("staff"));
+    var spans = (AVAIL.free[day] || {})[staffId];
+    if (!spans) return;
+    var from = toMin(fd.get("time")), to = from + svc.minutes;
+    var kept = [];
+    spans.forEach(function (span) {
+      var s = toMin(span[0]), e = toMin(span[1]);
+      if (to <= s || from >= e) { kept.push(span); return; }
+      if (from > s) kept.push([span[0], toHHMM(from)]);
+      if (to < e) kept.push([toHHMM(to), span[1]]);
+    });
+    AVAIL.free[day][staffId] = kept;
+  }
   function renderDays() {
     var strip = room("timesDays");
     strip.innerHTML = "";
@@ -511,13 +543,15 @@
     var btn = room("confirmBtn");
     btn.disabled = true;
     btn.textContent = "Booking…";
-    fetch(form.action, { method: "POST", body: new FormData(form) })
+    var fd = new FormData(form);
+    fetch(form.action, { method: "POST", body: fd })
       .then(function (r) { return r.json(); })
       .then(function (body) {
         delete form.dataset.busy;
         btn.disabled = false;
         btn.textContent = "Confirm booking";
         if (body.ok) {
+          consumeBookedSpan(fd);
           room("doneSummary").textContent =
             body.summary.service + " with " + body.summary.staff + " — " +
             body.summary.when + ". See you soon, " +
