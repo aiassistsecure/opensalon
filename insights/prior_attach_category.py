@@ -12,6 +12,21 @@ with the missing side zero, keyed as the service groups them.
 Rows order by current revenue descending, then name ascending.
 CSV helpers follow :mod:`insights.prior_period_export` (Exit
 Principle): money/percentages to two places, ``None`` as empty.
+
+The attach comparison also carries ``daily``: a tuple of
+offset-aligned per-day entries (day 1 vs day 1, day 2 vs day 2,
+…, following :mod:`insights.prior_trend`'s per-day shape), taken
+verbatim from :func:`insights.attach_rate.retail_attach_rate`'s
+own ``RetailAttachRate.daily`` series for both windows — no new
+counting path. Each entry carries its current and prior
+:class:`~insights.attach_rate.AttachDay` plus count/money
+deltas for ``service_sales``, ``attached_sales``,
+``retail_revenue``, and ``service_revenue``; ``attach_rate`` is
+a derived property of the source's ``AttachDay`` and follows
+from the compared counts, so it carries no delta of its own.
+The attach CSV gains one ``daily_<metric>`` row per entry and
+metric, distinguished by appended ``offset`` / ``current_date``
+/ ``prior_date`` columns (empty on the summary rows).
 """
 import csv
 import io
@@ -19,13 +34,14 @@ from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
 
-from .attach_rate import retail_attach_rate
+from .attach_rate import AttachDay, retail_attach_rate
 from .category_mix import category_mix
 from .prior_period import ComponentDelta, _as_window_date, _delta
 from .services import ZERO
 
 __all__ = [
-    "AttachPriorComparison", "CategoryPriorDelta",
+    "AttachPriorComparison", "AttachDayDelta", "AttachPriorDayDelta",
+    "PriorAttachDayDelta", "CategoryPriorDelta",
     "PriorCategoryMixComparison", "prior_period_attach_rate",
     "prior_period_category_mix", "compare_attach_rate",
     "compare_category_mix", "PRIOR_ATTACH_FIELDNAMES",
@@ -38,6 +54,57 @@ _CENTS = Decimal("0.01")
 
 def _count_delta(component, current, prior):
     return _delta(component, Decimal(current), Decimal(prior))
+
+
+_DAILY_FIELDS = (
+    "service_sales", "attached_sales", "retail_revenue",
+    "service_revenue",
+)
+
+
+@dataclass(frozen=True)
+class AttachDayDelta:
+    """One offset-aligned per-day pair: current day vs prior day."""
+
+    offset: int
+    current: AttachDay
+    prior: AttachDay
+    service_sales: ComponentDelta
+    attached_sales: ComponentDelta
+    retail_revenue: ComponentDelta
+    service_revenue: ComponentDelta
+
+    @property
+    def previous(self):
+        return self.prior
+
+    @property
+    def date(self):
+        return self.current.date
+
+    @property
+    def current_date(self):
+        return self.current.date
+
+    @property
+    def prior_date(self):
+        return self.prior.date
+
+    @property
+    def current_attach_rate(self):
+        return self.current.attach_rate
+
+    @property
+    def prior_attach_rate(self):
+        return self.prior.attach_rate
+
+    @property
+    def deltas(self):
+        return {name: getattr(self, name) for name in _DAILY_FIELDS}
+
+
+AttachPriorDayDelta = AttachDayDelta
+PriorAttachDayDelta = AttachDayDelta
 
 
 @dataclass(frozen=True)
@@ -56,10 +123,23 @@ class AttachPriorComparison:
     product_only_sales: ComponentDelta
     total_completed_sales: ComponentDelta
     retail_quantity: ComponentDelta
+    daily: tuple = ()
 
     @property
     def previous(self):
         return self.prior
+
+    @property
+    def per_day(self):
+        return self.daily
+
+    @property
+    def by_day(self):
+        return self.daily
+
+    @property
+    def by_offset(self):
+        return {r.offset: r for r in self.daily}
 
     @property
     def start_date(self):
@@ -146,6 +226,23 @@ def prior_period_attach_rate(salon, start_date=None, end_date=None,
         salon, start_date, end_date, kwargs)
     current = retail_attach_rate(salon, days=length, end_date=end)
     prior = retail_attach_rate(salon, days=length, end_date=p_end)
+    daily = tuple(
+        AttachDayDelta(
+            offset=offset, current=cur, prior=pri,
+            service_sales=_count_delta(
+                "service_sales", cur.service_sales, pri.service_sales),
+            attached_sales=_count_delta(
+                "attached_sales", cur.attached_sales,
+                pri.attached_sales),
+            retail_revenue=_delta(
+                "retail_revenue", cur.retail_revenue,
+                pri.retail_revenue),
+            service_revenue=_delta(
+                "service_revenue", cur.service_revenue,
+                pri.service_revenue),
+        )
+        for offset, (cur, pri) in enumerate(
+            zip(current.daily, prior.daily)))
     return AttachPriorComparison(
         current=current, prior=prior,
         service_sales=_count_delta(
@@ -178,6 +275,7 @@ def prior_period_attach_rate(salon, start_date=None, end_date=None,
         retail_quantity=_count_delta(
             "retail_quantity", current.retail_quantity,
             prior.retail_quantity),
+        daily=daily,
     )
 
 
@@ -222,7 +320,8 @@ compare_category_mix = prior_period_category_mix
 PRIOR_ATTACH_FIELDNAMES = [
     "metric", "current_start_date", "current_end_date",
     "prior_start_date", "prior_end_date", "current", "prior",
-    "delta", "percent_change",
+    "delta", "percent_change", "offset", "current_date",
+    "prior_date",
 ]
 PRIOR_CATEGORY_FIELDNAMES = [
     "category_name", "current_start_date", "current_end_date",
@@ -277,16 +376,37 @@ def _bounds(result):
 
 def export_prior_attach_csv(salon, start_date=None, end_date=None,
                             **kwargs):
-    """Return the attach prior-period comparison as a CSV string."""
+    """Return the attach prior-period comparison as a CSV string.
+
+    Summary metric rows first (``offset`` / ``current_date`` /
+    ``prior_date`` empty), then one ``daily_<metric>`` row per
+    offset-aligned per-day entry and daily metric, carrying that
+    entry's offset and current/prior dates.
+    """
     result = prior_period_attach_rate(salon, start_date, end_date,
                                       **kwargs)
-    return _write([{
+    rows = [{
         "metric": name, **_bounds(result),
         "current": _fmt(name, getattr(result, name).current),
         "prior": _fmt(name, getattr(result, name).prior),
         "delta": _fmt(name, getattr(result, name).delta),
         "percent_change": _pct(getattr(result, name).percent_change),
-    } for name in _ATTACH_METRICS], PRIOR_ATTACH_FIELDNAMES)
+        "offset": "", "current_date": "", "prior_date": "",
+    } for name in _ATTACH_METRICS]
+    for entry in result.daily:
+        for name in _DAILY_FIELDS:
+            comp = getattr(entry, name)
+            rows.append({
+                "metric": f"daily_{name}", **_bounds(result),
+                "current": _fmt(name, comp.current),
+                "prior": _fmt(name, comp.prior),
+                "delta": _fmt(name, comp.delta),
+                "percent_change": _pct(comp.percent_change),
+                "offset": entry.offset,
+                "current_date": entry.current_date.isoformat(),
+                "prior_date": entry.prior_date.isoformat(),
+            })
+    return _write(rows, PRIOR_ATTACH_FIELDNAMES)
 
 
 def export_prior_category_mix_csv(salon, start_date=None, end_date=None,
