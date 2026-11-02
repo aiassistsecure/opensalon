@@ -1,8 +1,15 @@
 """CSV export of the prior-week roster week comparison.
 
 Backend only, read-only, built ON TOP of :mod:`team.prior_roster_week`
-— figures verbatim. First row is the salon total, then one row per
-staff member. Percent changes render to two places; ``None`` empty.
+— figures verbatim. Rows: the salon total first
+(``section="total"``), then one row per staff member
+(``section="staff"``), then one row per weekday
+(``section="weekday"``; ``date`` is the current week's day,
+``prior_date`` its prior-week counterpart, ``weekday`` Monday=0).
+Weekday rows carry ``total_minutes`` + ``working_staff``; their
+``working_days`` columns are empty, as are staff/total rows'
+``working_staff`` columns. Percent changes render to two
+places; ``None`` empty.
 """
 import csv
 import io
@@ -14,10 +21,13 @@ __all__ = ["PRIOR_ROSTER_WEEK_EXPORT_FIELDNAMES", "PRIOR_ROSTER_WEEK_FIELDNAMES"
            "export_prior_roster_week_csv", "prior_roster_week_csv",
            "export_prior_period_roster_week_csv"]
 _METRICS = ["total_minutes", "working_days"]
+_WEEKDAY_METRICS = ["total_minutes", "working_staff"]
+_ALL_METRICS = _METRICS + ["working_staff"]
 PRIOR_ROSTER_WEEK_EXPORT_FIELDNAMES = (
     ["salon_id", "current_week_start", "current_week_end", "prior_week_start",
-     "prior_week_end", "staff_member_id", "staff_name"]
-    + [n for m in _METRICS for n in
+     "prior_week_end", "section", "staff_member_id", "staff_name",
+     "weekday", "weekday_name", "date", "prior_date"]
+    + [n for m in _ALL_METRICS for n in
        (f"current_{m}", f"prior_{m}", f"{m}_delta", f"{m}_percent_change")])
 PRIOR_ROSTER_WEEK_FIELDNAMES = PRIOR_ROSTER_WEEK_EXPORT_FIELDNAMES
 EXPORT_FIELDNAMES = PRIOR_ROSTER_WEEK_EXPORT_FIELDNAMES
@@ -34,18 +44,33 @@ def _rows(result):
             "prior_week_start": result.prior_week_start.isoformat() if result.prior_week_start else "",
             "prior_week_end": result.prior_week_end.isoformat() if result.prior_week_end else ""}
 
-    def build(staff_id, staff_name, source):
-        row = {**base, "staff_member_id": staff_id, "staff_name": staff_name}
-        for m in _METRICS:
-            d = getattr(source, m)
-            row[f"current_{m}"] = d.current
-            row[f"prior_{m}"] = d.prior
-            row[f"{m}_delta"] = d.delta
-            row[f"{m}_percent_change"] = _pct(d.percent_change)
+    def build(section, staff_id, staff_name, weekday, source, metrics):
+        row = {**base, "section": section, "staff_member_id": staff_id,
+               "staff_name": staff_name,
+               "weekday": weekday.weekday if weekday else "",
+               "weekday_name": weekday.weekday_name if weekday else "",
+               "date": weekday.day.isoformat() if weekday and weekday.day else "",
+               "prior_date": weekday.prior_day.isoformat() if weekday and weekday.prior_day else ""}
+        for m in _ALL_METRICS:
+            if m in metrics:
+                d = getattr(source, m)
+                row[f"current_{m}"] = d.current
+                row[f"prior_{m}"] = d.prior
+                row[f"{m}_delta"] = d.delta
+                row[f"{m}_percent_change"] = _pct(d.percent_change)
+            else:
+                row[f"current_{m}"] = ""
+                row[f"prior_{m}"] = ""
+                row[f"{m}_delta"] = ""
+                row[f"{m}_percent_change"] = ""
         return row
 
-    return [build("", "", result)] + [
-        build(s.staff_member_id, s.staff_name, s) for s in result.by_staff]
+    rows = [build("total", "", "", None, result, _METRICS)]
+    rows += [build("staff", s.staff_member_id, s.staff_name, None, s,
+                   _METRICS) for s in result.by_staff]
+    rows += [build("weekday", "", "", w, w, _WEEKDAY_METRICS)
+             for w in result.by_weekday]
+    return rows
 
 
 def export_prior_roster_week(*args, **kwargs):

@@ -9,8 +9,14 @@ the current week's Monday. Each metric (per-staff and salon
 ``prior``, ``delta`` and ``percent_change`` (Decimal, 2dp,
 ROUND_HALF_UP), ``None`` when prior is zero. ``by_staff`` is the
 union of both weeks' entries, ordered by display name then id,
-with zeros on the missing side. An invalid week start or a
-missing salon raises ``ValueError``.
+with zeros on the missing side. ``by_weekday`` carries the
+salon totals per weekday too: for each of Monday–Sunday, the
+rostered ``total_minutes`` and the ``working_staff`` count,
+aggregated verbatim from ``roster_week``'s own per-staff
+``days`` entries for both weeks — no new counting path. Both
+weeks start on a Monday, so entries are keyed BY WEEKDAY
+(Monday=0 through Sunday=6), never offset-aligned. An invalid
+week start or a missing salon raises ``ValueError``.
 """
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -20,12 +26,20 @@ from team.availability import _tz
 from team.roster_week import StaffWeekRoster, roster_week
 
 __all__ = ["MetricDelta", "ComponentDelta", "RosterWeekDelta",
-           "StaffPriorRosterWeek", "PriorRosterWeekReport",
+           "StaffPriorRosterWeek", "WeekdayRosterTotal",
+           "WeekdayPriorRosterWeek", "WeekdayRosterWeekDelta",
+           "RosterWeekWeekdayDelta", "WEEKDAY_NAMES",
+           "PriorRosterWeekReport",
            "PriorRosterWeek", "prior_roster_week_report",
            "prior_roster_week", "prior_period_roster_week",
            "compare_roster_week", "get_prior_roster_week"]
 _CENT = Decimal("0.01")
 _METRICS = ("total_minutes", "working_days")
+_WEEKDAY_METRICS = ("total_minutes", "working_staff")
+WEEKDAY_NAMES = (
+    "Monday", "Tuesday", "Wednesday", "Thursday",
+    "Friday", "Saturday", "Sunday",
+)
 
 
 @dataclass(frozen=True)
@@ -109,6 +123,62 @@ class StaffPriorRosterWeek:
 
 
 @dataclass(frozen=True)
+class WeekdayRosterTotal:
+    """One weekday's salon totals, aggregated from ``days``."""
+
+    weekday: int = 0
+    weekday_name: str = ""
+    day: object = None
+    total_minutes: int = 0
+    working_staff: int = 0
+
+    date = property(lambda self: self.day)
+    staff_count = property(lambda self: self.working_staff)
+    working_staff_count = property(lambda self: self.working_staff)
+
+    @property
+    def is_working(self): return self.working_staff > 0
+
+    def as_dict(self):
+        return {"weekday": self.weekday, "weekday_name": self.weekday_name,
+                "day": self.day.isoformat() if self.day else None,
+                "total_minutes": self.total_minutes,
+                "working_staff": self.working_staff}
+
+
+@dataclass(frozen=True)
+class WeekdayPriorRosterWeek:
+    """One weekday's salon totals in both weeks, with changes."""
+
+    weekday: int = 0
+    weekday_name: str = ""
+    day: object = None
+    prior_day: object = None
+    current: object = None
+    prior: object = None
+    total_minutes: MetricDelta = None
+    working_staff: MetricDelta = None
+
+    date = property(lambda self: self.day)
+    current_date = property(lambda self: self.day)
+    prior_date = property(lambda self: self.prior_day)
+    staff_count = property(lambda self: self.working_staff)
+    working_staff_count = property(lambda self: self.working_staff)
+
+    def as_dict(self):
+        iso = lambda d: d.isoformat() if d else None  # noqa: E731
+        return {"weekday": self.weekday, "weekday_name": self.weekday_name,
+                "day": iso(self.day), "date": iso(self.day),
+                "prior_day": iso(self.prior_day),
+                "prior_date": iso(self.prior_day),
+                **{m: getattr(self, m).as_dict() for m in _WEEKDAY_METRICS}}
+
+
+WeekdayRosterWeekDelta = WeekdayPriorRosterWeek
+RosterWeekWeekdayDelta = WeekdayPriorRosterWeek
+
+
+@dataclass(frozen=True)
 class PriorRosterWeekReport:
     salon: object = None
     week_start: object = None
@@ -120,9 +190,11 @@ class PriorRosterWeekReport:
     total_minutes: MetricDelta = None
     working_days: MetricDelta = None
     by_staff: tuple = field(default_factory=tuple)
+    by_weekday: tuple = field(default_factory=tuple)
 
     salon_id = property(lambda self: getattr(self.salon, "pk", self.salon))
     per_staff = property(lambda self: self.by_staff)
+    weekdays = property(lambda self: self.by_weekday)
     entries = per_staff
     staff = per_staff
     start_date = property(lambda self: self.week_start)
@@ -137,19 +209,56 @@ class PriorRosterWeekReport:
         key = getattr(staff_member, "pk", staff_member)
         return next((s for s in self.by_staff if s.staff_member_id == key), None)
 
+    def for_weekday(self, weekday):
+        if isinstance(weekday, str):
+            return next((w for w in self.by_weekday
+                         if w.weekday_name.lower() == weekday.lower()), None)
+        return next((w for w in self.by_weekday if w.weekday == weekday), None)
+
     def as_dict(self):
         iso = lambda d: d.isoformat() if d else None  # noqa: E731
         return {"week_start": iso(self.week_start), "week_end": iso(self.week_end),
                 "prior_week_start": iso(self.prior_week_start),
                 "prior_week_end": iso(self.prior_week_end),
                 **{m: getattr(self, m).as_dict() for m in _METRICS},
-                "by_staff": [s.as_dict() for s in self.by_staff]}
+                "by_staff": [s.as_dict() for s in self.by_staff],
+                "by_weekday": [w.as_dict() for w in self.by_weekday]}
 
     __iter__ = lambda self: iter(self.by_staff)  # noqa: E731
     __len__ = lambda self: len(self.by_staff)  # noqa: E731
 
 
 PriorRosterWeek = PriorRosterWeekReport
+
+
+def _weekday_totals(week):
+    """Salon totals per weekday, verbatim from per-staff ``days``."""
+    totals = []
+    for idx in range(7):
+        minutes, staff = 0, 0
+        for entry in week.entries:
+            if idx < len(entry.days):
+                day = entry.days[idx]
+                minutes += int(day.total_minutes)
+                if day.is_working:
+                    staff += 1
+        totals.append(WeekdayRosterTotal(
+            weekday=idx, weekday_name=WEEKDAY_NAMES[idx],
+            day=week.week_start + timedelta(days=idx),
+            total_minutes=minutes, working_staff=staff))
+    return totals
+
+
+def _weekday_deltas(current, prior):
+    cur, pri = _weekday_totals(current), _weekday_totals(prior)
+    return tuple(
+        WeekdayPriorRosterWeek(
+            weekday=idx, weekday_name=WEEKDAY_NAMES[idx],
+            day=cur[idx].day, prior_day=pri[idx].day,
+            current=cur[idx], prior=pri[idx],
+            **{m: _count_delta(m, getattr(cur[idx], m), getattr(pri[idx], m))
+               for m in _WEEKDAY_METRICS})
+        for idx in range(7))
 
 
 def _as_date(value, tz):
@@ -209,7 +318,8 @@ def prior_roster_week_report(salon, week_start=None, **kwargs):
     return PriorRosterWeekReport(
         salon=salon, week_start=monday, week_end=current.week_end,
         prior_week_start=prior_monday, prior_week_end=prior.week_end,
-        current=current, prior=prior, by_staff=tuple(by_staff), **salon_deltas)
+        current=current, prior=prior, by_staff=tuple(by_staff),
+        by_weekday=_weekday_deltas(current, prior), **salon_deltas)
 
 
 prior_roster_week = prior_roster_week_report
