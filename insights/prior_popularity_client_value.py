@@ -14,7 +14,11 @@ is ``None`` when the prior value is zero (the absolute
 ``ValueError``. Rows present in only one period appear with
 the missing side zero. Popularity rows key by linked service
 or snapshot name, client rows by client, as the services
-group them. Client-value rows carry attributed revenue only;
+group them. Popularity rows also carry ``cancelled`` and
+``no_show`` as separate count deltas alongside the combined
+``cancelled_no_show`` delta, taken verbatim from
+:mod:`insights.popularity`'s per-service ``cancelled_count``
+/ ``no_show_count`` for both windows. Client-value rows carry attributed revenue only;
 the services' unattributed bucket is exposed separately on
 the comparison as ``unattributed``. Rows order by current
 total descending, then name ascending. The CSV helpers
@@ -60,6 +64,8 @@ class PopularityPriorDelta:
     completed: ComponentDelta
     booked: ComponentDelta
     cancelled_no_show: ComponentDelta
+    cancelled: ComponentDelta
+    no_show: ComponentDelta
     total: ComponentDelta
 
     @property
@@ -77,6 +83,22 @@ class PopularityPriorDelta:
     @property
     def prior_completed_count(self):
         return self.prior.completed_count if self.prior else 0
+
+    @property
+    def current_cancelled_count(self):
+        return self.current.cancelled_count if self.current else 0
+
+    @property
+    def prior_cancelled_count(self):
+        return self.prior.cancelled_count if self.prior else 0
+
+    @property
+    def current_no_show_count(self):
+        return self.current.no_show_count if self.current else 0
+
+    @property
+    def prior_no_show_count(self):
+        return self.prior.no_show_count if self.prior else 0
 
 
 @dataclass(frozen=True)
@@ -181,6 +203,12 @@ def prior_period_popularity(salon, start_date=None, end_date=None,
                 "cancelled_no_show",
                 c.cancelled_no_show_count if c else 0,
                 p.cancelled_no_show_count if p else 0),
+            cancelled=_count_delta(
+                "cancelled", c.cancelled_count if c else 0,
+                p.cancelled_count if p else 0),
+            no_show=_count_delta(
+                "no_show", c.no_show_count if c else 0,
+                p.no_show_count if p else 0),
             total=_count_delta(
                 "total", c.total_count if c else 0,
                 p.total_count if p else 0),
@@ -232,7 +260,9 @@ PRIOR_POPULARITY_FIELDNAMES = [
     "prior_start_date", "prior_end_date", "current", "prior",
     "delta", "percent_change", "current_completed_count",
     "prior_completed_count", "current_total_count",
-    "prior_total_count",
+    "prior_total_count", "current_cancelled_count",
+    "prior_cancelled_count", "current_no_show_count",
+    "prior_no_show_count",
 ]
 PRIOR_CLIENT_VALUE_FIELDNAMES = [
     "client_name", "current_start_date", "current_end_date",
@@ -288,6 +318,10 @@ def export_prior_popularity_csv(salon, start_date=None, end_date=None,
         "prior_completed_count": r.prior_completed_count,
         "current_total_count": r.current_total_count,
         "prior_total_count": r.prior_total_count,
+        "current_cancelled_count": r.current_cancelled_count,
+        "prior_cancelled_count": r.prior_cancelled_count,
+        "current_no_show_count": r.current_no_show_count,
+        "prior_no_show_count": r.prior_no_show_count,
     } for r in result], PRIOR_POPULARITY_FIELDNAMES)
 
 

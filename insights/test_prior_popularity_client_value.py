@@ -111,6 +111,106 @@ class PriorPopularityClientValueTests(TestCase):
         self.assertEqual(perm.total.current, Decimal("0"))
         self.assertEqual(perm.total.percent_change, Decimal("-100.00"))
 
+    def test_popularity_cancelled_no_show_split_deltas(self):
+        self._appt(CUR, self.cut, Appointment.Status.CANCELLED)
+        self._appt(CUR, self.cut, Appointment.Status.NO_SHOW)
+        self._appt(date(2026, 11, 5), self.cut,
+                   Appointment.Status.NO_SHOW)
+        self._appt(PRI, self.cut, Appointment.Status.CANCELLED)
+        self._appt(date(2026, 10, 29), self.cut,
+                   Appointment.Status.CANCELLED)
+        self._appt(PRI, self.cut, Appointment.Status.NO_SHOW)
+        r = prior_period_popularity(self.salon, START, END)
+        cut = {x.service_name: x for x in r}["Haircut"]
+        self.assertEqual((cut.cancelled.current, cut.cancelled.prior,
+                          cut.cancelled.delta,
+                          cut.cancelled.percent_change),
+                         (Decimal("1"), Decimal("2"), Decimal("-1"),
+                          Decimal("-50.00")))
+        self.assertEqual((cut.no_show.current, cut.no_show.prior,
+                          cut.no_show.delta, cut.no_show.percent_change),
+                         (Decimal("2"), Decimal("1"), Decimal("1"),
+                          Decimal("100.00")))
+        self.assertEqual((cut.cancelled_no_show.current,
+                          cut.cancelled_no_show.prior,
+                          cut.cancelled_no_show.delta),
+                         (Decimal("3"), Decimal("3"), Decimal("0")))
+        self.assertEqual(cut.cancelled.current + cut.no_show.current,
+                         cut.cancelled_no_show.current)
+        self.assertEqual(cut.cancelled.prior + cut.no_show.prior,
+                         cut.cancelled_no_show.prior)
+        cur = {x.service_name: x for x in
+               service_popularity(self.salon, START, END)}["Haircut"]
+        pri = {x.service_name: x for x in
+               service_popularity(self.salon, PRIOR_START,
+                                  PRIOR_END)}["Haircut"]
+        self.assertEqual((cut.current_cancelled_count,
+                          cut.prior_cancelled_count,
+                          cut.current_no_show_count,
+                          cut.prior_no_show_count),
+                         (cur.cancelled_count, pri.cancelled_count,
+                          cur.no_show_count, pri.no_show_count))
+
+    def test_popularity_split_zero_fill_one_window_only(self):
+        self._appt(CUR, self.colour, Appointment.Status.CANCELLED)
+        self._appt(PRI, self.perm, Appointment.Status.NO_SHOW)
+        by_name = {x.service_name: x for x in
+                   prior_period_popularity(self.salon, START, END)}
+        colour = by_name["Colour"]  # current only
+        self.assertEqual((colour.cancelled.current,
+                          colour.cancelled.prior),
+                         (Decimal("1"), Decimal("0")))
+        self.assertIsNone(colour.cancelled.percent_change)
+        self.assertEqual((colour.current_cancelled_count,
+                          colour.prior_cancelled_count,
+                          colour.current_no_show_count,
+                          colour.prior_no_show_count), (1, 0, 0, 0))
+        perm = by_name["Perm"]  # prior only
+        self.assertEqual((perm.no_show.current, perm.no_show.prior,
+                          perm.no_show.delta,
+                          perm.no_show.percent_change),
+                         (Decimal("0"), Decimal("1"), Decimal("-1"),
+                          Decimal("-100.00")))
+        self.assertEqual((perm.cancelled.current, perm.cancelled.prior),
+                         (Decimal("0"), Decimal("0")))
+        self.assertIsNone(perm.cancelled.percent_change)
+        self.assertEqual((perm.current_cancelled_count,
+                          perm.prior_cancelled_count,
+                          perm.current_no_show_count,
+                          perm.prior_no_show_count), (0, 0, 0, 1))
+
+    def test_popularity_split_csv_columns(self):
+        self._appt(CUR, self.cut, Appointment.Status.CANCELLED)
+        self._appt(CUR, self.cut, Appointment.Status.NO_SHOW)
+        self._appt(PRI, self.cut, Appointment.Status.NO_SHOW)
+        self._appt(PRI, self.perm, Appointment.Status.CANCELLED)
+        text = export_prior_popularity_csv(self.salon, START, END)
+        self.assertEqual(list(csv.reader(io.StringIO(text)))[0],
+                         PRIOR_POPULARITY_FIELDNAMES)
+        rows = list(csv.DictReader(io.StringIO(text)))
+        by_name = {x["service_name"]: x for x in rows}
+        self.assertEqual((by_name["Haircut"]["current_cancelled_count"],
+                          by_name["Haircut"]["prior_cancelled_count"],
+                          by_name["Haircut"]["current_no_show_count"],
+                          by_name["Haircut"]["prior_no_show_count"]),
+                         ("1", "0", "1", "1"))
+        self.assertEqual((by_name["Perm"]["current_cancelled_count"],
+                          by_name["Perm"]["prior_cancelled_count"],
+                          by_name["Perm"]["current_no_show_count"],
+                          by_name["Perm"]["prior_no_show_count"]),
+                         ("0", "1", "0", "0"))
+        comp = {x.service_name: x for x in
+                prior_period_popularity(self.salon, START, END)}
+        for name, row in by_name.items():
+            self.assertEqual(int(row["current_cancelled_count"]),
+                             comp[name].current_cancelled_count)
+            self.assertEqual(int(row["prior_cancelled_count"]),
+                             comp[name].prior_cancelled_count)
+            self.assertEqual(int(row["current_no_show_count"]),
+                             comp[name].current_no_show_count)
+            self.assertEqual(int(row["prior_no_show_count"]),
+                             comp[name].prior_no_show_count)
+
     def test_client_value_deltas_unattributed_and_scoping(self):
         self._seed_value()
         r = prior_period_client_value(self.salon, START, END)
