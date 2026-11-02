@@ -267,3 +267,34 @@ class DiscountSummaryTests(TestCase):
         self.assertEqual(result.discount_total, Decimal("10.00"))
         self.assertEqual(result.gross_total, Decimal("85.00"))
         self.assertEqual(result.net_total, Decimal("75.00"))
+
+
+class LegacyRowDiscountTests(TestCase):
+    """Rows written before the discount fields existed read
+    ``discount_amount`` back as None on schemaless NEDB (no column
+    default is applied on read). Totals must treat a missing
+    discount as no discount — the /insights/ crash on Mark's pilot
+    box (2026-11-02) was Decimal minus None in ``line_total``."""
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon")
+        self.sale = Sale.objects.create(salon=self.salon)
+        self.item = SaleItem.objects.create(
+            sale=self.sale, kind="service", description="Haircut",
+            quantity=1, unit_price=Decimal("85.00"),
+        )
+
+    def test_line_total_treats_missing_discount_as_no_discount(self):
+        self.item.discount_amount = None
+        self.assertEqual(self.item.line_total, Decimal("85.00"))
+
+    def test_sale_totals_treat_missing_discounts_as_no_discount(self):
+        self.item.discount_amount = None
+        self.sale.discount_amount = None
+        self.sale._prefetched_objects_cache = {"items": [self.item]}
+        self.assertEqual(self.sale.discount_total, Decimal("0.00"))
+        self.assertEqual(self.sale.total, Decimal("85.00"))
+
+    def test_unsaved_sale_discount_total_treats_missing_as_no_discount(self):
+        sale = Sale(salon=self.salon, discount_amount=None)
+        self.assertEqual(sale.discount_total, Decimal("0.00"))
