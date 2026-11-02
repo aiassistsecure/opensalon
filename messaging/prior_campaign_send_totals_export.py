@@ -9,7 +9,8 @@ never recomputes a figure, delta, or percentage. The dict
 export (:func:`export_prior_campaign_send_totals`) is the one
 source of truth; the CSV export is built from that same list,
 so the two formats can never disagree. One row per metric:
-``total``, then per-channel, per-status, and per-day rows.
+``total``, then per-channel, per-status, per-channel-per-status,
+per-day, and per-day-per-channel rows.
 Columns: ``metric``, current/prior window bounds, ``current``,
 ``prior``, ``delta``, ``percent_change``. ``percent_change``
 renders to two places, never via a float; ``None`` renders
@@ -51,8 +52,14 @@ def _metrics(result):
         yield f"channel_{ch}", delta
     for status, delta in result.by_status.items():
         yield f"status_{status}", delta
+    for ch, cells in result.by_channel_by_status.items():
+        for status, delta in cells.items():
+            yield f"channel_{ch}_status_{status}", delta
     for day, delta in result.by_day.items():
         yield f"day_{day.isoformat()}", delta
+    for day, cells in result.by_day_by_channel.items():
+        for ch, delta in cells.items():
+            yield f"day_{day.isoformat()}_{ch}", delta
 
 
 def export_prior_campaign_send_totals(salon, start=None, end=None, **kwargs):

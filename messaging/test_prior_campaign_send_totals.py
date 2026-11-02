@@ -141,6 +141,129 @@ class PriorCampaignSendTotalsTests(TestCase):
                          P1.isoformat())
         self.assertEqual(len(csv_rows), len(rows))
 
+    def test_by_channel_by_status_verbatim_and_deltas(self):
+        self._book()
+        r = prior_campaign_send_totals(self.salon, C1, C2)
+        cross = r.by_channel_by_status
+        self.assertEqual((cross["email"]["sent"].current,
+                          cross["email"]["sent"].prior,
+                          cross["email"]["sent"].delta,
+                          cross["email"]["sent"].percent_change),
+                         (2, 1, 1, Decimal("100.00")))
+        self.assertEqual((cross["sms"]["sent"].current,
+                          cross["sms"]["sent"].prior,
+                          cross["sms"]["sent"].percent_change),
+                         (3, 1, Decimal("200.00")))
+        # Verbatim from the source's own cross-tab, both windows.
+        cur = campaign_send_totals(self.salon, C1, C2)
+        pri = campaign_send_totals(self.salon, P1, P2)
+        for ch, cells in cross.items():
+            for status, delta in cells.items():
+                self.assertEqual(
+                    delta.current,
+                    cur.by_channel_by_status[ch][status])
+                self.assertEqual(
+                    delta.prior, pri.by_channel_by_status[ch][status])
+        # Cross cells sum to by_channel and by_status deltas.
+        for ch, delta in r.by_channel.items():
+            self.assertEqual(
+                sum(c.current for c in cross[ch].values()),
+                delta.current)
+        self.assertEqual(
+            r.as_dict()["by_channel_by_status"]["sms"]["sent"]["prior"], 1)
+        self.assertEqual(r.deltas["by_channel_by_status"], cross)
+
+    def test_by_day_by_channel_offset_aligned_verbatim(self):
+        self._book()
+        r = prior_campaign_send_totals(self.salon, C1, C2)
+        cells = r.by_day_by_channel
+        self.assertEqual(list(cells), [C1, C2])
+        # C1 pairs with P1, C2 with P2 (offset alignment, as by_day).
+        self.assertEqual((cells[C1]["email"].current,
+                          cells[C1]["email"].prior,
+                          cells[C1]["email"].delta,
+                          cells[C1]["email"].percent_change),
+                         (2, 1, 1, Decimal("100.00")))
+        self.assertEqual((cells[C1]["sms"].current,
+                          cells[C1]["sms"].prior), (1, 0))
+        self.assertIsNone(cells[C1]["sms"].percent_change)
+        self.assertEqual((cells[C2]["sms"].current,
+                          cells[C2]["sms"].prior), (2, 1))
+        self.assertEqual((cells[C2]["email"].current,
+                          cells[C2]["email"].prior), (0, 0))
+        self.assertIsNone(cells[C2]["email"].percent_change)
+        # Verbatim from the source's own by_day_by_channel,
+        # prior side read at the offset-paired prior day.
+        cur = campaign_send_totals(self.salon, C1, C2)
+        pri = campaign_send_totals(self.salon, P1, P2)
+        for offset, day in enumerate([C1, C2]):
+            prior_day = [P1, P2][offset]
+            for ch, delta in cells[day].items():
+                self.assertEqual(
+                    delta.current, cur.by_day_by_channel[day][ch])
+                self.assertEqual(
+                    delta.prior, pri.by_day_by_channel[prior_day][ch])
+        # Cells sum to the by_day delta for every day.
+        for day, delta in r.by_day.items():
+            self.assertEqual(
+                sum(c.current for c in cells[day].values()),
+                delta.current)
+            self.assertEqual(
+                sum(c.prior for c in cells[day].values()), delta.prior)
+        self.assertEqual(
+            r.as_dict()["by_day_by_channel"][C1.isoformat()]
+            ["email"]["current"], 2)
+
+    def test_new_breakdowns_prior_zero_percent_none(self):
+        r = prior_campaign_send_totals(self.salon, C1, C2)
+        self.assertIsNone(
+            r.by_channel_by_status["email"]["sent"].percent_change)
+        self.assertIsNone(
+            r.by_day_by_channel[C1]["email"].percent_change)
+        self._book()
+        # Current window is the prior book; its prior is empty,
+        # so every new-breakdown cell has prior 0 -> None.
+        r2 = prior_campaign_send_totals(self.salon, P1, P2)
+        self.assertEqual(
+            r2.by_channel_by_status["email"]["sent"].current, 1)
+        self.assertEqual(
+            r2.by_channel_by_status["email"]["sent"].prior, 0)
+        self.assertIsNone(
+            r2.by_channel_by_status["email"]["sent"].percent_change)
+        self.assertEqual(r2.by_day_by_channel[P2]["sms"].current, 1)
+        self.assertIsNone(
+            r2.by_day_by_channel[P2]["sms"].percent_change)
+
+    def test_export_includes_new_breakdown_rows(self):
+        self._book()
+        rows = export_prior_campaign_send_totals(self.salon, C1, C2)
+        by_metric = {row["metric"]: row for row in rows}
+        self.assertEqual(
+            (by_metric["channel_email_status_sent"]["current"],
+             by_metric["channel_email_status_sent"]["prior"],
+             by_metric["channel_email_status_sent"]["percent_change"]),
+            (2, 1, Decimal("100.00")))
+        self.assertEqual(
+            by_metric["channel_sms_status_sent"]["current"], 3)
+        self.assertEqual(
+            (by_metric[f"day_{C1.isoformat()}_email"]["current"],
+             by_metric[f"day_{C1.isoformat()}_email"]["prior"]), (2, 1))
+        self.assertIsNone(
+            by_metric[f"day_{C1.isoformat()}_sms"]["percent_change"])
+        self.assertEqual(
+            by_metric[f"day_{C2.isoformat()}_sms"]["current"], 2)
+        text = export_prior_campaign_send_totals_csv(self.salon, C1, C2)
+        csv_rows = {row["metric"]: row
+                    for row in csv.DictReader(io.StringIO(text))}
+        self.assertEqual(len(csv_rows), len(rows))
+        self.assertEqual(
+            csv_rows["channel_sms_status_sent"]["percent_change"],
+            "200.00")
+        self.assertEqual(
+            csv_rows[f"day_{C1.isoformat()}_sms"]["percent_change"], "")
+        self.assertEqual(
+            csv_rows[f"day_{C2.isoformat()}_sms"]["current"], "2")
+
     def test_command_stdout_file_and_errors(self):
         self._book()
         out = io.StringIO()
@@ -150,6 +273,8 @@ class PriorCampaignSendTotalsTests(TestCase):
         self.assertEqual(
             out.getvalue(),
             export_prior_campaign_send_totals_csv(self.salon, C1, C2))
+        self.assertIn("channel_sms_status_sent", out.getvalue())
+        self.assertIn(f"day_{C1.isoformat()}_email", out.getvalue())
         for kwargs in (dict(salon_id=self.salon.pk + 1000,
                             start_date=C1, end_date=C2),
                        dict(salon_id=self.salon.pk,
