@@ -1793,7 +1793,17 @@
   }
   document.addEventListener("os:drain", function (event) {
     var failed = (event.detail && event.detail.failed) || [];
-    if (failed.length) {
+    /* A held play is not a failure: it is waiting on the
+       node's word, and the book does not rebuild itself over
+       a wait. (A queue that held forever once answered every
+       held round with a full rebuild — the page tore itself
+       down twice a second and every click landed on an
+       element mid-rebuild.) Only the node's actual refusals
+       earn a rebuild; a hold takes the quiet refresh. */
+    var refused = failed.filter(function (f) {
+      return !f || f.held == null;
+    });
+    if (refused.length) {
       refreshDay(selected ? selected.dataset.appt : null);
     } else {
       scheduleStoreRefresh();

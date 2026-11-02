@@ -63,6 +63,7 @@ const undoStack = [];
 const queuedIds = [];
 let drainTimer = null;
 let draining = false;
+let lastHeldSig = "";
 
 function emit(name, detail) {
   document.dispatchEvent(new CustomEvent(name, { detail: detail || {} }));
@@ -259,6 +260,16 @@ async function restorePreserved() {
       try { lastChain = JSON.parse(rec.chain); } catch (err) {}
       return;
     }
+    if (rec.key.indexOf("rename:") === 0) {
+      /* A birth the node named in an earlier life of this
+         tab. The name map itself is tab memory, so the names
+         are preserved with the journal beside the chain's
+         head: a play recovered in this life can still find
+         the real id its birth was given. Like the chain's
+         head, a name is never windowed out. */
+      if (rec.to != null) renames[rec.key.slice(7)] = rec.to;
+      return;
+    }
     if (!rec.op) return;
     let at = 0;
     try { at = JSON.parse(rec.op).at || 0; } catch (err) {}
@@ -291,15 +302,35 @@ async function recoverQueue() {
   saved.forEach(function (rec) {
     if (rec.state !== "queued") idbDelete(rec.key);
   });
+  /* A play on a store-born booking resolves one of two
+     ways: its birth is still in this queue (the birth drains
+     first, then the play follows under the name it is
+     given), or the preserved name map knows the real id the
+     node gave that birth in an earlier life. A play with
+     neither can never apply — its birth settled without it
+     and without a name — so it is struck here rather than
+     restored into a hold that would never lift. */
+  const birthRefs = {};
   queued.forEach(function (rec) {
+    if (rec.kind === "create" && rec.ref) birthRefs[rec.ref] = true;
+  });
+  let restored = 0;
+  queued.forEach(function (rec) {
+    if (rec.kind !== "create" &&
+        typeof rec.id === "string" && rec.id.indexOf("tmp_") === 0 &&
+        renames[rec.id] == null && !birthRefs[rec.id]) {
+      idbDelete(rec.key);
+      return;
+    }
     const clean = Object.assign({}, rec);
     const key = clean.key;
     delete clean.key;
     db.put("outbox", key, JSON.stringify(clean));
     if (queuedIds.indexOf(key) < 0) queuedIds.push(key);
+    restored += 1;
   });
-  if (queued.length) {
-    emit("os:recovered", { count: queued.length });
+  if (restored) {
+    emit("os:recovered", { count: restored });
     scheduleDrain(800);
   }
 }
@@ -487,6 +518,28 @@ function applyLocal(op) {
    and holds a batch that would outrun the birth. */
 const renames = {};
 
+/* Plays chained onto a birth that settled without a name —
+   refused by the node, or answered without an id — can
+   never apply: their target was never born. They leave the
+   queue with the birth itself, struck from the store and
+   the mirror alike; the journal keeps their provenance. A
+   play left holding on a name that will never be given
+   holds forever, and a forever-held queue is not a quiet
+   thing: the drain speaks for it on every round. */
+function strikePlays(ref, birthKey) {
+  delete birthKeys[ref];
+  queuedIds.slice().forEach(function (k) {
+    let rec = null;
+    try { rec = JSON.parse(db.get("outbox", k)); } catch (err) {}
+    if (!rec || rec.kind === "create") return;
+    if (rec.id !== ref && rec.after !== birthKey) return;
+    try { db.delete("outbox", k); } catch (err) {}
+    idbDelete(k);
+    const at = queuedIds.indexOf(k);
+    if (at >= 0) queuedIds.splice(at, 1);
+  });
+}
+
 /* The write-through's chain receipts: the last chain stamp
    (engine seq + head hash) the node echoed back whole. Kept
    in the preserved journal, so a fresh tab knows where the
@@ -556,6 +609,7 @@ async function drain(keepalive) {
   const batch = [];
   const ops = [];
   let held = 0;
+  const heldKeys = [];
   for (let qi = 0; qi < queuedIds.length && batch.length < 100; qi++) {
     const key = queuedIds[qi];
     const rec = JSON.parse(db.get("outbox", key));
@@ -593,7 +647,7 @@ async function drain(keepalive) {
     /* A contested doc's tail holds for the node's fresh
        word; the rebase lands when the adopt does. */
     if (!skip && rec.id != null && contested(rec.id)) skip = true;
-    if (skip) { held += 1; continue; }
+    if (skip) { held += 1; heldKeys.push(key); continue; }
     if (rec.kind === "move") {
       op.staff_member_id = rec.staff_member_id;
       op.start_minutes = rec.start_minutes;
@@ -612,8 +666,20 @@ async function drain(keepalive) {
     /* Everything queued is held (an unacked birth, a
        contested tail): say so — the day book hears a drain
        with failures as its cue to fetch the node's word,
-       which is exactly what a hold is waiting for. */
-    if (held) emit("os:drain", { acked: 0, failed: [{ held: held }] });
+       which is exactly what a hold is waiting for. The word
+       is spoken once per hold, though: a hold standing round
+       after round is the same news, and answering every
+       round as if it were fresh once rebuilt the book twice
+       a second for as long as a dead play held. The retry
+       itself stays — a contested hold lifts on its TTL and
+       drains then — it just retries quietly. */
+    if (held) {
+      const sig = heldKeys.slice().sort().join(",");
+      if (sig !== lastHeldSig) {
+        lastHeldSig = sig;
+        emit("os:drain", { acked: 0, failed: [{ held: held }] });
+      }
+    }
     scheduleDrain(900);
     return;
   }
@@ -658,6 +724,11 @@ async function drain(keepalive) {
              onto the ref resolve through the rename from
              here on. */
           renames[rec.ref] = r.id;
+          /* The name is preserved with the journal, so a
+             play recovered in a later tab can still find the
+             real id its birth was given — the map above is
+             only this tab's memory. */
+          idbPutIn("journal", "rename:" + rec.ref, { to: r.id });
           const wasLocal = !!db.get("appointments", String(rec.ref));
           const entry = r.entry
             ? Object.assign({ day: rec.date }, r.entry)
@@ -683,6 +754,10 @@ async function drain(keepalive) {
           delDoc(rec.ref);
           if (dayIndex[rec.date]) delete dayIndex[rec.date][rec.ref];
           emit("os:vanish", { day: rec.date, id: rec.ref });
+          /* And its chained plays are void with it: struck
+             here, in the same breath, or they would hold
+             forever on a name that will never be given. */
+          strikePlays(rec.ref, key);
         }
       }
       db.put("outbox", key, JSON.stringify(rec));
@@ -706,6 +781,7 @@ async function drain(keepalive) {
         chain: JSON.stringify(chainStamp),
       });
     }
+    lastHeldSig = "";
     emit("os:drain", {
       acked: batch.length - failed.length, failed: failed,
       chain: { seq: chainStamp.seq, head: chainStamp.head, ok: chainOk },

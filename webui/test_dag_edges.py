@@ -38,9 +38,10 @@ class DagEdgeTests(TestCase):
     def test_the_drain_honors_edges_per_doc(self):
         for pin in [
             "if (!skip && rec.after && queuedIds.indexOf(rec.after) >= 0)",
-            "if (skip) { held += 1; continue; }",
-            # a fully-held round still speaks, so the book
-            # fetches the node's word the hold is waiting for
+            "if (skip) { held += 1; heldKeys.push(key); continue; }",
+            # a fully-held round still speaks — once per hold
+            # episode (test_held_plays) — so the book fetches
+            # the node's word the hold is waiting for
             'emit("os:drain", { acked: 0, failed: [{ held: held }] })',
         ]:
             self.assertIn(pin, self.src)
