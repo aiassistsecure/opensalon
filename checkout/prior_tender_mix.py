@@ -9,6 +9,11 @@ Amounts/shares come verbatim from :mod:`checkout.tender_mix`
 shares, ``delta``, ``percent_change`` (two places). Share is
 ``None`` on a zero window total; ``percent_change`` is ``None``
 on a zero prior amount. Reversed window raises ``ValueError``.
+Salon level only, the result also carries ``count``: a
+MetricDelta-shaped payment-count delta whose current/prior
+values are ``TenderMix.count`` verbatim for both windows (no
+new counting path); per-method entries gain nothing, as the
+source carries no per-method count.
 """
 import datetime
 from dataclasses import dataclass, field
@@ -19,6 +24,7 @@ from .tender_mix import tender_mix
 _CENTS = Decimal("0.01")
 
 __all__ = [
+    "MetricDelta", "FigureDelta",
     "PriorTenderMix", "PriorTenderMixEntry", "PriorTenderMixRow",
     "prior_tender_mix", "prior_period_tender_mix",
     "get_prior_tender_mix", "compare_tender_mix"]
@@ -29,6 +35,47 @@ def _pct_change(current, prior):
         return None
     return ((Decimal(current) - Decimal(prior)) / Decimal(prior)
             * 100).quantize(_CENTS, rounding=ROUND_HALF_UP)
+
+
+@dataclass(frozen=True)
+class MetricDelta:
+    """One figure in both windows, with its change."""
+
+    component: str
+    current: object = None
+    prior: object = None
+    delta: object = None
+    percent_change: Decimal | None = None
+
+    @property
+    def name(self):
+        return self.component
+
+    @property
+    def previous(self):
+        return self.prior
+
+    @property
+    def change(self):
+        return self.delta
+
+    @property
+    def pct_change(self):
+        return self.percent_change
+
+    def as_dict(self):
+        return {"component": self.component, "current": self.current,
+                "prior": self.prior, "delta": self.delta,
+                "percent_change": self.percent_change}
+
+
+FigureDelta = MetricDelta
+
+
+def _count_delta(name, current, prior):
+    current, prior = int(current), int(prior)
+    return MetricDelta(name, current, prior, current - prior,
+                       _pct_change(current, prior))
 
 
 @dataclass(frozen=True)
@@ -87,6 +134,19 @@ class PriorTenderMix:
     prior: object
     entries: list = field(default_factory=list)
     by_method: dict = field(default_factory=dict)
+    count: MetricDelta = None
+
+    @property
+    def payment_count(self):
+        return self.count
+
+    @property
+    def current_count(self):
+        return self.count.current if self.count else self.current.count
+
+    @property
+    def prior_count(self):
+        return self.count.prior if self.count else self.prior.count
 
     @property
     def salon_id(self):
@@ -168,7 +228,8 @@ def prior_tender_mix(salon, start=None, end=None, **kwargs):
     return PriorTenderMix(
         salon=salon, start=start, end=end, prior_start=prior_start,
         prior_end=prior_end, current=current, prior=prior,
-        entries=entries, by_method={e.method: e for e in entries})
+        entries=entries, by_method={e.method: e for e in entries},
+        count=_count_delta("count", current.count, prior.count))
 
 
 #: Aliases, mirroring sibling services.
