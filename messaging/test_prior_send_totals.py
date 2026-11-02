@@ -240,6 +240,118 @@ class PriorSendTotalsTests(TestCase):
         self.assertEqual(
             csv_rows[f"reminder_day_{C1.isoformat()}_email"]["current"], "2")
 
+
+    def test_by_status_and_cross_tab_verbatim_and_deltas(self):
+        self._book()
+        r = prior_send_totals(self.salon, C1, C2)
+        # by_status verbatim from both source services.
+        cur_r, pri_r = send_totals(self.salon, C1, C2), send_totals(self.salon, P1, P2)
+        cur_c, pri_c = (campaign_send_totals(self.salon, C1, C2),
+                        campaign_send_totals(self.salon, P1, P2))
+        for delta_map, cur, pri in (
+                (r.reminder_by_status, cur_r, pri_r),
+                (r.campaign_by_status, cur_c, pri_c)):
+            self.assertEqual(set(delta_map), set(cur.by_status) | set(pri.by_status))
+            for status, delta in delta_map.items():
+                self.assertEqual(delta.current, cur.by_status.get(status, 0))
+                self.assertEqual(delta.prior, pri.by_status.get(status, 0))
+        self.assertEqual((r.reminder_by_status["sent"].current,
+                          r.reminder_by_status["sent"].prior,
+                          r.reminder_by_status["sent"].delta,
+                          r.reminder_by_status["sent"].percent_change),
+                         (3, 2, 1, Decimal("50.00")))
+        self.assertEqual((r.campaign_by_status["sent"].current,
+                          r.campaign_by_status["sent"].prior), (2, 1))
+        self.assertIs(r.by_status, r.reminder_by_status)
+        # Cross-tab verbatim, cells sum to by_channel / by_status.
+        for cross, cur, pri, by_channel in (
+                (r.reminder_by_channel_by_status, cur_r, pri_r, r.reminder_by_channel),
+                (r.campaign_by_channel_by_status, cur_c, pri_c, r.campaign_by_channel)):
+            for ch, cells in cross.items():
+                for status, delta in cells.items():
+                    self.assertEqual(delta.current, cur.by_channel_by_status[ch][status])
+                    self.assertEqual(delta.prior, pri.by_channel_by_status[ch][status])
+                self.assertEqual(sum(c.current for c in cells.values()),
+                                 by_channel[ch].current)
+        self.assertIs(r.by_channel_by_status, r.reminder_by_channel_by_status)
+        self.assertEqual((r.reminder_by_channel_by_status["email"]["sent"].current,
+                          r.reminder_by_channel_by_status["email"]["sent"].prior), (2, 1))
+        self.assertEqual((r.campaign_by_channel_by_status["sms"]["sent"].current,
+                          r.campaign_by_channel_by_status["sms"]["sent"].prior), (2, 0))
+        self.assertIsNone(r.campaign_by_channel_by_status["sms"]["sent"].percent_change)
+        self.assertEqual(r.as_dict()["campaign_by_channel_by_status"]["sms"]["sent"]["current"], 2)
+        self.assertEqual(r.deltas["reminder_by_status"], r.reminder_by_status)
+
+    def test_campaign_by_day_union_zero_filled(self):
+        self._book()
+        r = prior_send_totals(self.salon, C1, C2)
+        self.assertEqual(list(r.campaign_by_day), [P1, P2, C1, C2])
+        self.assertEqual((r.campaign_by_day[P1].current, r.campaign_by_day[P1].prior), (0, 0))
+        self.assertEqual((r.campaign_by_day[P2].current, r.campaign_by_day[P2].prior,
+                          r.campaign_by_day[P2].delta), (0, 1, -1))
+        self.assertEqual((r.campaign_by_day[C1].current, r.campaign_by_day[C1].prior), (2, 0))
+        self.assertIsNone(r.campaign_by_day[C1].percent_change)
+        self.assertEqual(r.campaign_by_day[C2].current, 0)
+        cur, pri = campaign_send_totals(self.salon, C1, C2), campaign_send_totals(self.salon, P1, P2)
+        for day, delta in r.campaign_by_day.items():
+            self.assertEqual(delta.current, cur.by_day.get(day, 0))
+            self.assertEqual(delta.prior, pri.by_day.get(day, 0))
+        cells = r.campaign_by_day_by_channel
+        self.assertEqual(list(cells), [P1, P2, C1, C2])
+        self.assertEqual((cells[P2]["email"].current, cells[P2]["email"].prior), (0, 1))
+        self.assertEqual((cells[C1]["sms"].current, cells[C1]["sms"].prior), (2, 0))
+        for day, delta in r.campaign_by_day.items():
+            self.assertEqual(sum(c.current for c in cells[day].values()), delta.current)
+            self.assertEqual(sum(c.prior for c in cells[day].values()), delta.prior)
+        self.assertEqual(r.as_dict()["campaign_by_day"][C1.isoformat()]["current"], 2)
+        self.assertEqual(r.as_dict()["campaign_by_day_by_channel"][P2.isoformat()]["email"]["prior"], 1)
+
+    def test_status_cross_and_campaign_day_union_zero_fill_mocked(self):
+        import types
+        def fake(total, by_channel, by_status, cross, by_day, by_day_ch):
+            return types.SimpleNamespace(
+                total=total, by_channel=by_channel, by_status=by_status,
+                by_channel_by_status=cross, by_day=by_day, by_day_by_channel=by_day_ch)
+        cur_r = fake(1, {"email": 1}, {"sent": 1}, {"email": {"sent": 1}},
+                     {C1: 1}, {C1: {"email": 1}})
+        pri_r = fake(2, {"sms": 2}, {"failed": 2}, {"sms": {"failed": 2}},
+                     {P1: 2}, {P1: {"sms": 2}})
+        cur_c = fake(1, {"sms": 1}, {"queued": 1}, {"sms": {"queued": 1}},
+                     {C2: 1}, {C2: {"sms": 1}})
+        pri_c = fake(1, {"email": 1}, {"sent": 1}, {"email": {"sent": 1}},
+                     {P2: 1}, {P2: {"email": 1}})
+        with mock.patch("messaging.prior_send_totals.send_totals",
+                        side_effect=[cur_r, pri_r]), mock.patch(
+                "messaging.prior_send_totals.campaign_send_totals",
+                side_effect=[cur_c, pri_c]):
+            r = prior_send_totals(self.salon, C1, C2)
+        self.assertEqual((r.reminder_by_status["failed"].current,
+                          r.reminder_by_status["failed"].prior), (0, 2))
+        self.assertEqual((r.campaign_by_status["queued"].current,
+                          r.campaign_by_status["queued"].prior), (1, 0))
+        self.assertEqual(r.reminder_by_channel_by_status["sms"]["failed"].prior, 2)
+        self.assertEqual(r.campaign_by_channel_by_status["email"]["sent"].current, 0)
+        self.assertEqual(list(r.campaign_by_day), [P2, C2])
+        self.assertEqual((r.campaign_by_day[P2].current, r.campaign_by_day[P2].prior), (0, 1))
+        self.assertEqual(r.campaign_by_day_by_channel[C2]["sms"].current, 1)
+
+    def test_export_includes_new_rows_and_agrees(self):
+        self._book()
+        rows = export_prior_send_totals(self.salon, C1, C2)
+        by_metric = {row["metric"]: row for row in rows}
+        self.assertEqual(by_metric["reminder_status_sent"]["current"], 3)
+        self.assertEqual(by_metric["campaign_status_sent"]["prior"], 1)
+        self.assertEqual(by_metric["reminder_channel_email_status_sent"]["current"], 2)
+        self.assertEqual(by_metric["campaign_channel_sms_status_sent"]["current"], 2)
+        self.assertEqual((by_metric[f"campaign_day_{C1.isoformat()}"]["current"],
+                          by_metric[f"campaign_day_{C1.isoformat()}"]["prior"]), (2, 0))
+        self.assertEqual(by_metric[f"campaign_day_{P2.isoformat()}_email"]["prior"], 1)
+        text = export_prior_send_totals_csv(self.salon, C1, C2)
+        csv_rows = {row["metric"]: row for row in csv.DictReader(io.StringIO(text))}
+        self.assertEqual(len(csv_rows), len(rows))
+        self.assertEqual(csv_rows["reminder_status_sent"]["percent_change"], "50.00")
+        self.assertEqual(csv_rows[f"campaign_day_{C1.isoformat()}"]["percent_change"], "")
+
     def test_command_stdout_file_and_errors(self):
         self._book()
         out = io.StringIO()

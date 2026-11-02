@@ -16,7 +16,14 @@ zero. The reminder side also carries ``by_day`` /
 ``send_totals``'s own ``by_day`` and ``by_day_by_channel``
 fields for both windows, zero-filled to the union of both
 windows' days (a day present in only one window pairs with
-``0`` on the other side). No ``history.py`` wrapper is used
+``0`` on the other side). Both sides also carry
+``by_status`` and ``by_channel_by_status`` deltas, and the
+campaign side also carries ``by_day`` / ``by_day_by_channel``
+deltas, taken verbatim from the two source services' own
+``by_status``, ``by_channel_by_status``, ``by_day`` and
+``by_day_by_channel`` fields for both windows, zero-filled
+to the union of both windows' statuses, channels and days.
+No ``history.py`` wrapper is used
 -- history stays salon-agnostic and unconsumed by
 comparisons, and sourcing from ``send_totals`` keeps exactly
 one counting path for ``ReminderSend`` rows. A reversed
@@ -108,6 +115,12 @@ class PriorSendTotalsComparison:
     combined_by_channel: dict = field(default_factory=dict)
     reminder_by_day: dict = field(default_factory=dict)
     reminder_by_day_by_channel: dict = field(default_factory=dict)
+    reminder_by_status: dict = field(default_factory=dict)
+    campaign_by_status: dict = field(default_factory=dict)
+    reminder_by_channel_by_status: dict = field(default_factory=dict)
+    campaign_by_channel_by_status: dict = field(default_factory=dict)
+    campaign_by_day: dict = field(default_factory=dict)
+    campaign_by_day_by_channel: dict = field(default_factory=dict)
 
     @property
     def salon_id(self): return getattr(self.salon, "pk", self.salon)
@@ -133,6 +146,16 @@ class PriorSendTotalsComparison:
         return self.reminder_by_day_by_channel
 
     @property
+    def by_status(self):
+        """Reminder ``by_status`` deltas (the reminder side)."""
+        return self.reminder_by_status
+
+    @property
+    def by_channel_by_status(self):
+        """Reminder cross-tab deltas (the reminder side)."""
+        return self.reminder_by_channel_by_status
+
+    @property
     def deltas(self):
         return {"total": self.total, "reminder_total": self.reminder_total,
                 "campaign_total": self.campaign_total,
@@ -143,7 +166,19 @@ class PriorSendTotalsComparison:
                 "reminder_by_day_by_channel":
                     self.reminder_by_day_by_channel,
                 "by_day": self.reminder_by_day,
-                "by_day_by_channel": self.reminder_by_day_by_channel}
+                "by_day_by_channel": self.reminder_by_day_by_channel,
+                "reminder_by_status": self.reminder_by_status,
+                "campaign_by_status": self.campaign_by_status,
+                "by_status": self.reminder_by_status,
+                "reminder_by_channel_by_status":
+                    self.reminder_by_channel_by_status,
+                "campaign_by_channel_by_status":
+                    self.campaign_by_channel_by_status,
+                "by_channel_by_status":
+                    self.reminder_by_channel_by_status,
+                "campaign_by_day": self.campaign_by_day,
+                "campaign_by_day_by_channel":
+                    self.campaign_by_day_by_channel}
 
     def as_dict(self):
         by = lambda d: {k: v.as_dict() for k, v in d.items()}  # noqa: E731
@@ -152,6 +187,12 @@ class PriorSendTotalsComparison:
         by_day_by_channel = {
             d.isoformat(): by(cells)
             for d, cells in self.reminder_by_day_by_channel.items()}
+        cross = lambda d: {str(k): by(v) for k, v in d.items()}  # noqa: E731
+        campaign_by_day = {d.isoformat(): v.as_dict()
+                           for d, v in self.campaign_by_day.items()}
+        campaign_by_day_by_channel = {
+            d.isoformat(): by(cells)
+            for d, cells in self.campaign_by_day_by_channel.items()}
         return {"salon_id": self.salon_id, "start_date": self.start_date,
                 "end_date": self.end_date,
                 "prior_start_date": self.prior_start_date,
@@ -165,7 +206,19 @@ class PriorSendTotalsComparison:
                 "reminder_by_day": by_day,
                 "reminder_by_day_by_channel": by_day_by_channel,
                 "by_day": by_day,
-                "by_day_by_channel": by_day_by_channel}
+                "by_day_by_channel": by_day_by_channel,
+                "reminder_by_status": by(self.reminder_by_status),
+                "campaign_by_status": by(self.campaign_by_status),
+                "by_status": by(self.reminder_by_status),
+                "reminder_by_channel_by_status":
+                    cross(self.reminder_by_channel_by_status),
+                "campaign_by_channel_by_status":
+                    cross(self.campaign_by_channel_by_status),
+                "by_channel_by_status":
+                    cross(self.reminder_by_channel_by_status),
+                "campaign_by_day": campaign_by_day,
+                "campaign_by_day_by_channel":
+                    campaign_by_day_by_channel}
 
 
 def prior_send_totals(salon, start=None, end=None, **kwargs):
@@ -206,24 +259,52 @@ def prior_send_totals(salon, start=None, end=None, **kwargs):
         return {ch: _delta(f"{prefix}_{ch}", cur.by_channel.get(ch, 0),
                            pri.by_channel.get(ch, 0)) for ch in channels}
 
-    # Reminder by-day / by-day-by-channel: verbatim from
-    # send_totals' own fields for both windows, zero-filled to
-    # the union of both windows' days.
-    union_days = sorted(set(cur_r.by_day) | set(pri_r.by_day))
-    reminder_by_day = {
-        day: _delta(f"reminder_day_{day.isoformat()}",
-                    cur_r.by_day.get(day, 0), pri_r.by_day.get(day, 0))
-        for day in union_days}
-    reminder_by_day_by_channel = {}
-    for day in union_days:
-        cur_cells = cur_r.by_day_by_channel.get(day, {})
-        pri_cells = pri_r.by_day_by_channel.get(day, {})
-        channels = list(cur_cells) + [
-            ch for ch in pri_cells if ch not in cur_cells]
-        reminder_by_day_by_channel[day] = {
-            ch: _delta(f"reminder_day_{day.isoformat()}_{ch}",
-                       cur_cells.get(ch, 0), pri_cells.get(ch, 0))
-            for ch in channels}
+    def _union_map(cur_map, pri_map, prefix):
+        keys = list(cur_map) + [k for k in pri_map if k not in cur_map]
+        return {k: _delta(f"{prefix}_{k}", cur_map.get(k, 0),
+                          pri_map.get(k, 0)) for k in keys}
+
+    def _cross(cur, pri, prefix):
+        channels = list(cur.by_channel_by_status) + [
+            ch for ch in pri.by_channel_by_status
+            if ch not in cur.by_channel_by_status]
+        out = {}
+        for ch in channels:
+            cur_cells = cur.by_channel_by_status.get(ch, {})
+            pri_cells = pri.by_channel_by_status.get(ch, {})
+            statuses = list(cur_cells) + [
+                s for s in pri_cells if s not in cur_cells]
+            out[ch] = {
+                s: _delta(f"{prefix}_channel_{ch}_status_{s}",
+                          cur_cells.get(s, 0), pri_cells.get(s, 0))
+                for s in statuses}
+        return out
+
+    def _by_day(cur, pri, prefix):
+        # Verbatim from the source's own by_day /
+        # by_day_by_channel for both windows, zero-filled to
+        # the union of both windows' days.
+        union_days = sorted(set(cur.by_day) | set(pri.by_day))
+        by_day = {
+            day: _delta(f"{prefix}_day_{day.isoformat()}",
+                        cur.by_day.get(day, 0), pri.by_day.get(day, 0))
+            for day in union_days}
+        by_day_by_channel = {}
+        for day in union_days:
+            cur_cells = cur.by_day_by_channel.get(day, {})
+            pri_cells = pri.by_day_by_channel.get(day, {})
+            channels = list(cur_cells) + [
+                ch for ch in pri_cells if ch not in cur_cells]
+            by_day_by_channel[day] = {
+                ch: _delta(f"{prefix}_day_{day.isoformat()}_{ch}",
+                           cur_cells.get(ch, 0), pri_cells.get(ch, 0))
+                for ch in channels}
+        return by_day, by_day_by_channel
+
+    reminder_by_day, reminder_by_day_by_channel = _by_day(
+        cur_r, pri_r, "reminder")
+    campaign_by_day, campaign_by_day_by_channel = _by_day(
+        cur_c, pri_c, "campaign")
 
     reminder_by_channel = _by_channel(cur_r, pri_r, "reminder")
     campaign_by_channel = _by_channel(cur_c, pri_c, "campaign")
@@ -242,7 +323,15 @@ def prior_send_totals(salon, start=None, end=None, **kwargs):
         reminder_by_channel=reminder_by_channel,
         campaign_by_channel=campaign_by_channel, combined_by_channel=combined,
         reminder_by_day=reminder_by_day,
-        reminder_by_day_by_channel=reminder_by_day_by_channel)
+        reminder_by_day_by_channel=reminder_by_day_by_channel,
+        reminder_by_status=_union_map(
+            cur_r.by_status, pri_r.by_status, "reminder_status"),
+        campaign_by_status=_union_map(
+            cur_c.by_status, pri_c.by_status, "campaign_status"),
+        reminder_by_channel_by_status=_cross(cur_r, pri_r, "reminder"),
+        campaign_by_channel_by_status=_cross(cur_c, pri_c, "campaign"),
+        campaign_by_day=campaign_by_day,
+        campaign_by_day_by_channel=campaign_by_day_by_channel)
 
 
 #: Aliases, mirroring the naming convenience in sibling services.
