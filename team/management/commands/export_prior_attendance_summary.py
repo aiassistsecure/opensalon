@@ -1,5 +1,8 @@
 """Export one salon's prior-period attendance summary as CSV.
 
+Includes the total, per-staff, and offset-aligned per-day rows
+from :mod:`team.prior_attendance_summary_export`, unchanged.
+
 Usage: python manage.py export_prior_attendance_summary --salon-id ID
     --start-date YYYY-MM-DD --end-date YYYY-MM-DD [--output PATH]
 Thin wrapper around :mod:`team.prior_attendance_summary_export`;
