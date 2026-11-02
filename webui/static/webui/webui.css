@@ -1401,11 +1401,18 @@ button:focus-visible, a:focus-visible, select:focus-visible {
 .book-day{font:inherit;cursor:pointer}
 .book-loading{animation:bookPulse 1.1s ease-in-out infinite}
 @keyframes bookPulse{0%,100%{opacity:.45}50%{opacity:1}}
-.book-modal{position:fixed;inset:0;background:rgba(29,37,48,.48);display:flex;align-items:center;justify-content:center;padding:18px;z-index:60;opacity:0;transition:opacity .25s ease}
-.book-modal[hidden]{display:none}
-.book-modal.open{opacity:1}
+/* These four rules are scoped to the enclave's own body,
+   and the scoping is load-bearing: .book-modal is ALSO the
+   class of the app's own modals in base.html (checkout, new
+   appointment, time clock), which open by class alone and
+   never take .open. Unscoped, the opacity:0 below opened
+   every one of them invisible — a full-screen overlay that
+   showed nothing and swallowed every click on the page. */
+.book-body .book-modal{position:fixed;inset:0;background:rgba(29,37,48,.48);display:flex;align-items:center;justify-content:center;padding:18px;z-index:60;opacity:0;transition:opacity .25s ease}
+.book-body .book-modal[hidden]{display:none}
+.book-body .book-modal.open{opacity:1}
 .book-done-card{max-width:440px;width:100%;text-align:center;transform:scale(.94) translateY(10px);transition:transform .32s cubic-bezier(.22,.9,.3,1)}
-.book-modal.open .book-done-card{transform:none}
+.book-body .book-modal.open .book-done-card{transform:none}
 .book-done-card .book-pick{text-align:left}
 .book-done-check{width:52px;height:52px;margin:2px auto 12px;border-radius:50%;background:#eef5e8;color:#3f5a36;font-size:26px;font-weight:800;display:flex;align-items:center;justify-content:center;border:1px solid #cfdfc0}
 #bookToasts{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:80;display:flex;flex-direction:column;gap:8px;width:min(92vw,440px)}
