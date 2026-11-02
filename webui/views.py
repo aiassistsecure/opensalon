@@ -2264,6 +2264,26 @@ def _level_label(level, seen):
 
 def price_book(request):
     salon = Salon.objects.order_by("id").first()
+    message = ""
+    if request.method == "POST" and salon is not None:
+        if request.POST.get("action") == "performers":
+            from team.capabilities import set_service_performers
+
+            service = Service.objects.filter(
+                pk=request.POST.get("service"), category__salon=salon,
+                active=True,
+            ).first()
+            if service is not None:
+                checked = {
+                    int(value)
+                    for value in request.POST.getlist("performer")
+                    if value.isdigit()
+                }
+                set_service_performers(service, checked)
+                message = (
+                    f"{service.name}: {len(checked)} of the team "
+                    "perform it now."
+                )
     levels = list(StaffLevel.objects.filter(salon=salon, active=True)) if salon else []
     levels.sort(key=_level_rank)
     seen_labels = {}
@@ -2272,7 +2292,14 @@ def price_book(request):
         for level in levels
     ]
     categories = []
+    members = []
     if salon is not None:
+        from team.capabilities import performer_map
+
+        cap_map = performer_map(salon)
+        members = list(
+            StaffMember.objects.filter(salon=salon, active=True)
+        )
         cats = (
             ServiceCategory.objects.filter(salon=salon, active=True)
             .prefetch_related("services__prices")
@@ -2289,11 +2316,18 @@ def price_book(request):
                         "service": service,
                         "duration": _duration_label(service.total_minutes),
                         "cells": [prices.get(level["pk"]) for level in levels],
+                        "performer_ids": cap_map.get(service.pk, set()),
                     }
                 )
             if rows:
                 categories.append({"category": cat, "rows": rows})
-    context = {"nav_key": "pricebook", "levels": levels, "categories": categories}
+    context = {
+        "nav_key": "pricebook",
+        "levels": levels,
+        "categories": categories,
+        "members": members,
+        "message": message,
+    }
     return render(request, "webui/pricebook.html", context)
 
 
@@ -2415,6 +2449,42 @@ def team(request):
                     member.pin = pin
                     member.save(update_fields=["pin"])
                     message = f"PIN set for {member.display_name}."
+        elif action == "services":
+            from team.capabilities import set_member_services
+
+            member = StaffMember.objects.filter(
+                pk=request.POST.get("member"), salon=salon, active=True
+            ).first()
+            if member is not None:
+                checked = {
+                    int(value)
+                    for value in request.POST.getlist("service")
+                    if value.isdigit()
+                }
+                set_member_services(member, checked)
+                message = (
+                    f"{member.display_name} now performs "
+                    f"{len(checked)} services."
+                )
+        elif action == "copy_services":
+            from team.capabilities import copy_member_services
+
+            member = StaffMember.objects.filter(
+                pk=request.POST.get("member"), salon=salon, active=True
+            ).first()
+            source = (
+                StaffMember.objects.filter(
+                    pk=request.POST.get("source"), salon=salon, active=True
+                )
+                .exclude(pk=member.pk if member else None)
+                .first()
+            )
+            if member is not None and source is not None:
+                copy_member_services(source, member)
+                message = (
+                    f"{member.display_name}'s services now mirror "
+                    f"{source.display_name}'s."
+                )
     rows, patterns, members = [], [], []
     week_label = ""
     if salon is not None:
@@ -2455,6 +2525,35 @@ def team(request):
         members = list(
             StaffMember.objects.filter(salon=salon, active=True).order_by("display_name")
         )
+    member_caps = []
+    service_groups = []
+    if salon is not None:
+        from team.capabilities import performer_map
+
+        cap_map = performer_map(salon)
+        by_member = {}
+        for service_id, ids in cap_map.items():
+            for member_id in ids:
+                by_member.setdefault(member_id, set()).add(service_id)
+        member_caps = [
+            {
+                "member": member,
+                "service_ids": by_member.get(member.pk, set()),
+                "count": len(by_member.get(member.pk, set())),
+            }
+            for member in members
+        ]
+        cats = (
+            ServiceCategory.objects.filter(salon=salon, active=True)
+            .prefetch_related("services")
+            .order_by("sort_order", "name")
+        )
+        for cat in cats:
+            services = [s for s in cat.services.all() if s.active]
+            if services:
+                service_groups.append(
+                    {"category": cat, "services": services}
+                )
     return render(
         request,
         "webui/roster.html",
@@ -2464,6 +2563,8 @@ def team(request):
             "rows": rows,
             "patterns": patterns,
             "members": members,
+            "member_caps": member_caps,
+            "service_groups": service_groups,
             "weekday_choices": RosterPattern.Weekday.choices,
             "week_label": week_label,
             "message": message,
@@ -2733,24 +2834,6 @@ def _book_services(salon):
     ]
 
 
-def _grid_starts(interval, minutes, now):
-    """Quarter-hour start times inside one free interval that
-    fit the service and haven't already passed."""
-    start = interval.start
-    remainder = start.minute % 15
-    if remainder or start.second or start.microsecond:
-        start = start.replace(second=0, microsecond=0) + datetime.timedelta(
-            minutes=(15 - remainder) % 15 or 15
-        )
-    length = datetime.timedelta(minutes=minutes)
-    starts = []
-    while start + length <= interval.end:
-        if start > now:
-            starts.append(start)
-        start += datetime.timedelta(minutes=15)
-    return starts
-
-
 def _book_service_groups(salon):
     """The menu grouped by category, in the book's own order —
     a real salon's menu is a directory, not a scroll."""
@@ -2767,6 +2850,70 @@ def _book_service_groups(salon):
     return groups
 
 
+def _book_availability(salon):
+    """The booking page's whole world, in one payload.
+
+    Availability arrives WITH the page and lives in the client:
+    for the fourteen-day window, every online-bookable stylist's
+    free spans per day (rostered time from `available_slots` —
+    the roster resolver's word, breaks and appointments already
+    subtracted), each service's length, and the stylists who
+    perform it (the capability rule, `team.capabilities`). The
+    guest's picks then sort locally — duration-aware, quarter-
+    hour grid, past starts dropped — with no fetch per pick.
+    The lane's law is unchanged: this picture is an offer, and
+    `create_online_booking` re-checks everything at the write.
+    """
+    from bookings.availability import available_slots
+    from saloncore.models import Service
+    from team.capabilities import performer_ids
+    from team.models import StaffMember
+
+    tz = _tz(salon)
+    now = timezone.now().astimezone(tz)
+    today = now.date()
+    members = list(
+        StaffMember.objects.filter(
+            salon=salon, active=True, online_bookable=True
+        )
+    )
+    staff = {str(member.pk): member.display_name for member in members}
+    services = {}
+    for service in Service.objects.filter(category__salon=salon, active=True):
+        ids = performer_ids(salon, service)
+        if ids is None:
+            ids = set(staff)
+        else:
+            ids = {str(pk) for pk in ids} & set(staff)
+        services[str(service.pk)] = {
+            "minutes": service.total_minutes,
+            "staff": sorted(int(pk) for pk in ids),
+        }
+    days = []
+    free = {}
+    for offset in range(BOOKING_WINDOW_DAYS):
+        day = today + datetime.timedelta(days=offset)
+        days.append(day.isoformat())
+        per_member = {}
+        for availability in available_slots(salon, day, online_only=True):
+            per_member[str(availability.staff_member_id)] = [
+                [
+                    interval.start.astimezone(tz).strftime("%H:%M"),
+                    interval.end.astimezone(tz).strftime("%H:%M"),
+                ]
+                for interval in availability.intervals
+            ]
+        free[day.isoformat()] = per_member
+    return {
+        "today": today.isoformat(),
+        "now": now.strftime("%Y-%m-%dT%H:%M"),
+        "days": days,
+        "staff": staff,
+        "services": services,
+        "free": free,
+    }
+
+
 def book_page(request):
     """Online booking — the salon's public page, its own brand.
 
@@ -2774,9 +2921,11 @@ def book_page(request):
     journey is a room already on it — menu, times, details,
     done. The guest moves room to room over the page's edge
     table (show/hide with depth motion, the whiteglove
-    pattern); the only fetches are data edges: the chosen
-    service's slot grid (`book_slots`) and the confirm
-    (`book_confirm`, JSON mode). The classic no-JS posts still
+    pattern); availability rides the page itself (see
+    `_book_availability`) and picks sort locally — the only
+    fetches left are the confirm (`book_confirm`, JSON mode)
+    and, after a "taken" answer, one re-read of the picture.
+    The classic no-JS posts still
     land on the same endpoints and redirect as they always
     did; a bounced confirm returns here with `taken` and the
     enclave reopens at the times room with the news.
@@ -2814,76 +2963,22 @@ def book_page(request):
             "today": today,
             "taken": request.GET.get("taken") == "1",
             "resume_service": resume_service,
+            "availability": _book_availability(salon),
         }
     )
     return render(request, "webui/book.html", ctx)
 
 
-def book_slots(request):
-    """The data edge for the times room: one service's whole
-    window — fourteen days of per-stylist quarter-hour starts
-    — in a single payload, so day-hopping inside the room is
-    pure show/hide and never another fetch."""
-    from onlinebooking.services import bookable_slots
-    from saloncore.models import Service
-
+def book_availability(request):
+    """The booking page's resident picture, as data: the same
+    payload the page itself carries (see `_book_availability`),
+    re-served for the one moment the picture can go stale — a
+    confirm that answers "taken". The enclave re-reads it once,
+    then goes back to sorting locally."""
     salon = Salon.objects.order_by("id").first()
     if salon is None:
         return JsonResponse({"ok": False, "error": "closed"}, status=404)
-    try:
-        service = Service.objects.get(
-            pk=int(request.GET.get("service", "")), category__salon=salon,
-            active=True,
-        )
-    except (ValueError, Service.DoesNotExist):
-        return JsonResponse({"ok": False, "error": "service"}, status=404)
-    tz = _tz(salon)
-    now = timezone.now().astimezone(tz)
-    today = now.date()
-    days = []
-    for offset in range(BOOKING_WINDOW_DAYS):
-        day = today + datetime.timedelta(days=offset)
-        sections = []
-        for availability in bookable_slots(salon, service, day):
-            starts = []
-            for interval in availability.intervals:
-                starts.extend(
-                    _grid_starts(interval, service.total_minutes, now)
-                )
-            if starts:
-                sections.append(
-                    {
-                        "staff_id": availability.staff_member.pk,
-                        "staff": availability.staff_member.display_name,
-                        "starts": [
-                            {
-                                "t": s.strftime("%H:%M"),
-                                "label": _fmt_time(s.time()),
-                            }
-                            for s in starts
-                        ],
-                    }
-                )
-        days.append(
-            {
-                "date": day.isoformat(),
-                "dow": day.strftime("%a"),
-                "dom": day.day,
-                "label": f"{day.strftime('%A, %B')} {day.day}",
-                "sections": sections,
-            }
-        )
-    return JsonResponse(
-        {
-            "ok": True,
-            "service": {
-                "id": service.pk,
-                "name": service.name,
-                "minutes": service.total_minutes,
-            },
-            "days": days,
-        }
-    )
+    return JsonResponse(_book_availability(salon))
 
 
 @require_POST
@@ -2897,7 +2992,10 @@ def book_confirm(request):
     lifecycle delegate re-checks the toggle, the roster and
     overlaps, so a race or a crafted post cannot land a
     booking the page wouldn't have offered. A refusal returns
-    to the time step with a plain "just taken" note.
+    to the time step with a plain "just taken" note — unless
+    the slot is taken by this guest's own booking (a double
+    tap, a retry after a slow answer), which answers with
+    the booking itself: already theirs is not a refusal.
     """
     from django.core.exceptions import ValidationError
 
@@ -2959,6 +3057,56 @@ def book_confirm(request):
     ) or start <= now:
         return fail("taken", "That time was just taken — please pick another.")
 
+    first = request.POST.get("first_name", "").strip()
+    last = request.POST.get("last_name", "").strip()
+    phone = request.POST.get("phone", "").strip()
+    email = request.POST.get("email", "").strip()
+    note = request.POST.get("note", "").strip()
+    if not first or not phone:
+        return fail("details", "Add your name and a mobile number, and we'll book it.")
+
+    def summary():
+        return {
+            "service": service.name,
+            "staff": member.display_name,
+            "when": (
+                f"{day.strftime('%A, %B')} {day.day} at "
+                f"{_fmt_time(start.time())}"
+            ),
+            "name": f"{first} {last}".strip(),
+        }
+
+    def taken_or_already():
+        """A taken answer is a refusal only when the slot is
+        someone else's. When it is THIS guest's own booking —
+        a double tap, a retry after a slow answer — the
+        booking stands, and the honest answer is the booking
+        itself, not a bounce back to the times."""
+        existing = (
+            Appointment.objects.filter(
+                staff_member=member, service=service, start=start,
+                client__salon=salon,
+            )
+            .exclude(status=Appointment.Status.CANCELLED)
+            .exclude(status=Appointment.Status.NO_SHOW)
+            .select_related("client")
+            .first()
+        )
+        if existing is not None:
+            owner = existing.client
+            if (phone and owner.phone == phone) or (
+                email
+                and owner.email
+                and owner.email.lower() == email.lower()
+            ):
+                request.session["booked_appointment"] = existing.pk
+                if wants_json:
+                    return JsonResponse(
+                        {"ok": True, "already": True, "summary": summary()}
+                    )
+                return redirect("webui:book_done")
+        return fail("taken", "That time was just taken — please pick another.")
+
     fits = False
     for availability in bookable_slots(salon, service, day):
         if availability.staff_member.pk != member.pk:
@@ -2969,15 +3117,7 @@ def book_confirm(request):
             for interval in availability.intervals
         )
     if not fits:
-        return fail("taken", "That time was just taken — please pick another.")
-
-    first = request.POST.get("first_name", "").strip()
-    last = request.POST.get("last_name", "").strip()
-    phone = request.POST.get("phone", "").strip()
-    email = request.POST.get("email", "").strip()
-    note = request.POST.get("note", "").strip()
-    if not first or not phone:
-        return fail("details", "Add your name and a mobile number, and we'll book it.")
+        return taken_or_already()
 
     guest = None
     if phone:
@@ -2998,23 +3138,10 @@ def book_confirm(request):
             note_author=f"{first} {last}".strip() or "Online booking",
         )
     except ValidationError:
-        return fail("taken", "That time was just taken — please pick another.")
+        return taken_or_already()
     request.session["booked_appointment"] = appointment.pk
     if wants_json:
-        return JsonResponse(
-            {
-                "ok": True,
-                "summary": {
-                    "service": service.name,
-                    "staff": member.display_name,
-                    "when": (
-                        f"{day.strftime('%A, %B')} {day.day} at "
-                        f"{_fmt_time(start.time())}"
-                    ),
-                    "name": f"{first} {last}".strip(),
-                },
-            }
-        )
+        return JsonResponse({"ok": True, "summary": summary()})
     return redirect("webui:book_done")
 
 

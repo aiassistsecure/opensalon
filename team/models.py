@@ -66,6 +66,44 @@ class StaffMember(StrictConstraints):
         return latest is not None and latest.event_type == AttendanceRecord.EventType.CHECK_IN
 
 
+class StaffService(StrictConstraints):
+    """Whether one staff member performs one service.
+
+    The capability matrix: pricing (``ServicePrice``, per level)
+    says how much a service costs; this says *who can do it*. A row
+    is an explicit word from the salon — once any row exists for a
+    service, rows are the whole truth for that service (a member
+    with no row does not perform it). A service with no rows at all
+    falls back to the price book: the members whose level is priced
+    for the service perform it (see :mod:`team.capabilities`).
+    """
+
+    staff_member = models.ForeignKey(
+        StaffMember, on_delete=models.CASCADE, related_name="service_links"
+    )
+    service = models.ForeignKey(
+        "saloncore.Service",
+        on_delete=models.CASCADE,
+        related_name="performer_links",
+    )
+    enabled = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["service", "staff_member"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["staff_member", "service"],
+                name="uniq_staff_service",
+            )
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.staff_member} — {self.service}: "
+            f"{'performs' if self.enabled else 'does not perform'}"
+        )
+
+
 class RosterPattern(StrictConstraints):
     """Recurring weekly availability for a staff member.
 

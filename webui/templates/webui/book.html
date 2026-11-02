@@ -19,8 +19,11 @@
   <!-- The enclave: one load, every step a room already on the
        page. Navigation walks the edge table below — rooms are
        shown and hidden in place with depth motion, never
-       fetched as pages. The only network edges are data:
-       the slot grid for a chosen service, and the confirm.
+       fetched as pages. Availability is resident: the page
+       arrives carrying the fortnight's free spans for every
+       bookable stylist, and picking a service sorts that
+       picture locally — no fetch stands between the pick
+       and the times; the confirm is the only write.
        The menu is two rooms deep on purpose: the lobby shows
        only categories and a name search — a real menu runs
        near a hundred services, and nobody should have to
@@ -116,6 +119,7 @@
     </section>
   </div>
 
+  {{ availability|json_script:"bookAvailability" }}
   <script>
   /* The edge table: every way a guest can move through the
      enclave, named once. go() walks an edge — the room behind
@@ -262,51 +266,154 @@
     room("bookNoMatch").hidden = true;
   }
 
-  /* The journey itself: pick a service (one data fetch for
-     the whole fortnight), walk days inside the room, pick a
-     time, confirm — the answer comes back as data and the
-     page speaks it: a toast, a step back, or the door to the
-     done room. Nothing a guest does here ends in silence.
-     State law: the newest pick is the only truth. Every
-     slot fetch carries the request number it was born with,
-     and a response that lands after a newer pick is dropped
-     on the floor — a slow fetch for the last service must
-     never repaint this service's room (the lag that left a
-     stale name on the times room after backing out and
-     picking another service). The heading is set from the
+  /* The journey itself: availability arrived WITH the page
+     and lives in the client (the #bookAvailability payload:
+     every bookable stylist's free spans for the fortnight,
+     each service's length and its performers). Picking a
+     service sorts that picture locally — quarter-hour grid,
+     the service's own duration, past starts dropped — so
+     the times room paints in the same gesture: no fetch to
+     wait on, and nothing stale to drop, because a pick is a
+     computation, not a request. The one re-read is
+     refreshAvailability(), after a confirm answers "taken":
+     the picture changed under the guest, so it loads once
+     more and the room re-sorts. The heading is set from the
      button the guest actually tapped, immediately, so the
-     room names their pick before any fetch lands. */
-  var SLOTS_URL = "{% url 'webui:book_slots' %}";
+     room names their pick before anything else moves. */
+  var AVAIL_URL = "{% url 'webui:book_availability' %}";
+  var AVAIL = null;
+  var availStamp = 0;
+  try {
+    AVAIL = JSON.parse(room("bookAvailability").textContent);
+    availStamp = Date.now();
+  } catch (e) { AVAIL = null; }
   var state = {
     serviceId: null, payload: null, dayIdx: 0,
-    req: 0, viaSearch: false, catName: ""
+    viaSearch: false, catName: ""
   };
 
-  function loadSlots(serviceId, then) {
-    var req = ++state.req;
-    room("timesLoading").hidden = false;
-    room("timesSections").innerHTML = "";
-    room("timesDays").innerHTML = "";
-    fetch(SLOTS_URL + "?service=" + serviceId, { headers: { "Accept": "application/json" } })
-      .then(function (r) { return r.json(); })
-      .then(function (payload) {
-        if (req !== state.req) return;
-        state.payload = payload;
-        state.dayIdx = 0;
-        for (var i = 0; i < payload.days.length; i++) {
-          if (payload.days[i].sections.length) { state.dayIdx = i; break; }
+  function toMin(hhmm) {
+    var parts = hhmm.split(":");
+    return (+parts[0]) * 60 + (+parts[1]);
+  }
+  function toHHMM(min) {
+    var h = Math.floor(min / 60), m = min % 60;
+    return (h < 10 ? "0" + h : h) + ":" + (m < 10 ? "0" + m : m);
+  }
+  /* The server's _fmt_time, in JS dress: whole hours read
+     "9 AM", the rest "9:15 AM". Keep the two in lockstep. */
+  function fmtLabel(hhmm) {
+    var parts = hhmm.split(":");
+    var h = +parts[0], m = +parts[1];
+    var h12 = h % 12 || 12;
+    var suffix = h >= 12 ? "PM" : "AM";
+    return m
+      ? h12 + ":" + (m < 10 ? "0" + m : m) + " " + suffix
+      : h12 + " " + suffix;
+  }
+  var DOWS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  var DAYS_FULL = ["Sunday", "Monday", "Tuesday", "Wednesday",
+    "Thursday", "Friday", "Saturday"];
+  var MONTHS = ["January", "February", "March", "April", "May",
+    "June", "July", "August", "September", "October",
+    "November", "December"];
+  function dayMeta(iso) {
+    var d = new Date(iso + "T12:00:00");
+    return {
+      date: iso, dow: DOWS[d.getDay()], dom: d.getDate(),
+      label: DAYS_FULL[d.getDay()] + ", " +
+        MONTHS[d.getMonth()] + " " + d.getDate()
+    };
+  }
+  /* "Now" on the salon's clock: the server's stamp at page
+     load plus the real time since. First-day starts must
+     still be ahead of it — the server's past-start rule. */
+  function nowMinutes() {
+    if (!AVAIL) return 0;
+    return toMin(AVAIL.now.split("T")[1]) +
+      (Date.now() - availStamp) / 60000;
+  }
+  function serviceName(serviceId) {
+    for (var i = 0; i < allRows.length; i++) {
+      if (allRows[i].getAttribute("data-pick") === String(serviceId)) {
+        var el = allRows[i].querySelector(".book-service-name");
+        if (el) return el.textContent;
+      }
+    }
+    return "";
+  }
+  function computeSlots(serviceId, then) {
+    room("timesLoading").hidden = true;
+    var svc = AVAIL ? AVAIL.services[String(serviceId)] : null;
+    var days = [];
+    if (AVAIL) {
+      AVAIL.days.forEach(function (iso, idx) {
+        var sections = [];
+        if (svc) {
+          svc.staff.forEach(function (staffId) {
+            var spans = (AVAIL.free[iso] || {})[String(staffId)] || [];
+            var starts = [];
+            spans.forEach(function (span) {
+              /* The quarter-hour grid: first start at the
+                 span's opening rounded up to the quarter,
+                 then every quarter while the whole service
+                 still fits inside the span. */
+              var cursor = toMin(span[0]);
+              var rem = cursor % 15;
+              if (rem) cursor += 15 - rem;
+              var end = toMin(span[1]);
+              while (cursor + svc.minutes <= end) {
+                if (idx > 0 || cursor > nowMinutes()) {
+                  var t = toHHMM(cursor);
+                  starts.push({ t: t, label: fmtLabel(t) });
+                }
+                cursor += 15;
+              }
+            });
+            if (starts.length) {
+              sections.push({
+                staff_id: staffId,
+                staff: AVAIL.staff[String(staffId)],
+                starts: starts
+              });
+            }
+          });
         }
-        room("timesService").textContent = payload.service.name;
-        room("timesLoading").hidden = true;
-        renderDays();
-        renderSections();
+        var meta = dayMeta(iso);
+        meta.sections = sections;
+        days.push(meta);
+      });
+    }
+    state.payload = {
+      service: {
+        id: +serviceId,
+        name: serviceName(serviceId),
+        minutes: svc ? svc.minutes : 0
+      },
+      days: days
+    };
+    state.dayIdx = 0;
+    for (var i = 0; i < days.length; i++) {
+      if (days[i].sections.length) { state.dayIdx = i; break; }
+    }
+    if (state.payload.service.name) {
+      room("timesService").textContent = state.payload.service.name;
+    }
+    renderDays();
+    renderSections();
+    if (then) then();
+  }
+  function refreshAvailability(then) {
+    fetch(AVAIL_URL, { headers: { "Accept": "application/json" } })
+      .then(function (r) { return r.json(); })
+      .then(function (fresh) {
+        if (fresh && fresh.days) {
+          AVAIL = fresh;
+          availStamp = Date.now();
+        }
         if (then) then();
       })
-      .catch(function () {
-        if (req !== state.req) return;
-        room("timesLoading").hidden = true;
-        toast("Open times couldn't load — check your connection and try again.", true);
-      });
+      .catch(function () { if (then) then(); });
   }
   function renderDays() {
     var strip = room("timesDays");
@@ -379,7 +486,7 @@
       ? "← All services"
       : "← " + (state.catName || "All services");
     go("pickService");
-    loadSlots(state.serviceId);
+    computeSlots(state.serviceId);
   });
   room("timesBack").addEventListener("click", function () {
     go(state.viaSearch ? "backToLobby" : "backToCategory");
@@ -395,12 +502,19 @@
   var form = room("bookForm");
   form.addEventListener("submit", function (ev) {
     ev.preventDefault();
+    /* One confirm in flight, structurally — not just a
+       disabled button a double tap can outrun. A second
+       submit while the first is unanswered is ignored, so
+       the guest's own booking can never race itself. */
+    if (form.dataset.busy) return;
+    form.dataset.busy = "1";
     var btn = room("confirmBtn");
     btn.disabled = true;
     btn.textContent = "Booking…";
     fetch(form.action, { method: "POST", body: new FormData(form) })
       .then(function (r) { return r.json(); })
       .then(function (body) {
+        delete form.dataset.busy;
         btn.disabled = false;
         btn.textContent = "Confirm booking";
         if (body.ok) {
@@ -409,16 +523,21 @@
             body.summary.when + ". See you soon, " +
             body.summary.name.split(" ")[0] + ".";
           go("booked");
-          toast("Booked — " + body.summary.service + ", " + body.summary.when + ".");
+          toast(body.already
+            ? "That time was already yours — you're booked."
+            : "Booked — " + body.summary.service + ", " + body.summary.when + ".");
         } else if (body.error === "taken") {
           toast(body.message, true);
-          loadSlots(state.serviceId);
+          refreshAvailability(function () {
+            computeSlots(state.serviceId);
+          });
           go("backToTimes");
         } else {
           toast(body.message || "That booking couldn't be made.", true);
         }
       })
       .catch(function () {
+        delete form.dataset.busy;
         btn.disabled = false;
         btn.textContent = "Confirm booking";
         toast("The booking didn't go through — check your connection and try again.", true);
@@ -432,7 +551,7 @@
   if (RESUME_SERVICE) {
     state.serviceId = RESUME_SERVICE;
     go("pickService");
-    loadSlots(RESUME_SERVICE, function () {
+    computeSlots(RESUME_SERVICE, function () {
       if (RESUME_TAKEN) toast("That time was just taken — please pick another.", true);
     });
   }

@@ -1487,3 +1487,50 @@ body.side-collapsed .store-chip-text { display: none; }
 /* Team page PIN rows */
 .pin-form { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .pin-input { width: 110px; letter-spacing: .2em; }
+
+/* Capability modals: who performs what (price book + team page).
+   The modals ride the app's .book-modal law; these rules are
+   only the list inside them. */
+.page-msg {
+  background: #f3ecd9; border: 1px solid #ddd0ac; color: #5c543d;
+  border-radius: 10px; padding: 9px 13px; font-size: 13.5px;
+  margin: 0 0 14px;
+}
+.cap-open {
+  background: none; border: none; padding: 2px 0; cursor: pointer;
+  font: inherit; font-size: 13px; font-weight: 650; color: #7a641f;
+  white-space: nowrap;
+}
+.cap-open:hover { text-decoration: underline; }
+.cap-note { color: #6b6250; font-size: 13px; margin: 0 0 12px; }
+.cap-list {
+  max-height: 46vh; overflow-y: auto; margin-bottom: 14px;
+  border: 1px solid #eee4cb; border-radius: 12px; padding: 6px;
+}
+.cap-row {
+  display: flex; align-items: center; gap: 9px; padding: 7px 8px;
+  border-radius: 8px; cursor: pointer; font-size: 14px;
+}
+.cap-row:hover { background: #faf5e6; }
+.cap-row input { width: 17px; height: 17px; accent-color: #3f5a36; flex: none; }
+.cap-name { font-weight: 600; }
+.cap-meta { color: #9a927e; font-size: 12px; margin-left: auto; }
+.cap-group-h {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 11px; font-weight: 700; letter-spacing: .07em;
+  text-transform: uppercase; color: #9a7b2d; padding: 10px 8px 4px;
+}
+.cap-mini {
+  background: none; border: 1px solid #ddd0ac; border-radius: 999px;
+  padding: 1px 9px; font-size: 11px; font-weight: 650; color: #7a641f;
+  cursor: pointer; margin-left: 5px;
+}
+.cap-copy {
+  display: flex; align-items: end; gap: 9px; margin-top: 14px;
+  padding-top: 13px; border-top: 1px solid #eee4cb;
+}
+.cap-copy label {
+  display: block; font-size: 11px; font-weight: 700;
+  letter-spacing: .07em; text-transform: uppercase; color: #a2987d;
+}
+.cap-copy select { margin-top: 5px; }

@@ -18,6 +18,7 @@ from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from bookings.models import Appointment, Break
+from team.capabilities import performer_ids
 from team.models import RosterPattern, ShiftOverride, StaffMember
 
 
@@ -111,6 +112,13 @@ def available_slots(salon, day, service=None, *, online_only=False):
     if online_only:
         staff_qs = staff_qs.filter(online_bookable=True)
     staff = list(staff_qs)
+    if service is not None:
+        # Capability: a service only offers the staff who perform
+        # it (team.capabilities). An open service (no rows, no
+        # prices) restricts nobody.
+        ids = performer_ids(salon, service)
+        if ids is not None:
+            staff = [member for member in staff if member.pk in ids]
 
     overrides = {
         o.staff_member_id: o

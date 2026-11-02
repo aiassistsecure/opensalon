@@ -47,21 +47,21 @@ class BookingPageTests(TestCase):
         query = "&".join(f"{k}={v}" for k, v in params.items())
         return f"{reverse('webui:book')}?{query}"
 
-    def slots(self):
-        response = self.client.get(
-            reverse("webui:book_slots"), {"service": self.service.pk}
-        )
+    def availability(self):
+        response = self.client.get(reverse("webui:book_availability"))
         self.assertEqual(response.status_code, 200)
         return response.json()
 
     def first_start(self):
         """Tomorrow's first offered start, as an \"H:M\" string —
-        read from the enclave's data edge, the way the page does."""
-        payload = self.slots()
-        for day in payload["days"]:
-            if day["date"] == self.tomorrow.isoformat():
-                return day["sections"][0]["starts"][0]["t"]
-        raise AssertionError("no starts offered tomorrow")
+        the first start the page's own local sort produces from
+        the resident picture: Dana's first free span opens on
+        the quarter and the hour-long service fits inside it."""
+        payload = self.availability()
+        spans = payload["free"][self.tomorrow.isoformat()][
+            str(self.staff.pk)
+        ]
+        return spans[0][0]
 
     def test_menu_shows_services_under_the_salons_name(self):
         response = self.client.get(reverse("webui:book"))
@@ -70,20 +70,59 @@ class BookingPageTests(TestCase):
         self.assertContains(response, "Signature Cut")
         self.assertNotContains(response, "OpenSalon")
 
-    def test_slots_come_from_the_roster_and_the_toggle(self):
-        payload = self.slots()
-        self.assertTrue(payload["ok"])
+    def test_availability_comes_from_the_roster_and_the_toggle(self):
+        payload = self.availability()
         self.assertEqual(len(payload["days"]), 14)
-        tomorrow = next(
-            d for d in payload["days"]
-            if d["date"] == self.tomorrow.isoformat()
+        # The toggle-off stylist is not in the picture at all.
+        self.assertEqual(
+            payload["staff"], {str(self.staff.pk): "Dana Stylist"}
         )
-        names = [s["staff"] for s in tomorrow["sections"]]
-        self.assertEqual(names, ["Dana Stylist"])
-        starts = tomorrow["sections"][0]["starts"]
-        self.assertTrue(starts)
-        self.assertTrue(
-            all(int(s["t"].split(":")[1]) % 15 == 0 for s in starts)
+        offered = payload["services"][str(self.service.pk)]
+        self.assertEqual(offered["minutes"], 60)
+        self.assertEqual(offered["staff"], [self.staff.pk])
+        self.assertEqual(
+            payload["free"][self.tomorrow.isoformat()][str(self.staff.pk)],
+            [["09:00", "12:00"]],
+        )
+
+    def test_availability_subtracts_a_booked_span(self):
+        guest = Client.objects.create(
+            salon=self.salon, first_name="Early", last_name="Bird"
+        )
+        Appointment.objects.create(
+            client=guest, staff_member=self.staff, service=self.service,
+            start=datetime.datetime.combine(
+                self.tomorrow, datetime.time(10, 0),
+                tzinfo=datetime.timezone.utc,
+            ),
+            end=datetime.datetime.combine(
+                self.tomorrow, datetime.time(11, 0),
+                tzinfo=datetime.timezone.utc,
+            ),
+        )
+        payload = self.availability()
+        self.assertEqual(
+            payload["free"][self.tomorrow.isoformat()][str(self.staff.pk)],
+            [["09:00", "10:00"], ["11:00", "12:00"]],
+        )
+
+    def test_availability_respects_the_capability_matrix(self):
+        # Priced for a level Dana doesn't hold: the price book's
+        # derivation says she doesn't perform it, so the picture
+        # offers the service with nobody until the salon enables
+        # someone. The write path would refuse her too.
+        from decimal import Decimal
+
+        from saloncore.models import ServicePrice, StaffLevel
+
+        level = StaffLevel.objects.create(salon=self.salon, name="Colorists")
+        ServicePrice.objects.create(
+            service=self.service, staff_level=level,
+            amount=Decimal("50.00"),
+        )
+        payload = self.availability()
+        self.assertEqual(
+            payload["services"][str(self.service.pk)]["staff"], []
         )
 
     def test_full_flow_books_an_online_appointment(self):
@@ -243,24 +282,72 @@ class BookingPageTests(TestCase):
         self.assertContains(response, "1 service")
         self.assertContains(response, 'id="catServices"')
 
-    def test_slot_loads_drop_stale_responses(self):
-        # The stale-name bug the founder hit: pick a service,
-        # back out, pick another — the first fetch could land
-        # last and repaint the room with the previous service.
-        # Every fetch carries its birth request number and a
-        # superseded response is dropped; the heading is set
-        # from the tapped button before any fetch lands.
+    def test_times_sort_locally_from_the_resident_picture(self):
+        # The founder's law (2026-11-02): availability loads
+        # when the guest arrives, resident in the page, and a
+        # service pick sorts it locally by service and
+        # duration. The per-pick slot fetch was the ten-second
+        # "Finding open times…" stall — and its race was the
+        # stale-name bug before that: a slow response for the
+        # previous pick repainting the new pick's room. A
+        # computation can't land late. The heading still names
+        # the tapped pick at once.
+        from pathlib import Path
+
+        response = self.client.get(reverse("webui:book"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'id="bookAvailability"')
+        template = (
+            Path(__file__).parent / "templates" / "webui" / "book.html"
+        ).read_text()
+        self.assertIn("function computeSlots(", template)
+        self.assertIn("AVAIL.free", template)
+        self.assertIn("cursor + svc.minutes <= end", template)
+        self.assertIn("function refreshAvailability(", template)
+        self.assertNotIn("book_slots", template)
+        self.assertNotIn("SLOTS_URL", template)
+        self.assertIn(
+            'room("timesService").textContent = nameEl.textContent',
+            template,
+        )
+
+    def test_second_confirm_for_own_booking_answers_already(self):
+        # The founder's report (2026-11-02): he booked, and the
+        # page answered "That time was just taken" and threw
+        # him back to the slots — the slot was taken by his
+        # own first confirm (a double tap, a retry after a
+        # slow answer). Already-theirs is not a refusal: the
+        # second answer names the standing booking, and no
+        # second appointment is made.
+        payload = {
+            "service": self.service.pk, "staff": self.staff.pk,
+            "day": self.tomorrow.isoformat(),
+            "time": self.first_start(),
+            "first_name": "Robin", "last_name": "Guest",
+            "phone": "555-0110", "email": "", "note": "",
+            "format": "json",
+        }
+        first = self.client.post(reverse("webui:book_confirm"), payload)
+        self.assertTrue(first.json()["ok"])
+        self.assertEqual(Appointment.objects.count(), 1)
+        second = self.client.post(reverse("webui:book_confirm"), payload)
+        body = second.json()
+        self.assertTrue(body["ok"])
+        self.assertTrue(body["already"])
+        self.assertEqual(body["summary"]["service"], "Signature Cut")
+        self.assertEqual(Appointment.objects.count(), 1)
+
+    def test_confirm_submit_is_structurally_single_flight(self):
         from pathlib import Path
 
         template = (
             Path(__file__).parent / "templates" / "webui" / "book.html"
         ).read_text()
-        self.assertIn("var req = ++state.req", template)
-        self.assertIn("if (req !== state.req) return;", template)
-        self.assertIn(
-            'room("timesService").textContent = nameEl.textContent',
-            template,
-        )
+        # The double-tap race dies at the form, not just at a
+        # disabled button; an "already" answer lands in the
+        # done room like any success.
+        self.assertIn("form.dataset.busy", template)
+        self.assertIn("body.already", template)
 
     def test_confirm_json_mode_answers_instead_of_redirecting(self):
         payload = {

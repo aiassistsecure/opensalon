@@ -9,6 +9,8 @@
   </div>
 </section>
 
+{% if message %}<p class="page-msg" role="status">{{ message }}</p>{% endif %}
+
 {% if categories %}
 {% for group in categories %}
 <section class="price-group">
@@ -19,6 +21,7 @@
         <th class="col-service">Service</th>
         <th class="col-duration">Duration</th>
         {% for level in levels %}<th class="col-price">{{ level.label }}</th>{% endfor %}
+        <th class="col-performs">Performs</th>
       </tr>
     </thead>
     <tbody>
@@ -29,6 +32,7 @@
         {% for cell in row.cells %}
         <td class="col-price">{% if cell %}{% if cell.is_from %}from {% endif %}${{ cell.amount }}{% else %}<span class="price-none">—</span>{% endif %}</td>
         {% endfor %}
+        <td class="col-performs"><button type="button" class="cap-open" data-cap-open="capSvc{{ row.service.pk }}">{{ row.performer_ids|length }} of {{ members|length }} ›</button></td>
       </tr>
       {% endfor %}
     </tbody>
@@ -41,4 +45,34 @@
   <p>When the price book is entered, it appears here grouped by category, priced per staff level.</p>
 </div>
 {% endif %}
+
+{% for group in categories %}{% for row in group.rows %}
+<div class="book-modal hidden" id="capSvc{{ row.service.pk }}" role="dialog" aria-modal="true" aria-label="Who performs {{ row.service.name }}">
+  <div class="book-card">
+    <div class="book-card-head">
+      <h2>Who performs {{ row.service.name }}?</h2>
+      <button type="button" class="rail-close" data-cap-close aria-label="Close">✕</button>
+    </div>
+    <p class="cap-note">Tick everyone who performs this service. Booking offers it only with them; until a service is set here, the prices above speak — a stylist performs what their level is priced for.</p>
+    <form method="post">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="performers">
+      <input type="hidden" name="service" value="{{ row.service.pk }}">
+      <div class="cap-list">
+        {% for member in members %}
+        <label class="cap-row">
+          <input type="checkbox" name="performer" value="{{ member.pk }}" {% if member.pk in row.performer_ids %}checked{% endif %}>
+          <span class="cap-name">{{ member.display_name }}</span>
+          {% if member.staff_level %}<span class="cap-meta">{{ member.staff_level.name }}</span>{% endif %}
+        </label>
+        {% endfor %}
+      </div>
+      <div class="book-actions">
+        <button type="button" class="btn-ghost" data-cap-close>Cancel</button>
+        <button type="submit" class="btn-grad grow">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endfor %}{% endfor %}
 {% endblock %}

@@ -30,6 +30,7 @@ from django.utils import timezone
 
 from bookings.availability import _merge, _subtract, _tz
 from bookings.models import Appointment, AppointmentNote
+from team.capabilities import performs
 from team.models import RosterPattern
 
 ALLOWED_TRANSITIONS = {
@@ -104,6 +105,10 @@ def _check_bookable(salon, staff_member, service, start, end, *,
     if online and not staff_member.online_bookable:
         raise ValidationError(
             "This staff member is not bookable online."
+        )
+    if not performs(staff_member, service):
+        raise ValidationError(
+            "This staff member does not perform this service."
         )
     if not _fits_availability(
         salon, staff_member, start, end, exclude_id=exclude_id,

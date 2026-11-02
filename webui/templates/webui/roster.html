@@ -99,4 +99,70 @@
   <p class="roster-empty">No team members yet.</p>
   {% endfor %}
 </section>
+
+<section class="roster-card">
+  <h2 class="roster-h">Services by stylist</h2>
+  <p class="roster-note">Who performs what. Booking offers a service only with the stylists enabled for it. Until a stylist is set here, the price book speaks — they perform what their level is priced for.</p>
+  {% for cap in member_caps %}
+  <div class="roster-pattern">
+    <span class="roster-p-who">{{ cap.member.display_name }}</span>
+    <span class="roster-p-band">{{ cap.count }} service{{ cap.count|pluralize }}</span>
+    <button type="button" class="btn-dark" data-cap-open="capMember{{ cap.member.pk }}">Services</button>
+  </div>
+  {% empty %}
+  <p class="roster-empty">No team members yet.</p>
+  {% endfor %}
+</section>
+
+{% for cap in member_caps %}
+<div class="book-modal hidden" id="capMember{{ cap.member.pk }}" role="dialog" aria-modal="true" aria-label="Services for {{ cap.member.display_name }}">
+  <div class="book-card">
+    <div class="book-card-head">
+      <h2>{{ cap.member.display_name }} performs…</h2>
+      <button type="button" class="rail-close" data-cap-close aria-label="Close">✕</button>
+    </div>
+    <form method="post">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="services">
+      <input type="hidden" name="member" value="{{ cap.member.pk }}">
+      <div class="cap-list">
+        {% for group in service_groups %}
+        <div class="cap-group" data-cap-group>
+          <div class="cap-group-h">
+            <span>{{ group.category.name }}</span>
+            <span class="cap-group-btns">
+              <button type="button" class="cap-mini" data-cap-all>All</button>
+              <button type="button" class="cap-mini" data-cap-none>None</button>
+            </span>
+          </div>
+          {% for service in group.services %}
+          <label class="cap-row">
+            <input type="checkbox" name="service" value="{{ service.pk }}" {% if service.pk in cap.service_ids %}checked{% endif %}>
+            <span class="cap-name">{{ service.name }}</span>
+          </label>
+          {% endfor %}
+        </div>
+        {% endfor %}
+      </div>
+      <div class="book-actions">
+        <button type="button" class="btn-ghost" data-cap-close>Cancel</button>
+        <button type="submit" class="btn-grad grow">Save services</button>
+      </div>
+    </form>
+    {% if members|length > 1 %}
+    <form method="post" class="cap-copy">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="copy_services">
+      <input type="hidden" name="member" value="{{ cap.member.pk }}">
+      <label>Or mirror another stylist
+        <select name="source" class="fsel">
+          {% for other in members %}{% if other.pk != cap.member.pk %}<option value="{{ other.pk }}">{{ other.display_name }}</option>{% endif %}{% endfor %}
+        </select>
+      </label>
+      <button type="submit" class="btn-ghost">Copy their services</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+{% endfor %}
 {% endblock %}
