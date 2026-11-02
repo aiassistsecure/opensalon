@@ -7,7 +7,10 @@ every value comes verbatim from the service. Columns:
 ``salon_id``, current/prior window bounds (ISO-8601),
 ``method``, ``current`` / ``prior``, ``delta``,
 ``percent_change``, both share percents (empty when ``None``),
-and window totals/counts repeated per row. Lines end ``"\\n"``.
+and window totals/counts repeated per row, plus the salon-level
+payment-count delta (``count_delta`` / ``count_percent_change``,
+from the service's ``count`` MetricDelta; empty percent when
+``None``) repeated per row. Lines end ``"\\n"``.
 """
 import csv
 import io
@@ -25,6 +28,7 @@ EXPORT_FIELDNAMES = [
     "method", "current", "prior", "delta", "percent_change",
     "current_share_percent", "prior_share_percent",
     "current_total", "prior_total", "current_count", "prior_count",
+    "count_delta", "count_percent_change",
 ]
 
 _CENTS = Decimal("0.01")
@@ -58,6 +62,8 @@ def prior_tender_mix_export_row(entry, result):
         "prior_total": _money(result.prior.total),
         "current_count": result.current.count,
         "prior_count": result.prior.count,
+        "count_delta": result.count.delta,
+        "count_percent_change": _pct(result.count.percent_change),
     }
 
 

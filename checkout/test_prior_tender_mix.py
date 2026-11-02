@@ -84,6 +84,26 @@ class PriorTenderMixTests(TestCase):
         self.assertEqual((result.total_delta, result.total_percent_change),
                          (Decimal("50.00"), Decimal("50.00")))
 
+    def test_count_delta_verbatim(self):
+        result = prior_tender_mix(self.salon, START, END)
+        cur = tender_mix(self.salon, START, END)
+        pri = tender_mix(self.salon, P_START, P_END)
+        # Verbatim from tender_mix: 2 payments in each window.
+        self.assertEqual(result.count.current, cur.count)
+        self.assertEqual(result.count.prior, pri.count)
+        self.assertEqual((result.count.current, result.count.prior,
+                          result.count.delta, result.count.percent_change),
+                         (2, 2, 0, Decimal("0.00")))
+        self.assertEqual(result.count.component, "count")
+        self.assertIsInstance(result.count.current, int)
+        self.assertIsInstance(result.count.delta, int)
+        self.assertEqual(result.payment_count, result.count)
+        self.assertEqual((result.current_count, result.prior_count), (2, 2))
+        self.assertEqual(result.count.as_dict()["delta"], 0)
+        for entry in result.entries:
+            self.assertFalse(hasattr(entry, "count"))
+            self.assertFalse(hasattr(entry, "payment_count"))
+
     def test_none_when_prior_total_zero(self):
         result = prior_tender_mix(
             self.salon, datetime.date(2026, 9, 24), datetime.date(2026, 9, 30))
@@ -93,11 +113,16 @@ class PriorTenderMixTests(TestCase):
             self.assertIsNone(entry.prior_share_percent)
             self.assertIsNone(entry.percent_change)
         self.assertIsNone(result.total_percent_change)
+        self.assertEqual((result.count.current, result.count.prior,
+                          result.count.delta), (1, 0, 1))
+        self.assertIsNone(result.count.percent_change)
         text = export_prior_tender_mix_csv(
             self.salon, datetime.date(2026, 9, 24), datetime.date(2026, 9, 30))
         for row in csv.DictReader(io.StringIO(text)):
             self.assertEqual(row["percent_change"], "")
             self.assertEqual(row["prior_share_percent"], "")
+            self.assertEqual(row["count_delta"], "1")
+            self.assertEqual(row["count_percent_change"], "")
         empty = prior_tender_mix(
             self.salon, datetime.date(2026, 8, 8), datetime.date(2026, 8, 14))
         for entry in empty.entries:
@@ -127,13 +152,19 @@ class PriorTenderMixTests(TestCase):
         self.assertEqual(
             (cash["start"], cash["prior_start"], cash["prior_end"]),
             (START.isoformat(), P_START.isoformat(), P_END.isoformat()))
+        self.assertEqual(
+            (cash["current_count"], cash["prior_count"],
+             cash["count_delta"], cash["count_percent_change"]),
+            (2, 2, 0, "0.00"))
+        self.assertEqual(cash["count_delta"], result.count.delta)
         text = export_prior_tender_mix_csv(self.salon, START, END)
         self.assertEqual(text.splitlines()[0], ",".join(EXPORT_FIELDNAMES))
         parsed = list(csv.DictReader(io.StringIO(text)))
         self.assertEqual(
             [{**r, "salon_id": int(r["salon_id"]),
               "current_count": int(r["current_count"]),
-              "prior_count": int(r["prior_count"])} for r in parsed], rows)
+              "prior_count": int(r["prior_count"]),
+              "count_delta": int(r["count_delta"])} for r in parsed], rows)
         self.assertEqual(result["cash"].delta, Decimal(cash["delta"]))
 
     def test_command_stdout_and_file_match_service(self):
