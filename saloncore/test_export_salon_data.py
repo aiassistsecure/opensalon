@@ -75,7 +75,7 @@ class ExportSalonDataTests(TestCase):
         self.assertEqual(data["counts"], {
             "salons": 1, "service_categories": 1, "services": 1,
             "staff_levels": 1, "service_prices": 1, "clients": 2,
-            "client_notes": 1, "staff_members": 1,
+            "client_notes": 1, "staff_members": 1, "staff_services": 0,
             "appointments": 0, "appointment_notes": 0, "products": 0,
             "roster_patterns": 0, "shift_overrides": 0,
             "sales": 0, "sale_items": 0, "sale_payments": 0,

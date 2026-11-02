@@ -14,6 +14,13 @@ fully export. This is part 1 of that test — the core records only:
 - team: StaffMember (including the ``online_bookable`` toggle
   and the time-clock ``pin``, in plaintext — Mark's 2026-11-01
   decision: full export/import completeness wins for staff PINs).
+- team: StaffService (the capability matrix: whether one staff
+  member performs one service, scoped through its staff member's
+  salon). Rows carry the staff and service references as both the
+  internal ``staff_member_id`` / ``service_id`` and the related
+  records' ``staff_member_external_id`` / ``service_external_id``,
+  like appointments, plus ``enabled`` as a real boolean — a
+  ``False`` row is part of the truth and is exported verbatim.
 - bookings: Appointment and AppointmentNote (appointment-only
   notes; a separate model from ClientNote — the two kinds never
   blur). Appointment rows carry their own ``external_id`` plus the
@@ -144,6 +151,7 @@ from team.models import (
     RosterPattern,
     ShiftOverride,
     StaffMember,
+    StaffService,
 )
 
 
@@ -152,7 +160,7 @@ def _dt(value):
 
 
 class Command(BaseCommand):
-    help = "Export salon core data (price book, clients, staff, appointments, products, sales, stock movements, attendance, price changes, refunds, breaks, cashups, receipts, reminder sends, campaigns, campaign sends) to one JSON file."
+    help = "Export salon core data (price book, clients, staff, staff services, appointments, products, sales, stock movements, attendance, price changes, refunds, breaks, cashups, receipts, reminder sends, campaigns, campaign sends) to one JSON file."
 
     def add_arguments(self, parser):
         parser.add_argument("output", help="Path of the JSON file to write.")
@@ -185,6 +193,9 @@ class Command(BaseCommand):
         notes = ClientNote.objects.filter(client_id__in=client_ids)
         staff = StaffMember.objects.filter(salon_id__in=salon_ids)
         staff_ids = list(staff.values_list("id", flat=True))
+        staff_services = StaffService.objects.filter(
+            staff_member_id__in=staff_ids
+        ).select_related("staff_member", "service")
         roster_patterns = RosterPattern.objects.filter(
             staff_member_id__in=staff_ids
         ).select_related("staff_member")
@@ -300,6 +311,17 @@ class Command(BaseCommand):
                     "active": m.active, "pin": m.pin,
                 }
                 for m in staff
+            ],
+            "staff_services": [
+                {
+                    "id": link.id,
+                    "staff_member_id": link.staff_member_id,
+                    "staff_member_external_id": link.staff_member.external_id,
+                    "service_id": link.service_id,
+                    "service_external_id": link.service.external_id,
+                    "enabled": link.enabled,
+                }
+                for link in staff_services
             ],
             "roster_patterns": [
                 {

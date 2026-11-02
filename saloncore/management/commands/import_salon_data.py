@@ -7,14 +7,15 @@ This is the restore side of the Exit Test: it consumes exactly the
 JSON format written by ``export_salon_data`` (see that command for the
 section list) and restores Salon, ServiceCategory, Service,
 StaffLevel, ServicePrice, Client, ClientNote, StaffMember,
-Appointment, AppointmentNote, Product, RosterPattern,
+StaffService, Appointment, AppointmentNote, Product, RosterPattern,
 ShiftOverride, Sale, SaleItem, Payment, StockMovement,
 AttendanceRecord, PriceChange, Refund, Break, Cashup, Receipt,
 ReminderSend, Campaign and CampaignSend records. The ``products``,
 ``roster_patterns``, ``shift_overrides``, ``sales``, ``sale_items``,
 ``sale_payments``, ``stock_movements``, ``attendance_records``,
 ``price_changes``, ``refunds``, ``breaks``, ``cashups``, ``receipts``,
-``reminder_sends``, ``campaigns`` and ``campaign_sends`` sections are optional on read: an export
+``reminder_sends``, ``campaigns``, ``campaign_sends`` and
+``staff_services`` sections are optional on read: an export
 file written before they existed (no such section, no ``counts``
 entry for it) imports exactly as before, with the section
 treated as empty. Roster rows restore idempotently too:
@@ -51,6 +52,18 @@ and creates nothing twice:
   salon carrying the same non-empty pin — all with zero writes.
   The payment ``provider_reference`` strip is a separate rule
   and is untouched by this.
+- StaffService   <- (staff_member, service) — the model's own
+  unique constraint. The capability matrix is mutable salon
+  data, so restore uses ``update_or_create`` with ``enabled``
+  as a default — a re-import updates a row in place (including
+  an ``enabled=False`` row, which is part of the truth) and
+  never duplicates it. Restored after staff_members and
+  services; both links resolve by the related record's
+  ``*_external_id`` first, falling back to the file-local
+  ``*_id`` map, like appointments; a link that resolves by
+  neither fails closed in phase 1. ``enabled`` is STRICT-parsed
+  (TF-3): missing / null / non-bool is a named CommandError,
+  never guessed.
 - Appointment      <- external_id when present, else
   (client, staff_member, start, end). Its client / staff_member /
   service links resolve by the related record's ``*_external_id``
@@ -269,7 +282,8 @@ that do support transactions.
 Strict boolean types (TF-3): the boolean fields the exporter always
 carries — ``active`` (service_categories, services, staff_levels,
 service_prices, clients, staff_members, products), ``is_from``
-(service_prices) and ``online_bookable`` (staff_members) — are
+(service_prices), ``online_bookable`` (staff_members) and
+``enabled`` (staff_services) — are
 validated in phase 1 and never guessed in phase 2. The three bad
 shapes are distinct, named errors: a missing key is not a value, an
 explicit ``null`` is rejected because none of these model fields can
@@ -364,11 +378,13 @@ from team.models import (
     RosterPattern,
     ShiftOverride,
     StaffMember,
+    StaffService,
 )
 
 SECTIONS = (
     "salons", "service_categories", "services", "staff_levels",
     "service_prices", "clients", "client_notes", "staff_members",
+    "staff_services",
     "appointments", "appointment_notes", "products",
     "roster_patterns", "shift_overrides",
     "sales", "sale_items", "sale_payments", "stock_movements",
@@ -383,7 +399,7 @@ OPTIONAL_SECTIONS = ("products", "roster_patterns", "shift_overrides",
                      "stock_movements", "attendance_records",
                      "price_changes", "refunds", "breaks", "cashups",
                      "receipts", "reminder_sends", "campaigns",
-                     "campaign_sends")
+                     "campaign_sends", "staff_services")
 
 # Every key the exporter emits (hence the importer may consume) per
 # section. Any other key in a record is unknown (TF-11).
@@ -408,6 +424,9 @@ KNOWN_KEYS = {
     "staff_members": {"id", "salon_id", "external_id", "display_name",
                       "staff_level_id", "online_bookable", "active",
                       "pin"},
+    "staff_services": {"id", "staff_member_id",
+                       "staff_member_external_id", "service_id",
+                       "service_external_id", "enabled"},
     "appointments": {"id", "external_id", "client_id",
                      "client_external_id", "staff_member_id",
                      "staff_member_external_id", "service_id",
@@ -538,6 +557,7 @@ BOOL_FIELDS = {
     "service_prices": ("is_from", "active"),
     "clients": ("active",),
     "staff_members": ("online_bookable", "active"),
+    "staff_services": ("enabled",),
     "products": ("active",),
     "roster_patterns": ("active",),
     "shift_overrides": ("is_off",),
@@ -594,6 +614,9 @@ _ID_FIELDS = {
     "client_notes": ("id", "client_id"),
     "staff_members": ("id", "salon_id", "staff_level_id",
                       "external_id"),
+    "staff_services": ("id", "staff_member_id",
+                       "staff_member_external_id", "service_id",
+                       "service_external_id"),
     "appointments": ("id", "external_id", "client_id",
                      "client_external_id", "staff_member_id",
                      "staff_member_external_id", "service_id",
@@ -660,6 +683,10 @@ _EXTERNAL_ID_LIMITS = {
         Service._meta.get_field("external_id").max_length,
     ("breaks", "staff_member_external_id"):
         StaffMember._meta.get_field("external_id").max_length,
+    ("staff_services", "staff_member_external_id"):
+        StaffMember._meta.get_field("external_id").max_length,
+    ("staff_services", "service_external_id"):
+        Service._meta.get_field("external_id").max_length,
 }
 
 
@@ -821,6 +848,7 @@ def _validate(data):
         "clients": ("id", "salon_id", "first_name", "last_name"),
         "client_notes": ("client_id", "body"),
         "staff_members": ("id", "salon_id", "display_name"),
+        "staff_services": ("id", "staff_member_id", "service_id"),
         "appointments": ("id", "client_id", "staff_member_id",
                          "start", "end"),
         "appointment_notes": ("appointment_id", "body"),
@@ -953,6 +981,13 @@ def _validate(data):
                         f"{_seen_pins[key]!r} in the same salon; "
                         f"non-empty pins are unique per salon.")
                 _seen_pins[key] = row.get("id")
+    for row in data["staff_services"]:
+        _check_appt_ref(
+            staff_ids, staff_ext_ids, row.get("staff_member_id"),
+            row.get("staff_member_external_id"), "staff_member")
+        _check_appt_ref(
+            service_ids, service_ext_ids, row.get("service_id"),
+            row.get("service_external_id"), "service")
     for row in data["appointments"]:
         _check_appt_ref(
             client_ids, client_ext_ids, row.get("client_id"),
@@ -1557,6 +1592,19 @@ class Command(BaseCommand):
         clients_by_ext = _by_external(data["clients"], clients)
         staff_by_ext = _by_external(data["staff_members"], staff_members)
         services_by_ext = _by_external(data["services"], services)
+
+        for row in data["staff_services"]:
+            staff_member = _resolve_appt_ref(
+                staff_members, staff_by_ext, row,
+                "staff_member_id", "staff_member_external_id",
+                "staff_member")
+            service = _resolve_appt_ref(
+                services, services_by_ext, row,
+                "service_id", "service_external_id", "service")
+            StaffService.objects.update_or_create(
+                staff_member=staff_member, service=service,
+                defaults={"enabled": row["enabled"]},
+            )
 
         appointments = {}
         for row in data["appointments"]:
