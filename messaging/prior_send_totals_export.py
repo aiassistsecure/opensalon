@@ -14,7 +14,9 @@ per-channel rows for reminder, campaign, and combined sends,
 then reminder per-day rows and reminder per-day-per-channel
 rows, then per-status rows for reminder and campaign sends,
 per-channel-per-status cross-tab rows for both sides, and
-campaign per-day and per-day-per-channel rows. Columns: ``metric``, current/prior window bounds,
+campaign per-day and per-day-per-channel rows, then combined
+per-status, per-channel-per-status, per-day and
+per-day-per-channel rows. Columns: ``metric``, current/prior window bounds,
 ``current``, ``prior``, ``delta``, ``percent_change``.
 ``percent_change`` renders to two places, never via a float;
 ``None`` renders empty. Lines ``"\\n"``.
@@ -75,6 +77,16 @@ def _metrics(result):
     for day, cells in result.campaign_by_day_by_channel.items():
         for ch, delta in cells.items():
             yield f"campaign_day_{day.isoformat()}_{ch}", delta
+    for status, delta in result.combined_by_status.items():
+        yield f"combined_status_{status}", delta
+    for ch, cells in result.combined_by_channel_by_status.items():
+        for status, delta in cells.items():
+            yield f"combined_channel_{ch}_status_{status}", delta
+    for day, delta in result.combined_by_day.items():
+        yield f"combined_day_{day.isoformat()}", delta
+    for day, cells in result.combined_by_day_by_channel.items():
+        for ch, delta in cells.items():
+            yield f"combined_day_{day.isoformat()}_{ch}", delta
 
 def export_prior_send_totals(salon, start=None, end=None, **kwargs):
     """Return ``salon``'s prior-period send totals as dicts.
