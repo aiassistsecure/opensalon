@@ -169,7 +169,12 @@ def noshow_rate_report(salon, date_from=None, date_to=None, *,
         client__salon=salon, staff_member__salon=salon,
         status=Appointment.Status.CANCELLED,
         start__gte=window_start, start__lt=window_end,
-        updated_at__gte=F("start"),
+        # Flipped on purpose — do NOT "simplify" back to
+        # updated_at__gte=F("start"): NEDB's pgwire evaluator returns
+        # false for any >= comparison with a column reference on the
+        # RHS. start__lte=F("updated_at") is semantically identical
+        # (updated_at >= start) and evaluates correctly on NEDB.
+        start__lte=F("updated_at"),
     ).count()
     total = counts.total
     no_shows = counts.no_show
