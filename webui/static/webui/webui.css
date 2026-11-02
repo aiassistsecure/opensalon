@@ -1534,3 +1534,66 @@ body.side-collapsed .store-chip-text { display: none; }
   letter-spacing: .07em; text-transform: uppercase; color: #a2987d;
 }
 .cap-copy select { margin-top: 5px; }
+
+/* Accounts (email + PIN) + the stylist's day. */
+.account-card {
+  margin: 8px 10px 0; padding: 8px 10px; border-radius: 10px;
+  background: rgba(255, 255, 255, .05); font-size: 12px;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.account-card a { color: #cdbd8a; text-decoration: none; }
+.account-name { font-weight: 700; color: #e9e2cd; }
+body.side-collapsed .account-card { display: none; }
+.signin-panel { max-width: 430px; margin: 24px auto; }
+.signin-form { display: flex; flex-direction: column; gap: 12px; margin-top: 14px; }
+.signin-form .fld { display: flex; flex-direction: column; gap: 5px; font-size: 12px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: #a2987d; }
+.signin-form .fld input {
+  padding: 10px 12px; border-radius: 9px; border: 1px solid #e6ddc6;
+  background: #fffdf7; color: #1d2530; font-size: 15px; text-transform: none; letter-spacing: 0;
+}
+.page-msg.err { color: #b3402e; }
+.myday-arrival {
+  border: 1px solid #c9a94e; background: #fdf6dd; border-radius: 10px;
+  padding: 10px 12px; margin-bottom: 8px; font-size: 14px;
+}
+.myday-row {
+  display: flex; align-items: center; gap: 10px; padding: 9px 4px;
+  border-bottom: 1px solid #eee5cb; font-size: 14px;
+}
+.myday-row .grow { flex: 1; }
+
+/* ---- graph status faces (founder, 2026-11-02) ----
+   The st- classes ride next to the older status- wash and
+   state the two moments the room must read at a glance.
+   Checked in: a DIFFERENT COLOR and a HIGHLIGHT — warm gold
+   face, gold ring — she is in the building. Checked out
+   (paid): GREEN, no mistaking a settled visit. These rules
+   come after the page-light status washes so the founder's
+   faces win on the day book itself. */
+.appt-block.st-arrived {
+  background: linear-gradient(150deg, #f3d67c, #e0b34a);
+  border-color: #a97c1f; border-left-color: #a97c1f;
+  box-shadow: 0 0 0 2px rgba(217, 164, 65, .95),
+    0 0 22px rgba(217, 164, 65, .55), 0 4px 16px rgba(0, 0, 8, .35);
+}
+.page-light .appt-block.st-arrived {
+  background-image:
+    linear-gradient(180deg, rgba(255, 255, 255, .5), rgba(255, 255, 255, 0) 46%),
+    linear-gradient(150deg, #f6dd8d, #e9c35c);
+  border-color: #b98a2f; border-left-color: #a97c1f;
+  box-shadow: 0 0 0 2px rgba(185, 138, 47, .9),
+    0 0 20px rgba(201, 162, 39, .5), 0 3px 10px rgba(96, 76, 24, .12);
+  opacity: 1;
+}
+.appt-block.st-completed {
+  background: linear-gradient(150deg, #57b96a, #2f8f4e);
+  border-color: #20703c; border-left-color: #20703c;
+}
+.page-light .appt-block.st-completed {
+  background-image:
+    linear-gradient(180deg, rgba(255, 255, 255, .35), rgba(255, 255, 255, 0) 46%),
+    linear-gradient(150deg, #7cc78d, #43a35f);
+  background-color: #43a35f;
+  border-color: #2e7d46; border-left-color: #2e7d46;
+  opacity: 1;
+}

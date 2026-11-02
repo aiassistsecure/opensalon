@@ -57,8 +57,22 @@ def salon_context(request):
     # UI theme (the deep-navy glass theme, approved 2026-10-30): the
     # theme is dark-born; there is no light variant in this build.
     salon = Salon.objects.order_by("id").first()
+    # The signed-in account (email + PIN), when there is one: the
+    # sidebar names them, and their salon outranks "first salon"
+    # wherever an account is speaking.
+    member = None
+    member_pk = request.session.get("staff_member_id")
+    if member_pk:
+        from team.models import StaffMember
+
+        member = StaffMember.objects.filter(
+            pk=member_pk, active=True
+        ).select_related("salon").first()
+        if member is not None:
+            salon = member.salon
     return {
         "salon": salon,
+        "current_member": member,
         "salon_theme": DEFAULT_THEME,
         "asset_v": _asset_version(),
         # The salon's own clock: the sidebar time clock renders and

@@ -1,0 +1,30 @@
+{% extends "webui/base.html" %}
+{% block title %}My day{% endblock %}
+{% block content %}
+<section class="panel">
+  <h1 class="page-h">{{ member.display_name }} — today</h1>
+  <p class="page-sub">{{ today|date:"l, F j" }} · your book, your arrivals.</p>
+
+  {% for a in arrivals %}
+  <div class="myday-arrival">{{ a.client }} is here — {{ a.service }} at {{ a.time }}</div>
+  {% endfor %}
+
+  {% for r in rows %}
+  <div class="myday-row">
+    <span>{{ r.time }}</span>
+    <span class="grow">{{ r.client }} · {{ r.service }}</span>
+    <span>{{ r.status_label }}</span>
+    {% if r.can_start %}
+    <form method="post">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="start">
+      <input type="hidden" name="appointment" value="{{ r.pk }}">
+      <button type="submit" class="btn-grad">Start service</button>
+    </form>
+    {% endif %}
+  </div>
+  {% empty %}
+  <p class="page-sub">Nothing on your book today.</p>
+  {% endfor %}
+</section>
+{% endblock %}

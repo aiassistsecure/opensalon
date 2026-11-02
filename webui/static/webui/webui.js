@@ -1314,8 +1314,12 @@
       el.dataset.cat = entry.cat;
     }
     if (el.dataset.status !== entry.status) {
-      if (el.dataset.status) el.classList.remove("status-" + el.dataset.status);
+      if (el.dataset.status) {
+        el.classList.remove("status-" + el.dataset.status);
+        el.classList.remove("st-" + el.dataset.status);
+      }
       el.classList.add("status-" + entry.status);
+      el.classList.add("st-" + entry.status);
       el.dataset.status = entry.status;
     }
     el.classList.toggle("is-new", !!entry.is_new);
@@ -1367,6 +1371,7 @@
   function renderBlock(entry) {
     var el = document.createElement("article");
     el.className = "appt-block cat-" + entry.cat + " status-" + entry.status +
+      " st-" + entry.status +
       (entry.is_new ? " is-new" : "") + (entry._born ? " b-born" : "") + (entry.provisional ? " b-prov" : "");
     /* The birth motion plays once: the flag is spent as the
        block is built, so later repaints stand still. */
@@ -2091,6 +2096,19 @@
       return '<div class="co-line"><span>' + esc(item.service) + "</span><b>" +
         esc(item.price_label) + "</b></div>";
     }).join("");
+    /* The receipt's address comes from the client's card,
+       every time (founder, 2026-11-02): the row is here from
+       the moment the modal opens, prefilled where the card
+       has an email and simply waiting where it doesn't —
+       editable either way, and the send reads the field's
+       current value. Seeded once per open (the row starts
+       hidden each open) so stepping products in and out
+       never wipes an edit in progress. */
+    var emailRow = coEl("coEmailRow");
+    if (emailRow && emailRow.classList.contains("hidden")) {
+      coEl("coEmail").value = d.client_email || "";
+      emailRow.classList.remove("hidden");
+    }
     coEl("coProducts").innerHTML = Object.keys(coState.products).map(function (id) {
       var p = coState.products[id];
       return '<div class="co-line"><span>' + esc(p.name) +
@@ -2122,6 +2140,35 @@
       coEl("coClient").textContent =
         "This booking is still saving — its full card lands in a moment.";
     }
+  }
+
+  /* Instant paint for checkout (founder, 2026-11-02): the
+     visit turns settled on the graph — green, in the status
+     language — the moment Complete is tapped, not when the
+     poll next comes around. The model entries for the open
+     payload's stack are remembered as they were, flipped to
+     completed, and repainted; the returned restore puts them
+     back exactly if the node refuses the sale. On success
+     the paint simply stays: the server sync confirms the
+     same state. */
+  function paintSettledLocally() {
+    var d = payloads[coState.appt];
+    var entries = modelDay();
+    if (!d || !entries) return function () {};
+    var ids = {};
+    (d.stack || []).forEach(function (item) { ids[item.id] = true; });
+    var painted = [];
+    entries.forEach(function (e) {
+      if (ids[e.id] && e.status !== "completed") {
+        painted.push({ entry: e, status: e.status });
+        e.status = "completed";
+      }
+    });
+    if (painted.length) repaintDay();
+    return function restoreSettledPaint() {
+      painted.forEach(function (p) { p.entry.status = p.status; });
+      if (painted.length) repaintDay();
+    };
   }
 
   function openCheckout(apptId) {
@@ -2232,6 +2279,7 @@
         return { product_id: parseInt(id, 10), qty: coState.products[id].qty };
       });
       coEl("coErr").classList.add("hidden");
+      var restoreSettledPaint = paintSettledLocally();
       fetch(layout.dataset.checkout, {
         method: "POST",
         headers: {
@@ -2247,6 +2295,7 @@
         .then(function (r) { return r.json(); })
         .then(function (data) {
           if (!data.ok) {
+            restoreSettledPaint();
             var err = coEl("coErr");
             err.textContent = data.error || "Checkout failed.";
             err.classList.remove("hidden");
@@ -2265,11 +2314,19 @@
           coState.saleId = data.sale_id;
           var emailRow = coEl("coEmailRow");
           if (emailRow) {
-            coEl("coEmail").value = data.client_email || "";
+            /* Fill an untouched field from the settle answer;
+               never clobber an address the desk typed or
+               corrected before settling — the edit is the
+               address the receipt goes to. */
+            var emailInput = coEl("coEmail");
+            if (emailInput && !emailInput.value) {
+              emailInput.value = data.client_email || "";
+            }
             emailRow.classList.remove("hidden");
           }
         })
         .catch(function () {
+          restoreSettledPaint();
           var err = coEl("coErr");
           err.textContent = "Checkout could not reach the server.";
           err.classList.remove("hidden");

@@ -54,6 +54,19 @@
       <span class="store-dot" aria-hidden="true"></span>
       <span class="store-chip-text" id="storeChipText">Local store…</span>
     </div>
+    {% if current_member %}
+    <div class="account-card">
+      <span class="account-name">{{ current_member.display_name }}</span>
+      <span class="account-links">
+        <a href="{% url 'webui:my_day' %}">My day</a> ·
+        <a href="{% url 'webui:sign_out' %}">Sign out</a>
+      </span>
+    </div>
+    {% else %}
+    <div class="account-card">
+      <a href="{% url 'webui:sign_in' %}">Stylist sign-in</a>
+    </div>
+    {% endif %}
   </aside>
 
   <div class="main">

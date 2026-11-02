@@ -1,0 +1,24 @@
+{% extends "webui/base.html" %}
+{% block title %}Sign in{% endblock %}
+{% block content %}
+<section class="panel signin-panel">
+  <h1 class="page-h">Sign in</h1>
+  <p class="page-sub">Your email says who you are; your time-clock PIN is the key. No password — that's the point.</p>
+  {% if error %}<p class="page-msg err">{{ error }}</p>{% endif %}
+  <form method="post" class="signin-form">
+    {% csrf_token %}
+    <label class="fld">
+      <span>Email</span>
+      <input type="email" name="email" required autocomplete="username"
+             placeholder="you@salon.com" value="{{ request.POST.email }}">
+    </label>
+    <label class="fld">
+      <span>PIN</span>
+      <input type="text" name="pin" required inputmode="numeric" autocomplete="off"
+             maxlength="8" placeholder="Your clock PIN">
+    </label>
+    <button type="submit" class="btn-grad grow">Sign in</button>
+  </form>
+  <p class="page-sub">No email on your account yet? Your manager adds it on the Team page, next to your PIN.</p>
+</section>
+{% endblock %}
