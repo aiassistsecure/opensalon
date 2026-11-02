@@ -12,7 +12,8 @@ from messaging.campaign_send_totals import campaign_send_totals
 from messaging.models import Campaign, CampaignSend, ReminderSend
 from messaging.prior_send_totals import prior_send_totals
 from messaging.prior_send_totals_export import (
-    PRIOR_SEND_TOTALS_FIELDNAMES, export_prior_send_totals_csv)
+    PRIOR_SEND_TOTALS_FIELDNAMES, export_prior_send_totals,
+    export_prior_send_totals_csv)
 from messaging.send_totals import send_totals
 from saloncore.models import Salon, Service, ServiceCategory
 from team.models import StaffMember
@@ -151,6 +152,94 @@ class PriorSendTotalsTests(TestCase):
         self.assertEqual(rows["total"]["prior_start_date"], P1.isoformat())
         self.assertIn("combined_email", rows)
 
+    def test_reminder_by_day_union_zero_filled(self):
+        self._book()
+        r = prior_send_totals(self.salon, C1, C2)
+        # Union of both windows' days, sorted; one-window days
+        # pair with 0 on the missing side.
+        self.assertEqual(list(r.reminder_by_day), [P1, P2, C1, C2])
+        self.assertIs(r.by_day, r.reminder_by_day)
+        self.assertEqual((r.reminder_by_day[P1].current,
+                          r.reminder_by_day[P1].prior,
+                          r.reminder_by_day[P1].delta,
+                          r.reminder_by_day[P1].percent_change),
+                         (0, 1, -1, Decimal("-100.00")))
+        self.assertEqual((r.reminder_by_day[P2].current,
+                          r.reminder_by_day[P2].prior), (0, 1))
+        # Current-only day: prior zero -> percent None. The
+        # other salon's C1 reminder is never counted (2, not 3).
+        self.assertEqual((r.reminder_by_day[C1].current,
+                          r.reminder_by_day[C1].prior,
+                          r.reminder_by_day[C1].delta), (2, 0, 2))
+        self.assertIsNone(r.reminder_by_day[C1].percent_change)
+        self.assertEqual(r.reminder_by_day[C2].current, 1)
+        # Verbatim from send_totals' own by_day for both windows.
+        cur, pri = send_totals(self.salon, C1, C2), send_totals(self.salon, P1, P2)
+        for day, delta in r.reminder_by_day.items():
+            self.assertEqual(delta.current, cur.by_day.get(day, 0))
+            self.assertEqual(delta.prior, pri.by_day.get(day, 0))
+        self.assertEqual(
+            r.as_dict()["reminder_by_day"][C1.isoformat()]["current"], 2)
+        self.assertEqual(
+            r.as_dict()["by_day"][P1.isoformat()]["delta"], -1)
+
+    def test_reminder_by_day_by_channel_cells(self):
+        self._book()
+        r = prior_send_totals(self.salon, C1, C2)
+        cells = r.reminder_by_day_by_channel
+        self.assertIs(r.by_day_by_channel, cells)
+        self.assertEqual(list(cells), [P1, P2, C1, C2])
+        self.assertEqual((cells[P1]["email"].current, cells[P1]["email"].prior,
+                          cells[P1]["email"].delta,
+                          cells[P1]["email"].percent_change),
+                         (0, 1, -1, Decimal("-100.00")))
+        self.assertEqual((cells[P1]["sms"].current, cells[P1]["sms"].prior),
+                         (0, 0))
+        self.assertIsNone(cells[P1]["sms"].percent_change)
+        self.assertEqual((cells[P2]["sms"].current, cells[P2]["sms"].prior),
+                         (0, 1))
+        self.assertEqual((cells[C1]["email"].current,
+                          cells[C1]["email"].prior), (2, 0))
+        self.assertIsNone(cells[C1]["email"].percent_change)
+        self.assertEqual((cells[C2]["sms"].current, cells[C2]["sms"].prior),
+                         (1, 0))
+        # Cells sum to the by_day delta for every union day.
+        for day, delta in r.reminder_by_day.items():
+            self.assertEqual(
+                sum(c.current for c in cells[day].values()), delta.current)
+            self.assertEqual(
+                sum(c.prior for c in cells[day].values()), delta.prior)
+        self.assertEqual(
+            r.as_dict()["reminder_by_day_by_channel"]
+            [P2.isoformat()]["sms"]["prior"], 1)
+
+    def test_export_dict_and_csv_agree_on_day_rows(self):
+        self._book()
+        rows = export_prior_send_totals(self.salon, C1, C2)
+        by_metric = {row["metric"]: row for row in rows}
+        self.assertEqual((by_metric[f"reminder_day_{C1.isoformat()}"]["current"],
+                          by_metric[f"reminder_day_{C1.isoformat()}"]["prior"],
+                          by_metric[f"reminder_day_{C1.isoformat()}"]["delta"]),
+                         (2, 0, 2))
+        self.assertIsNone(
+            by_metric[f"reminder_day_{C1.isoformat()}"]["percent_change"])
+        self.assertEqual(
+            by_metric[f"reminder_day_{P1.isoformat()}_email"]["percent_change"],
+            Decimal("-100.00"))
+        self.assertEqual(
+            by_metric[f"reminder_day_{C2.isoformat()}_sms"]["current"], 1)
+        text = export_prior_send_totals_csv(self.salon, C1, C2)
+        csv_rows = {row["metric"]: row
+                    for row in csv.DictReader(io.StringIO(text))}
+        self.assertEqual(len(csv_rows), len(rows))
+        self.assertEqual(
+            csv_rows[f"reminder_day_{P1.isoformat()}"]["percent_change"],
+            "-100.00")
+        self.assertEqual(
+            csv_rows[f"reminder_day_{C1.isoformat()}"]["percent_change"], "")
+        self.assertEqual(
+            csv_rows[f"reminder_day_{C1.isoformat()}_email"]["current"], "2")
+
     def test_command_stdout_file_and_errors(self):
         self._book()
         out = io.StringIO()
@@ -158,6 +247,7 @@ class PriorSendTotalsTests(TestCase):
                      start_date=C1, end_date=C2, stdout=out)
         self.assertEqual(out.getvalue(),
                          export_prior_send_totals_csv(self.salon, C1, C2))
+        self.assertIn(f"reminder_day_{C1.isoformat()}_email", out.getvalue())
         for kwargs in (dict(salon_id=self.salon.pk + 1000,
                             start_date=C1, end_date=C2),
                        dict(salon_id=self.salon.pk,
