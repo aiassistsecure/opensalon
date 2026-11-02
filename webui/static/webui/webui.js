@@ -1659,6 +1659,16 @@
             keep.classList.add("sel");
           }
         }
+        /* An open checkout waiting on this payload re-renders
+           and arms the moment the true card lands. */
+        var coModal = document.getElementById("checkoutModal");
+        if (
+          coModal && !coModal.classList.contains("hidden") &&
+          payloads[coState.appt]
+        ) {
+          coRender();
+          armCheckout();
+        }
       })
       .catch(function () {});
   }
@@ -1770,7 +1780,28 @@
     if (currentDate === d.day) repaintDay();
     if (wasSelected) {
       delete payloads[d.from];
-      choose(d.to);
+      /* choose() takes the block element, never the id: the
+         re-painted block carries the true id now, and choosing
+         it reopens the card on the provisional facts while the
+         true payload chains in behind. (This call once passed
+         the bare id, which threw inside choose() and left the
+         rail dead on the provisional card.) */
+      var keep = document.querySelector(
+        '.appt-block[data-appt="' + d.to + '"], ' +
+        '.acard[data-appt="' + d.to + '"]'
+      );
+      if (keep) choose(keep, false);
+    }
+    /* A checkout opened on the unnamed card follows the name
+       home: the modal's visit is this booking, so its id is
+       the true one now, and the payload fetch re-arms it. */
+    var coModal = document.getElementById("checkoutModal");
+    if (
+      coModal && !coModal.classList.contains("hidden") &&
+      (!Number.isInteger(coState.appt) || !payloads[coState.appt])
+    ) {
+      coState.appt = d.to;
+      refreshRailData(d.to);
     }
   });
 
@@ -2072,6 +2103,27 @@
     coEl("coTotal").textContent = coMoney(coTotal());
   }
 
+  /* The sale arms only on the true payload: a server-named
+     appointment whose stack the node has spoken for. A card
+     still chaining in (a booking born this session, not yet
+     renamed) opens the modal in its honest state — Saving…,
+     Complete disabled — instead of a live sale on a $0 stack
+     and a temporary ref the server can only refuse. The
+     rename and the payload fetch re-arm it in place. */
+  function armCheckout() {
+    var done = coEl("coComplete");
+    var ready = !!(
+      Number.isInteger(coState.appt) && coState.appt > 0 &&
+      payloads[coState.appt]
+    );
+    done.disabled = !ready;
+    done.textContent = ready ? "Complete sale" : "Saving…";
+    if (!ready) {
+      coEl("coClient").textContent =
+        "This booking is still saving — its full card lands in a moment.";
+    }
+  }
+
   function openCheckout(apptId) {
     if (!coEl("checkoutModal")) return;
     coState = { appt: apptId, tender: "cash", products: {}, settled: false };
@@ -2091,6 +2143,7 @@
       b.classList.toggle("active", b.dataset.tender === "cash");
     });
     coRender();
+    armCheckout();
     coEl("checkoutModal").classList.remove("hidden");
   }
 
@@ -2163,6 +2216,16 @@
       coRender();
     });
     coEl("coComplete").addEventListener("click", function () {
+      if (
+        !Number.isInteger(coState.appt) || coState.appt <= 0 ||
+        !payloads[coState.appt]
+      ) {
+        var err0 = coEl("coErr");
+        err0.textContent =
+          "This booking is still saving — give it a moment and try again.";
+        err0.classList.remove("hidden");
+        return;
+      }
       var layout = document.querySelector(".book-layout");
       var tokenEl = layout.querySelector('input[name="csrfmiddlewaretoken"]');
       var products = Object.keys(coState.products).map(function (id) {
@@ -3233,5 +3296,46 @@
   });
   document.addEventListener("keydown", function (ev) {
     if (ev.key === "Escape" && !modal.classList.contains("hidden")) close();
+  });
+
+  /* Capability modals (price book + team page): who performs
+     what. One delegated ear under the app modal law — .hidden
+     off to open, back on to close; a click on the backdrop
+     itself closes too. The category All/None buttons in a
+     stylist's services modal tick or clear just their own
+     group. Inert on pages without the triggers. */
+  document.addEventListener("click", function (event) {
+    var opener = event.target.closest("[data-cap-open]");
+    if (opener) {
+      var modal = document.getElementById(
+        opener.getAttribute("data-cap-open")
+      );
+      if (modal) modal.classList.remove("hidden");
+      return;
+    }
+    var closer = event.target.closest("[data-cap-close]");
+    if (closer) {
+      var own = closer.closest(".book-modal");
+      if (own) own.classList.add("hidden");
+      return;
+    }
+    if (
+      event.target.classList &&
+      event.target.classList.contains("book-modal") &&
+      event.target.id.indexOf("cap") === 0
+    ) {
+      event.target.classList.add("hidden");
+      return;
+    }
+    var bulk = event.target.closest("[data-cap-all],[data-cap-none]");
+    if (bulk) {
+      var group = bulk.closest("[data-cap-group]");
+      if (group) {
+        var on = bulk.hasAttribute("data-cap-all");
+        group.querySelectorAll("input[type=checkbox]").forEach(
+          function (box) { box.checked = on; }
+        );
+      }
+    }
   });
 })();
