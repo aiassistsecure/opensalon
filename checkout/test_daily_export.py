@@ -15,6 +15,10 @@ from checkout.daily_export import (
 )
 from checkout.models import Sale, SaleItem
 from checkout.summary import daily_sales_summary
+from checkout.summary_export import (
+    EXPORT_FIELDNAMES as SUMMARY_FIELDNAMES,
+)
+from checkout.summary_export import export_summary, export_summary_csv
 from saloncore.models import Salon
 
 
@@ -34,13 +38,19 @@ class DailyExportTests(TestCase):
             datetime.timezone.utc,
         )
 
-    def _sale(self, salon, items, day=None, status=Sale.Status.COMPLETED):
+    def _sale(self, salon, items, day=None, status=Sale.Status.COMPLETED,
+              sale_discount="0.00"):
         day = day or self.day
-        sale = Sale.objects.create(salon=salon, status=status)
-        for kind, price, qty in items:
+        sale = Sale.objects.create(
+            salon=salon, status=status,
+            discount_amount=Decimal(sale_discount))
+        for item in items:
+            kind, price, qty = item[:3]
+            discount = item[3] if len(item) > 3 else "0.00"
             SaleItem.objects.create(
                 sale=sale, kind=kind, description=kind,
                 unit_price=Decimal(price), quantity=qty,
+                discount_amount=Decimal(discount),
             )
         stamp = self._at(day)
         Sale.objects.filter(pk=sale.pk).update(
@@ -70,7 +80,11 @@ class DailyExportTests(TestCase):
             "service_total": str(
                 summary.service_total.quantize(Decimal("0.01"))),
             "retail_total": str(summary.retail_total.quantize(Decimal("0.01"))),
+            "series_total": str(summary.series_total.quantize(Decimal("0.01"))),
             "item_count": summary.item_count,
+            "discount_total": str(
+                summary.discount_total.quantize(Decimal("0.01"))),
+            "net_total": str(summary.net_total.quantize(Decimal("0.01"))),
         }])
         self.assertEqual(summary.gross_total, Decimal("175.00"))
         self.assertEqual(summary.service_total, Decimal("135.00"))
@@ -115,7 +129,10 @@ class DailyExportTests(TestCase):
             self.assertEqual(row["gross_total"], "0.00")
             self.assertEqual(row["service_total"], "0.00")
             self.assertEqual(row["retail_total"], "0.00")
+            self.assertEqual(row["series_total"], "0.00")
             self.assertEqual(row["item_count"], 0)
+            self.assertEqual(row["discount_total"], "0.00")
+            self.assertEqual(row["net_total"], "0.00")
         self.assertEqual(export_daily_sales(self.salon, last, self.day), [])
         text = export_daily_sales_csv(self.salon, last, self.day)
         self.assertEqual(text, ",".join(EXPORT_FIELDNAMES) + "\n")
@@ -151,6 +168,67 @@ class DailyExportTests(TestCase):
         parsed = _rows(export_daily_sales_csv(self.salon, self.day))
         self.assertEqual([r["salon_id"] for r in parsed],
                          [str(self.salon.pk)])
+
+    def test_series_total_column_matches_service(self):
+        self.assertIn("series_total", EXPORT_FIELDNAMES)
+        self._sale(self.salon, [("service", "85.00", 1),
+                                ("product", "20.00", 2),
+                                ("series", "100.00", 2)])
+        summary = daily_sales_summary(self.salon, self.day)
+        rows = export_daily_sales(self.salon, self.day)
+        self.assertEqual(rows[0]["series_total"], "200.00")
+        self.assertEqual(
+            Decimal(rows[0]["series_total"]), summary.series_total)
+        self.assertEqual(rows[0]["gross_total"], "325.00")
+        parsed = _rows(export_daily_sales_csv(self.salon, self.day))
+        self.assertEqual(parsed[0]["series_total"], "200.00")
+
+    def test_discount_and_net_columns_appended(self):
+        self.assertEqual(
+            EXPORT_FIELDNAMES[-2:], ["discount_total", "net_total"])
+        self.assertEqual(EXPORT_FIELDNAMES, SUMMARY_FIELDNAMES)
+
+    def test_discounted_sale_export_matches_summary(self):
+        # Gross 85 + 20*2 = 125; discounts 10 (line) + 8 (line)
+        # + 5 (whole-sale) = 23; net = 125 - 23 = 102.
+        self._sale(
+            self.salon,
+            [("service", "85.00", 1, "10.00"),
+             ("product", "20.00", 2, "8.00")],
+            sale_discount="5.00")
+        summary = daily_sales_summary(self.salon, self.day)
+        self.assertEqual(summary.discount_total, Decimal("23.00"))
+        self.assertEqual(summary.net_total, Decimal("102.00"))
+        rows = export_daily_sales(self.salon, self.day)
+        self.assertEqual(
+            rows[0]["discount_total"],
+            str(summary.discount_total.quantize(Decimal("0.01"))))
+        self.assertEqual(
+            rows[0]["net_total"],
+            str(summary.net_total.quantize(Decimal("0.01"))))
+        self.assertEqual(rows[0]["discount_total"], "23.00")
+        self.assertEqual(rows[0]["net_total"], "102.00")
+        self.assertEqual(
+            Decimal(rows[0]["net_total"]),
+            Decimal(rows[0]["gross_total"])
+            - Decimal(rows[0]["discount_total"]))
+        parsed = _rows(export_daily_sales_csv(self.salon, self.day))
+        self.assertEqual(parsed[0]["discount_total"], "23.00")
+        self.assertEqual(parsed[0]["net_total"], "102.00")
+
+    def test_parity_with_summary_export(self):
+        self._sale(
+            self.salon,
+            [("service", "85.00", 1, "10.00"),
+             ("series", "100.00", 1)],
+            sale_discount="5.00")
+        last = self.day + datetime.timedelta(days=1)
+        self.assertEqual(
+            export_daily_sales(self.salon, self.day, last),
+            export_summary(self.salon, self.day, last))
+        self.assertEqual(
+            export_daily_sales_csv(self.salon, self.day, last),
+            export_summary_csv(self.salon, self.day, last))
 
     def test_read_only_records_unchanged(self):
         self._sale(self.salon, [("service", "85.00", 1)])
