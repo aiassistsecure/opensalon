@@ -114,6 +114,16 @@ fully export. This is part 1 of that test — the core records only:
   and client; ``detail`` is free-form send detail exported
   verbatim, and ``sent_at`` as ISO-8601 with timezone via
   ``_dt``.
+- team: StaffNotification (a ping in one staff member's
+  account inbox, e.g. a check-in arrival notice, scoped
+  through its staff member's salon). Rows carry the staff
+  and appointment references as both the internal
+  ``staff_member_id`` / ``appointment_id`` and the related
+  records' ``staff_member_external_id`` /
+  ``appointment_external_id``, like staff services carry
+  their links; ``created_at`` / ``seen_at`` are emitted as
+  ISO-8601 with timezone via ``_dt`` (``seen_at`` is ``None``
+  when the ping has not been seen yet).
 
 The ``payload`` (whole source record, stored verbatim) is emitted
 for every section whose model carries one — clients, services,
@@ -151,6 +161,7 @@ from team.models import (
     RosterPattern,
     ShiftOverride,
     StaffMember,
+    StaffNotification,
     StaffService,
 )
 
@@ -160,7 +171,7 @@ def _dt(value):
 
 
 class Command(BaseCommand):
-    help = "Export salon core data (price book, clients, staff, staff services, appointments, products, sales, stock movements, attendance, price changes, refunds, breaks, cashups, receipts, reminder sends, campaigns, campaign sends) to one JSON file."
+    help = "Export salon core data (price book, clients, staff, staff services, appointments, products, sales, stock movements, attendance, price changes, refunds, breaks, cashups, receipts, reminder sends, campaigns, campaign sends, staff notifications) to one JSON file."
 
     def add_arguments(self, parser):
         parser.add_argument("output", help="Path of the JSON file to write.")
@@ -231,6 +242,9 @@ class Command(BaseCommand):
         campaigns = Campaign.objects.filter(salon_id__in=salon_ids)
         campaign_sends = CampaignSend.objects.filter(
             campaign__salon_id__in=salon_ids)
+        staff_notifications = StaffNotification.objects.filter(
+            staff_member_id__in=staff_ids
+        ).select_related("staff_member", "appointment")
 
         data = {
             "salons": [
@@ -553,6 +567,19 @@ class Command(BaseCommand):
                     "detail": s.detail,
                 }
                 for s in campaign_sends
+            ],
+            "staff_notifications": [
+                {
+                    "id": n.id,
+                    "staff_member_id": n.staff_member_id,
+                    "staff_member_external_id": n.staff_member.external_id,
+                    "appointment_id": n.appointment_id,
+                    "appointment_external_id": n.appointment.external_id,
+                    "kind": n.kind,
+                    "created_at": _dt(n.created_at),
+                    "seen_at": _dt(n.seen_at),
+                }
+                for n in staff_notifications
             ],
         }
         data["counts"] = {

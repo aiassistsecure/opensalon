@@ -82,7 +82,7 @@ class ExportSalonDataTests(TestCase):
             "stock_movements": 0, "attendance_records": 0,
             "price_changes": 0, "refunds": 0, "breaks": 0, "cashups": 0,
             "receipts": 0, "reminder_sends": 0, "campaigns": 0,
-            "campaign_sends": 0,
+            "campaign_sends": 0, "staff_notifications": 0,
         })
         for key, count in data["counts"].items():
             self.assertEqual(len(data[key]), count)
