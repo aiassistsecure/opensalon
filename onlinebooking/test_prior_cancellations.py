@@ -85,6 +85,46 @@ class PriorCancellationsTests(TestCase):
                          (2, 1))
         self.assertEqual((svc["Colour"].current, svc["Colour"].prior), (1, 0))
 
+    def test_by_day_offset_aligned_deltas(self):
+        r = prior_cancellations(self.salon, START, END)
+        self.assertEqual(len(r.by_day), 7)
+        self.assertEqual(r.by_date, r.by_day)
+        self.assertEqual([d.offset for d in r.by_day], list(range(7)))
+        self.assertEqual([d.date for d in r.by_day],
+                         [START + datetime.timedelta(days=i)
+                          for i in range(7)])
+        self.assertEqual([d.prior_date for d in r.by_day],
+                         [P_START + datetime.timedelta(days=i)
+                          for i in range(7)])
+        # Verbatim from the source tuples, offset-aligned.
+        self.assertEqual([d.current for d in r.by_day],
+                         [row.count for row in r.current.by_day])
+        self.assertEqual([d.prior for d in r.by_day],
+                         [row.count for row in r.prior.by_day])
+        first, second = r.by_day[0], r.by_day[1]
+        self.assertEqual((first.current, first.prior, first.delta,
+                          first.percent_change),
+                         (2, 1, 1, Decimal("100.00")))
+        self.assertEqual((second.current, second.prior, second.delta),
+                         (1, 0, 1))
+        self.assertIsNone(second.percent_change)
+        self.assertTrue(all(
+            (d.current, d.prior, d.delta) == (0, 0, 0)
+            for d in r.by_day[2:]))
+        self.assertEqual(sum(d.current for d in r.by_day), r.total.current)
+        self.assertEqual(sum(d.prior for d in r.by_day), r.total.prior)
+        self.assertEqual(first.as_dict()["date"], START.isoformat())
+        self.assertEqual(first.as_dict()["prior_date"],
+                         P_START.isoformat())
+
+    def test_by_day_zero_filled_for_empty_salon(self):
+        other = Salon.objects.create(name="Fresh", timezone="UTC")
+        r = prior_cancellations(other, START, END)
+        self.assertEqual(len(r.by_day), 7)
+        self.assertTrue(all(
+            (d.current, d.prior, d.delta, d.percent_change)
+            == (0, 0, 0, None) for d in r.by_day))
+
     def test_percent_change_none_when_prior_zero(self):
         other = Salon.objects.create(name="Fresh", timezone="UTC")
         r = prior_cancellations(other, START, END)
@@ -126,7 +166,7 @@ class PriorCancellationsExportTests(TestCase):
     def test_rows_and_csv_agree(self):
         rows = export_prior_cancellations(self.salon, START, END)
         self.assertEqual([r["section"] for r in rows],
-                         ["total", "staff", "service"])
+                         ["total", "staff", "service"] + ["day"] * 7)
         self.assertTrue(all(list(r) == EXPORT_FIELDNAMES for r in rows))
         self.assertEqual((rows[0]["current"], rows[0]["prior"],
                           rows[0]["delta"], rows[0]["percent_change"]),
@@ -136,6 +176,22 @@ class PriorCancellationsExportTests(TestCase):
             export_prior_cancellations_csv(self.salon, START, END))))
         self.assertEqual(parsed, [{k: "" if v is None else str(v)
                                    for k, v in r.items()} for r in rows])
+
+    def test_day_rows_carry_offset_aligned_pair(self):
+        rows = export_prior_cancellations(self.salon, START, END)
+        days = [r for r in rows if r["section"] == "day"]
+        self.assertEqual(len(days), 7)
+        self.assertEqual(
+            (days[0]["date"], days[0]["prior_date"], days[0]["current"],
+             days[0]["prior"], days[0]["delta"],
+             days[0]["percent_change"]),
+            (START.isoformat(), P_START.isoformat(), 1, 1, 0, "0.00"))
+        self.assertTrue(all(
+            (r["current"], r["prior"], r["delta"]) == (0, 0, 0)
+            for r in days[1:]))
+        self.assertTrue(all(
+            r["date"] is None and r["prior_date"] is None
+            for r in rows if r["section"] != "day"))
 
     def test_command_stdout_file_and_errors(self):
         out = io.StringIO()
