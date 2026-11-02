@@ -7,6 +7,15 @@ come verbatim from ``campaign_send_totals`` (``CampaignSend``,
 scoped via ``campaign__salon``) -- never recounted here. Each
 metric carries ``current``/``prior``/``delta``/``percent_change``
 (Decimal, 2dp, ROUND_HALF_UP), ``None`` when prior is zero.
+The comparison also carries ``by_channel_by_status`` and
+``by_day_by_channel`` deltas, taken verbatim from
+``campaign_send_totals``'s own breakdowns for both windows --
+no new counting path here. ``by_day_by_channel`` is aligned
+by day position within the window, exactly like ``by_day``
+(a current day pairs with the prior day at the same offset),
+and its cells are zero-filled to the union of both windows'
+channels; ``by_channel_by_status`` is zero-filled to the
+union of both windows' channels and statuses.
 A reversed window or missing salon raises ``ValueError``.
 """
 from dataclasses import dataclass, field
@@ -87,7 +96,9 @@ class PriorCampaignSendTotalsComparison:
     total: CountDelta = None
     by_channel: dict = field(default_factory=dict)
     by_status: dict = field(default_factory=dict)
+    by_channel_by_status: dict = field(default_factory=dict)
     by_day: dict = field(default_factory=dict)
+    by_day_by_channel: dict = field(default_factory=dict)
 
     @property
     def salon_id(self): return getattr(self.salon, "pk", self.salon)
@@ -107,10 +118,17 @@ class PriorCampaignSendTotalsComparison:
     @property
     def deltas(self):
         return {"total": self.total, "by_channel": self.by_channel,
-                "by_status": self.by_status, "by_day": self.by_day}
+                "by_status": self.by_status,
+                "by_channel_by_status": self.by_channel_by_status,
+                "by_day": self.by_day,
+                "by_day_by_channel": self.by_day_by_channel}
 
     def as_dict(self):
         by = lambda d: {str(k): v.as_dict() for k, v in d.items()}  # noqa: E731
+        cross = {str(ch): by(cells) for ch, cells in
+                 self.by_channel_by_status.items()}
+        day_ch = {day.isoformat(): by(cells) for day, cells in
+                  self.by_day_by_channel.items()}
         return {"salon_id": self.salon_id, "start_date": self.start_date,
                 "end_date": self.end_date,
                 "prior_start_date": self.prior_start_date,
@@ -118,7 +136,9 @@ class PriorCampaignSendTotalsComparison:
                 "total": self.total.as_dict(),
                 "by_channel": by(self.by_channel),
                 "by_status": by(self.by_status),
-                "by_day": by(self.by_day)}
+                "by_channel_by_status": cross,
+                "by_day": by(self.by_day),
+                "by_day_by_channel": day_ch}
 
 
 def prior_campaign_send_totals(salon, start=None, end=None, **kwargs):
@@ -157,13 +177,42 @@ def prior_campaign_send_totals(salon, start=None, end=None, **kwargs):
         return {k: _delta(f"{prefix}_{k}", cur_map.get(k, 0),
                           pri_map.get(k, 0)) for k in keys}
 
+    # Cross-tab: verbatim from the source's own
+    # by_channel_by_status for both windows, zero-filled to
+    # the union of both windows' channels and statuses.
+    cross_channels = list(cur.by_channel_by_status) + [
+        ch for ch in pri.by_channel_by_status
+        if ch not in cur.by_channel_by_status]
+    by_channel_by_status = {}
+    for ch in cross_channels:
+        cur_cells = cur.by_channel_by_status.get(ch, {})
+        pri_cells = pri.by_channel_by_status.get(ch, {})
+        statuses = list(cur_cells) + [
+            s for s in pri_cells if s not in cur_cells]
+        by_channel_by_status[ch] = {
+            s: _delta(f"channel_{ch}_status_{s}",
+                      cur_cells.get(s, 0), pri_cells.get(s, 0))
+            for s in statuses}
+
     by_day = {}
+    by_day_by_channel = {}
     cur_days = sorted(cur.by_day)
     for offset, day in enumerate(cur_days):
         prior_day = p_start + timedelta(days=offset)
         by_day[day] = _delta(f"day_{day.isoformat()}",
                              cur.by_day.get(day, 0),
                              pri.by_day.get(prior_day, 0))
+        # By-day-by-channel: verbatim from the source's own
+        # by_day_by_channel for both windows, offset-aligned
+        # like by_day, zero-filled to the union of channels.
+        cur_cells = cur.by_day_by_channel.get(day, {})
+        pri_cells = pri.by_day_by_channel.get(prior_day, {})
+        channels = list(cur_cells) + [
+            ch for ch in pri_cells if ch not in cur_cells]
+        by_day_by_channel[day] = {
+            ch: _delta(f"day_{day.isoformat()}_{ch}",
+                       cur_cells.get(ch, 0), pri_cells.get(ch, 0))
+            for ch in channels}
     return PriorCampaignSendTotalsComparison(
         salon=salon, start_date=first, end_date=last,
         prior_start_date=p_start, prior_end_date=p_end,
@@ -171,7 +220,8 @@ def prior_campaign_send_totals(salon, start=None, end=None, **kwargs):
         total=_delta("total", cur.total, pri.total),
         by_channel=_union(cur.by_channel, pri.by_channel, "channel"),
         by_status=_union(cur.by_status, pri.by_status, "status"),
-        by_day=by_day)
+        by_channel_by_status=by_channel_by_status,
+        by_day=by_day, by_day_by_channel=by_day_by_channel)
 
 
 #: Aliases, mirroring the naming convenience in sibling services.
