@@ -12,6 +12,17 @@ from saloncore.models import Salon, Service, StrictConstraints
 # creates no database-level constraints.
 
 
+def _recorded_discount(value):
+    """A recorded discount amount, with a missing value read as none.
+
+    Rows written before the discount fields existed (or restored
+    onto schemaless NEDB, which applies no column default on read)
+    come back with ``discount_amount`` as None. A missing discount
+    is no discount — never a crash in the totals below.
+    """
+    return Decimal("0.00") if value is None else value
+
+
 class Sale(StrictConstraints):
     """A single checkout sale for a salon.
 
@@ -79,9 +90,12 @@ class Sale(StrictConstraints):
     def discount_total(self):
         """This sale's discount plus every line's discount."""
         if self.pk is None:
-            return self.discount_amount
-        return self.discount_amount + sum(
-            (item.discount_amount for item in self.items.all()),
+            return _recorded_discount(self.discount_amount)
+        return _recorded_discount(self.discount_amount) + sum(
+            (
+                _recorded_discount(item.discount_amount)
+                for item in self.items.all()
+            ),
             Decimal("0.00"),
         )
 
@@ -95,7 +109,7 @@ class Sale(StrictConstraints):
             return Decimal("0.00")
         return sum(
             (item.line_total for item in self.items.all()), Decimal("0.00")
-        ) - self.discount_amount
+        ) - _recorded_discount(self.discount_amount)
 
 
 class SaleItem(StrictConstraints):
@@ -164,7 +178,7 @@ class SaleItem(StrictConstraints):
     @property
     def line_total(self):
         """Line amount after this line's recorded discount."""
-        return self.subtotal - self.discount_amount
+        return self.subtotal - _recorded_discount(self.discount_amount)
 
 
 class Payment(models.Model):
