@@ -13,6 +13,16 @@ Rows order by current revenue descending, then name ascending.
 CSV helpers follow :mod:`insights.prior_period_export` (Exit
 Principle): money/percentages to two places, ``None`` as empty.
 
+Category rows also carry ``line_count`` and ``service_count``
+as count deltas (house :class:`ComponentDelta` shape), taken
+verbatim from :mod:`insights.category_mix`'s own ``CategoryMix``
+rows for both windows — no new counting path — plus a
+``quantity_share_percent`` raw current/prior pair mirroring the
+existing ``revenue_share_percent`` properties (``None`` when a
+side is missing or its window quantity total is zero). The
+category CSV carries the new figures alongside the existing
+columns.
+
 The attach comparison also carries ``daily``: a tuple of
 offset-aligned per-day entries (day 1 vs day 1, day 2 vs day 2,
 …, following :mod:`insights.prior_trend`'s per-day shape), taken
@@ -172,6 +182,8 @@ class CategoryPriorDelta:
     prior: object | None
     revenue: ComponentDelta
     quantity: ComponentDelta
+    line_count: ComponentDelta
+    service_count: ComponentDelta
     current_sale_count: int
     prior_sale_count: int
 
@@ -180,12 +192,37 @@ class CategoryPriorDelta:
         return self.category_name
 
     @property
+    def current_line_count(self):
+        return int(self.line_count.current) if self.line_count else 0
+
+    @property
+    def prior_line_count(self):
+        return int(self.line_count.prior) if self.line_count else 0
+
+    @property
+    def current_service_count(self):
+        return int(self.service_count.current) \
+            if self.service_count else 0
+
+    @property
+    def prior_service_count(self):
+        return int(self.service_count.prior) if self.service_count else 0
+
+    @property
     def current_revenue_share_percent(self):
         return self.current.revenue_share_percent if self.current else None
 
     @property
     def prior_revenue_share_percent(self):
         return self.prior.revenue_share_percent if self.prior else None
+
+    @property
+    def current_quantity_share_percent(self):
+        return self.current.quantity_share_percent if self.current else None
+
+    @property
+    def prior_quantity_share_percent(self):
+        return self.prior.quantity_share_percent if self.prior else None
 
 
 class PriorCategoryMixComparison(list):
@@ -305,6 +342,12 @@ def prior_period_category_mix(salon, start_date=None, end_date=None,
             quantity=_count_delta(
                 "quantity", c.quantity if c else 0,
                 p.quantity if p else 0),
+            line_count=_count_delta(
+                "line_count", c.line_count if c else 0,
+                p.line_count if p else 0),
+            service_count=_count_delta(
+                "service_count", c.service_count if c else 0,
+                p.service_count if p else 0),
             current_sale_count=c.sale_count if c else 0,
             prior_sale_count=p.sale_count if p else 0,
         ))
@@ -329,6 +372,11 @@ PRIOR_CATEGORY_FIELDNAMES = [
     "delta", "percent_change", "current_quantity", "prior_quantity",
     "current_sale_count", "prior_sale_count",
     "current_revenue_share_percent", "prior_revenue_share_percent",
+    "current_line_count", "prior_line_count",
+    "line_count_delta", "line_count_percent_change",
+    "current_service_count", "prior_service_count",
+    "service_count_delta", "service_count_percent_change",
+    "current_quantity_share_percent", "prior_quantity_share_percent",
 ]
 _ATTACH_METRICS = (
     "service_sales", "attached_sales", "attach_rate_percent",
@@ -428,4 +476,17 @@ def export_prior_category_mix_csv(salon, start_date=None, end_date=None,
             r.current_revenue_share_percent),
         "prior_revenue_share_percent": _pct(
             r.prior_revenue_share_percent),
+        "current_line_count": int(r.line_count.current),
+        "prior_line_count": int(r.line_count.prior),
+        "line_count_delta": int(r.line_count.delta),
+        "line_count_percent_change": _pct(r.line_count.percent_change),
+        "current_service_count": int(r.service_count.current),
+        "prior_service_count": int(r.service_count.prior),
+        "service_count_delta": int(r.service_count.delta),
+        "service_count_percent_change": _pct(
+            r.service_count.percent_change),
+        "current_quantity_share_percent": _pct(
+            r.current_quantity_share_percent),
+        "prior_quantity_share_percent": _pct(
+            r.prior_quantity_share_percent),
     } for r in result], PRIOR_CATEGORY_FIELDNAMES)

@@ -293,6 +293,136 @@ class PriorAttachCategoryTests(TestCase):
         self.assertEqual(spa.revenue.percent_change, Decimal("-100.00"))
         self.assertIsNone(spa.current)
 
+    def test_category_line_service_count_deltas_and_quantity_share(self):
+        self._seed()
+        r = prior_period_category_mix(self.salon, START, END)
+        by_name = {x.category_name: x for x in r}
+        hair, nails, spa = by_name["Hair"], by_name["Nails"], by_name["Spa"]
+        # ComponentDelta shape, verbatim from category_mix both windows.
+        self.assertEqual(
+            (hair.line_count.current, hair.line_count.prior,
+             hair.line_count.delta, hair.line_count.percent_change),
+            (Decimal("2"), Decimal("2"), Decimal("0"), Decimal("0.00")))
+        self.assertEqual(
+            (hair.service_count.current, hair.service_count.prior,
+             hair.service_count.delta, hair.service_count.percent_change),
+            (Decimal("1"), Decimal("1"), Decimal("0"), Decimal("0.00")))
+        self.assertEqual(hair.line_count.component, "line_count")
+        self.assertEqual(hair.service_count.component, "service_count")
+        self.assertEqual((hair.current_line_count, hair.prior_line_count,
+                          hair.current_service_count,
+                          hair.prior_service_count), (2, 2, 1, 1))
+        cur = {x.category_name: x for x in category_mix(self.salon, START, END)}
+        pri = {x.category_name: x for x in category_mix(
+            self.salon, date(2026, 10, 26), date(2026, 11, 1))}
+        for name, row in by_name.items():
+            self.assertEqual(row.line_count.current,
+                             Decimal(cur[name].line_count) if name in cur
+                             else Decimal("0"))
+            self.assertEqual(row.line_count.prior,
+                             Decimal(pri[name].line_count) if name in pri
+                             else Decimal("0"))
+            self.assertEqual(row.service_count.current,
+                             Decimal(cur[name].service_count)
+                             if name in cur else Decimal("0"))
+            self.assertEqual(row.service_count.prior,
+                             Decimal(pri[name].service_count)
+                             if name in pri else Decimal("0"))
+            self.assertEqual(row.current_quantity_share_percent,
+                             cur[name].quantity_share_percent
+                             if name in cur else None)
+            self.assertEqual(row.prior_quantity_share_percent,
+                             pri[name].quantity_share_percent
+                             if name in pri else None)
+        # Quantity shares: Hair 2/3 both windows; single-period rows None.
+        self.assertEqual((hair.current_quantity_share_percent,
+                          hair.prior_quantity_share_percent),
+                         (Decimal("66.67"), Decimal("66.67")))
+        self.assertEqual(nails.current_quantity_share_percent,
+                         Decimal("33.33"))
+        self.assertIsNone(nails.prior_quantity_share_percent)
+        self.assertEqual(
+            (nails.line_count.current, nails.line_count.prior,
+             nails.line_count.delta, nails.service_count.current,
+             nails.service_count.prior, nails.service_count.delta),
+            (Decimal("1"), Decimal("0"), Decimal("1"),
+             Decimal("1"), Decimal("0"), Decimal("1")))
+        self.assertIsNone(nails.line_count.percent_change)
+        self.assertIsNone(nails.service_count.percent_change)
+        self.assertIsNone(spa.current_quantity_share_percent)
+        self.assertEqual(spa.prior_quantity_share_percent, Decimal("33.33"))
+        self.assertEqual(
+            (spa.line_count.current, spa.line_count.prior,
+             spa.line_count.delta, spa.line_count.percent_change,
+             spa.service_count.delta, spa.service_count.percent_change),
+            (Decimal("0"), Decimal("1"), Decimal("-1"),
+             Decimal("-100.00"), Decimal("-1"), Decimal("-100.00")))
+
+    def test_category_line_count_distinct_from_quantity_and_services(self):
+        blowout = Service.objects.create(
+            category=self.cut.category, name="Blowout", service_minutes=30)
+        sale = self._sale(CUR, [(S, "100.00", self.cut),
+                                (S, "60.00", blowout)])
+        SaleItem.objects.filter(sale=sale, service=self.cut).update(quantity=3)
+        self._sale(CUR, [(S, "50.00", self.mani)])
+        self._sale(PRI, [(S, "100.00", self.cut)])
+        by_name = {x.category_name: x for x in
+                   prior_period_category_mix(self.salon, START, END)}
+        hair = by_name["Hair"]
+        # Quantity 4 (3+1) over 2 lines / 2 distinct services vs 1/1/1.
+        self.assertEqual((hair.quantity.current, hair.quantity.prior),
+                         (Decimal("4"), Decimal("1")))
+        self.assertEqual(
+            (hair.line_count.current, hair.line_count.prior,
+             hair.line_count.delta, hair.line_count.percent_change),
+            (Decimal("2"), Decimal("1"), Decimal("1"), Decimal("100.00")))
+        self.assertEqual(
+            (hair.service_count.current, hair.service_count.prior,
+             hair.service_count.delta, hair.service_count.percent_change),
+            (Decimal("2"), Decimal("1"), Decimal("1"), Decimal("100.00")))
+        self.assertEqual((hair.current_quantity_share_percent,
+                          hair.prior_quantity_share_percent),
+                         (Decimal("80.00"), Decimal("100.00")))
+
+    def test_category_secondary_figures_csv_and_command(self):
+        self._seed()
+        text = export_prior_category_mix_csv(self.salon, START, END)
+        self.assertEqual(list(csv.reader(io.StringIO(text)))[0],
+                         PRIOR_CATEGORY_FIELDNAMES)
+        rows = {x["category_name"]: x
+                for x in csv.DictReader(io.StringIO(text))}
+        hair, nails, spa = rows["Hair"], rows["Nails"], rows["Spa"]
+        self.assertEqual(
+            (hair["current_line_count"], hair["prior_line_count"],
+             hair["line_count_delta"], hair["line_count_percent_change"],
+             hair["current_service_count"], hair["prior_service_count"],
+             hair["service_count_delta"],
+             hair["service_count_percent_change"],
+             hair["current_quantity_share_percent"],
+             hair["prior_quantity_share_percent"]),
+            ("2", "2", "0", "0.00", "1", "1", "0", "0.00",
+             "66.67", "66.67"))
+        self.assertEqual(
+            (nails["current_line_count"], nails["prior_line_count"],
+             nails["line_count_delta"], nails["line_count_percent_change"],
+             nails["current_quantity_share_percent"],
+             nails["prior_quantity_share_percent"]),
+            ("1", "0", "1", "", "33.33", ""))
+        self.assertEqual(
+            (spa["current_service_count"], spa["prior_service_count"],
+             spa["service_count_delta"],
+             spa["service_count_percent_change"],
+             spa["current_quantity_share_percent"],
+             spa["prior_quantity_share_percent"]),
+            ("0", "1", "-1", "-100.00", "", "33.33"))
+        out = io.StringIO()
+        call_command("export_prior_attach_category",
+                     salon_id=self.salon.pk, kind="category_mix",
+                     start_date="2026-11-02", end_date="2026-11-08",
+                     stdout=out)
+        self.assertIn("current_line_count", out.getvalue())
+        self.assertIn("current_quantity_share_percent", out.getvalue())
+
     def test_zero_prior_percent_none_and_reversed_raises(self):
         self._seed()
         r = prior_period_attach_rate(self.other, START, END)
