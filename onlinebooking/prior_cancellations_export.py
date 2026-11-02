@@ -4,10 +4,13 @@ Read-only. Founding rule (Exit Principle): renders
 :mod:`onlinebooking.prior_cancellations` as dict rows and as
 CSV built from that same list, so the formats never disagree;
 every value comes verbatim from the service. Rows: one
-``total`` row, then staff rows, then service rows. Columns:
-window bounds, ``section``, staff/service identity,
+``total`` row, then staff rows, then service rows, then one
+``day`` row per offset-aligned per-day pair (``date`` is the
+current day, ``prior_date`` its prior-window counterpart).
+Columns: window bounds, ``section``, staff/service identity,
 ``current`` / ``prior`` / ``delta`` / ``percent_change``
-(empty when ``None``), and both window totals. Lines ``"\\n"``.
+(empty when ``None``), both window totals, and the day pair's
+dates (empty on non-day rows). Lines ``"\\n"``.
 """
 import csv
 import io
@@ -24,6 +27,7 @@ EXPORT_FIELDNAMES = [
     "prior_end_date", "section", "staff_member_id", "staff_name",
     "service_id", "service_name", "current", "prior", "delta",
     "percent_change", "current_total", "prior_total",
+    "date", "prior_date",
 ]
 PRIOR_CANCELLATIONS_FIELDNAMES = EXPORT_FIELDNAMES
 _CENTS = Decimal("0.01")
@@ -34,7 +38,7 @@ def _pct(value):
 
 
 def _row(result, section, delta, staff_id=None, staff_name=None,
-         service_id=None, service_name=None):
+         service_id=None, service_name=None, day=None, prior_day=None):
     return {
         "salon_id": result.salon_id,
         "start_date": result.start_date.isoformat(),
@@ -47,7 +51,9 @@ def _row(result, section, delta, staff_id=None, staff_name=None,
         "prior": delta.prior, "delta": delta.delta,
         "percent_change": _pct(delta.percent_change),
         "current_total": result.current.total,
-        "prior_total": result.prior.total}
+        "prior_total": result.prior.total,
+        "date": day.isoformat() if day else None,
+        "prior_date": prior_day.isoformat() if prior_day else None}
 
 
 def export_prior_cancellations(salon, start=None, end=None, **kwargs):
@@ -58,6 +64,8 @@ def export_prior_cancellations(salon, start=None, end=None, **kwargs):
                   staff_name=r.staff_name) for r in result.by_staff]
     rows += [_row(result, "service", r, service_id=r.service_id,
                   service_name=r.service_name) for r in result.by_service]
+    rows += [_row(result, "day", r, day=r.date, prior_day=r.prior_date)
+             for r in result.by_day]
     return rows
 
 

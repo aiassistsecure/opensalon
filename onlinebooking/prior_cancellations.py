@@ -7,8 +7,15 @@ current window ``[start, end]`` of ``length`` days, the prior
 period is ``[start - length, start - 1 day]``. Each count
 carries ``current``, ``prior``, ``delta`` and
 ``percent_change`` (Decimal, two places, ROUND_HALF_UP),
-``None`` when the prior count is zero. Missing salon or
-bound, or a reversed window, raises ``ValueError``.
+``None`` when the prior count is zero. ``by_day`` carries the
+source's per-day breakdown too: entries are offset-aligned
+between the windows (day 1 vs day 1, day 2 vs day 2, ...,
+following ``prior_attendance_summary``'s per-day alignment),
+taken verbatim from the source's own ``by_day`` tuples for
+both windows — no new counting. A side missing at an offset
+is zero-filled dated by window start + offset (the source
+zero-fills every day in range). Missing salon or bound, or
+a reversed window, raises ``ValueError``.
 """
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -19,6 +26,7 @@ from bookings.availability import _tz
 from .cancellations import online_cancellation_summary
 
 __all__ = ["CountDelta", "MetricDelta", "BreakdownDelta",
+           "DayDelta", "DayCancellationDelta",
            "PriorCancellations", "PriorCancellationsComparison",
            "prior_cancellations", "prior_period_cancellations",
            "compare_cancellations", "get_prior_cancellations"]
@@ -79,6 +87,44 @@ class BreakdownDelta:
 
 
 @dataclass(frozen=True)
+class DayDelta:
+    """One offset-aligned per-day pair: current day vs prior day."""
+    date: object = None
+    prior_date: object = None
+    offset: int = 0
+    current: int = 0
+    prior: int = 0
+
+    @property
+    def delta(self): return self.current - self.prior
+    @property
+    def percent_change(self): return _pct(self.current, self.prior)
+    @property
+    def day(self): return self.date
+    @property
+    def previous(self): return self.prior
+    @property
+    def change(self): return self.delta
+    @property
+    def pct_change(self): return self.percent_change
+    @property
+    def current_count(self): return self.current
+    @property
+    def prior_count(self): return self.prior
+
+    def as_dict(self):
+        return {"date": self.date.isoformat() if self.date else None,
+                "prior_date": (self.prior_date.isoformat()
+                               if self.prior_date else None),
+                "offset": self.offset, "current": self.current,
+                "prior": self.prior, "delta": self.delta,
+                "percent_change": self.percent_change}
+
+
+DayCancellationDelta = DayDelta
+
+
+@dataclass(frozen=True)
 class PriorCancellationsComparison:
     salon: object = None
     start_date: object = None
@@ -90,7 +136,10 @@ class PriorCancellationsComparison:
     total: CountDelta = None
     by_staff: tuple = field(default_factory=tuple)
     by_service: tuple = field(default_factory=tuple)
+    by_day: tuple = field(default_factory=tuple)
 
+    @property
+    def by_date(self): return self.by_day
     @property
     def salon_id(self): return getattr(self.salon, "pk", self.salon)
     @property
@@ -119,6 +168,28 @@ def _breakdown(section, current_rows, prior_rows, key, make):
     rows = [make(k, cur.get(k), pri.get(k)) for k in cur.keys() | pri.keys()]
     return tuple(sorted(rows, key=lambda r: (
         -r.current, -r.prior, r.name, r.staff_member_id or r.service_id or 0)))
+
+
+def _by_day(current_rows, prior_rows, first, prior_first):
+    """Offset-align both windows' ``by_day`` tuples, verbatim.
+
+    Index ``i`` of the current tuple pairs with index ``i`` of
+    the prior tuple; a side missing at an offset is zero-filled
+    with a row dated window-start + offset.
+    """
+    cur, pri = list(current_rows), list(prior_rows)
+    rows = []
+    for offset in range(max(len(cur), len(pri))):
+        c = cur[offset] if offset < len(cur) else None
+        p = pri[offset] if offset < len(pri) else None
+        rows.append(DayDelta(
+            date=c.date if c else first + timedelta(days=offset),
+            prior_date=(p.date if p else
+                        prior_first + timedelta(days=offset)),
+            offset=offset,
+            current=c.count if c else 0,
+            prior=p.count if p else 0))
+    return tuple(rows)
 
 
 def prior_cancellations(salon, date_from=None, date_to=None, *,
@@ -164,7 +235,8 @@ def prior_cancellations(salon, date_from=None, date_to=None, *,
         salon=salon, start_date=first, end_date=last,
         prior_start_date=p_start, prior_end_date=p_end,
         current=current, prior=prior, total=total,
-        by_staff=by_staff, by_service=by_service)
+        by_staff=by_staff, by_service=by_service,
+        by_day=_by_day(current.by_day, prior.by_day, first, p_start))
 
 
 prior_period_cancellations = prior_cancellations
