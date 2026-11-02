@@ -8,11 +8,18 @@ total, and how that gross splits by :class:`SaleItem` kind.
 
 Facts and their one source of truth (nothing is stored here):
 
-* A sale's gross is the sum of its items' line totals
-  (``unit_price * quantity``) — the same derivation as
-  :attr:`Sale.total`. Payments are not used for the gross: a
+* A sale's gross is the sum of its items' pre-discount line
+  amounts (``unit_price * quantity``) — the same derivation as
+  :attr:`Sale.subtotal`. Payments are not used for the gross: a
   payment records how a sale was settled, not what was sold, and
   pending/failed payments moved no money.
+* Discounts are reported, never netted silently: ``discount_total``
+  is every recorded discount for the day (per-line
+  ``SaleItem.discount_amount`` plus each sale's own
+  ``Sale.discount_amount``), and ``net_total`` is
+  ``gross_total - discount_total`` — the day's equivalent of
+  :attr:`Sale.total` summed over its sales. The kind split stays
+  gross, exactly as before.
 * The kind split uses the model's real kinds: ``SERVICE`` items
   are the service total, ``PRODUCT`` items are the retail
   total (``retail`` is the reporting name for product sales, as
@@ -55,7 +62,9 @@ class DailySalesSummary:
     are the gross split by item kind (service vs product/retail
     vs series), and ``by_kind`` carries the same split keyed by
     the model's kind slugs (``"service"`` / ``"product"`` /
-    ``"series"``). An empty day is all zeroes, never ``None``.
+    ``"series"``). ``discount_total`` is every discount recorded
+    on those sales and their lines; ``net_total`` is gross less
+    discounts. An empty day is all zeroes, never ``None``.
     """
 
     salon: object
@@ -65,6 +74,8 @@ class DailySalesSummary:
     service_total: Decimal
     retail_total: Decimal
     series_total: Decimal = _ZERO
+    discount_total: Decimal = _ZERO
+    net_total: Decimal = _ZERO
     by_kind: dict = field(default_factory=dict)
     item_count: int = 0
 
@@ -124,6 +135,18 @@ class DailySalesSummary:
     def series_revenue(self):
         return self.series_total
 
+    @property
+    def discount(self):
+        return self.discount_total
+
+    @property
+    def discounts_total(self):
+        return self.discount_total
+
+    @property
+    def net(self):
+        return self.net_total
+
     def __getitem__(self, key):
         if key in ("service", SaleItem.Kind.SERVICE):
             return self.service_total
@@ -133,6 +156,10 @@ class DailySalesSummary:
             return self.series_total
         if key in ("gross_total", "total", "gross"):
             return self.gross_total
+        if key in ("discount_total", "discount", "discounts_total"):
+            return self.discount_total
+        if key in ("net_total", "net"):
+            return self.net_total
         if key in ("sales_count", "count", "total_sales"):
             return self.sales_count
         return self.by_kind[key]
@@ -191,6 +218,7 @@ def daily_sales_summary(salon, day):
         .values("kind")
         .annotate(
             amount=Sum(F("unit_price") * F("quantity")),
+            discount=Sum("discount_amount"),
             n=Count("id"),
         )
     )
@@ -200,10 +228,19 @@ def daily_sales_summary(salon, day):
         SaleItem.Kind.SERIES: _ZERO,
     }
     item_count = 0
+    item_discount_total = _ZERO
     for row in rows:
         item_count += row["n"]
+        if row["discount"] is not None:
+            item_discount_total += Decimal(row["discount"])
         if row["kind"] in by_kind and row["amount"] is not None:
             by_kind[row["kind"]] = Decimal(row["amount"]).quantize(_CENTS)
+
+    sale_discount = sales.aggregate(amount=Sum("discount_amount"))["amount"]
+    discount_total = (
+        item_discount_total
+        + (Decimal(sale_discount) if sale_discount is not None else _ZERO)
+    ).quantize(_CENTS)
 
     service_total = by_kind[SaleItem.Kind.SERVICE]
     retail_total = by_kind[SaleItem.Kind.PRODUCT]
@@ -217,6 +254,8 @@ def daily_sales_summary(salon, day):
         service_total=service_total,
         retail_total=retail_total,
         series_total=series_total,
+        discount_total=discount_total,
+        net_total=(gross_total - discount_total).quantize(_CENTS),
         by_kind=dict(by_kind),
         item_count=item_count,
     )

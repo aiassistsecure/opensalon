@@ -2532,8 +2532,8 @@ class GroupByExpressionExpansionTests(SimpleTestCase):
         group_by = _group_by_of(_sale_search_sql())
         self.assertIn('"clients_client"."first_name"', group_by)
         self.assertIn('"clients_client"."last_name"', group_by)
-        # The select ordinal for _full_name (position 9) is gone.
-        self.assertNotIn(", 9", group_by)
+        # The select ordinal for _full_name (position 10) is gone.
+        self.assertNotIn(", 10", group_by)
 
     def test_reverse_relation_expression_is_not_expanded(self):
         # items is a reverse FK (one-to-many): its rows are NOT
@@ -2558,7 +2558,7 @@ class GroupByExpressionExpansionTests(SimpleTestCase):
         sql, _params = qs.query.get_compiler(connection=wrapper).as_sql()
         group_by = _group_by_of(sql)
         self.assertNotIn('"checkout_saleitem"."description"', group_by)
-        self.assertIn(", 9", group_by)
+        self.assertIn(", 10", group_by)
 
     def test_undetermined_fk_expression_is_not_expanded(self):
         # values("status") grouping: neither the Sale PK nor the
