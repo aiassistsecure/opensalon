@@ -144,7 +144,9 @@ class PriorAttendanceSummaryTests(TestCase):
                         DayAttendanceSummary(
                             day=PRIOR_DAY - datetime.timedelta(days=1),
                             sessions_count=1)]}
-            per_day = days[first]
+            # .get: the per_staff_per_day cross also calls the
+            # source once per single day (starts it does not key).
+            per_day = days.get(first, [])
             return AttendanceSummary(salon=salon, start_date=first,
                                      end_date=last, per_staff=[], per_day=per_day)
         with mock.patch("team.prior_attendance_summary.attendance_summary",
@@ -185,10 +187,11 @@ class PriorAttendanceSummaryTests(TestCase):
         self._book()
         rows = export_prior_attendance_summary(self.salon, DAY, DAY)
         self.assertEqual(list(rows[0].keys()), PRIOR_ATTENDANCE_SUMMARY_EXPORT_FIELDNAMES)
-        # total + 3 staff + 1 per-day row
-        self.assertEqual((len(rows), rows[0]["staff_name"], rows[0]["current_sessions_count"]), (5, "", 3))
+        # total + 3 staff + 1 per-day + 3 staff-day cross rows
+        self.assertEqual((len(rows), rows[0]["staff_name"], rows[0]["current_sessions_count"]), (8, "", 3))
         self.assertEqual([r["section"] for r in rows],
-                         ["total", "staff", "staff", "staff", "day"])
+                         ["total", "staff", "staff", "staff", "day",
+                          "staff_day", "staff_day", "staff_day"])
         text = export_prior_attendance_summary_csv(self.salon, DAY, DAY)
         self.assertEqual(list(csv.reader(io.StringIO(text)))[0],
                          PRIOR_ATTENDANCE_SUMMARY_EXPORT_FIELDNAMES)
@@ -216,6 +219,98 @@ class PriorAttendanceSummaryTests(TestCase):
         parsed_day = next(r for r in parsed if r["section"] == "day")
         self.assertEqual((parsed_day["current_total_minutes"],
                           parsed_day["current_staff_count"]), ("720", "3"))
+
+    def test_per_staff_per_day_cross_and_zero_fill(self):
+        self._book()
+        r = prior_attendance_summary_report(self.salon, DAY, DAY)
+        # One offset; members ordered by display name as by_staff.
+        self.assertEqual([(e.staff_name, e.day, e.prior_day, e.offset)
+                          for e in r.per_staff_per_day],
+                         [("Stylist One", DAY, PRIOR_DAY, 0),
+                          ("Stylist Three", DAY, PRIOR_DAY, 0),
+                          ("Stylist Two", DAY, PRIOR_DAY, 0)])
+        self.assertIs(r.by_staff_per_day, r.per_staff_per_day)
+        one = r.for_staff_day(self.staff, DAY)
+        self.assertEqual((one.total_minutes.current, one.total_minutes.prior,
+                          one.total_minutes.delta,
+                          one.total_minutes.percent_change),
+                         (240, 480, -240, Decimal("-50.00")))
+        # Cross rows are the source's own single-day per_staff rows.
+        cur = attendance_summary(self.salon, DAY, DAY)
+        pri = attendance_summary(self.salon, PRIOR_DAY, PRIOR_DAY)
+        for e in r.per_staff_per_day:
+            self.assertEqual(e.current, cur.for_staff(e.staff_member))
+            src_prior = pri.for_staff(e.staff_member)
+            if src_prior is not None:
+                self.assertEqual(e.prior, src_prior)
+            else:  # one side only: zero-filled, as per_staff does
+                self.assertEqual((e.prior.sessions_count, e.prior.total_minutes),
+                                 (0, 0))
+        # Stylist Three is present current-side only: prior zero-fill.
+        three = r.for_staff_day(self.late_joiner, DAY)
+        self.assertEqual((three.sessions_count.current, three.sessions_count.prior,
+                          three.total_minutes.current, three.total_minutes.prior),
+                         (1, 0, 480, 0))
+        self.assertIsNone(three.sessions_count.percent_change)
+        self.assertEqual(r.as_dict()["per_staff_per_day"][0]["staff_name"],
+                         "Stylist One")
+        self.assertEqual(r.as_dict()["by_staff_per_day"],
+                         r.as_dict()["per_staff_per_day"])
+
+    def test_per_staff_per_day_offset_alignment_multi_day(self):
+        d = datetime.timedelta(days=1)
+        self._session(self.staff, DAY - 3 * d, end=(10, 0))       # prior off0: 60
+        self._session(self.staff, DAY - 1 * d, end=(12, 0))       # prior off2: 180
+        self._session(self.staff, DAY, end=(11, 0))               # cur off0: 120
+        self._session(self.other, DAY + 1 * d, end=None)          # cur off1: open
+        self._session(self.staff, DAY + 2 * d, end=(10, 30))      # cur off2: 90
+        r = prior_attendance_summary_report(self.salon, DAY, DAY + 2 * d)
+        # Active staff appear at every offset (source zero-fill);
+        # the inactive member has no session anywhere: no rows.
+        self.assertEqual(len(r.per_staff_per_day), 6)
+        self.assertEqual([(e.offset, e.staff_name) for e in r.per_staff_per_day],
+                         [(0, "Stylist One"), (0, "Stylist Two"),
+                          (1, "Stylist One"), (1, "Stylist Two"),
+                          (2, "Stylist One"), (2, "Stylist Two")])
+        e = r.for_staff_day(self.staff, DAY)
+        self.assertEqual((e.day, e.prior_day, e.total_minutes.current,
+                          e.total_minutes.prior, e.total_minutes.delta),
+                         (DAY, DAY - 3 * d, 120, 60, 60))
+        e = r.for_staff_day(self.staff, DAY + 2 * d)
+        self.assertEqual((e.prior_day, e.total_minutes.current,
+                          e.total_minutes.prior), (DAY - d, 90, 180))
+        e = r.for_staff_day(self.other, DAY + d)
+        self.assertEqual((e.open_sessions.current, e.open_sessions.prior,
+                          e.sessions_count.current), (1, 0, 1))
+        e = r.for_staff_day(self.staff, DAY + d)  # quiet day, both sides
+        self.assertEqual((e.sessions_count.current, e.sessions_count.prior,
+                          e.total_minutes.current), (0, 0, 0))
+
+    def test_per_staff_per_day_export_csv(self):
+        self._book()
+        rows = export_prior_attendance_summary(self.salon, DAY, DAY)
+        cross = [r for r in rows if r["section"] == "staff_day"]
+        report = prior_attendance_summary_report(self.salon, DAY, DAY)
+        self.assertEqual(len(cross), len(report.per_staff_per_day))
+        self.assertEqual([(r["staff_name"], r["date"], r["prior_date"])
+                          for r in cross],
+                         [("Stylist One", DAY.isoformat(), PRIOR_DAY.isoformat()),
+                          ("Stylist Three", DAY.isoformat(), PRIOR_DAY.isoformat()),
+                          ("Stylist Two", DAY.isoformat(), PRIOR_DAY.isoformat())])
+        one_row, one = cross[0], report.per_staff_per_day[0]
+        for m in ("sessions_count", "closed_sessions", "open_sessions",
+                  "total_minutes"):
+            d = getattr(one, m)
+            self.assertEqual((one_row[f"current_{m}"], one_row[f"prior_{m}"],
+                              one_row[f"{m}_delta"]), (d.current, d.prior, d.delta))
+        self.assertEqual(one_row["current_staff_count"], "")
+        parsed = list(csv.DictReader(io.StringIO(
+            export_prior_attendance_summary_csv(self.salon, DAY, DAY))))
+        parsed_cross = [r for r in parsed if r["section"] == "staff_day"]
+        self.assertEqual(len(parsed_cross), 3)
+        three = next(r for r in parsed_cross if r["staff_name"] == "Stylist Three")
+        self.assertEqual((three["current_total_minutes"], three["prior_total_minutes"],
+                          three["sessions_count_percent_change"]), ("480", "0", ""))
 
     def test_command_stdout_file_and_errors(self):
         self._book()

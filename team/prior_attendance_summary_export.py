@@ -5,8 +5,11 @@ Backend only, read-only, built ON TOP of
 the salon total first (``section="total"``), then one row per
 staff member (``section="staff"``), then one row per
 offset-aligned per-day pair (``section="day"``; ``date`` is the
-current day, ``prior_date`` its prior-window counterpart).
-Percent changes render to two places; ``None`` empty.
+current day, ``prior_date`` its prior-window counterpart),
+then one row per member per offset-aligned day pair
+(``section="staff_day"``, the report's ``per_staff_per_day``
+cross grain). Percent changes render to two places; ``None``
+empty.
 """
 import csv
 import io
@@ -66,6 +69,9 @@ def _rows(result):
                    _METRICS) for s in result.by_staff]
     rows += [build("day", "", "", d.day, d.prior_day, d, _DAY_METRICS)
              for d in result.per_day]
+    rows += [build("staff_day", e.staff_member_id, e.staff_name, e.day,
+                   e.prior_day, e, _METRICS)
+             for e in result.per_staff_per_day]
     return rows
 
 
