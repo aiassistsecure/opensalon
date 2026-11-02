@@ -134,3 +134,68 @@ class ImportStaffTests(TestCase):
         fh.close()
         with self.assertRaises(CommandError):
             call_command("import_staff", fh.name)
+
+
+class ImportStaffDryRunTests(TestCase):
+    """TF-12 wiring: --dry-run reports via saloncore.dry_run and
+    writes nothing; a normal import of the same fixture still works."""
+
+    # Record 1 carries a null staffCategoryName, record 2 omits it
+    # entirely and carries an empty-string lastName, so the
+    # report's null / missing / empty_string counts are distinct.
+    FIXTURE = [
+        {
+            "staffId": "dry-1", "firstName": "Dry", "lastName": "Run",
+            "staffCategoryName": None, "hideFromOnlineBookings": False,
+            "legacySourceField": "not-mapped",
+        },
+        {"staffId": "dry-2", "firstName": "Second", "lastName": ""},
+    ]
+
+    def run_dry(self, payload=None):
+        path = _write(self.FIXTURE if payload is None else payload)
+        out = io.StringIO()
+        call_command("import_staff", path, dry_run=True, stdout=out)
+        return path, json.loads(out.getvalue())
+
+    def test_dry_run_writes_nothing(self):
+        self.run_dry()
+        self.assertEqual(StaffMember.objects.count(), 0)
+        self.assertEqual(StaffLevel.objects.count(), 0)
+        self.assertEqual(Salon.objects.count(), 0)
+
+    def test_dry_run_report_names_unmapped_key(self):
+        path, report = self.run_dry()
+        self.assertEqual(report["source"], path)
+        self.assertEqual(report["record_count"], 2)
+        self.assertIn("legacySourceField", report["unmapped_keys"])
+        self.assertNotIn("legacySourceField", report["mapped_keys"])
+        for mapped in ("staffId", "id", "firstName", "lastName",
+                       "name", "displayName", "staffCategoryName",
+                       "hideFromOnlineBookings"):
+            self.assertIn(mapped, report["mapped_keys"])
+        self.assertNotIn("IMPORT_SUMMARY", json.dumps(report))
+
+    def test_dry_run_distinguishes_null_missing_and_empty_string(self):
+        _, report = self.run_dry()
+        category = report["fields"]["staffCategoryName"]
+        self.assertEqual(category["null"], 1)     # record 1: None
+        self.assertEqual(category["missing"], 1)  # record 2: absent
+        self.assertEqual(category["empty_string"], 0)
+        last = report["fields"]["lastName"]
+        self.assertEqual(last["empty_string"], 1)  # record 2: ""
+        self.assertEqual(last["missing"], 0)
+        self.assertEqual(last["null"], 0)
+        first = report["fields"]["firstName"]
+        self.assertEqual(first["valued"], 2)
+        self.assertEqual(first["inferred_type"], "string")
+
+    def test_normal_import_of_same_fixture_still_works(self):
+        out = io.StringIO()
+        call_command(
+            "import_staff", _write(self.FIXTURE), stdout=out)
+        self.assertIn('"created": 2', out.getvalue())
+        self.assertEqual(StaffMember.objects.count(), 2)
+        self.assertEqual(
+            StaffMember.objects.get(external_id="dry-1").display_name,
+            "Dry Run")
