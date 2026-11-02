@@ -15,8 +15,13 @@ rostered ``total_minutes`` and the ``working_staff`` count,
 aggregated verbatim from ``roster_week``'s own per-staff
 ``days`` entries for both weeks — no new counting path. Both
 weeks start on a Monday, so entries are keyed BY WEEKDAY
-(Monday=0 through Sunday=6), never offset-aligned. An invalid
-week start or a missing salon raises ``ValueError``.
+(Monday=0 through Sunday=6), never offset-aligned. Each staff
+entry also carries its own ``by_weekday`` tuple in the same
+way: seven weekday-keyed entries with that member's rostered
+``total_minutes`` delta and the ``is_working`` current/prior
+pair, verbatim from that member's own ``days`` entries in both
+weeks. An invalid week start or a missing salon raises
+``ValueError``.
 """
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -26,7 +31,8 @@ from team.availability import _tz
 from team.roster_week import StaffWeekRoster, roster_week
 
 __all__ = ["MetricDelta", "ComponentDelta", "RosterWeekDelta",
-           "StaffPriorRosterWeek", "WeekdayRosterTotal",
+           "StaffPriorRosterWeek", "StaffWeekdayPriorRosterWeek",
+           "StaffWeekdayRosterWeekDelta", "WeekdayRosterTotal",
            "WeekdayPriorRosterWeek", "WeekdayRosterWeekDelta",
            "RosterWeekWeekdayDelta", "WEEKDAY_NAMES",
            "PriorRosterWeekReport",
@@ -100,26 +106,84 @@ def _salon_value(week, name):
 
 
 @dataclass(frozen=True)
+class StaffWeekdayPriorRosterWeek:
+    """One weekday of one member's roster, in both weeks.
+
+    ``current`` / ``prior`` are that member's own ``days`` entries
+    (``RosterAvailability``) for the weekday, ``None`` on a side
+    where the member has no entry. ``total_minutes`` is the delta
+    of the day's rostered minutes; ``is_working`` is the day's
+    working flag as a current/prior pair of bools.
+    """
+
+    weekday: int = 0
+    weekday_name: str = ""
+    day: object = None
+    prior_day: object = None
+    current: object = None
+    prior: object = None
+    total_minutes: MetricDelta = None
+    current_is_working: bool = False
+    prior_is_working: bool = False
+
+    date = property(lambda self: self.day)
+    current_date = property(lambda self: self.day)
+    prior_date = property(lambda self: self.prior_day)
+
+    @property
+    def is_working(self): return (self.current_is_working, self.prior_is_working)
+    is_working_current = property(lambda self: self.current_is_working)
+    is_working_prior = property(lambda self: self.prior_is_working)
+
+    def as_dict(self):
+        iso = lambda d: d.isoformat() if d else None  # noqa: E731
+        return {"weekday": self.weekday, "weekday_name": self.weekday_name,
+                "day": iso(self.day), "date": iso(self.day),
+                "prior_day": iso(self.prior_day),
+                "prior_date": iso(self.prior_day),
+                "total_minutes": self.total_minutes.as_dict()
+                if self.total_minutes else None,
+                "is_working": {"current": self.current_is_working,
+                               "prior": self.prior_is_working},
+                "current_is_working": self.current_is_working,
+                "prior_is_working": self.prior_is_working,
+                "is_working_current": self.current_is_working,
+                "is_working_prior": self.prior_is_working}
+
+
+StaffWeekdayRosterWeekDelta = StaffWeekdayPriorRosterWeek
+
+
+@dataclass(frozen=True)
 class StaffPriorRosterWeek:
     staff_member: object = None
     current: object = None
     prior: object = None
     total_minutes: MetricDelta = None
     working_days: MetricDelta = None
+    by_weekday: tuple = field(default_factory=tuple)
 
     @property
     def staff_member_id(self): return self.staff_member.pk if self.staff_member else None
     @property
     def staff_name(self): return self.staff_member.display_name if self.staff_member else ""
     display_name = staff_name
+    weekdays = property(lambda self: self.by_weekday)
     @property
     def online_bookable(self):
         src = self.current or self.prior
         return src.online_bookable if src is not None else None
 
+    def for_weekday(self, weekday):
+        if isinstance(weekday, str):
+            return next((w for w in self.by_weekday
+                         if w.weekday_name.lower() == weekday.lower()), None)
+        return next((w for w in self.by_weekday if w.weekday == weekday), None)
+
     def as_dict(self):
         return {"staff_member_id": self.staff_member_id, "staff_name": self.staff_name,
-                **{m: getattr(self, m).as_dict() for m in _METRICS}}
+                **{m: getattr(self, m).as_dict() for m in _METRICS},
+                "by_weekday": [w.as_dict() for w in self.by_weekday]}
 
 
 @dataclass(frozen=True)
@@ -261,6 +325,40 @@ def _weekday_deltas(current, prior):
         for idx in range(7))
 
 
+def _staff_weekday_deltas(current_entry, prior_entry,
+                          week_start, prior_week_start):
+    """Per-weekday deltas verbatim from one member's ``days``.
+
+    Days are matched BY WEEKDAY (from each day's own date), never
+    by offset between the two weeks; a side with no entry for a
+    weekday contributes zero minutes and ``is_working`` False.
+    """
+    def by_weekday(entry):
+        days = {}
+        for day in (entry.days if entry is not None else ()):
+            key = day.day.weekday() if getattr(day, "day", None) else None
+            days[key if key is not None else len(days)] = day
+        return days
+
+    cur, pri = by_weekday(current_entry), by_weekday(prior_entry)
+    entries = []
+    for idx in range(7):
+        c, p = cur.get(idx), pri.get(idx)
+        c_minutes = int(c.total_minutes) if c is not None else 0
+        p_minutes = int(p.total_minutes) if p is not None else 0
+        entries.append(StaffWeekdayPriorRosterWeek(
+            weekday=idx, weekday_name=WEEKDAY_NAMES[idx],
+            day=(c.day if c is not None and getattr(c, "day", None)
+                 else week_start + timedelta(days=idx)),
+            prior_day=(p.day if p is not None and getattr(p, "day", None)
+                       else prior_week_start + timedelta(days=idx)),
+            current=c, prior=p,
+            total_minutes=_count_delta("total_minutes", c_minutes, p_minutes),
+            current_is_working=bool(c.is_working) if c is not None else False,
+            prior_is_working=bool(p.is_working) if p is not None else False))
+    return tuple(entries)
+
+
 def _as_date(value, tz):
     if isinstance(value, datetime):
         return value.astimezone(tz).date() if value.tzinfo else value.date()
@@ -312,7 +410,9 @@ def prior_roster_week_report(salon, week_start=None, **kwargs):
     for key in sorted(members, key=lambda k: (members[k].display_name, k)):
         deltas, c, p = staff_deltas(key)
         by_staff.append(StaffPriorRosterWeek(
-            staff_member=members[key], current=c, prior=p, **deltas))
+            staff_member=members[key], current=c, prior=p,
+            by_weekday=_staff_weekday_deltas(c, p, monday, prior_monday),
+            **deltas))
     salon_deltas = {m: _count_delta(m, _salon_value(current, m),
                                     _salon_value(prior, m)) for m in _METRICS}
     return PriorRosterWeekReport(
