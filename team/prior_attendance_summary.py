@@ -10,23 +10,37 @@ ROUND_HALF_UP), ``None`` when prior is zero. Headline fields are
 the summary's own: ``sessions_count``, ``closed_sessions``,
 ``open_sessions`` and ``total_minutes`` (the service's int derived
 from ``total_duration``). ``by_staff`` is the union of both
-windows' rows, ordered by display name then id. A reversed
-window, missing salon, or missing date raises ``ValueError``.
+windows' rows, ordered by display name then id. ``per_day``
+carries the source's per-day breakdown too: entries are
+offset-aligned between the windows (day 1 vs day 1, day 2 vs
+day 2, …, following ``prior_campaign_send_totals``' by_day
+alignment), taken verbatim from ``attendance_summary``'s own
+``per_day`` entries for both windows — no new counting. If the
+two ``per_day`` lists ever differ in length, the shorter side
+is zero-filled at that offset (the source zero-fills every day
+in range, so a missing entry is a zero entry dated by window
+start + offset). A reversed window, missing salon, or missing
+date raises ``ValueError``.
 """
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
-from team.attendance_summary import StaffAttendanceSummary, attendance_summary
+from team.attendance_summary import (DayAttendanceSummary,
+                                     StaffAttendanceSummary,
+                                     attendance_summary)
 from team.availability import _tz
 
 __all__ = ["MetricDelta", "ComponentDelta", "AttendanceDelta",
-           "StaffPriorAttendanceSummary", "PriorAttendanceSummaryReport",
+           "StaffPriorAttendanceSummary", "DayPriorAttendanceSummary",
+           "DayAttendanceDelta",
+           "PriorAttendanceSummaryReport",
            "PriorAttendanceSummary", "prior_attendance_summary_report",
            "prior_attendance_summary", "prior_period_attendance_summary",
            "compare_attendance_summary", "get_prior_attendance_summary"]
 _CENT = Decimal("0.01")
 _METRICS = ("sessions_count", "closed_sessions", "open_sessions", "total_minutes")
+_DAY_METRICS = _METRICS + ("staff_count",)
 
 
 @dataclass(frozen=True)
@@ -74,6 +88,42 @@ def _empty_staff(member):
     return StaffAttendanceSummary(staff_member=member)
 
 
+def _empty_day(day):
+    return DayAttendanceSummary(day=day)
+
+
+@dataclass(frozen=True)
+class DayPriorAttendanceSummary:
+    """One offset-aligned per-day pair: current day vs prior day."""
+
+    day: object = None
+    prior_day: object = None
+    offset: int = 0
+    current: object = None
+    prior: object = None
+    sessions_count: MetricDelta = None
+    closed_sessions: MetricDelta = None
+    open_sessions: MetricDelta = None
+    total_minutes: MetricDelta = None
+    staff_count: MetricDelta = None
+
+    date = property(lambda self: self.day)
+    current_date = property(lambda self: self.day)
+    prior_date = property(lambda self: self.prior_day)
+
+    def as_dict(self):
+        iso = lambda d: d.isoformat() if d else None  # noqa: E731
+        return {"day": iso(self.day), "date": iso(self.day),
+                "current_date": iso(self.day),
+                "prior_day": iso(self.prior_day),
+                "prior_date": iso(self.prior_day),
+                "offset": self.offset,
+                **{m: getattr(self, m).as_dict() for m in _DAY_METRICS}}
+
+
+DayAttendanceDelta = DayPriorAttendanceSummary
+
+
 @dataclass(frozen=True)
 class StaffPriorAttendanceSummary:
     staff_member: object = None
@@ -109,11 +159,13 @@ class PriorAttendanceSummaryReport:
     open_sessions: MetricDelta = None
     total_minutes: MetricDelta = None
     by_staff: tuple = field(default_factory=tuple)
+    per_day: tuple = field(default_factory=tuple)
 
     salon_id = property(lambda self: getattr(self.salon, "pk", self.salon))
     per_staff = property(lambda self: self.by_staff)
     entries = per_staff
     staff = per_staff
+    by_day = property(lambda self: self.per_day)
 
     @property
     def previous(self): return self.prior
@@ -126,13 +178,19 @@ class PriorAttendanceSummaryReport:
         key = getattr(staff_member, "pk", staff_member)
         return next((s for s in self.by_staff if s.staff_member_id == key), None)
 
+    def for_day(self, day):
+        key = day.date() if isinstance(day, datetime) else day
+        return next((d for d in self.per_day if d.day == key), None)
+
     def as_dict(self):
         iso = lambda d: d.isoformat() if d else None  # noqa: E731
+        per_day = [d.as_dict() for d in self.per_day]
         return {"start_date": iso(self.start_date), "end_date": iso(self.end_date),
                 "prior_start_date": iso(self.prior_start_date),
                 "prior_end_date": iso(self.prior_end_date),
                 **{m: getattr(self, m).as_dict() for m in _METRICS},
-                "by_staff": [s.as_dict() for s in self.by_staff]}
+                "by_staff": [s.as_dict() for s in self.by_staff],
+                "per_day": per_day, "by_day": per_day}
 
     __iter__ = lambda self: iter(self.by_staff)  # noqa: E731
     __len__ = lambda self: len(self.by_staff)  # noqa: E731
@@ -141,9 +199,30 @@ class PriorAttendanceSummaryReport:
 PriorAttendanceSummary = PriorAttendanceSummaryReport
 
 
-def _deltas(current, prior):
+def _deltas(current, prior, metrics=_METRICS):
     return {name: _count_delta(name, getattr(current, name), getattr(prior, name))
-            for name in _METRICS}
+            for name in metrics}
+
+
+def _per_day_deltas(current, prior, first, prior_first):
+    """Offset-align both windows' ``per_day`` entries, verbatim.
+
+    Index ``i`` of the current list pairs with index ``i`` of
+    the prior list; a side missing at an offset is zero-filled
+    with an entry dated window-start + offset.
+    """
+    cur_days, pri_days = list(current.per_day), list(prior.per_day)
+    out = []
+    for offset in range(max(len(cur_days), len(pri_days))):
+        cur = cur_days[offset] if offset < len(cur_days) else \
+            _empty_day(first + timedelta(days=offset))
+        pri = pri_days[offset] if offset < len(pri_days) else \
+            _empty_day(prior_first + timedelta(days=offset))
+        out.append(DayPriorAttendanceSummary(
+            day=cur.day, prior_day=pri.day, offset=offset,
+            current=cur, prior=pri,
+            **_deltas(cur, pri, _DAY_METRICS)))
+    return tuple(out)
 
 
 def _as_date(value, tz):
@@ -201,7 +280,8 @@ def prior_attendance_summary_report(salon, date_from=None, date_to=None, *,
     return PriorAttendanceSummaryReport(
         salon=salon, start_date=first, end_date=last, prior_start_date=p_start,
         prior_end_date=p_end, current=current, prior=prior,
-        by_staff=by_staff, **_deltas(current, prior))
+        by_staff=by_staff, per_day=_per_day_deltas(current, prior, first, p_start),
+        **_deltas(current, prior))
 
 
 prior_attendance_summary = prior_attendance_summary_report
