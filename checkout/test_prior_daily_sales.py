@@ -87,6 +87,19 @@ class PriorDailySalesTests(TestCase):
                          (Decimal("315.00"), Decimal("90.00"),
                           Decimal("225.00"), Decimal("250.00")))
 
+    def test_item_count_delta_verbatim(self):
+        r = prior_daily_sales(self.salon, DAY)
+        # Verbatim from daily_sales_summary: prior 2 item rows
+        # (service + product), current 4 (2 + 2, voided excluded).
+        self.assertEqual(r.item_count.current, r.current.item_count)
+        self.assertEqual(r.item_count.prior, r.prior.item_count)
+        self.assertEqual((r.item_count.current, r.item_count.prior,
+                          r.item_count.delta, r.item_count.percent_change),
+                         (4, 2, 2, Decimal("100.00")))
+        self.assertIsInstance(r.item_count.current, int)
+        self.assertIsInstance(r.item_count.delta, int)
+        self.assertEqual(r.as_dict()["item_count"], r.item_count.as_dict())
+
     def test_kind_split_figures(self):
         r = prior_daily_sales(self.salon, DAY)
         self.assertEqual((r.service_total.current, r.service_total.prior,
@@ -109,13 +122,16 @@ class PriorDailySalesTests(TestCase):
         empty_day = D(2026, 9, 26)  # prior 2026-09-19 also empty
         r = prior_daily_sales(self.salon, empty_day)
         self.assertEqual((r.sales_count.current, r.sales_count.prior), (0, 0))
-        for fig in (r.sales_count, r.gross_total, r.net_total):
+        for fig in (r.sales_count, r.gross_total, r.net_total, r.item_count):
             self.assertIsNone(fig.percent_change)
         # Current-only day: prior zero -> None, delta == current.
         r2 = prior_daily_sales(self.salon, PRIOR)
         self.assertEqual(r2.prior_date, D(2026, 9, 26))
         self.assertIsNone(r2.gross_total.percent_change)
         self.assertEqual(r2.gross_total.delta, Decimal("100.00"))
+        self.assertIsNone(r2.item_count.percent_change)
+        self.assertEqual((r2.item_count.current, r2.item_count.prior,
+                          r2.item_count.delta), (2, 0, 2))
 
     def test_salon_isolation(self):
         r = prior_daily_sales(self.other, DAY)
@@ -123,6 +139,8 @@ class PriorDailySalesTests(TestCase):
                          (1, Decimal("999.00")))
         self.assertEqual((r.sales_count.prior, r.gross_total.prior),
                          (1, Decimal("999.00")))
+        self.assertEqual((r.item_count.current, r.item_count.prior,
+                          r.item_count.delta), (1, 1, 0))
 
     def test_missing_and_bad_raise(self):
         for args in [(None, DAY), (self.salon, None), (self.salon, "bad")]:
@@ -135,7 +153,7 @@ class PriorDailySalesTests(TestCase):
         self.assertEqual([r["figure"] for r in rows],
                          ["sales_count", "gross_total", "discount_total",
                           "net_total", "service_total", "retail_total",
-                          "series_total"])
+                          "series_total", "item_count"])
         count, gross, _disc, net = rows[:4]
         self.assertEqual((count["current"], count["prior"], count["delta"],
                           count["percent_change"]), ("2", "1", "1", "100.00"))
@@ -145,6 +163,10 @@ class PriorDailySalesTests(TestCase):
         self.assertEqual((net["current"], net["prior"]), ("315.00", "90.00"))
         self.assertEqual((rows[6]["figure"], rows[6]["percent_change"]),
                          ("series_total", ""))
+        items = rows[7]
+        self.assertEqual((items["figure"], items["current"], items["prior"],
+                          items["delta"], items["percent_change"]),
+                         ("item_count", "4", "2", "2", "100.00"))
         self.assertEqual((count["date"], count["prior_date"]),
                          (DAY.isoformat(), PRIOR.isoformat()))
         text = export_prior_daily_sales_csv(self.salon, DAY)

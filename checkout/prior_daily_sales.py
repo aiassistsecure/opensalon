@@ -3,8 +3,9 @@
 Backend only, read-only. Built ON TOP of
 :func:`checkout.summary.daily_sales_summary` — figures for both
 days are that service's verbatim (sale count, ``gross_total``,
-``discount_total``, ``net_total``, and the service/retail/
-series kind split); nothing is recomputed here. The prior for
+``discount_total``, ``net_total``, the service/retail/
+series kind split, and ``item_count``); nothing is recomputed
+here. The prior for
 a single day is the same weekday one week earlier (a 7-day
 offset — the house definition for single-day reports, per
 :mod:`bookings.prior_day_load`). Each figure carries
@@ -27,7 +28,8 @@ __all__ = ["MetricDelta", "FigureDelta", "PriorDailySales",
            "prior_same_weekday_daily_sales", "compare_daily_sales",
            "get_prior_daily_sales"]
 FIGURES = ("sales_count", "gross_total", "discount_total", "net_total",
-           "service_total", "retail_total", "series_total")
+           "service_total", "retail_total", "series_total", "item_count")
+_COUNTS = ("sales_count", "item_count")
 KIND_FIGURES = ("service_total", "retail_total", "series_total")
 _KINDS = {"service_total": "service", "retail_total": "product",
           "series_total": "series"}
@@ -97,6 +99,7 @@ class PriorDailySales:
     service_total: MetricDelta = None
     retail_total: MetricDelta = None
     series_total: MetricDelta = None
+    item_count: MetricDelta = None
     by_kind: dict = field(default_factory=dict)
 
     @property
@@ -167,10 +170,11 @@ def prior_daily_sales(salon, day=None, **kwargs):
     current = daily_sales_summary(salon, current_date)
     prior = daily_sales_summary(salon, prior_date)
     deltas = {
-        "sales_count": _count_delta("sales_count", current.sales_count,
-                                    prior.sales_count),
+        **{name: _count_delta(name, getattr(current, name),
+                              getattr(prior, name))
+           for name in _COUNTS},
         **{name: _money_delta(name, getattr(current, name), getattr(prior, name))
-           for name in FIGURES[1:]},
+           for name in FIGURES if name not in _COUNTS},
     }
     return PriorDailySales(
         salon=salon, date=current_date, prior_date=prior_date,
