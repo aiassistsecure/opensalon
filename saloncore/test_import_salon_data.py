@@ -975,6 +975,7 @@ class ImportSalonDataDryRunTests(TestCase):
         self.assertEqual(set(reports), {
             "salons", "service_categories", "services", "staff_levels",
             "service_prices", "clients", "client_notes", "staff_members",
+            "staff_services",
             "appointments", "appointment_notes", "products",
             "roster_patterns", "shift_overrides", "sales",
             "sale_items", "sale_payments", "stock_movements",
