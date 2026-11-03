@@ -370,7 +370,7 @@ exactly the keys TF-11 would list as dropped for that section,
 keeping null / missing / empty-string counts distinct) — and the
 command returns before phase 2 writes a single row.
 
-Dry-run preview (slices 1–5): the salon / price-book sections
+Dry-run preview (slices 1–6): the salon / price-book sections
 listed in ``PREVIEW_SECTIONS``, the client / team sections in
 ``SLICE2_PREVIEW_SECTIONS``, the bookings / catalog sections
 in ``SLICE3_PREVIEW_SECTIONS``, the roster / attendance
@@ -390,6 +390,11 @@ the writer returns it untouched, never updated. The same
 in slice 5 (creation-only defaults, never an update), and a
 sale payment without ``created_at`` (empty defaults in the
 writer's fallback lookup, so amount/status form its identity).
+Slice 6 (``SLICE6_PREVIEW_SECTIONS`` /
+``_build_slice6_previews``) completes the set: price changes,
+reminder sends and campaign sends follow the same
+``get_or_create`` rule, and a stock movement's
+``update_or_create`` carries empty defaults in both lookups.
 """
 
 import json
@@ -1524,6 +1529,13 @@ SLICE5_PREVIEW_SECTIONS = (
     "receipts",
 )
 
+# Slice-6 preview sections: stock, price history, messaging logs
+# and the staff inbox (the final sections).
+SLICE6_PREVIEW_SECTIONS = (
+    "stock_movements", "price_changes", "reminder_sends",
+    "campaigns", "campaign_sends", "staff_notifications",
+)
+
 
 def _preview_counter(total):
     return {"total": total, "would_create": 0, "would_update": 0,
@@ -2311,6 +2323,261 @@ def _build_slice5_previews(data):
     return previews
 
 
+def _build_slice6_previews(data):
+    """Read-only preview twin for SLICE6_PREVIEW_SECTIONS only.
+
+    Mirrors phase 2's identity rules against planned state
+    seeded from the database and folded in file order (the
+    writer's order). Identities are comparable tuples, never
+    DB objects. Reads only. Stock movements mirror payments:
+    seeded under both lookup keys, folds sync the alias, and
+    empty defaults mean existing rows are would-unchanged.
+    Price changes, reminder sends and campaign sends are
+    ``get_or_create`` (empty-default tallies). A campaign's
+    planned entity (DB pk, or a fresh negative id) keys
+    campaign sends, like the writer's file-local map.
+    Campaigns and staff notifications are ``update_or_create``.
+    """
+    salon_name = {str(r["id"]): r["name"] for r in data["salons"]}
+    cat_key = {str(r["id"]): (salon_name.get(str(r["salon_id"])),
+                              r["name"])
+               for r in data["service_categories"]}
+    level_key = {str(r["id"]): (salon_name.get(str(r["salon_id"])),
+                                r["name"])
+                 for r in data["staff_levels"]}
+
+    def client_key(salon, ext, first, last, email, phone):
+        ext = _norm_id(ext) or ""
+        return ((salon, "ext", ext) if ext else
+                (salon, "name", first, last, email, phone))
+
+    def staff_key(salon, ext, display_name):
+        ext = _norm_id(ext) or ""
+        return ((salon, "ext", ext) if ext else
+                (salon, "name", display_name))
+
+    def service_key(row, cat):
+        ext = _norm_id(row.get("external_id")) or ""
+        return ("ext", ext) if ext else ("cat", cat, row["name"])
+
+    def product_key(salon, ext, name, sku, barcode):
+        ext = _norm_id(ext) or ""
+        return (("ext", ext) if ext else
+                (salon, "name", name, sku, barcode))
+
+    def appt_key(ext, client, staff, start, end):
+        ext = _norm_id(ext) or ""
+        return (("ext", ext) if ext else
+                ("appt", client, staff, start, end))
+
+    def db_client_key(c):
+        return client_key(c.salon.name, c.external_id, c.first_name,
+                          c.last_name, c.email, c.phone)
+
+    def db_staff_key(m):
+        return staff_key(m.salon.name, m.external_id, m.display_name)
+
+    def db_service_key(svc):
+        if svc is None:
+            return None
+        cat = (svc.category.salon.name, svc.category.name)
+        return service_key(
+            {"external_id": svc.external_id, "name": svc.name}, cat)
+
+    def db_product_key(p):
+        return product_key(p.salon.name, p.external_id, p.name,
+                           p.sku, p.barcode)
+
+    def db_appt_key(a):
+        return appt_key(a.external_id, db_client_key(a.client),
+                        db_staff_key(a.staff_member), a.start, a.end)
+
+    file_client = {str(r["id"]): client_key(
+        salon_name.get(str(r["salon_id"])), r.get("external_id"),
+        r["first_name"], r["last_name"], r.get("email", ""),
+        r.get("phone", "")) for r in data["clients"]}
+    file_staff = {str(r["id"]): staff_key(
+        salon_name.get(str(r["salon_id"])), r.get("external_id"),
+        r["display_name"]) for r in data["staff_members"]}
+    file_svc = {str(r["id"]): service_key(
+        r, cat_key.get(str(r["category_id"]))) for r in data["services"]}
+    file_product = {str(r["id"]): product_key(
+        salon_name.get(str(r["salon_id"])), r.get("external_id"),
+        r["name"], r.get("sku", ""), r.get("barcode", ""))
+        for r in data["products"]}
+    file_price = {str(r["id"]): (
+        file_svc.get(str(r["service_id"])),
+        level_key.get(str(r["staff_level_id"])))
+        for r in data["service_prices"] if r.get("id") is not None}
+    file_price_pairs = set(file_price.values())
+    client_by_ext = {_norm_id(r["external_id"]): file_client[str(r["id"])]
+                     for r in data["clients"] if r.get("external_id")}
+    staff_by_ext = {_norm_id(r["external_id"]): file_staff[str(r["id"])]
+                    for r in data["staff_members"]
+                    if r.get("external_id")}
+    svc_by_ext = {_norm_id(r["external_id"]): file_svc[str(r["id"])]
+                  for r in data["services"] if r.get("external_id")}
+    product_by_ext = {
+        _norm_id(r["external_id"]): file_product[str(r["id"])]
+        for r in data["products"] if r.get("external_id")}
+
+    def resolve(by_id, by_ext, row, id_field, ext_field):
+        ext = _norm_id(row.get(ext_field))
+        if ext and ext in by_ext:
+            return by_ext[ext]
+        return by_id.get(str(row.get(id_field)))
+
+    file_appt = {}
+    for r in data["appointments"]:
+        client = resolve(file_client, client_by_ext, r,
+                         "client_id", "client_external_id")
+        staff = resolve(file_staff, staff_by_ext, r,
+                        "staff_member_id", "staff_member_external_id")
+        file_appt[str(r["id"])] = (
+            appt_key(r.get("external_id"), client, staff,
+                     _checked_datetime(r["start"], "appointments start"),
+                     _checked_datetime(r["end"], "appointments end"))
+            if client is not None and staff is not None else None)
+    appt_by_ext = {_norm_id(r["external_id"]): file_appt[str(r["id"])]
+                   for r in data["appointments"]
+                   if r.get("external_id")}
+
+    def opt_dt(row, field, label):
+        return (_checked_datetime(row[field], label)
+                if row.get(field) is not None else None)
+
+    previews = {s: _preview_counter(len(data[s]))
+                for s in SLICE6_PREVIEW_SECTIONS}
+
+    planned = {}
+    for m in StockMovement.objects.select_related("product__salon"):
+        key_c = ("c", db_product_key(m.product), m.kind,
+                 m.quantity_delta, m.note, m.created_at)
+        key_n = ("n", db_product_key(m.product), m.kind,
+                 m.quantity_delta, m.note)
+        planned[key_c] = planned[key_n] = {}
+    for i, row in enumerate(data["stock_movements"]):
+        product = resolve(file_product, product_by_ext, row,
+                          "product_id", "product_external_id")
+        created = (_checked_datetime(
+            row["created_at"], "stock_movements created_at")
+            if row.get("created_at") else None)
+        key_c = ("c", product, row["kind"], row["quantity_delta"],
+                 row.get("note", ""), created)
+        key_n = ("n", product, row["kind"], row["quantity_delta"],
+                 row.get("note", ""))
+        key = key_c if created is not None else key_n
+        if product is None:
+            key = None
+        _preview_tally(previews["stock_movements"], planned, key,
+                       {}, i)
+        if key is not None:
+            planned[key_n if key == key_c else key_c] = planned[key]
+
+    db_price = {p.pk: (db_service_key(p.service), (
+        p.staff_level.salon.name, p.staff_level.name))
+        for p in ServicePrice.objects.select_related(
+            "service__category__salon", "staff_level__salon")}
+    planned = {(db_price.get(pc.service_price_id), pc.changed_at,
+                pc.old_amount, pc.new_amount, pc.changed_by,
+                pc.note): {}
+               for pc in PriceChange.objects.all()}
+    for i, row in enumerate(data["price_changes"]):
+        ext = _norm_id(row.get("service_external_id"))
+        svc = svc_by_ext.get(ext) if ext else None
+        lvl = level_key.get(str(row.get("staff_level_id")))
+        if (svc is not None and lvl is not None
+                and (svc, lvl) in file_price_pairs):
+            price = (svc, lvl)
+        else:
+            price = file_price.get(str(row.get("service_price_id")))
+        key = ((price, _checked_datetime(
+            row["changed_at"], "price_changes changed_at"),
+            Decimal(str(row["old_amount"]))
+            if row.get("old_amount") is not None else None,
+            Decimal(str(row["new_amount"])),
+            row.get("changed_by", ""), row.get("note", ""))
+            if price is not None else None)
+        _preview_tally(previews["price_changes"], planned, key, {}, i)
+
+    planned = {(db_appt_key(s.appointment), db_client_key(s.client),
+                s.channel, s.sent_at): {}
+               for s in ReminderSend.objects.select_related(
+                   "appointment__client__salon",
+                   "appointment__staff_member__salon",
+                   "appointment__service__category__salon",
+                   "client__salon")}
+    for i, row in enumerate(data["reminder_sends"]):
+        appt = file_appt.get(str(row["appointment_id"]))
+        client = file_client.get(str(row["client_id"]))
+        key = ((appt, client, row["channel"], _checked_datetime(
+            row["sent_at"], "reminder_sends sent_at"))
+            if appt is not None and client is not None else None)
+        _preview_tally(previews["reminder_sends"], planned, key,
+                       {}, i)
+
+    planned = {}
+    campaign_index = {}
+    for c in Campaign.objects.select_related("salon"):
+        key = (c.salon.name, c.name, c.channel, c.created_at)
+        planned[key] = {"subject": c.subject, "body": c.body,
+                        "status": c.status, "sent_at": c.sent_at}
+        campaign_index[key] = c.pk
+    file_campaign = {}
+    next_entity = 0
+    for i, row in enumerate(data["campaigns"]):
+        salon = salon_name.get(str(row["salon_id"]))
+        created = _checked_datetime(row["created_at"],
+                                    "campaigns created_at")
+        key = ((salon, row["name"], row["channel"], created)
+               if salon is not None else None)
+        _preview_tally(previews["campaigns"], planned, key, {
+            "subject": row.get("subject", ""),
+            "body": row.get("body", ""),
+            "status": row.get("status", Campaign.Status.DRAFT),
+            "sent_at": opt_dt(row, "sent_at", "campaigns sent_at")}, i)
+        if key is None:
+            continue
+        entity = campaign_index.get(key)
+        if entity is None:
+            next_entity -= 1
+            entity = next_entity
+        campaign_index[key] = entity
+        file_campaign[str(row["id"])] = entity
+
+    planned = {(s.campaign_id, db_client_key(s.client)): {}
+               for s in CampaignSend.objects.select_related(
+                   "client__salon")}
+    for i, row in enumerate(data["campaign_sends"]):
+        campaign = file_campaign.get(str(row["campaign_id"]))
+        client = file_client.get(str(row["client_id"]))
+        key = ((campaign, client)
+               if campaign is not None and client is not None
+               else None)
+        _preview_tally(previews["campaign_sends"], planned, key,
+                       {}, i)
+
+    planned = {(db_staff_key(n.staff_member), db_appt_key(n.appointment),
+                n.kind, n.created_at): {"seen_at": n.seen_at}
+               for n in StaffNotification.objects.select_related(
+                   "staff_member__salon",
+                   "appointment__client__salon",
+                   "appointment__staff_member__salon",
+                   "appointment__service__category__salon")}
+    for i, row in enumerate(data["staff_notifications"]):
+        staff = resolve(file_staff, staff_by_ext, row,
+                        "staff_member_id", "staff_member_external_id")
+        appt = resolve(file_appt, appt_by_ext, row,
+                       "appointment_id", "appointment_external_id")
+        key = ((staff, appt, row["kind"], _checked_datetime(
+            row["created_at"], "staff_notifications created_at"))
+            if staff is not None and appt is not None else None)
+        _preview_tally(previews["staff_notifications"], planned, key, {
+            "seen_at": opt_dt(row, "seen_at",
+                               "staff_notifications seen_at")}, i)
+    return previews
+
+
 class Command(BaseCommand):
     help = "Import salon core data from an export_salon_data JSON file."
 
@@ -2323,8 +2590,8 @@ class Command(BaseCommand):
                  "read-only import_preview counts on the slice-1 "
                  "salon/price-book, slice-2 client/team, "
                  "slice-3 bookings/catalog, slice-4 "
-                 "roster/attendance and slice-5 sales-family "
-                 "sections — and write nothing.")
+                 "roster/attendance, slice-5 sales-family and "
+                 "slice-6 final sections — and write nothing.")
 
     @transaction.atomic
     def handle(self, *args, **options):
@@ -2341,13 +2608,14 @@ class Command(BaseCommand):
                 for section in SECTIONS if section in data
             }
             reports = build_dry_run_reports(record_sets)
-            # Slices 1–5 only: preview counts attach to those
-            # sections' reports; all others stay shape-only.
+            # Slices 1–6: preview counts attach to every
+            # section's report.
             previews = _build_slice1_previews(data)
             previews.update(_build_slice2_previews(data))
             previews.update(_build_slice3_previews(data))
             previews.update(_build_slice4_previews(data))
             previews.update(_build_slice5_previews(data))
+            previews.update(_build_slice6_previews(data))
             for section, preview in previews.items():
                 reports[section]["import_preview"] = preview
             self.stdout.write(json.dumps(reports, sort_keys=True))

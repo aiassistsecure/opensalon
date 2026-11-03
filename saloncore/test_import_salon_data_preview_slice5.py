@@ -152,10 +152,6 @@ class ImportSalonDataPreviewSlice5Tests(TestCase):
         self.assertEqual(set(reports), set(SECTIONS))
         for section in SLICE5:
             self.assertIn("import_preview", reports[section], section)
-        self.assertNotIn(
-            "import_preview", reports["stock_movements"])
-        self.assertNotIn(
-            "import_preview", reports["price_changes"])
 
     def test_would_create_all_slice5_on_empty_db(self):
         reports = self.run_dry(_data())
