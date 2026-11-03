@@ -131,9 +131,10 @@
           }).join("") + "</div>" +
           '<p class="rail-hint">Drag to move · Arrow keys nudge 5 min, ←/→ switch stylist · Ctrl+Z undoes a move.</p>'
         : "") +
-      ((["booked", "confirmed", "arrived", "in_service"].indexOf(d.status) >= 0 && d.stack_price_label)
-        ? '<div class="rail-actions"><button type="button" class="btn-grad grow" data-checkout data-appt="' +
-          esc(d.id) + '">Checkout · ' + esc(d.stack_price_label) + "</button></div>"
+      ((d.status === "in_service" && d.stack_price_label)
+        ? '<div class="rail-till"><div class="stack-head"><span>Till</span></div>' +
+          '<div class="rail-actions"><button type="button" class="btn-grad grow" data-checkout data-appt="' +
+          esc(d.id) + '">Checkout · ' + esc(d.stack_price_label) + "</button></div></div>"
         : "");
     if (railEl) railEl.setAttribute("data-current", d.id);
   }

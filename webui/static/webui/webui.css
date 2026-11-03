@@ -525,6 +525,12 @@ button { font-family: inherit; }
 }
 .rail-empty { color: var(--tx3); font-size: 12.5px; margin: 4px 0; }
 .rail-actions { display: flex; gap: 8px; margin-top: 16px; }
+/* The till is its own step, behind its own divider — it is
+   never stacked into the arrival/status actions above it,
+   and it only exists once the visit is in service. */
+.rail-till { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--ln2); }
+.rail-till .rail-actions { margin-top: 10px; }
+.page-light .rail-till { border-top-color: #f0e7cf; }
 .rail-actions .grow { flex: 1; justify-content: center; border-radius: 11px; padding: 11px 10px; }
 
 /* ---------- inner pages (clients / price book / placeholders) ---------- */
