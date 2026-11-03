@@ -108,6 +108,26 @@ class ImportTransactionsCsvTests(TestCase):
             if line.startswith(("IMPORT_SUMMARY", "IMPORT_SKIPPED"))
         ]
 
+    def test_progress_lines_name_each_file_and_heartbeat(self):
+        # A long import must never be silent about where it is:
+        # one READ line per source file as it is parsed, and an
+        # IMPORTING heartbeat every 250 transactions. Progress
+        # rides stderr so stdout keeps its contracts (summary
+        # lines, and the dry-run JSON staying parseable).
+        self._write(
+            [row(transaction_id=f"txn-{i}") for i in range(251)],
+            name="transactions-2026-09.csv",
+        )
+        out, err = StringIO(), StringIO()
+        call_command(
+            "import_transactions_csv", self.dir.name,
+            salon=self.salon.pk, stdout=out, stderr=err,
+        )
+        progress = err.getvalue()
+        self.assertIn("READ transactions-2026-09.csv: 251 rows", progress)
+        self.assertIn("IMPORTING 250/251 transactions", progress)
+        self.assertIn("sales_created=249 so far", progress)
+
     def test_maps_totals_tips_date_and_links(self):
         self._write([
             row(unit_price="100.00", discount_amount="10.00",

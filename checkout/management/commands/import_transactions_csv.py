@@ -69,7 +69,12 @@ The files live outside the repo and stay there: the
 command takes the directory as an argument and commits
 no data. Run summary follows the import_salon_data
 precedent (one IMPORT_SUMMARY line, one IMPORT_SKIPPED
-line accounting for everything not imported).
+line accounting for everything not imported). Progress
+is printed (to stderr, so stdout keeps its contracts —
+the summary lines and the dry-run JSON stay parseable)
+as the import goes — one READ line per source file and
+an IMPORTING line every 250 transactions — so a long
+history import is never silent about where it is.
 
 With ``--dry-run`` the directory is parsed and counted
 exactly as for a real import but NOTHING is written (no
@@ -259,6 +264,7 @@ class Command(BaseCommand):
                 text = raw.decode("latin-1")
             rows = list(csv.DictReader(io.StringIO(text)))
             file_records[str(path)] = rows
+            self.stderr.write(f"READ {path.name}: {len(rows)} rows")
             for row in rows:
                 stats["rows_read"] += 1
                 txn_id = (row.get("transaction_id") or "").strip()
@@ -279,7 +285,13 @@ class Command(BaseCommand):
                 }),
                 indent=2, sort_keys=True))
 
-        for txn_id, rows in transactions.items():
+        total_transactions = len(transactions)
+        for index, (txn_id, rows) in enumerate(transactions.items(), start=1):
+            if index % 250 == 0:
+                self.stderr.write(
+                    f"IMPORTING {index}/{total_transactions} transactions "
+                    f"— sales_created={stats['sales_created']} so far"
+                )
             stats["transactions"] += 1
             live = [r for r in rows if (r.get("void") or "").strip() != "1"]
             stats["void_rows"] += len(rows) - len(live)
