@@ -3,7 +3,7 @@
 Usage:
     python manage.py export_breaks --salon-id ID
         [--date-from YYYY-MM-DD] [--date-to YYYY-MM-DD]
-        [--output PATH]
+        [--staff-member ID] [--output PATH]
 
 Thin wrapper around
 :func:`bookings.breaks_export.export_breaks_csv`: the salon is
@@ -45,6 +45,21 @@ def _coerce_date(value, label):
         ) from exc
 
 
+
+def _coerce_staff(value):
+    if value is None:
+        return None
+    # StaffMember instance passes through verbatim.
+    pk = getattr(value, "pk", value)
+    if isinstance(pk, int):
+        return pk
+    try:
+        return int(pk)
+    except (TypeError, ValueError) as exc:
+        raise CommandError(
+            f"Invalid staff member {value!r}; expected an id."
+        ) from exc
+
 class Command(BaseCommand):
     help = "Export one salon's Break rows verbatim as CSV."
 
@@ -65,6 +80,16 @@ class Command(BaseCommand):
                  "(default: the service's own default).",
         )
         parser.add_argument(
+            "--staff-member", "--staff-member-id", "--staff-id",
+            dest="staff_member", type=int, default=None,
+            help="Id of the staff member to scope to.",
+        )
+        parser.add_argument(
+            "--staff", dest="staff_member_id",
+            type=int, default=None,
+            help="Alias for --staff-member (id of the staff member).",
+        )
+        parser.add_argument(
             "--output", default=None,
             help="Path to write the CSV to (default: stdout).",
         )
@@ -78,8 +103,13 @@ class Command(BaseCommand):
             ) from exc
         date_from = _coerce_date(options.get("date_from"), "date_from")
         date_to = _coerce_date(options.get("date_to"), "date_to")
+        staff_raw = options.get("staff_member")
+        if staff_raw is None:
+            staff_raw = options.get("staff_member_id")
+        staff_member = _coerce_staff(staff_raw)
         try:
-            text = export_breaks_csv(salon, date_from, date_to)
+            text = export_breaks_csv(
+                salon, date_from, date_to, staff_member=staff_member)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options.get("output"):
