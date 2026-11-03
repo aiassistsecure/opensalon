@@ -3,6 +3,16 @@
 Usage:
     python manage.py resend_receipt --sale-id ID [--recipient EMAIL]
     python manage.py resend_receipt --receipt-id ID [--recipient EMAIL]
+        [--dry-run]
+
+With ``--dry-run`` nothing is sent and no ``Receipt`` changes:
+the command names the sale and receipt a real run would
+re-send and how the recipient resolves (an explicit
+``--recipient``, else the receipt's stored recipient, else the
+sale's client email -- the service's own resolution order),
+applying the service's own refusals (voided / not-completed
+sale, sale with no existing receipt, no recipient available)
+as ``CommandError``.
 
 Thin wrapper around the existing services in
 :mod:`checkout.receipt_resend`: ``--sale-id`` delegates verbatim
@@ -50,6 +60,12 @@ class Command(BaseCommand):
                  "default -- the receipt's stored recipient, "
                  "falling back to the sale's client email).",
         )
+        parser.add_argument(
+            "--dry-run", action="store_true",
+            help="Preview only: name the sale/receipt and the "
+                 "resolved recipient a re-send would use, send "
+                 "no email, and change no Receipt.",
+        )
 
     def handle(self, *args, **options):
         sale_id = options.get("sale_id")
@@ -59,6 +75,9 @@ class Command(BaseCommand):
             raise CommandError(
                 "Provide exactly one of --sale-id or --receipt-id."
             )
+        if options.get("dry_run"):
+            self._dry_run(sale_id, receipt_id, recipient)
+            return
         try:
             if sale_id is not None:
                 try:
@@ -81,4 +100,46 @@ class Command(BaseCommand):
         self.stdout.write(
             f"Re-sent receipt #{receipt.pk} for sale "
             f"#{receipt.sale_id} to {receipt.recipient_email}."
+        )
+
+    def _dry_run(self, sale_id, receipt_id, recipient):
+        """Preview a re-send: resolve only, send/change nothing."""
+        if sale_id is not None:
+            try:
+                sale = Sale.objects.get(pk=sale_id)
+            except Sale.DoesNotExist as exc:
+                raise CommandError(
+                    f"No sale with id {sale_id}.") from exc
+            try:
+                receipt = sale.receipt
+            except Receipt.DoesNotExist as exc:
+                raise CommandError(
+                    "sale has no existing receipt to re-send"
+                ) from exc
+        else:
+            try:
+                receipt = Receipt.objects.get(pk=receipt_id)
+            except Receipt.DoesNotExist as exc:
+                raise CommandError(
+                    f"No receipt with id {receipt_id}.") from exc
+            sale = receipt.sale
+        if sale.status == Sale.Status.VOIDED:
+            raise CommandError(
+                "cannot re-send a receipt for a voided sale")
+        if sale.status != Sale.Status.COMPLETED:
+            raise CommandError(
+                "only a completed sale's receipt can be re-sent")
+        if recipient:
+            resolved, source = recipient, "explicit recipient"
+        elif receipt.recipient_email:
+            resolved = receipt.recipient_email
+            source = "receipt's stored recipient"
+        elif sale.client_id and sale.client.email:
+            resolved, source = sale.client.email, "sale's client email"
+        else:
+            raise CommandError("no recipient email for receipt")
+        self.stdout.write(
+            f"Dry run: would re-send receipt #{receipt.pk} for "
+            f"sale #{sale.pk} to {resolved} "
+            f"(recipient: {source}); no email sent."
         )

@@ -59,6 +59,44 @@ class RunCashupCommandTests(TestCase):
         self.assertEqual(Cashup.objects.get().total, Decimal("85.00"))
         self.assertEqual(Cashup.objects.get().note, "")
 
+    def test_dry_run_creates_no_cashup_and_previews_totals(self):
+        out = io.StringIO()
+        call_command(
+            "run_cashup", salon_id=self.salon.pk,
+            since=self.since, until=self.until, note="midday",
+            dry_run=True, stdout=out)
+        self.assertEqual(Cashup.objects.count(), 0)
+        text = out.getvalue()
+        self.assertIn("Dry run", text)
+        self.assertIn("cash", text)
+        self.assertIn("85.00", text)
+        self.assertIn("Total: 85.00", text)
+
+    def test_dry_run_preview_matches_real_run_totals(self):
+        out = io.StringIO()
+        call_command(
+            "run_cashup", "--salon-id", str(self.salon.pk),
+            "--since", self.since.isoformat(),
+            "--until", self.until.isoformat(), "--dry-run", stdout=out)
+        self.assertEqual(Cashup.objects.count(), 0)
+        self.assertIn("85.00", out.getvalue())
+        # Real behaviour unchanged after a dry run.
+        call_command(
+            "run_cashup", salon_id=self.salon.pk,
+            since=self.since, until=self.until, stdout=io.StringIO())
+        self.assertEqual(Cashup.objects.count(), 1)
+        cashup = Cashup.objects.get()
+        self.assertEqual(cashup.tender_totals, {"cash": "85.00"})
+        self.assertEqual(cashup.total, Decimal("85.00"))
+
+    def test_dry_run_inverted_period_raises_and_creates_nothing(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "run_cashup", salon_id=self.salon.pk,
+                since=self.until, until=self.since, dry_run=True,
+                stdout=io.StringIO())
+        self.assertEqual(Cashup.objects.count(), 0)
+
     def test_unknown_salon_raises_command_error(self):
         with self.assertRaises(CommandError):
             call_command(
