@@ -2,13 +2,19 @@
 
 Usage:
     python manage.py set_price --service-id ID --staff-level-id ID
-        --amount 85 [--is-from true|false] [--note TEXT] [--dry-run]
+        --amount 85 [--is-from true|false]
+        [--price-active true|false] [--note TEXT] [--dry-run]
 
 Thin wrapper around :func:`saloncore.pricing.set_price`: the
 service and staff level are resolved by id (the level must belong
 to the same salon as the service's category), and the amount /
-is_from are passed to the service -- its validation stays the
-single source of truth and surfaces here as ``CommandError``.
+is_from / price_active are passed to the service -- its validation
+stays the single source of truth and surfaces here as
+``CommandError``. ``--price-active`` omitted passes ``None`` to
+the service, whose default is active -- exactly the behaviour
+before this flag existed; ``false`` creates or sets an inactive
+price, matching the ``price_active`` the price-book import/export
+round-trips verbatim.
 This command adds no price logic of its own, so command, service
 and the price-book importer can never disagree. A price change
 appends a ``PriceChange`` audit row with
@@ -16,7 +22,8 @@ appends a ``PriceChange`` audit row with
 
 With ``--dry-run`` nothing is written, audit row included: the
 command only reads the stored price, prints the old -> new price
-that WOULD apply, and returns without calling the service.
+and the ``price_active`` value that WOULD apply, and returns
+without calling the service.
 
 Invalid input -- an unknown service, an unknown staff level, a
 cross-salon level, or a service ``ValidationError`` -- raises
@@ -32,7 +39,7 @@ from saloncore.models import Service, ServicePrice, StaffLevel
 from saloncore.pricing import set_price
 
 
-def _parse_is_from(value):
+def _parse_bool_flag(value, flag):
     if value is None or isinstance(value, bool):
         return value
     lowered = str(value).strip().lower()
@@ -40,7 +47,15 @@ def _parse_is_from(value):
         return True
     if lowered in ("false", "0", "no", "off"):
         return False
-    raise CommandError(f"Invalid --is-from value {value!r}; use true or false.")
+    raise CommandError(f"Invalid {flag} value {value!r}; use true or false.")
+
+
+def _parse_is_from(value):
+    return _parse_bool_flag(value, "--is-from")
+
+
+def _parse_price_active(value):
+    return _parse_bool_flag(value, "--price-active")
 
 
 class Command(BaseCommand):
@@ -62,6 +77,11 @@ class Command(BaseCommand):
             choices=("true", "false"),
             help="Starting-at pricing flag (true/false); "
                  "omitted = leave a stored flag unchanged.")
+        parser.add_argument(
+            "--price-active", dest="price_active", default=None,
+            choices=("true", "false"),
+            help="Price active flag (true/false); "
+                 "omitted = active (the service default).")
         parser.add_argument(
             "--note", default="",
             help="Optional note stored on the PriceChange audit row.")
@@ -86,6 +106,7 @@ class Command(BaseCommand):
             raise CommandError(
                 f"Amount {amount_raw!r} is not a valid price.") from None
         is_from = _parse_is_from(options.get("is_from"))
+        price_active = _parse_price_active(options.get("price_active"))
         try:
             service = Service.objects.get(pk=service_id)
         except Service.DoesNotExist:
@@ -108,13 +129,15 @@ class Command(BaseCommand):
             self.stdout.write(
                 f"Dry run: would set price for service {service.pk} "
                 f"at staff level {staff_level.pk}: {old} -> {amount} "
+                f"(price_active={price_active}) "
                 f"-- no price or audit row written.")
             return
 
         try:
             result = set_price(
                 service, staff_level, amount, is_from=is_from,
-                changed_by="set_price", note=options.get("note") or "")
+                changed_by="set_price", note=options.get("note") or "",
+                price_active=price_active)
         except ValidationError as exc:
             raise CommandError("; ".join(
                 str(m) for m in exc.messages)) from exc

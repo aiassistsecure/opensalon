@@ -159,3 +159,55 @@ class SetPriceCommandTests(SetPriceBase):
         with self.assertRaises(CommandError):
             self.run_command(**self.base_kwargs(amount="junk"))
         self.assertEqual(ServicePrice.objects.count(), 0)
+
+    def test_command_creates_inactive_price(self):
+        self.run_command(**self.base_kwargs(price_active="false"))
+        price = ServicePrice.objects.get(
+            service=self.service, staff_level=self.level)
+        self.assertEqual(price.amount, Decimal("85.00"))
+        self.assertFalse(price.active)
+
+    def test_command_price_active_true_reactivates_price(self):
+        self.make_price("50.00", active=False)
+        self.run_command(**self.base_kwargs(price_active="true"))
+        price = ServicePrice.objects.get(
+            service=self.service, staff_level=self.level)
+        self.assertTrue(price.active)
+
+    def test_command_price_active_false_deactivates_price(self):
+        self.make_price("50.00", active=True)
+        self.run_command(**self.base_kwargs(price_active="false"))
+        price = ServicePrice.objects.get(
+            service=self.service, staff_level=self.level)
+        self.assertFalse(price.active)
+
+    def test_command_omitted_price_active_passes_none_default(self):
+        # Omitted = today's behaviour: the service receives None,
+        # which it defines as active -- even on an inactive row.
+        self.make_price("50.00", active=False)
+        self.run_command(**self.base_kwargs())
+        price = ServicePrice.objects.get(
+            service=self.service, staff_level=self.level)
+        self.assertTrue(price.active)
+
+    def test_command_dry_run_shows_price_active_writes_nothing(self):
+        self.make_price("50.00", active=True)
+        out = self.run_command(**self.base_kwargs(
+            amount="65.00", price_active="false", dry_run=True))
+        self.assertIn("price_active=False", out)
+        self.assertIn("Dry run", out)
+        price = ServicePrice.objects.get(
+            service=self.service, staff_level=self.level)
+        self.assertEqual(price.amount, Decimal("50.00"))
+        self.assertTrue(price.active)
+        self.assertEqual(PriceChange.objects.count(), 0)
+
+    def test_command_dry_run_omitted_shows_price_active_none(self):
+        out = self.run_command(**self.base_kwargs(dry_run=True))
+        self.assertIn("price_active=None", out)
+        self.assertEqual(ServicePrice.objects.count(), 0)
+
+    def test_command_invalid_price_active(self):
+        with self.assertRaises(CommandError):
+            self.run_command(**self.base_kwargs(price_active="junk"))
+        self.assertEqual(ServicePrice.objects.count(), 0)
