@@ -370,16 +370,21 @@ exactly the keys TF-11 would list as dropped for that section,
 keeping null / missing / empty-string counts distinct) — and the
 command returns before phase 2 writes a single row.
 
-Dry-run preview (slices 1–3): the salon / price-book sections
+Dry-run preview (slices 1–4): the salon / price-book sections
 listed in ``PREVIEW_SECTIONS``, the client / team sections in
-``SLICE2_PREVIEW_SECTIONS`` and the bookings / catalog sections
-in ``SLICE3_PREVIEW_SECTIONS`` additionally carry an
+``SLICE2_PREVIEW_SECTIONS``, the bookings / catalog sections
+in ``SLICE3_PREVIEW_SECTIONS`` and the roster / attendance
+sections in ``SLICE4_PREVIEW_SECTIONS`` additionally carry an
 ``import_preview`` — read-only would-create / would-update /
 would-unchanged / would-skip counts from
 ``_build_slice1_previews`` / ``_build_slice2_previews`` /
-``_build_slice3_previews``, following the preview-twin pattern
+``_build_slice3_previews`` / ``_build_slice4_previews``,
+following the preview-twin pattern
 of ``import_clients`` / ``import_products``. Every other
-section's report is shape-only, exactly as before.
+section's report is shape-only, exactly as before. Breaks are
+``get_or_create`` in the writer, so an existing break is
+previewed as would-unchanged even when ``paid`` differs —
+the writer returns it untouched, never updated.
 """
 
 import json
@@ -1502,6 +1507,12 @@ SLICE3_PREVIEW_SECTIONS = (
     "appointments", "appointment_notes", "products",
 )
 
+# Slice-4 preview sections: roster, overrides, attendance, breaks.
+SLICE4_PREVIEW_SECTIONS = (
+    "roster_patterns", "shift_overrides", "attendance_records",
+    "breaks",
+)
+
 
 def _preview_counter(total):
     return {"total": total, "would_create": 0, "would_update": 0,
@@ -1958,6 +1969,100 @@ def _build_slice3_previews(data):
     return previews
 
 
+def _build_slice4_previews(data):
+    """Read-only preview twin for SLICE4_PREVIEW_SECTIONS only.
+
+    Mirrors phase 2's identity rules and defaults for roster
+    patterns, shift overrides, attendance records and breaks
+    against planned state seeded from the database and folded
+    in file order (the writer's order), so in-file repeats are
+    judged as the writer sees them. Identities are comparable
+    tuples, never DB objects. Reads only: writer never entered.
+    Breaks use ``get_or_create`` (``paid`` is a creation-only
+    default), so they tally against empty defaults: an existing
+    break is would-unchanged even if ``paid`` differs.
+    """
+    salon_name = {str(r["id"]): r["name"] for r in data["salons"]}
+
+    def staff_key(salon, ext, display_name):
+        ext = _norm_id(ext) or ""
+        return ((salon, "ext", ext) if ext else
+                (salon, "name", display_name))
+
+    def db_staff_key(m):
+        return staff_key(m.salon.name, m.external_id, m.display_name)
+
+    file_staff = {str(r["id"]): staff_key(
+        salon_name.get(str(r["salon_id"])), r.get("external_id"),
+        r["display_name"]) for r in data["staff_members"]}
+    staff_by_ext = {_norm_id(r["external_id"]): file_staff[str(r["id"])]
+                    for r in data["staff_members"]
+                    if r.get("external_id")}
+
+    def resolve(row):
+        ext = _norm_id(row.get("staff_member_external_id"))
+        if ext and ext in staff_by_ext:
+            return staff_by_ext[ext]
+        return file_staff.get(str(row.get("staff_member_id")))
+
+    def shift_time(row, field):
+        return (_checked_time(row[field], "shift_overrides")
+                if row.get(field) is not None else None)
+
+    previews = {s: _preview_counter(len(data[s]))
+                for s in SLICE4_PREVIEW_SECTIONS}
+
+    planned = {(db_staff_key(p.staff_member), p.weekday,
+                p.start_time, p.end_time): {"active": p.active}
+               for p in RosterPattern.objects.select_related(
+                   "staff_member__salon")}
+    for i, row in enumerate(data["roster_patterns"]):
+        staff = resolve(row)
+        key = ((staff, row["weekday"],
+                _checked_time(row["start_time"], "roster_patterns"),
+                _checked_time(row["end_time"], "roster_patterns"))
+               if staff is not None else None)
+        _preview_tally(previews["roster_patterns"], planned, key,
+                       {"active": row["active"]}, i)
+
+    planned = {(db_staff_key(o.staff_member), o.date): {
+        "is_off": o.is_off, "start_time": o.start_time,
+        "end_time": o.end_time}
+        for o in ShiftOverride.objects.select_related(
+            "staff_member__salon")}
+    for i, row in enumerate(data["shift_overrides"]):
+        staff = resolve(row)
+        key = ((staff, _checked_date(row["date"], "shift_overrides"))
+               if staff is not None else None)
+        _preview_tally(previews["shift_overrides"], planned, key, {
+            "is_off": row["is_off"],
+            "start_time": shift_time(row, "start_time"),
+            "end_time": shift_time(row, "end_time")}, i)
+
+    planned = {(db_staff_key(r.staff_member), r.recorded_at,
+                r.event_type): {"note": r.note}
+               for r in AttendanceRecord.objects.select_related(
+                   "staff_member__salon")}
+    for i, row in enumerate(data["attendance_records"]):
+        staff = resolve(row)
+        key = ((staff, _checked_datetime(
+            row["recorded_at"], "attendance_records recorded_at"),
+            row["event_type"]) if staff is not None else None)
+        _preview_tally(previews["attendance_records"], planned, key,
+                       {"note": row.get("note", "")}, i)
+
+    planned = {(db_staff_key(b.staff_member), b.start, b.end): {}
+               for b in Break.objects.select_related(
+                   "staff_member__salon")}
+    for i, row in enumerate(data["breaks"]):
+        staff = resolve(row)
+        key = ((staff, _checked_datetime(row["start"], "breaks start"),
+                _checked_datetime(row["end"], "breaks end"))
+               if staff is not None else None)
+        _preview_tally(previews["breaks"], planned, key, {}, i)
+    return previews
+
+
 class Command(BaseCommand):
     help = "Import salon core data from an export_salon_data JSON file."
 
@@ -1968,8 +2073,9 @@ class Command(BaseCommand):
             help="Print a per-section JSON dry-run report "
                  "(saloncore.dry_run) for the source file — with "
                  "read-only import_preview counts on the slice-1 "
-                 "salon/price-book, slice-2 client/team and "
-                 "slice-3 bookings/catalog "
+                 "salon/price-book, slice-2 client/team, "
+                 "slice-3 bookings/catalog and slice-4 "
+                 "roster/attendance "
                  "sections — and write nothing.")
 
     @transaction.atomic
@@ -1987,11 +2093,12 @@ class Command(BaseCommand):
                 for section in SECTIONS if section in data
             }
             reports = build_dry_run_reports(record_sets)
-            # Slices 1–3 only: preview counts attach to those
+            # Slices 1–4 only: preview counts attach to those
             # sections' reports; all others stay shape-only.
             previews = _build_slice1_previews(data)
             previews.update(_build_slice2_previews(data))
             previews.update(_build_slice3_previews(data))
+            previews.update(_build_slice4_previews(data))
             for section, preview in previews.items():
                 reports[section]["import_preview"] = preview
             self.stdout.write(json.dumps(reports, sort_keys=True))
