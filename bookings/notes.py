@@ -19,6 +19,18 @@ from django.core.exceptions import ValidationError
 from bookings.models import AppointmentNote
 
 
+def validate_add_note(appointment, text, author=""):
+    """Validate an ``add_note`` call without writing anything.
+
+    Raises the same ``ValidationError`` :func:`add_note` would
+    raise. Reads/writes nothing, so it is safe for ``--dry-run``
+    previews on every backend (including NEDB, where a
+    rolled-back transaction does not undo writes).
+    """
+    if not text or not text.strip():
+        raise ValidationError({"text": "Note text must not be empty."})
+
+
 def add_note(appointment, text, author=""):
     """Add an appointment-only note to ``appointment``.
 
@@ -29,8 +41,7 @@ def add_note(appointment, text, author=""):
     alone; no ``ClientNote`` is created for the appointment's
     client.
     """
-    if not text or not text.strip():
-        raise ValidationError({"text": "Note text must not be empty."})
+    validate_add_note(appointment, text, author=author)
     return AppointmentNote.objects.create(
         appointment=appointment, body=text, author_name=author,
     )

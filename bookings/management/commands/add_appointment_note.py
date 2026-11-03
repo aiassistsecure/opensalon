@@ -4,10 +4,12 @@ Usage:
     python manage.py add_appointment_note --appointment-id ID
         --text TEXT [--author NAME] [--salon-id ID] [--dry-run]
 
-With ``--dry-run`` nothing is written: the command runs the
-service inside a transaction it rolls back, so the preview
-applies the service's own validation and prints the note that
-WOULD be created (its appointment, body, and author).
+With ``--dry-run`` nothing is written: the command calls the
+service's validate-only helper (no write happens at all, so
+the preview is safe on every backend -- NEDB does not roll
+back transaction writes), so the preview applies the
+service's own validation and prints the note that WOULD be
+created (its appointment, body, and author).
 
 Thin wrapper around :func:`bookings.notes.add_note`: the
 appointment is resolved by id (scoped to the salon via both
@@ -26,10 +28,8 @@ written. Backend only -- no views, templates, or UI.
 """
 from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
-
 from bookings.models import Appointment
-from bookings.notes import add_note
+from bookings.notes import add_note, validate_add_note
 from saloncore.models import Salon
 
 
@@ -54,9 +54,9 @@ class Command(BaseCommand):
             help="Optional author name stored on the note.")
         parser.add_argument(
             "--dry-run", action="store_true",
-            help="Preview only: run the service inside a "
-                 "transaction that is rolled back, print the "
-                 "note that would be created, and write nothing.")
+            help="Preview only: validate with the service's "
+                 "validate-only helper, print the note that "
+                 "would be created, and write nothing.")
 
     def handle(self, *args, **options):
         appointment_id = options.get("appointment_id")
@@ -93,14 +93,11 @@ class Command(BaseCommand):
                 f"No appointment with id {appointment_id}.") from None
         if options.get("dry_run"):
             try:
-                with transaction.atomic():
-                    note = add_note(appointment, text, author=author)
-                    preview = (note.body, note.author_name)
-                    transaction.set_rollback(True)
+                validate_add_note(appointment, text, author=author)
             except ValidationError as exc:
                 raise CommandError(
                     "; ".join(exc.messages)) from exc
-            body, author_name = preview
+            body, author_name = text, author
             self.stdout.write(
                 f"Dry run: would create appointment note for "
                 f"appointment {appointment.pk}: body={body!r} "
