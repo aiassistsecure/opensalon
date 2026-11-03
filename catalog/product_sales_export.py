@@ -28,6 +28,17 @@ Columns are only fields the report rows actually carry:
 
 Money and ratios are rendered as strings from ``Decimal``,
 never passed through a float.
+
+Optional window: the export accepts the same optional
+``start`` / ``end`` (aliases ``start_date`` / ``end_date``) as
+:func:`catalog.product_sales.product_sales` and passes them
+verbatim. With no window the CSV is byte-identical to the
+historic export (header :data:`PRODUCT_SALES_FIELDNAMES` only).
+With a window, three documentation columns are appended —
+``sales_start_date``, ``sales_end_date``, ``stock_scope`` — so
+the windowed units/revenue are never silently mixed with the
+all-time stock figures (``stock_scope`` is ``"all_time"``);
+the historic columns keep their order and meaning.
 """
 import csv
 import io
@@ -71,7 +82,12 @@ def _ratio(value):
     return str(Decimal(value).quantize(_RATIO))
 
 
-def export_product_sales_csv(salon):
+#: Extra columns appended only on a windowed export (see docstring).
+WINDOW_FIELDNAMES = ["sales_start_date", "sales_end_date", "stock_scope"]
+
+
+def export_product_sales_csv(salon, start=None, end=None, *,
+                             start_date=None, end_date=None):
     """Return ``salon``'s per-product sales report as a CSV string.
 
     The header row is :data:`PRODUCT_SALES_FIELDNAMES` and every
@@ -79,16 +95,19 @@ def export_product_sales_csv(salon):
     :func:`catalog.product_sales.product_sales` for the same
     salon, in that service's order. A salon with no products
     exports as the header row alone. Lines end with ``"\\n"``.
-    Records nothing.
+    Records nothing. On a windowed export the documentation
+    columns in :data:`WINDOW_FIELDNAMES` are appended.
     """
-    report = product_sales(salon)
+    report = product_sales(salon, start=start, end=end,
+                           start_date=start_date, end_date=end_date)
+    windowed = report.start_date is not None or report.end_date is not None
+    fieldnames = (PRODUCT_SALES_FIELDNAMES + WINDOW_FIELDNAMES
+                  if windowed else PRODUCT_SALES_FIELDNAMES)
     buffer = io.StringIO()
-    writer = csv.DictWriter(
-        buffer, fieldnames=PRODUCT_SALES_FIELDNAMES, lineterminator="\n"
-    )
+    writer = csv.DictWriter(buffer, fieldnames=fieldnames, lineterminator="\n")
     writer.writeheader()
     for row in report.rows:
-        writer.writerow({
+        record = {
             "product_id": row.product.pk,
             "product_name": row.product.name,
             "sku": row.sku,
@@ -98,7 +117,16 @@ def export_product_sales_csv(salon):
             "current_stock": int(row.current_stock),
             "average_stock": _ratio(row.average_stock),
             "stock_turns": _ratio(row.stock_turns),
-        })
+        }
+        if windowed:
+            record.update({
+                "sales_start_date": (
+                    row.start_date.isoformat() if row.start_date else ""),
+                "sales_end_date": (
+                    row.end_date.isoformat() if row.end_date else ""),
+                "stock_scope": row.stock_scope,
+            })
+        writer.writerow(record)
     return buffer.getvalue()
 
 
