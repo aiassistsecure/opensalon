@@ -20,6 +20,8 @@ editing from the truth its book already states. Seeding never
 flips an existing row: once the salon has spoken, its word stands.
 """
 
+from django.core.exceptions import ValidationError
+
 from saloncore.models import Service, ServicePrice
 from team.models import StaffMember, StaffService
 
@@ -143,6 +145,56 @@ def set_member_services(member, service_ids):
             service=service,
             defaults={"enabled": service.pk in wanted},
         )
+
+
+def validate_set_service_performers(service, member_ids):
+    """Validate a :func:`set_service_performers` call, writing
+    nothing. Returns the wanted member-id set; raises
+    ``ValidationError`` when the service is missing or any id
+    is not a member of the service's salon. Reads only, so it
+    is safe for ``--dry-run`` previews on every backend
+    (including NEDB, where rollback does not undo writes).
+    The writer itself is unchanged."""
+    if service is None or getattr(service, "pk", None) is None:
+        raise ValidationError("A service is required.")
+    wanted = set(member_ids or ())
+    known = set(
+        StaffMember.objects.filter(
+            salon_id=service.category.salon_id
+        ).values_list("pk", flat=True)
+    )
+    unknown = wanted - known
+    if unknown:
+        raise ValidationError(
+            "Unknown staff member id(s) for this salon: "
+            + ", ".join(str(pk) for pk in sorted(unknown))
+            + "."
+        )
+    return wanted
+
+
+def validate_set_member_services(member, service_ids):
+    """Validate a :func:`set_member_services` call, writing
+    nothing. Returns the wanted service-id set; raises
+    ``ValidationError`` when the member is missing or any id
+    is not a service of the member's salon. Reads only -- see
+    :func:`validate_set_service_performers`."""
+    if member is None or getattr(member, "pk", None) is None:
+        raise ValidationError("A staff member is required.")
+    wanted = set(service_ids or ())
+    known = set(
+        Service.objects.filter(
+            category__salon_id=member.salon_id
+        ).values_list("pk", flat=True)
+    )
+    unknown = wanted - known
+    if unknown:
+        raise ValidationError(
+            "Unknown service id(s) for this salon: "
+            + ", ".join(str(pk) for pk in sorted(unknown))
+            + "."
+        )
+    return wanted
 
 
 def copy_member_services(source, target):
