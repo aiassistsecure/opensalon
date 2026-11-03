@@ -19,11 +19,13 @@ source is never moved or mutated. ``--new-end`` omitted
 defaults (in the creation service) to ``--new-start`` plus
 the service's total minutes.
 
-With ``--dry-run`` nothing is written: the service runs
-inside a transaction that is rolled back, so the preview
-applies the service's own validation and prints the booking
-that WOULD be created. Invalid input -- unknown
-salon/appointment, appointment outside the salon,
+With ``--dry-run`` nothing is written: the preview runs the
+service layer's read-only ``validate_rebook_appointment``
+helper, which applies the service's own validation without
+calling the writer, and prints the booking that WOULD be
+created. (No transaction rollback is relied on -- on NEDB a
+rolled-back transaction does not undo writes.) Invalid input
+-- unknown salon/appointment, appointment outside the salon,
 unparseable datetime, or a service ``ValidationError`` --
 raises ``CommandError``, nothing written.
 Backend only -- no views, templates, or UI.
@@ -32,10 +34,9 @@ import datetime
 
 from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
 
 from bookings.models import Appointment
-from onlinebooking.rebook import rebook_appointment
+from onlinebooking.rebook import rebook_appointment, validate_rebook_appointment
 from saloncore.models import Salon
 
 
@@ -105,18 +106,16 @@ class Command(BaseCommand):
         note_author = options.get("note_author") or ""
         if options.get("dry_run"):
             try:
-                with transaction.atomic():
-                    created = rebook_appointment(
-                        source, new_start, new_end,
-                        note=note, note_author=note_author)
-                    preview = (created.start, created.end, created.status)
-                    transaction.set_rollback(True)
+                preview_end = validate_rebook_appointment(
+                    source, new_start, new_end,
+                    note=note, note_author=note_author)
             except ValidationError as exc:
                 raise CommandError("; ".join(exc.messages)) from exc
             self.stdout.write(
                 f"Dry run: would rebook appointment {source.pk}: "
-                f"new booking at {preview[0].isoformat()}, "
-                f"end {preview[1].isoformat()}, status {preview[2]} "
+                f"new booking at {new_start.isoformat()}, "
+                f"end {preview_end.isoformat()}, "
+                f"status {Appointment.Status.BOOKED} "
                 f"-- no appointment created.")
             return
         try:

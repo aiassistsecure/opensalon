@@ -2,7 +2,8 @@
 
 Thin wrapper over ``onlinebooking.rebook.rebook_appointment``:
 real runs create a NEW appointment (source unchanged),
-``--dry-run`` rolls back and prints the would-be booking, and
+``--dry-run`` previews without writing (read-only validate
+helper, NEDB-safe) and prints the would-be booking, and
 invalid rebooks (cancelled source, unrostered slot, toggle
 off, unknown or out-of-salon appointment) surface as
 ``CommandError`` with nothing created. Tiny synthetic fixtures.
@@ -78,6 +79,16 @@ class RebookBookingCommandTests(TestCase):
         self.assertIn("Dry run", text)
         self.assertIn(at(MONDAY, 13).isoformat(), text)
         self.assertIn("no appointment created", text)
+
+    def test_dry_run_no_write_regression_count_status_times(self):
+        call_command("rebook_booking", appointment_id=self.source.pk,
+                     new_start=at(MONDAY, 13), dry_run=True,
+                     stdout=io.StringIO())
+        self.source.refresh_from_db()
+        self.assertEqual(Appointment.objects.count(), 1)
+        self.assertEqual(self.source.status, Appointment.Status.COMPLETED)
+        self.assertEqual((self.source.start, self.source.end),
+                         (at(PAST_MONDAY, 10), at(PAST_MONDAY, 10, 45)))
 
     def test_dry_run_flag_form_writes_nothing(self):
         out = io.StringIO()

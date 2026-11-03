@@ -1,7 +1,8 @@
 """Tests for reschedule_booking / cancel_booking commands.
 
 Thin wrappers over ``onlinebooking.services``: real runs apply
-the service move/cancellation, ``--dry-run`` rolls back and
+the service move/cancellation, ``--dry-run`` previews without
+writing (read-only validate helpers, NEDB-safe) and
 prints the would-be result, and invalid moves (unrostered,
 overlap, toggle off, non-cancellable status, unknown or
 out-of-salon appointment) surface as ``CommandError`` with
@@ -77,6 +78,16 @@ class RescheduleBookingCommandTests(CommandBase):
         self.assertIn("Dry run", text)
         self.assertIn(at(MONDAY, 13).isoformat(), text)
 
+    def test_dry_run_no_write_regression_count_status_times(self):
+        call_command("reschedule_booking", appointment_id=self.appt.pk,
+                     new_start=at(MONDAY, 13), dry_run=True,
+                     stdout=io.StringIO())
+        self.appt.refresh_from_db()
+        self.assertEqual(Appointment.objects.count(), 1)
+        self.assertEqual(self.appt.status, Appointment.Status.BOOKED)
+        self.assertEqual((self.appt.start, self.appt.end),
+                         (at(MONDAY, 10), at(MONDAY, 10, 45)))
+
     def test_dry_run_invalid_move_is_command_error_unchanged(self):
         with self.assertRaises(CommandError):
             call_command("reschedule_booking", appointment_id=self.appt.pk,
@@ -143,6 +154,15 @@ class CancelBookingCommandTests(CommandBase):
         text = out.getvalue()
         self.assertIn("Dry run", text)
         self.assertIn("cancelled", text)
+
+    def test_dry_run_no_write_regression_count_status_times(self):
+        call_command("cancel_booking", appointment_id=self.appt.pk,
+                     dry_run=True, stdout=io.StringIO())
+        self.appt.refresh_from_db()
+        self.assertEqual(Appointment.objects.count(), 1)
+        self.assertEqual(self.appt.status, Appointment.Status.BOOKED)
+        self.assertEqual((self.appt.start, self.appt.end),
+                         (at(MONDAY, 10), at(MONDAY, 10, 45)))
 
     def test_dry_run_flag_form(self):
         out = io.StringIO()

@@ -16,9 +16,12 @@ rostered-availability refusals stay the single source of truth
 and surface here as ``CommandError``. ``--new-end`` omitted
 preserves the original duration, per the service.
 
-With ``--dry-run`` nothing is written: the service runs inside
-a transaction that is rolled back, so the preview applies the
-service's own validation and prints the move that WOULD apply.
+With ``--dry-run`` nothing is written: the preview runs the
+service layer's read-only ``validate_reschedule_online_booking``
+helper, which applies the service's own validation without
+calling the writer, and prints the move that WOULD apply.
+(No transaction rollback is relied on -- on NEDB a
+rolled-back transaction does not undo writes.)
 Invalid input -- unknown salon/appointment, appointment outside
 the salon, unparseable datetime, or a service
 ``ValidationError`` -- raises ``CommandError``, nothing written.
@@ -28,10 +31,12 @@ import datetime
 
 from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
 
 from bookings.models import Appointment
-from onlinebooking.services import reschedule_online_booking
+from onlinebooking.services import (
+    reschedule_online_booking,
+    validate_reschedule_online_booking,
+)
 from saloncore.models import Salon
 
 
@@ -96,17 +101,14 @@ class Command(BaseCommand):
         old_start, old_end = appointment.start, appointment.end
         if options.get("dry_run"):
             try:
-                with transaction.atomic():
-                    moved = reschedule_online_booking(
-                        appointment, new_start, new_end)
-                    preview = (moved.start, moved.end)
-                    transaction.set_rollback(True)
+                preview_end = validate_reschedule_online_booking(
+                    appointment, new_start, new_end)
             except ValidationError as exc:
                 raise CommandError("; ".join(exc.messages)) from exc
             self.stdout.write(
                 f"Dry run: would reschedule appointment {appointment.pk}: "
-                f"{old_start.isoformat()} -> {preview[0].isoformat()}, "
-                f"end {old_end.isoformat()} -> {preview[1].isoformat()} "
+                f"{old_start.isoformat()} -> {new_start.isoformat()}, "
+                f"end {old_end.isoformat()} -> {preview_end.isoformat()} "
                 f"-- no appointment moved.")
             return
         try:
