@@ -4,10 +4,13 @@ The command is a thin wrapper around
 ``checkout.receipt_export.export_receipts``: these tests pin
 that its stdout and file output match that service verbatim
 (serialized as JSON, as the service builds JSON-serializable
-rows) and that unknown salons, bad dates, reversed ranges,
-and unwritable output fail cleanly as ``CommandError``.
+rows, or as CSV rendering those same rows under
+``EXPORT_FIELDNAMES``) and that unknown salons, bad dates,
+reversed ranges, invalid formats, and unwritable output fail
+cleanly as ``CommandError``.
 Fixtures are tiny synthetic records -- unit logic only.
 """
+import csv
 import datetime
 import io
 import json
@@ -20,7 +23,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from checkout.models import Receipt, Sale, SaleItem
-from checkout.receipt_export import export_receipts
+from checkout.receipt_export import EXPORT_FIELDNAMES, export_receipts
 from checkout.receipts import build_receipt
 from clients.models import Client
 from saloncore.models import Salon
@@ -37,6 +40,24 @@ def _aware(day, hour=12):
 def _service_text(salon, date_from=None, date_to=None):
     return json.dumps(
         export_receipts(date_from, date_to, salon=salon), indent=2) + "\n"
+
+
+def _csv_text(salon, date_from=None, date_to=None):
+    buffer = io.StringIO()
+    writer = csv.DictWriter(
+        buffer, fieldnames=EXPORT_FIELDNAMES, lineterminator="\n")
+    writer.writeheader()
+    for row in export_receipts(date_from, date_to, salon=salon):
+        writer.writerow(row)
+    return buffer.getvalue()
+
+
+def _as_csv_values(rows):
+    return [
+        {key: ("" if value is None else str(value))
+         for key, value in row.items()}
+        for row in rows
+    ]
 
 
 class ExportReceiptCommandTests(TestCase):
@@ -138,3 +159,94 @@ class ExportReceiptCommandTests(TestCase):
             call_command(
                 "export_receipt", salon_id=self.salon.pk,
                 start_date=NEXT, end_date=DAY, stdout=io.StringIO())
+
+    def test_default_format_remains_json(self):
+        self._receipt(DAY)
+        out = io.StringIO()
+        call_command(
+            "export_receipt", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, stdout=out)
+        self.assertEqual(out.getvalue(), _service_text(self.salon, DAY, DAY))
+
+    def test_explicit_json_format_matches_service(self):
+        self._receipt(DAY)
+        out = io.StringIO()
+        call_command(
+            "export_receipt", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, format="json", stdout=out)
+        self.assertEqual(out.getvalue(), _service_text(self.salon, DAY, DAY))
+
+    def test_csv_format_matches_expected_csv(self):
+        self._receipt(DAY)
+        out = io.StringIO()
+        call_command(
+            "export_receipt", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, format="csv", stdout=out)
+        self.assertEqual(out.getvalue(), _csv_text(self.salon, DAY, DAY))
+
+    def test_csv_content_equals_json_rows(self):
+        self._receipt(DAY)
+        self._receipt(DAY, client=None)
+        rows = export_receipts(DAY, DAY, salon=self.salon)
+        out = io.StringIO()
+        call_command(
+            "export_receipt", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, format="csv", stdout=out)
+        parsed = list(csv.DictReader(io.StringIO(out.getvalue())))
+        self.assertEqual(parsed, _as_csv_values(rows))
+        self.assertEqual(parsed, _as_csv_values(json.loads(
+            _service_text(self.salon, DAY, DAY))))
+
+    def test_csv_header_and_field_order(self):
+        self._receipt(DAY)
+        out = io.StringIO()
+        call_command(
+            "export_receipt", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, format="csv", stdout=out)
+        lines = list(csv.reader(io.StringIO(out.getvalue())))
+        self.assertEqual(lines[0], EXPORT_FIELDNAMES)
+        self.assertEqual(
+            EXPORT_FIELDNAMES,
+            ["id", "receipt_id", "sale_id", "salon_id", "client_id",
+             "salon_name", "total", "issued_at", "delivery_channel",
+             "delivery_status", "recipient_email", "sent_at"])
+        self.assertNotIn("provider_reference", lines[0])
+        self.assertNotIn("provider_reference", out.getvalue())
+
+    def test_csv_flag_matches_expected_csv(self):
+        self._receipt(DAY)
+        out = io.StringIO()
+        call_command(
+            "export_receipt", "--salon-id", str(self.salon.pk),
+            "--start-date", DAY.isoformat(), "--end-date", DAY.isoformat(),
+            "--format", "csv", stdout=out)
+        self.assertEqual(out.getvalue(), _csv_text(self.salon, DAY, DAY))
+
+    def test_csv_output_file_matches_expected_csv(self):
+        self._receipt(DAY)
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "receipts.csv")
+            call_command(
+                "export_receipt", salon_id=self.salon.pk,
+                start_date=DAY, end_date=DAY, format="csv",
+                output=path, stdout=out)
+            with open(path, encoding="utf-8") as fh:
+                written = fh.read()
+        self.assertEqual(written, _csv_text(self.salon, DAY, DAY))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_csv_empty_range_is_header_only(self):
+        out = io.StringIO()
+        call_command(
+            "export_receipt", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, format="csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(), ",".join(EXPORT_FIELDNAMES) + "\n")
+
+    def test_invalid_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_receipt", salon_id=self.salon.pk,
+                start_date=DAY, end_date=DAY, format="xml",
+                stdout=io.StringIO())
