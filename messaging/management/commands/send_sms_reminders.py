@@ -24,11 +24,32 @@ class Command(BaseCommand):
             "--hours", type=int, default=24,
             help="Remind appointments starting within this many hours.",
         )
+        parser.add_argument(
+            "--dry-run", action="store_true",
+            help="Preview only: count would-send/skipped, send nothing.",
+        )
 
     def handle(self, *args, **options):
+        dry_run = options["dry_run"]
         summary = send_due_sms_reminders(
-            within=timedelta(hours=options["hours"])
+            within=timedelta(hours=options["hours"]), dry_run=dry_run
         )
+        if dry_run:
+            self.stdout.write(
+                "Dry run: SMS reminders: {sent} would send, "
+                "{skipped} skipped "
+                "({opt} not opted in, {missing} missing phone, "
+                "{status} not remindable status, "
+                "{failed} send failed).".format(
+                    sent=summary.sent,
+                    skipped=summary.skipped,
+                    opt=summary.skipped_not_opted_in,
+                    missing=summary.skipped_missing_phone,
+                    status=summary.skipped_status,
+                    failed=summary.skipped_send_failed,
+                )
+            )
+            return
         self.stdout.write(
             "SMS reminders: {sent} sent, {skipped} skipped "
             "({opt} not opted in, {missing} missing phone, "

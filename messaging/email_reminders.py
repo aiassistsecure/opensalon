@@ -94,7 +94,8 @@ def _skip(summary, reason):
     return result
 
 
-def send_due_email_reminders(now=None, within=DEFAULT_WINDOW, appointments=None):
+def send_due_email_reminders(now=None, within=DEFAULT_WINDOW, appointments=None,
+                             dry_run=False):
     """Deliver email reminders for due appointments; return a summary.
 
     ``appointments`` defaults to :func:`due_appointments` for the
@@ -102,11 +103,15 @@ def send_due_email_reminders(now=None, within=DEFAULT_WINDOW, appointments=None)
     gate above (status, opt-in, address) before anything sends.
     All eligible messages go out over one mail connection, so a
     run against the salon's SMTP server opens it once.
+
+    With ``dry_run=True`` the same due set and gates are applied
+    and eligible appointments are counted in ``sent`` as would-send,
+    but nothing is sent and no ``ReminderSend`` row is written.
     """
     if appointments is None:
         appointments = due_appointments(now=now, within=within)
     summary = EmailDeliverySummary()
-    connection = get_connection()
+    connection = None if dry_run else get_connection()
     messages = []
     pending = []
     for appointment in appointments:
@@ -120,9 +125,13 @@ def send_due_email_reminders(now=None, within=DEFAULT_WINDOW, appointments=None)
         if not client.email:
             _skip(summary, "missing_email")
             continue
-        messages.append(build_email_message(appointment, connection=connection))
+        if not dry_run:
+            messages.append(
+                build_email_message(appointment, connection=connection))
         pending.append(appointment)
-    if messages:
+    if dry_run:
+        sent_count = len(pending)
+    elif messages:
         sent_count = connection.send_messages(messages) or 0
     else:
         sent_count = 0
@@ -130,7 +139,8 @@ def send_due_email_reminders(now=None, within=DEFAULT_WINDOW, appointments=None)
         if index < sent_count:
             summary.results.append(ReminderResult("email", "sent"))
             summary.sent += 1
-            ReminderSend.record(appointment, channel="email")
+            if not dry_run:
+                ReminderSend.record(appointment, channel="email")
         else:
             summary.results.append(
                 ReminderResult("email", "skipped", reason="send_failed")

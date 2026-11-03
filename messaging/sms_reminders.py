@@ -57,13 +57,18 @@ class SmsDeliverySummary:
 
 
 def send_due_sms_reminders(now=None, within=DEFAULT_WINDOW, appointments=None,
-                           adapter=None):
+                           adapter=None, dry_run=False):
     """Deliver SMS reminders for due appointments; return a summary.
 
     ``appointments`` defaults to :func:`due_appointments` for the
     window; an explicit iterable is still passed through every
     gate above (status, opt-in, phone) before anything sends.
     ``adapter`` defaults to the configured SMS adapter.
+
+    With ``dry_run=True`` the same gates are re-checked (status,
+    opt-in, phone) and eligible appointments are counted in
+    ``sent`` as would-send, but the adapter is never called and
+    no ``ReminderSend`` row is written.
     """
     if appointments is None:
         appointments = due_appointments(now=now, within=within)
@@ -72,6 +77,19 @@ def send_due_sms_reminders(now=None, within=DEFAULT_WINDOW, appointments=None,
         if appointment.status not in REMINDABLE_STATUSES:
             summary.skipped_status += 1
             _record(summary, "not_remindable_status")
+            continue
+        if dry_run:
+            client = appointment.client
+            if not client.sms_opt_in:
+                summary.skipped_not_opted_in += 1
+                _record(summary, "not_opted_in")
+                continue
+            if not client.phone:
+                summary.skipped_missing_phone += 1
+                _record(summary, "missing_phone")
+                continue
+            summary.sent += 1
+            summary.results.append(ReminderResult("sms", "sent"))
             continue
         result = send_sms_reminder(appointment, adapter=adapter)
         summary.results.append(result)

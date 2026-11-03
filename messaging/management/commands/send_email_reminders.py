@@ -24,11 +24,30 @@ class Command(BaseCommand):
             "--hours", type=int, default=24,
             help="Remind appointments starting within this many hours.",
         )
+        parser.add_argument(
+            "--dry-run", action="store_true",
+            help="Preview only: count would-send/skipped, send nothing.",
+        )
 
     def handle(self, *args, **options):
+        dry_run = options["dry_run"]
         summary = send_due_email_reminders(
-            within=timedelta(hours=options["hours"])
+            within=timedelta(hours=options["hours"]), dry_run=dry_run
         )
+        if dry_run:
+            self.stdout.write(
+                "Dry run: Email reminders: {sent} would send, "
+                "{skipped} skipped "
+                "({opt} not opted in, {missing} missing email, "
+                "{status} not remindable status).".format(
+                    sent=summary.sent,
+                    skipped=summary.skipped,
+                    opt=summary.skipped_not_opted_in,
+                    missing=summary.skipped_missing_email,
+                    status=summary.skipped_status,
+                )
+            )
+            return
         self.stdout.write(
             "Email reminders: {sent} sent, {skipped} skipped "
             "({opt} not opted in, {missing} missing email, "

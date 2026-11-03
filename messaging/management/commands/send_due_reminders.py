@@ -38,19 +38,44 @@ class Command(BaseCommand):
             "--hours", type=int, default=24,
             help="Remind appointments starting within this many hours.",
         )
+        parser.add_argument(
+            "--dry-run", action="store_true",
+            help="Preview only: count would-send/skipped, send nothing.",
+        )
 
     def handle(self, *args, **options):
         hours = options["hours"]
+        dry_run = options["dry_run"]
         if hours < 0:
             raise CommandError(
                 f"Invalid --hours {hours!r}; expected 0 or more."
             )
         try:
             summary = send_due_reminders(
-                within=timedelta(hours=hours)
+                within=timedelta(hours=hours), dry_run=dry_run
             )
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
+        if dry_run:
+            opt_in_skipped = (
+                summary.email.skipped_not_opted_in
+                + summary.sms.skipped_not_opted_in
+            )
+            self.stdout.write(
+                "Dry run: Reminders: {sent} would send, "
+                "{skipped} skipped ({opt} skipped by opt-in; "
+                "email: {e_sent} would send, {e_skipped} skipped; "
+                "SMS: {s_sent} would send, {s_skipped} skipped).".format(
+                    sent=summary.sent,
+                    skipped=summary.skipped,
+                    opt=opt_in_skipped,
+                    e_sent=summary.email.sent,
+                    e_skipped=summary.email.skipped,
+                    s_sent=summary.sms.sent,
+                    s_skipped=summary.sms.skipped,
+                )
+            )
+            return
         self.stdout.write(
             "Reminders: {sent} sent, {skipped} skipped "
             "(email: {e_sent} sent, {e_skipped} skipped; "
