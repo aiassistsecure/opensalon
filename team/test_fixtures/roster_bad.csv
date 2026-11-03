@@ -1,0 +1,5 @@
+staff_member_external_id,weekday,start_time,end_time
+stf-1,9,09:00,17:00
+stf-1,0,17:00,09:00
+stf-1,0,nine,17:00
+stf-1,,09:00,17:00
