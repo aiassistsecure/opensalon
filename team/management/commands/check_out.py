@@ -2,7 +2,11 @@
 
 Usage:
     python manage.py check_out --staff-member-id ID
-        [--at ISO-8601-DATETIME] [--note TEXT]
+        [--at ISO-8601-DATETIME] [--note TEXT] [--dry-run]
+
+With ``--dry-run`` the same validation runs and the
+``AttendanceRecord`` that would be written is printed, but
+no record is created.
 
 Thin wrapper around :func:`team.availability.check_out`: the
 staff member is resolved by id, ``--at`` is parsed to a
@@ -21,8 +25,10 @@ import datetime
 
 from django.core.management.base import BaseCommand, CommandError
 
+from django.utils import timezone
+
 from team.availability import check_out
-from team.models import StaffMember
+from team.models import AttendanceRecord, StaffMember
 
 
 def _datetime_from_string(value):
@@ -66,6 +72,10 @@ class Command(BaseCommand):
         parser.add_argument(
             "--note", default="",
             help="Optional note recorded on the attendance event.")
+        parser.add_argument(
+            "--dry-run", action="store_true",
+            help="Preview the AttendanceRecord that would be "
+                 "written and write nothing.")
 
     def handle(self, *args, **options):
         try:
@@ -76,6 +86,20 @@ class Command(BaseCommand):
                 f"No staff member with id "
                 f"{options['staff_member_id']}.") from None
         recorded_at = _coerce_at(options.get("at"))
+        if options.get("dry_run"):
+            if not staff_member.is_checked_in():
+                raise CommandError(
+                    f"{staff_member} is not checked in")
+            when = recorded_at or timezone.now()
+            self.stdout.write(
+                f"Dry run: would create AttendanceRecord "
+                f"staff_member={staff_member} "
+                f"staff_member_id={staff_member.pk} "
+                f"event_type={AttendanceRecord.EventType.CHECK_OUT} "
+                f"recorded_at={when} "
+                f"note={options.get('note') or ''!r} "
+                f"-- no record written.")
+            return
         try:
             record = check_out(
                 staff_member, recorded_at=recorded_at,

@@ -159,14 +159,13 @@ def copy_member_services(source, target):
     )
 
 
-def seed_salon_capabilities(salon):
-    """Materialise the derived matrix for ``salon`` into rows.
+def _seed_plan(salon):
+    """(members, candidates) the seed would create for ``salon``.
 
-    Creates a :class:`StaffService` row for every (member, active
-    service) pair that lacks one, with ``enabled`` set to what the
-    price book derives today (an unpriced service seeds everyone
-    enabled — the open case, made explicit). Existing rows are
-    never touched. Returns ``(created, enabled)`` counts.
+    Each candidate is a ``(member, service, enabled)`` triple for a
+    (member, active service) pair that lacks a row. Read-only: both
+    the real seed and its dry-run preview are built on this plan,
+    so their counts can never disagree.
     """
     members = list(StaffMember.objects.filter(salon=salon))
     existing = set(
@@ -180,7 +179,7 @@ def seed_salon_capabilities(salon):
         ).values_list("service_id", "staff_level_id")
     )
     priced_services = {service_id for service_id, _ in priced}
-    created = enabled = 0
+    candidates = []
     for service in Service.objects.filter(category__salon=salon, active=True):
         for member in members:
             if (member.pk, service.pk) in existing:
@@ -189,10 +188,48 @@ def seed_salon_capabilities(salon):
                 member.staff_level_id is not None
                 and (service.pk, member.staff_level_id) in priced
             )
-            StaffService.objects.create(
-                staff_member=member, service=service, enabled=on
-            )
-            created += 1
-            if on:
-                enabled += 1
+            candidates.append((member, service, on))
+    return members, candidates
+
+
+def seed_salon_capabilities(salon):
+    """Materialise the derived matrix for ``salon`` into rows.
+
+    Creates a :class:`StaffService` row for every (member, active
+    service) pair that lacks one, with ``enabled`` set to what the
+    price book derives today (an unpriced service seeds everyone
+    enabled — the open case, made explicit). Existing rows are
+    never touched. Returns ``(created, enabled)`` counts.
+    """
+    _members, candidates = _seed_plan(salon)
+    created = enabled = 0
+    for member, service, on in candidates:
+        StaffService.objects.create(
+            staff_member=member, service=service, enabled=on
+        )
+        created += 1
+        if on:
+            enabled += 1
     return created, enabled
+
+
+def preview_seed_salon_capabilities(salon):
+    """Dry-run twin of :func:`seed_salon_capabilities`: write nothing.
+
+    Returns ``(would_create, would_enable, per_member)`` where
+    ``per_member`` maps every member id of the salon to its own
+    ``(would_create, would_enable)`` counts (zeroes included).
+    """
+    members, candidates = _seed_plan(salon)
+    per_member = {member.pk: [0, 0] for member in members}
+    for member, _service, on in candidates:
+        per_member[member.pk][0] += 1
+        if on:
+            per_member[member.pk][1] += 1
+    would_create = sum(counts[0] for counts in per_member.values())
+    would_enable = sum(counts[1] for counts in per_member.values())
+    return (
+        would_create,
+        would_enable,
+        {pk: tuple(counts) for pk, counts in per_member.items()},
+    )
