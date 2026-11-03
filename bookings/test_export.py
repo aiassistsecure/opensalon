@@ -1,4 +1,5 @@
 import datetime
+import json
 from decimal import Decimal
 
 from django.test import TestCase
@@ -176,3 +177,73 @@ class SnapshotAndStatusTests(ExportTestCase):
         self.assertEqual([r["id"] for r in rows], [cancelled.pk, booked.pk])
         rows = export_appointments(self.salon, DAY, DAY, include_cancelled=False)
         self.assertEqual([r["id"] for r in rows], [booked.pk])
+
+
+class CompletenessTests(ExportTestCase):
+    """Every concrete Appointment field appears and round-trips."""
+
+    # Model field name -> export key(s) carrying it verbatim.
+    FIELD_TO_KEYS = {
+        "id": ["id"],
+        "external_id": ["external_id"],
+        "client": ["client_id"],
+        "staff_member": ["staff_member_id"],
+        "service": ["service_id"],
+        "service_name": ["service_name", "service_name_snapshot"],
+        "start": ["start"],
+        "end": ["end"],
+        "status": ["status"],
+        "origin": ["origin"],
+        "price_override": ["price_override"],
+        "payload": ["payload"],
+        "created_at": ["created_at"],
+        "updated_at": ["updated_at"],
+    }
+
+    def test_every_concrete_model_field_is_exported(self):
+        concrete = {f.name for f in Appointment._meta.concrete_fields}
+        self.assertEqual(concrete, set(self.FIELD_TO_KEYS))
+        for keys in self.FIELD_TO_KEYS.values():
+            for key in keys:
+                self.assertIn(key, EXPORT_FIELDNAMES)
+        # "price" is the only export key that is not a model field.
+        exported = {k for keys in self.FIELD_TO_KEYS.values() for k in keys}
+        self.assertEqual(set(EXPORT_FIELDNAMES) - exported, {"price"})
+
+    def test_all_stored_fields_round_trip_verbatim(self):
+        payload = {"price": "999", "source": "audit",
+                   "nested": {"tags": ["a", "b"], "n": 3}}
+        appt = self._appt(
+            external_id="ext-appt-123",
+            origin=Appointment.Origin.ONLINE,
+            price_override=Decimal("70.50"),
+            payload=payload,
+            service_name="Snapshot Name",
+            status=Appointment.Status.CONFIRMED,
+        )
+        appt.refresh_from_db()
+        (row,) = export_appointments(self.salon, DAY, DAY)
+        self.assertEqual(list(row.keys()), EXPORT_FIELDNAMES)
+        self.assertEqual(row["external_id"], "ext-appt-123")
+        self.assertEqual(row["origin"], "online")
+        self.assertEqual(row["price_override"], "70.50")
+        self.assertEqual(Decimal(row["price_override"]), appt.price_override)
+        self.assertEqual(row["payload"], payload)
+        # Resolved name still wins for service_name; snapshot verbatim.
+        self.assertEqual(row["service_name"], "Haircut")
+        self.assertEqual(row["service_name_snapshot"], "Snapshot Name")
+        self.assertEqual(row["created_at"], appt.created_at.isoformat())
+        self.assertEqual(row["updated_at"], appt.updated_at.isoformat())
+        # Whole row survives a JSON round-trip unchanged.
+        self.assertEqual(json.loads(json.dumps(row)), row)
+
+    def test_defaults_round_trip_verbatim(self):
+        self._appt()
+        (row,) = export_appointments(self.salon, DAY, DAY)
+        self.assertEqual(row["external_id"], "")
+        self.assertEqual(row["origin"], "unknown")
+        self.assertIsNone(row["price_override"])
+        self.assertEqual(row["payload"], {})
+        self.assertEqual(row["service_name_snapshot"], "")
+        self.assertIsNotNone(row["created_at"])
+        self.assertIsNotNone(row["updated_at"])

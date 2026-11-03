@@ -21,6 +21,23 @@ per appointment, with exactly :data:`EXPORT_FIELDNAMES` keys:
 - ``start`` / ``end``: ISO-8601 strings, as stored.
 - ``status``: the ``Appointment.status`` value.
 - ``price``: see below.
+- ``external_id``: the stored source id, verbatim (blank when the
+  appointment was created directly in OpenSalon).
+- ``origin``: the stored ``Appointment.origin`` value.
+- ``price_override``: the desk's own price for this appointment,
+  formatted like ``price`` (two decimal places, as a string), or
+  ``None`` when the price book speaks. Distinct from the derived
+  ``price`` below: this is a stored field, exported verbatim.
+- ``payload``: the whole source record preserved verbatim on the
+  appointment (DYOR section 9), as stored.
+- ``service_name_snapshot``: the stored ``service_name`` snapshot,
+  verbatim — unlike the resolved ``service_name`` above, this
+  keeps the snapshot even when a linked service is later renamed.
+- ``created_at`` / ``updated_at``: ISO-8601 strings, as stored.
+
+Every concrete field of :class:`bookings.models.Appointment` is
+represented above (``id``, the three FK ids, and each scalar);
+``price`` is the only derived (non-model) key.
 
 Price: ``Appointment`` stores no price (the import path documents
 the same: the source price is not stored), so there is no charged
@@ -76,6 +93,13 @@ EXPORT_FIELDNAMES = [
     "end",
     "status",
     "price",
+    "external_id",
+    "origin",
+    "price_override",
+    "payload",
+    "service_name_snapshot",
+    "created_at",
+    "updated_at",
 ]
 
 _ZERO = Decimal("0.00")
@@ -166,5 +190,22 @@ def export_appointments(salon, date_from, date_to=None, *, include_cancelled=Tru
             "end": appt.end.isoformat() if appt.end else None,
             "status": appt.status,
             "price": _money(amount) if amount is not None else None,
+            "external_id": appt.external_id,
+            "origin": appt.origin,
+            "price_override": (
+                _money(appt.price_override)
+                if appt.price_override is not None else None
+            ),
+            "payload": (
+                dict(appt.payload) if isinstance(appt.payload, dict)
+                else appt.payload
+            ),
+            "service_name_snapshot": appt.service_name,
+            "created_at": (
+                appt.created_at.isoformat() if appt.created_at else None
+            ),
+            "updated_at": (
+                appt.updated_at.isoformat() if appt.updated_at else None
+            ),
         })
     return rows
