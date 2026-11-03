@@ -105,13 +105,12 @@ from django.db import transaction
 
 from saloncore.dry_run import build_dry_run_reports
 from saloncore.models import (
-    PriceChange,
     Salon,
     Service,
     ServiceCategory,
-    ServicePrice,
     StaffLevel,
 )
+from saloncore.pricing import set_price as _set_price
 
 BASE_LEVEL_DEFAULT = "Base"
 
@@ -630,23 +629,15 @@ class Command(BaseCommand):
 
             def set_price(service, level, amount, is_from=None,
                           price_active=None):
-                defaults = {"amount": amount,
-                            "active": True if price_active is None
-                            else price_active}
-                if is_from is not None:
-                    defaults["is_from"] = is_from
-                old = ServicePrice.objects.filter(
-                    service=service, staff_level=level).first()
-                price, created = ServicePrice.objects.update_or_create(
-                    service=service, staff_level=level,
-                    defaults=defaults)
-                stats["prices"] += int(created)
-                if old and not created and old.amount != amount:
-                    PriceChange.objects.create(
-                        service_price=price, changed_by="import_price_book",
-                        old_amount=old.amount, new_amount=amount,
-                        note="Price book import")
-                return price
+                # The write itself is the saloncore.pricing service
+                # (extracted from this closure); the importer only
+                # names itself as the audit caller and counts creates.
+                result = _set_price(
+                    service, level, amount, is_from=is_from,
+                    changed_by="import_price_book",
+                    note="Price book import", price_active=price_active)
+                stats["prices"] += int(result.created)
+                return result.price
 
             base_level = None
             for plan in plans:
