@@ -21,7 +21,8 @@ from django.core.exceptions import ValidationError
 from clients.models import Client, ClientNote
 from saloncore.models import Salon
 
-__all__ = ["add_client_note", "list_client_notes"]
+__all__ = ["add_client_note", "list_client_notes",
+           "validate_add_client_note"]
 
 
 def _clean_body(body):
@@ -44,6 +45,23 @@ def _resolve(salon, client):
         raise ValidationError("Client belongs to a different salon.")
 
 
+def validate_add_client_note(salon, client, body, author=""):
+    """Validate an ``add_client_note`` call without writing.
+
+    Performs every check :func:`add_client_note` performs and
+    returns the normalized ``(body, author_name)`` the writer
+    would store (both stripped; author blank by default).
+    Raises the same ``ValidationError`` the writer would
+    raise. Reads/writes nothing beyond validation reads, so
+    it is safe for ``--dry-run`` previews on every backend
+    (including NEDB, where a rolled-back transaction does
+    not undo writes).
+    """
+    _resolve(salon, client)
+    author_name = author.strip() if isinstance(author, str) else ""
+    return _clean_body(body), author_name
+
+
 def add_client_note(salon, client, body, author=""):
     """Add a persistent record note to ``client`` in ``salon``.
 
@@ -54,10 +72,10 @@ def add_client_note(salon, client, body, author=""):
     mismatched salon/client or an empty body. The note lives on
     the client profile alone; no ``AppointmentNote`` is created.
     """
-    _resolve(salon, client)
-    author_name = author.strip() if isinstance(author, str) else ""
+    body_clean, author_name = validate_add_client_note(
+        salon, client, body, author=author)
     return ClientNote.objects.create(
-        client=client, body=_clean_body(body), author_name=author_name,
+        client=client, body=body_clean, author_name=author_name,
     )
 
 

@@ -10,7 +10,8 @@ from django.test import TestCase
 
 from bookings.models import AppointmentNote
 from clients.models import Client, ClientNote
-from clients.notes import add_client_note, list_client_notes
+from clients.notes import (
+    add_client_note, list_client_notes, validate_add_client_note)
 from saloncore.models import Salon
 
 
@@ -71,6 +72,25 @@ class AddClientNoteTests(NotesBase):
     def test_creates_no_appointment_note(self):
         add_client_note(self.salon, self.client, "Persistent record")
         self.assertEqual(AppointmentNote.objects.count(), 0)
+
+    def test_validate_add_client_note_writes_nothing(self):
+        # Regression (NEDB dry-run): validation must not create a row.
+        result = validate_add_client_note(
+            self.salon, self.client, "  Valid but unsaved  ",
+            author="  Desk  ")
+        self.assertEqual(result, ("Valid but unsaved", "Desk"))
+        self.assertEqual(ClientNote.objects.count(), 0)
+        for body in ("", "   ", None, 123):
+            with self.assertRaises(ValidationError):
+                validate_add_client_note(self.salon, self.client, body)
+        foreign = Client.objects.create(
+            salon=self.other_salon, first_name="Out", last_name="Sider")
+        with self.assertRaises(ValidationError):
+            validate_add_client_note(self.salon, foreign, "Nope")
+        with self.assertRaises(ValidationError):
+            validate_add_client_note(
+                Salon(name="Unsaved"), self.client, "Text")
+        self.assertEqual(ClientNote.objects.count(), 0)
 
 
 class ListClientNotesTests(NotesBase):
