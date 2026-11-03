@@ -1,3 +1,5 @@
+import csv
+import io
 import json
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -11,7 +13,9 @@ from catalog.movement_export import (
     TOTAL_FIELDNAMES,
     export_movement_export,
     export_movements,
+    export_movements_csv,
     movement_totals,
+    movements_csv,
 )
 from saloncore.models import Salon
 
@@ -117,6 +121,30 @@ class MovementExportTests(TestCase):
         self.assertEqual(movement_totals(self.salon, empty_day, empty_day), [])
         combined = export_movement_export(self.salon, empty_day, empty_day)
         self.assertEqual(combined, {"movements": [], "totals": []})
+
+    def test_csv_header_and_rows_equal_list_export(self):
+        p = self.make_product("Shampoo", sku="SH-001", barcode="0123")
+        self.move(p, 10, note="delivery", on=self.day)
+        self.move(p, -3, kind=StockMovement.Kind.SALE, on=self.day)
+        text = export_movements_csv(self.salon, self.day, self.day)
+        lines = list(csv.reader(io.StringIO(text)))
+        self.assertEqual(lines[0], MOVEMENT_FIELDNAMES)
+        records = export_movements(self.salon, self.day, self.day)
+        parsed = list(csv.DictReader(io.StringIO(text)))
+        self.assertEqual(
+            parsed,
+            [{k: str(v) for k, v in r.items()} for r in records])
+        self.assertEqual([list(r) for r in parsed],
+                         [MOVEMENT_FIELDNAMES] * len(records))
+        self.assertIs(movements_csv, export_movements_csv)
+
+    def test_csv_empty_range_is_header_only(self):
+        p = self.make_product("Shampoo")
+        self.move(p, 7, on=self.day)
+        empty_day = self.day + timedelta(days=30)
+        self.assertEqual(
+            export_movements_csv(self.salon, empty_day, empty_day),
+            ",".join(MOVEMENT_FIELDNAMES) + "\n")
 
     def test_combined_export_and_read_only(self):
         p = self.make_product("Shampoo")

@@ -35,7 +35,15 @@ A ``datetime`` is used as given (naive datetimes are interpreted
 in the current time zone). Ordering of movement rows is
 deterministic: by ``created_at``, then id (the model's own
 ordering). Totals rows are ordered by product name, then id.
+
+The CSV rendering (:func:`export_movements_csv`) is built from
+that same :func:`export_movements` list, so the two formats can
+never disagree — one source of truth. It renders the movement
+rows only (the totals rollup stays in the JSON-shaped combined
+export); it adds no fields, filtering, or computation of its own.
 """
+import csv
+import io
 from datetime import date, datetime, time, timedelta
 
 from django.utils import timezone
@@ -46,6 +54,8 @@ __all__ = [
     "MOVEMENT_FIELDNAMES",
     "TOTAL_FIELDNAMES",
     "export_movements",
+    "export_movements_csv",
+    "movements_csv",
     "movement_totals",
     "export_movement_export",
     "movement_export",
@@ -135,6 +145,29 @@ def export_movements(salon, start=None, end=None):
     Records nothing.
     """
     return [_record(m) for m in _movements_in_range(salon, start, end)]
+
+
+def export_movements_csv(salon, start=None, end=None):
+    """Return ``salon``'s movements in the range as a CSV string.
+
+    The header row is :data:`MOVEMENT_FIELDNAMES` and every data
+    row comes from :func:`export_movements` with the same
+    arguments, so the CSV and list exports always agree. A range
+    with no movements exports as the header row alone. Lines end
+    with ``"\\n"``. Records nothing.
+    """
+    buffer = io.StringIO()
+    writer = csv.DictWriter(
+        buffer, fieldnames=MOVEMENT_FIELDNAMES, lineterminator="\n"
+    )
+    writer.writeheader()
+    for record in export_movements(salon, start=start, end=end):
+        writer.writerow(record)
+    return buffer.getvalue()
+
+
+#: Alias, mirroring the naming convenience in sibling services.
+movements_csv = export_movements_csv
 
 
 def movement_totals(salon, start=None, end=None):
