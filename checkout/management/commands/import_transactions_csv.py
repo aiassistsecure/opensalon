@@ -70,9 +70,21 @@ command takes the directory as an argument and commits
 no data. Run summary follows the import_salon_data
 precedent (one IMPORT_SUMMARY line, one IMPORT_SKIPPED
 line accounting for everything not imported).
+
+With ``--dry-run`` the directory is parsed and counted
+exactly as for a real import but NOTHING is written (no
+sale, item or payment rows): a JSON dry-run report from
+``saloncore.dry_run`` is printed to stdout first — one
+report per source file, per-key inferred types, distinct
+null / missing / empty-string counts, and the source keys
+this importer does not map — followed by the same
+IMPORT_SUMMARY / IMPORT_SKIPPED lines a real run would
+print, their counts read as would-create counts, and the
+command exits 0.
 """
 import csv
 import io
+import json
 from collections import defaultdict
 from datetime import datetime, time
 from decimal import Decimal, InvalidOperation
@@ -85,7 +97,19 @@ from django.db import transaction
 from catalog.models import Product
 from checkout.models import Payment, Sale, SaleItem
 from clients.models import Client
+from saloncore.dry_run import build_dry_run_reports
 from saloncore.models import Salon, Service
+
+# Every source key this importer actually maps. Anything else in a
+# source row is reported as unmapped by --dry-run so nothing is
+# silently dropped without being named first.
+MAPPED_KEYS = frozenset({
+    "transaction_id", "purchased_date", "purchase_time", "client_id",
+    "item_type", "description", "quantity", "unit_price",
+    "discount_amount", "net_total_amount", "service_id", "product_id",
+    "void", "purchase_type", "payment_type_names",
+    "payment_type_amounts",
+})
 
 REVENUE_KINDS = {
     "SERVICE": SaleItem.Kind.SERVICE,
@@ -106,6 +130,30 @@ def _salon_tz(salon):
         return ZoneInfo(salon.timezone or "UTC")
     except (ZoneInfoNotFoundError, ValueError):
         return ZoneInfo("UTC")
+
+
+def _line_values(row):
+    """One revenue row's (quantity, unit_price, discount_amount).
+
+    Refund lines carry a negative quantity (and a negative
+    discount) — a shape the models cannot hold (quantity and
+    discount are non-negative there). Such a line is folded
+    to a positive quantity at its exact settled net per unit,
+    discount zero: the net — the figure the books reconcile
+    on — is exact; only the refund line's own gross/discount
+    split is not carried. Shared by the real import and the
+    dry-run counter so both count the same lines.
+    """
+    quantity = int(_decimal(row.get("quantity")))
+    unit_price = _decimal(row.get("unit_price"))
+    discount = _decimal(row.get("discount_amount"))
+    if quantity <= 0:
+        quantity = abs(quantity) or 1
+        unit_price = (
+            _decimal(row.get("net_total_amount")) / quantity
+        ).quantize(Decimal("0.01"))
+        discount = Decimal("0")
+    return quantity, unit_price, discount
 
 
 def _transaction_when(row, tz):
@@ -139,6 +187,12 @@ class Command(BaseCommand):
             default=None,
             help="Salon id to import into (default: the only salon).",
         )
+        parser.add_argument(
+            "--dry-run", action="store_true",
+            help="Print a JSON dry-run report (saloncore.dry_run) "
+                 "for the source files plus the IMPORT_SUMMARY / "
+                 "IMPORT_SKIPPED counts a real run would produce, "
+                 "and write nothing.")
 
     def _resolve_salon(self, salon_id):
         if salon_id is not None:
@@ -190,6 +244,7 @@ class Command(BaseCommand):
         stats = defaultdict(int)
         stats["excluded_amount"] = Decimal("0")
         transactions = {}
+        file_records = {}
         for path in files:
             stats["files"] += 1
             # Real exports arrive in both UTF-8 and Latin-1 (older
@@ -202,13 +257,27 @@ class Command(BaseCommand):
                 text = raw.decode("utf-8-sig")
             except UnicodeDecodeError:
                 text = raw.decode("latin-1")
-            for row in csv.DictReader(io.StringIO(text)):
+            rows = list(csv.DictReader(io.StringIO(text)))
+            file_records[str(path)] = rows
+            for row in rows:
                 stats["rows_read"] += 1
                 txn_id = (row.get("transaction_id") or "").strip()
                 if not txn_id:
                     stats["rows_without_id"] += 1
                     continue
                 transactions.setdefault(txn_id, []).append(row)
+
+        if options["dry_run"]:
+            # Zero writes: the schema report reads only the rows
+            # parsed above; the counting loop below only reads
+            # the salon's existing book (clients, services,
+            # products, known payment references).
+            self.stdout.write(json.dumps(
+                build_dry_run_reports({
+                    name: (rows, MAPPED_KEYS)
+                    for name, rows in file_records.items()
+                }),
+                indent=2, sort_keys=True))
 
         for txn_id, rows in transactions.items():
             stats["transactions"] += 1
@@ -232,10 +301,15 @@ class Command(BaseCommand):
                 stats["sales_existing"] += 1
                 continue
             try:
-                self._import_transaction(
-                    salon, tz, txn_id, live, revenue,
-                    clients, services, products, stats,
-                )
+                if options["dry_run"]:
+                    self._count_transaction(
+                        tz, txn_id, live, revenue, clients, stats,
+                    )
+                else:
+                    self._import_transaction(
+                        salon, tz, txn_id, live, revenue,
+                        clients, services, products, stats,
+                    )
             except Exception as exc:  # one bad transaction
                 # never aborts the import — it is counted,
                 # named, and left for a later re-run.
@@ -267,7 +341,41 @@ class Command(BaseCommand):
             f"rows_without_id={stats['rows_without_id']} "
             f"failed_transactions={stats['failed']}"
         )
-        self.stdout.write(f"Imported transactions from {directory}")
+        if options["dry_run"]:
+            self.stdout.write(
+                f"Dry run: no transactions were imported from {directory}"
+            )
+        else:
+            self.stdout.write(f"Imported transactions from {directory}")
+
+    def _count_transaction(self, tz, txn_id, live, revenue,
+                           clients, stats):
+        """Dry-run twin of ``_import_transaction``: count, never write.
+
+        Mirrors the real import's order and arithmetic — client
+        match, moment parse (a bad moment fails the transaction
+        exactly as in a real run), one would-create item per
+        revenue row via the shared ``_line_values`` fold, and
+        the tender split via the shared ``_tender_parts`` over
+        the would-be sale total — so the summary counts are the
+        counts a real run on the same data produces.
+        """
+        first = live[0]
+        is_refund = (first.get("purchase_type") or "").strip() == "REFUND"
+        client = clients.get((first.get("client_id") or "").strip())
+        if client is None:
+            stats["clients_unmatched"] += 1
+        _transaction_when(first, tz)
+        total = Decimal("0")
+        for row in revenue:
+            quantity, unit_price, discount = _line_values(row)
+            total += quantity * unit_price - discount
+            stats["items_created"] += 1
+        stats["payments_created"] += len(
+            self._tender_parts(first, total))
+        stats["sales_created"] += 1
+        if is_refund:
+            stats["refund_sales"] += 1
 
     def _import_transaction(self, salon, tz, txn_id, live, revenue,
                             clients, services, products, stats):
@@ -292,24 +400,7 @@ class Command(BaseCommand):
             sale.created_at = when
             for row in revenue:
                 kind = REVENUE_KINDS[(row.get("item_type") or "").strip()]
-                quantity = int(_decimal(row.get("quantity")))
-                unit_price = _decimal(row.get("unit_price"))
-                discount = _decimal(row.get("discount_amount"))
-                if quantity <= 0:
-                    # Refund lines carry a negative quantity (and
-                    # a negative discount) — a shape the models
-                    # cannot hold (quantity and discount are
-                    # non-negative there). Fold the line into a
-                    # positive quantity at its exact settled net
-                    # per unit, discount zero: the net — the
-                    # figure the books reconcile on — is exact;
-                    # only the refund line's own gross/discount
-                    # split is not carried.
-                    quantity = abs(quantity) or 1
-                    unit_price = (
-                        _decimal(row.get("net_total_amount")) / quantity
-                    ).quantize(Decimal("0.01"))
-                    discount = Decimal("0")
+                quantity, unit_price, discount = _line_values(row)
                 item = SaleItem(
                     sale=sale,
                     kind=kind,
@@ -328,7 +419,7 @@ class Command(BaseCommand):
                     )
                 item.save()
                 stats["items_created"] += 1
-            for method, amount in self._tender_parts(first, sale):
+            for method, amount in self._tender_parts(first, sale.total):
                 Payment.objects.create(
                     sale=sale,
                     method=method,
@@ -345,13 +436,13 @@ class Command(BaseCommand):
             stats["refund_sales"] += 1
 
     @staticmethod
-    def _tender_parts(first_row, sale):
+    def _tender_parts(first_row, sale_total):
         """The source's tender split as (method, amount) pairs.
 
         Cash keeps its name; every other tender is an external
         tender. When the split is absent or unreadable, fall
-        back to one external payment of the sale's total so
-        the settlement is still on record.
+        back to one external payment of ``sale_total`` so the
+        settlement is still on record.
         """
         names = (first_row.get("payment_type_names") or "").split(";")
         amounts = (first_row.get("payment_type_amounts") or "").split(";")
@@ -366,5 +457,5 @@ class Command(BaseCommand):
                 _decimal(amount),
             ))
         if not parts:
-            parts = [(Payment.Method.EXTERNAL, sale.total)]
+            parts = [(Payment.Method.EXTERNAL, sale_total)]
         return parts
