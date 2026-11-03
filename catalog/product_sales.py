@@ -29,12 +29,35 @@ Rows cover every product of the salon — active or not, since a
 retired product's sales history must not vanish — ordered by
 ``retail_revenue`` descending, then ``units_sold`` descending,
 then product name and id.
+
+Optional window (``start`` / ``end``, aliases ``start_date`` /
+``end_date``): each bound may be a ``date``, ``datetime``, or ISO
+date string, is inclusive, and covers whole local days in the
+salon's timezone. When a window is given, ``units_sold`` and
+``retail_revenue`` count only sales whose effective date — the
+sale's ``completed_at`` when set, otherwise its ``created_at``
+(the codebase-wide convention) — falls in the window. Either
+bound may be given alone. A reversed window raises ``ValueError``.
+
+STOCK SCOPE — never silently mixed: ``current_stock``,
+``average_stock``, and ``stock_turns`` are ALWAYS derived
+all-time, window or not. ``stock_turns`` is all-time units sold
+over all-time average stock, so a windowed row's turns do NOT
+use its windowed units. Rows and the report document this
+explicitly: ``stock_scope == "all_time"`` always, while
+``sales_scope`` is ``"windowed"`` when a window is given and
+``"all_time"`` otherwise, and ``start_date`` / ``end_date``
+carry the normalised window (``None`` when unbounded). With no
+window the report is exactly the historic all-time report.
 """
 from dataclasses import dataclass
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from django.db.models import ExpressionWrapper, F, Sum, Value
+from django.db.models import ExpressionWrapper, F, Q, Sum, Value
 from django.db.models.functions import Coalesce
+from django.utils import timezone
 
 from catalog.models import Product, StockMovement
 from checkout.models import Sale, SaleItem
@@ -57,6 +80,13 @@ class ProductSalesRow:
     current_stock: int
     average_stock: Decimal
     stock_turns: Decimal
+    # Scope documentation, never silently mixed: the sales figures
+    # above follow ``sales_scope`` / the window bounds; the stock
+    # figures above are always all-time (``stock_scope``).
+    start_date: date = None
+    end_date: date = None
+    sales_scope: str = "all_time"
+    stock_scope: str = "all_time"
 
 
 @dataclass(frozen=True)
@@ -69,6 +99,18 @@ class ProductSalesReport:
     rows: tuple
     total_units_sold: int
     total_retail_revenue: Decimal
+    start_date: date = None
+    end_date: date = None
+    sales_scope: str = "all_time"
+    stock_scope: str = "all_time"
+
+    @property
+    def window_start(self):
+        return self.start_date
+
+    @property
+    def window_end(self):
+        return self.end_date
 
     def __iter__(self):
         return iter(self.rows)
@@ -99,7 +141,74 @@ def _average_stock(product):
     return (Decimal(total) / Decimal(len(deltas))).quantize(_TURNS_PLACES)
 
 
-def product_sales(salon):
+def _salon_tz(salon):
+    try:
+        return ZoneInfo(getattr(salon, "timezone", None) or "UTC")
+    except (ZoneInfoNotFoundError, ValueError):
+        return ZoneInfo("UTC")
+
+
+def _as_local_date(value, tz):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = date.fromisoformat(value)
+    if isinstance(value, datetime):
+        if timezone.is_aware(value):
+            return value.astimezone(tz).date()
+        return value.date()
+    if isinstance(value, date):
+        return value
+    raise ValueError("window bounds must be a date, datetime, or ISO date string")
+
+
+def _resolve_window(salon, start, end, start_date, end_date):
+    tz = _salon_tz(salon)
+    first = _as_local_date(start if start is not None else start_date, tz)
+    last = _as_local_date(end if end is not None else end_date, tz)
+    if first is not None and last is not None and last < first:
+        raise ValueError("window end must not be before window start")
+    return first, last, tz
+
+
+def _window_q(first, last, tz):
+    """Q matching lines whose sale's effective date is in-window."""
+    if first is None and last is None:
+        return None
+    start_dt = (datetime.combine(first, time.min, tzinfo=tz)
+                if first is not None else None)
+    end_dt = (datetime.combine(last + timedelta(days=1), time.min, tzinfo=tz)
+              if last is not None else None)
+    completed = Q()
+    created = Q(sale__completed_at__isnull=True)
+    if start_dt is not None:
+        completed &= Q(sale__completed_at__gte=start_dt)
+        created &= Q(sale__created_at__gte=start_dt)
+    if end_dt is not None:
+        completed &= Q(sale__completed_at__lt=end_dt)
+        created &= Q(sale__created_at__lt=end_dt)
+    return completed | created
+
+
+def _sales_agg(salon, window_q):
+    qs = SaleItem.objects.filter(
+        sale__salon=salon, sale__status=Sale.Status.COMPLETED,
+        kind=SaleItem.Kind.PRODUCT, product__isnull=False)
+    if window_q is not None:
+        qs = qs.filter(window_q)
+    return {
+        row["product_id"]: row
+        for row in qs.values("product_id").annotate(
+            units=Coalesce(Sum("quantity"), Value(0)),
+            revenue=Coalesce(
+                Sum(ExpressionWrapper(
+                    F("quantity") * F("unit_price"),
+                    output_field=SaleItem._meta.get_field("unit_price"))),
+                Value(ZERO)))
+    }
+
+
+def product_sales(salon, start=None, end=None, *, start_date=None, end_date=None):
     """Return the per-product sales + stock turns report for ``salon``.
 
     See the module docstring for the full contract: completed
@@ -107,31 +216,15 @@ def product_sales(salon):
     current and average stock, turns safe on zero average stock,
     every product of the salon as a row (sold or not, active or
     not), ordered by revenue descending, units descending, then
-    product name and id.
+    product name and id. The optional window (``start`` / ``end``,
+    aliases ``start_date`` / ``end_date``) windows units/revenue
+    only; stock figures stay all-time, documented on the rows.
     """
+    first, last, tz = _resolve_window(salon, start, end, start_date, end_date)
+    windowed = first is not None or last is not None
     products = Product.objects.filter(salon=salon).order_by("name", "id")
-    sales = {
-        row["product_id"]: row
-        for row in SaleItem.objects.filter(
-            sale__salon=salon,
-            sale__status=Sale.Status.COMPLETED,
-            kind=SaleItem.Kind.PRODUCT,
-            product__isnull=False,
-        )
-        .values("product_id")
-        .annotate(
-            units=Coalesce(Sum("quantity"), Value(0)),
-            revenue=Coalesce(
-                Sum(
-                    ExpressionWrapper(
-                        F("quantity") * F("unit_price"),
-                        output_field=SaleItem._meta.get_field("unit_price"),
-                    )
-                ),
-                Value(ZERO),
-            ),
-        )
-    }
+    sales = _sales_agg(salon, _window_q(first, last, tz))
+    all_time = sales if not windowed else _sales_agg(salon, None)
     on_hand = {
         row["product_id"]: row["total"]
         for row in StockMovement.objects.filter(product__salon=salon)
@@ -145,11 +238,14 @@ def product_sales(salon):
         sold = sales.get(product.pk, {})
         units_sold = sold.get("units", 0) or 0
         retail_revenue = (sold.get("revenue", ZERO) or ZERO).quantize(ZERO)
+        all_units = all_time.get(product.pk, {}).get("units", 0) or 0
         average_stock = _average_stock(product)
         if average_stock == 0:
             stock_turns = Decimal("0.0000")
         else:
-            stock_turns = (Decimal(units_sold) / average_stock).quantize(
+            # All-time turns: all-time units over all-time average
+            # stock, even on a windowed report (module docstring).
+            stock_turns = (Decimal(all_units) / average_stock).quantize(
                 _TURNS_PLACES
             )
         rows.append(
@@ -162,6 +258,10 @@ def product_sales(salon):
                 current_stock=on_hand.get(product.pk, 0) or 0,
                 average_stock=average_stock,
                 stock_turns=stock_turns,
+                start_date=first,
+                end_date=last,
+                sales_scope="windowed" if windowed else "all_time",
+                stock_scope="all_time",
             )
         )
         total_units_sold += units_sold
@@ -179,6 +279,10 @@ def product_sales(salon):
         rows=tuple(rows),
         total_units_sold=total_units_sold,
         total_retail_revenue=total_retail_revenue.quantize(ZERO),
+        start_date=first,
+        end_date=last,
+        sales_scope="windowed" if windowed else "all_time",
+        stock_scope="all_time",
     )
 
 

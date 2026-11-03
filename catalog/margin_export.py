@@ -31,6 +31,15 @@ Money and percents are rendered as strings from ``Decimal`` to
 two places, never passed through a float. A ``None`` value (no
 cost recorded, or ``margin_percent`` on zero revenue) renders as
 an empty string in both formats.
+
+Optional window: both exports accept the same optional
+``start`` / ``end`` (aliases ``start_date`` / ``end_date``) as
+:func:`catalog.margin.product_margin` and pass them verbatim.
+With no window the output is byte-identical to the historic
+export (keys/header exactly :data:`MARGIN_FIELDNAMES`). With a
+window, ``sales_start_date`` / ``sales_end_date`` keys are
+appended to every record so the window is documented, never
+silent.
 """
 import csv
 import io
@@ -74,8 +83,12 @@ def _money(value):
     return "" if value is None else str(Decimal(value).quantize(_CENTS))
 
 
+#: Extra keys appended only on a windowed export (see docstring).
+WINDOW_FIELDNAMES = ["sales_start_date", "sales_end_date"]
+
+
 def _record(row):
-    return {
+    record = {
         "product_id": row.product.pk,
         "product_name": row.product.name,
         "sku": row.sku,
@@ -87,35 +100,56 @@ def _record(row):
         "margin": _money(row.margin),
         "margin_percent": _money(row.margin_percent),
     }
+    if row.start_date is not None or row.end_date is not None:
+        record.update({
+            "sales_start_date": (
+                row.start_date.isoformat() if row.start_date else ""),
+            "sales_end_date": (
+                row.end_date.isoformat() if row.end_date else ""),
+        })
+    return record
 
 
-def export_product_margin(salon):
+def export_product_margin(salon, start=None, end=None, *,
+                          start_date=None, end_date=None):
     """Return ``salon``'s margin rows as a list of dicts.
 
     Each entry is a dict with exactly :data:`MARGIN_FIELDNAMES`
-    keys, built directly from
+    keys (plus the window documentation keys on a windowed
+    export), built directly from
     :func:`catalog.margin.product_margin`. Only ``salon``'s
     products are included, in the report's order. A salon with no
     products returns ``[]``. Records nothing.
     """
-    return [_record(row) for row in product_margin(salon)]
+    return [_record(row) for row in product_margin(
+        salon, start=start, end=end,
+        start_date=start_date, end_date=end_date)]
 
 
-def export_product_margin_csv(salon):
+def export_product_margin_csv(salon, start=None, end=None, *,
+                              start_date=None, end_date=None):
     """Return ``salon``'s margin report as a CSV string.
 
-    The header row is :data:`MARGIN_FIELDNAMES` and every data row
-    comes from :func:`export_product_margin` with the same salon,
-    so the CSV and list exports always agree. A salon with no
-    products exports as the header row alone. Lines end with
-    ``"\\n"``. Records nothing.
+    The header row is :data:`MARGIN_FIELDNAMES` (plus the window
+    documentation columns on a windowed export) and every data
+    row comes from :func:`export_product_margin` with the same
+    salon and window, so the CSV and list exports always agree.
+    A salon with no products exports as the header row alone.
+    Lines end with ``"\\n"``. Records nothing.
     """
+    records = export_product_margin(
+        salon, start=start, end=end,
+        start_date=start_date, end_date=end_date)
+    fieldnames = MARGIN_FIELDNAMES
+    if records and "sales_start_date" in records[0]:
+        fieldnames = MARGIN_FIELDNAMES + WINDOW_FIELDNAMES
+    elif start is not None or end is not None or start_date is not None \
+            or end_date is not None:
+        fieldnames = MARGIN_FIELDNAMES + WINDOW_FIELDNAMES
     buffer = io.StringIO()
-    writer = csv.DictWriter(
-        buffer, fieldnames=MARGIN_FIELDNAMES, lineterminator="\n"
-    )
+    writer = csv.DictWriter(buffer, fieldnames=fieldnames, lineterminator="\n")
     writer.writeheader()
-    for record in export_product_margin(salon):
+    for record in records:
         writer.writerow(record)
     return buffer.getvalue()
 

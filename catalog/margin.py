@@ -34,8 +34,19 @@ Rows cover every product of the salon (the sales report's rows:
 active or not, sold or not) in the sales report's order:
 ``retail_revenue`` descending, ``units_sold`` descending, then
 product name and id.
+
+Optional window: ``product_margin`` accepts the same optional
+``start`` / ``end`` (aliases ``start_date`` / ``end_date``) as
+:func:`catalog.product_sales.product_sales` and passes them to
+that service verbatim, so windowed units/revenue — and therefore
+``cost`` (= current ``cost_price`` x windowed units), ``margin``,
+and ``margin_percent`` — follow the window exactly as the sales
+report defines it. Rows and the report carry the normalised
+``start_date`` / ``end_date``. No window is the historic
+all-time report, unchanged.
 """
 from dataclasses import dataclass
+from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
 from catalog.product_sales import product_sales
@@ -64,6 +75,8 @@ class ProductMarginRow:
     cost: Decimal | None
     margin: Decimal | None
     margin_percent: Decimal | None
+    start_date: date = None
+    end_date: date = None
 
 
 @dataclass(frozen=True)
@@ -82,6 +95,9 @@ class ProductMarginReport:
     total_retail_revenue: Decimal
     total_cost: Decimal
     total_margin: Decimal
+    start_date: date = None
+    end_date: date = None
+    sales_scope: str = "all_time"
 
     def __iter__(self):
         return iter(self.rows)
@@ -90,15 +106,17 @@ class ProductMarginReport:
         return len(self.rows)
 
 
-def product_margin(salon):
+def product_margin(salon, start=None, end=None, *, start_date=None, end_date=None):
     """Return the per-product margin report for ``salon``.
 
     See the module docstring for the full contract — above all the
     current-cost caveat: ``SaleItem`` has no cost snapshot, so
     cost is the product's current ``cost_price`` times the units
-    the sales report attributes to it.
+    the sales report attributes to it. The optional window is
+    passed to the sales report verbatim.
     """
-    sales = product_sales(salon)
+    sales = product_sales(salon, start=start, end=end,
+                          start_date=start_date, end_date=end_date)
     rows = []
     total_cost = ZERO
     total_margin = ZERO
@@ -129,6 +147,8 @@ def product_margin(salon):
                 cost=cost,
                 margin=margin,
                 margin_percent=margin_percent,
+                start_date=sales.start_date,
+                end_date=sales.end_date,
             )
         )
     return ProductMarginReport(
@@ -138,6 +158,9 @@ def product_margin(salon):
         total_retail_revenue=sales.total_retail_revenue,
         total_cost=total_cost.quantize(ZERO),
         total_margin=total_margin.quantize(ZERO),
+        start_date=sales.start_date,
+        end_date=sales.end_date,
+        sales_scope=sales.sales_scope,
     )
 
 
