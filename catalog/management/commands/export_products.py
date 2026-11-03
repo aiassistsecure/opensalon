@@ -1,11 +1,13 @@
 """Export a salon's products as CSV via the catalog export service.
 
 Usage:
-    python manage.py export_products --salon-id ID [--output PATH]
+    python manage.py export_products --salon-id ID
+        [--include-inactive] [--output PATH]
 
 Backend only — no views, templates, or UI. This command is a thin
 wrapper around :func:`catalog.export.export_products_csv`: it
-resolves the salon by id, delegates to that service verbatim, and
+resolves the salon by id, delegates to that service verbatim
+(with the same ``include_inactive``), and
 writes the returned CSV to ``--output`` when given, otherwise to
 stdout. It adds no fields, filtering, or formatting of its own, so
 the command output and the service output can never disagree — one
@@ -29,6 +31,10 @@ class Command(BaseCommand):
             help="ID of the salon whose products to export.",
         )
         parser.add_argument(
+            "--include-inactive", action="store_true", default=False,
+            help="Include inactive products (default: excluded).",
+        )
+        parser.add_argument(
             "--output", default=None,
             help="Path of the CSV file to write (default: stdout).",
         )
@@ -39,7 +45,8 @@ class Command(BaseCommand):
         except Salon.DoesNotExist as exc:
             raise CommandError(
                 f"No salon with id {options['salon_id']}.") from exc
-        text = export_products_csv(salon)
+        text = export_products_csv(
+            salon, include_inactive=options["include_inactive"])
         if options["output"]:
             try:
                 with open(options["output"], "w", encoding="utf-8",

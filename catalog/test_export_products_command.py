@@ -25,6 +25,9 @@ class ExportProductsCommandTests(TestCase):
             salon=self.salon, name="Balm", sku="BL-002",
             barcode="111222333444", price=Decimal("8.50"))
         Product.objects.create(
+            salon=self.salon, name="Retired Wax", sku="RW-003",
+            barcode="222333444555", price=Decimal("6.00"), active=False)
+        Product.objects.create(
             salon=self.other, name="Foreign", sku="FR-999",
             barcode="999", price=Decimal("1.00"))
 
@@ -53,6 +56,48 @@ class ExportProductsCommandTests(TestCase):
         self.assertIn("sku", text.splitlines()[0])
         self.assertIn("barcode", text.splitlines()[0])
         self.assertNotIn("Foreign", text)
+
+    def test_default_excludes_inactive(self):
+        out = io.StringIO()
+        call_command("export_products", salon_id=self.salon.pk, stdout=out)
+        text = out.getvalue()
+        self.assertEqual(text, export_products_csv(self.salon))
+        self.assertEqual(
+            text, export_products_csv(self.salon, include_inactive=False))
+        self.assertNotIn("Retired Wax", text)
+        self.assertNotIn("RW-003", text)
+
+    def test_include_inactive_matches_service(self):
+        out = io.StringIO()
+        call_command("export_products", salon_id=self.salon.pk,
+                     include_inactive=True, stdout=out)
+        text = out.getvalue()
+        self.assertEqual(
+            text, export_products_csv(self.salon, include_inactive=True))
+        self.assertIn("Retired Wax", text)
+        self.assertIn("RW-003", text)
+        self.assertNotIn("Foreign", text)
+
+    def test_include_inactive_via_cli_flag(self):
+        out = io.StringIO()
+        call_command("export_products", "--salon-id", str(self.salon.pk),
+                     "--include-inactive", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_products_csv(self.salon, include_inactive=True))
+        self.assertIn("Retired Wax", out.getvalue())
+
+    def test_include_inactive_output_file_matches_service(self):
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "products.csv")
+            call_command("export_products", salon_id=self.salon.pk,
+                         include_inactive=True, output=path, stdout=out)
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+        self.assertEqual(
+            text, export_products_csv(self.salon, include_inactive=True))
+        self.assertIn("Retired Wax", text)
 
     def test_unknown_salon_raises_command_error(self):
         with self.assertRaises(CommandError):
