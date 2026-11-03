@@ -334,7 +334,23 @@ class SendCampaignDelegationTests(CampaignFixture):
                 return_value=summary) as sender:
             text = _run(
                 "send_campaign", "--campaign-id", str(campaign.pk))
-        sender.assert_called_once_with(campaign)
+        sender.assert_called_once_with(campaign, now=None)
+        self.assertIn("1 sent", text)
+
+    def test_real_run_delegates_now_verbatim(self):
+        campaign = self._campaign()
+        summary = CampaignSendSummary(
+            campaign_id=campaign.pk, channel="sms", sent=1)
+        ref = timezone.now()
+        with mock.patch(
+                f"{SEND_CMD}.send_campaign",
+                return_value=summary) as sender:
+            text = _run(
+                "send_campaign", "--campaign-id", str(campaign.pk),
+                "--now", ref.isoformat())
+        sender.assert_called_once_with(campaign, now=ref)
+        self.assertIsNotNone(sender.call_args.kwargs["now"].tzinfo)
+        self.assertNotIn("adapter", sender.call_args.kwargs)
         self.assertIn("1 sent", text)
 
     def test_dry_run_reuses_service_audience_and_never_sends(self):
@@ -367,3 +383,7 @@ class SendCampaignDelegationTests(CampaignFixture):
             SendCampaignCommand, "send_campaign", ["--campaign-id", "1"])
         self.assertIs(options.dry_run, False)
         self.assertEqual(options.campaign_id, 1)
+        self.assertIs(options.now, None)
+        self.assertIs(
+            inspect.signature(service).parameters["now"].default, None)
+        self.assertFalse(hasattr(options, "adapter"))
