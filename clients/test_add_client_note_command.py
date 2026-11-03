@@ -9,6 +9,7 @@ surface as ``CommandError`` with nothing written. Fixtures are
 tiny synthetic records -- unit logic only.
 """
 import io
+from unittest import mock
 
 from django.core.management import CommandError, call_command
 from django.test import TestCase
@@ -119,6 +120,27 @@ class AddClientNoteCommandTests(TestCase):
                 client_id=self.client.pk, body="Hello",
                 stdout=io.StringIO())
         self.assertEqual(ClientNote.objects.count(), 0)
+
+    def test_dry_run_never_calls_writer_and_preserves_existing(self):
+        # Regression (NEDB): dry-run must not enter the writer at
+        # all -- a write-then-rollback preview persists on NEDB.
+        call_command(
+            "add_client_note", salon_id=self.salon.pk,
+            client_id=self.client.pk, body="Existing",
+            stdout=io.StringIO())
+        self.assertEqual(ClientNote.objects.count(), 1)
+        with mock.patch(
+                "clients.management.commands.add_client_note."
+                "add_client_note",
+                side_effect=AssertionError("writer called")):
+            out = io.StringIO()
+            call_command(
+                "add_client_note", salon_id=self.salon.pk,
+                client_id=self.client.pk, body="  Preview  ",
+                author=" Desk ", dry_run=True, stdout=out)
+        self.assertEqual(ClientNote.objects.count(), 1)
+        self.assertIn("Preview", out.getvalue())
+        self.assertIn("Desk", out.getvalue())
 
     def test_dry_run_unknown_client_is_command_error(self):
         with self.assertRaises(CommandError):

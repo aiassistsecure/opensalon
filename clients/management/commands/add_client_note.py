@@ -4,9 +4,11 @@ Usage:
     python manage.py add_client_note --salon-id ID --client-id ID
         --body TEXT [--author NAME] [--dry-run]
 
-With ``--dry-run`` nothing is written: the command runs the
-service inside a transaction it rolls back, so the preview
-applies the service's own cleaning/validation and prints the
+With ``--dry-run`` nothing is written: the command calls the
+service's validate-only helper (no write happens at all, so
+the preview is safe on every backend -- NEDB does not roll
+back transaction writes), so the preview applies the
+service's own cleaning/validation and prints the
 note that WOULD be created (its client, body, and author).
 
 Thin wrapper around :func:`clients.notes.add_client_note`: the
@@ -26,10 +28,9 @@ templates, or UI.
 """
 from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
 
 from clients.models import Client
-from clients.notes import add_client_note
+from clients.notes import add_client_note, validate_add_client_note
 from saloncore.models import Salon
 
 
@@ -52,9 +53,9 @@ class Command(BaseCommand):
             help="Optional author name stored on the note.")
         parser.add_argument(
             "--dry-run", action="store_true",
-            help="Preview only: run the service inside a "
-                 "transaction that is rolled back, print the "
-                 "note that would be created, and write nothing.")
+            help="Preview only: validate with the service's "
+                 "validate-only helper, print the note that "
+                 "would be created, and write nothing.")
 
     def handle(self, *args, **options):
         salon_id = options.get("salon_id")
@@ -84,14 +85,11 @@ class Command(BaseCommand):
                 f"in salon {salon.pk}.") from None
         if options.get("dry_run"):
             try:
-                with transaction.atomic():
-                    note = add_client_note(salon, client, body, author=author)
-                    preview = (note.body, note.author_name)
-                    transaction.set_rollback(True)
+                body_clean, author_name = validate_add_client_note(
+                    salon, client, body, author=author)
             except ValidationError as exc:
                 raise CommandError(
                     "; ".join(exc.messages)) from exc
-            body_clean, author_name = preview
             self.stdout.write(
                 f"Dry run: would create client note for "
                 f"client {client.pk} in salon {salon.pk}: "
