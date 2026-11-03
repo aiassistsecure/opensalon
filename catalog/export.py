@@ -10,10 +10,18 @@ string (:func:`export_products_csv`) built from that same list, so
 the two formats can never disagree — one source of truth.
 
 Fields per product: ``id``, ``salon_id``, ``name``, ``sku``,
-``barcode``, ``price``, ``active``, and ``stock_on_hand``.
-``price`` is a string formatted to two decimal places (e.g.
+``barcode``, ``price``, ``active``, ``stock_on_hand``, and the
+stored verbatim fields ``brand_name``, ``category_name``,
+``product_type``, ``cost_price``, ``external_id``, and ``payload``
+— rendered exactly as stored, never derived. ``price`` and
+``cost_price`` are strings formatted to two decimal places (e.g.
 ``"24.00"``) because ``Decimal`` is not JSON-serializable; no money
-value is ever passed through a float.
+value is ever passed through a float. ``cost_price`` is nullable:
+a product with no cost recorded exports ``None`` (an empty CSV
+cell), never zero. ``payload`` is the stored JSON document,
+verbatim in the list export and JSON-encoded into its cell in
+the CSV export (the ``export_all`` convention), so no part of
+it is dropped or reshaped.
 
 Stock is derived, never stored, and is NOT recomputed here: active
 products take their on-hand quantity from
@@ -34,6 +42,7 @@ Ordering is deterministic: by product name, then id.
 """
 import csv
 import io
+import json
 from decimal import Decimal
 
 from catalog.models import Product
@@ -57,6 +66,12 @@ EXPORT_FIELDNAMES = [
     "price",
     "active",
     "stock_on_hand",
+    "brand_name",
+    "category_name",
+    "product_type",
+    "cost_price",
+    "external_id",
+    "payload",
 ]
 
 _ZERO = Decimal("0.00")
@@ -76,6 +91,15 @@ def _record(product, on_hand):
         "price": _money(product.price),
         "active": bool(product.active),
         "stock_on_hand": int(on_hand),
+        "brand_name": product.brand_name,
+        "category_name": product.category_name,
+        "product_type": product.product_type,
+        "cost_price": (
+            _money(product.cost_price)
+            if product.cost_price is not None else None
+        ),
+        "external_id": product.external_id,
+        "payload": product.payload if product.payload is not None else {},
     }
 
 
@@ -122,7 +146,10 @@ def export_products_csv(salon, include_inactive=False):
     )
     writer.writeheader()
     for record in export_products(salon, include_inactive=include_inactive):
-        writer.writerow(record)
+        row = dict(record)
+        if isinstance(row["payload"], (dict, list)):
+            row["payload"] = json.dumps(row["payload"], sort_keys=True)
+        writer.writerow(row)
     return buffer.getvalue()
 
 
