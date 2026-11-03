@@ -7,6 +7,7 @@ verbatim as JSON and that unknown salons, bad dates, service
 errors, and unwritable outputs fail cleanly. Fixtures are tiny
 synthetic records -- unit logic only.
 """
+import csv
 import datetime
 import io
 import json
@@ -18,7 +19,7 @@ from unittest import mock
 from django.core.management import CommandError, call_command
 from django.test import TestCase
 
-from bookings.export import export_appointments
+from bookings.export import EXPORT_FIELDNAMES, export_appointments
 from bookings.models import Appointment
 from clients.models import Client
 from saloncore.models import (
@@ -183,3 +184,143 @@ class ExportAppointmentsCommandTests(TestCase):
                     "export_appointments", salon_id=self.salon.pk,
                     date_from=DAY, date_to=DAY, output=path,
                     stdout=io.StringIO())
+
+
+def expected_csv_text(rows):
+    buffer = io.StringIO()
+    writer = csv.DictWriter(
+        buffer, fieldnames=EXPORT_FIELDNAMES, lineterminator="\n")
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({
+            key: (json.dumps(row.get(key)) if isinstance(
+                row.get(key), (dict, list, tuple, set)) else row.get(key))
+            for key in EXPORT_FIELDNAMES})
+    return buffer.getvalue()
+
+
+class ExportAppointmentsFormatTests(TestCase):
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon", timezone="UTC")
+        self.level = StaffLevel.objects.create(salon=self.salon, name="Level 6")
+        self.staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Stylist One", staff_level=self.level)
+        self.client = Client.objects.create(
+            salon=self.salon, first_name="Test", last_name="Example")
+        category = ServiceCategory.objects.create(salon=self.salon, name="Hair")
+        self.service = Service.objects.create(
+            category=category, name="Haircut", service_minutes=45)
+        ServicePrice.objects.create(
+            service=self.service, staff_level=self.level,
+            amount=Decimal("85.00"))
+        self.booked = Appointment.objects.create(
+            client=self.client, staff_member=self.staff, service=self.service,
+            start=at(DAY, 9), end=at(DAY, 10),
+            status=Appointment.Status.CONFIRMED)
+        self.cancelled = Appointment.objects.create(
+            client=self.client, staff_member=self.staff, service=self.service,
+            start=at(DAY, 11), end=at(DAY, 12),
+            status=Appointment.Status.CANCELLED)
+
+    def _rows(self, **kwargs):
+        return export_appointments(self.salon, DAY, DAY, **kwargs)
+
+    def test_default_format_is_byte_exact_json(self):
+        out = io.StringIO()
+        call_command(
+            "export_appointments", salon_id=self.salon.pk,
+            date_from=DAY, date_to=DAY, stdout=out)
+        self.assertEqual(out.getvalue(), expected_text(self.salon, DAY, DAY))
+
+    def test_explicit_json_matches_default(self):
+        default_out, json_out = io.StringIO(), io.StringIO()
+        call_command(
+            "export_appointments", salon_id=self.salon.pk,
+            date_from=DAY, date_to=DAY, stdout=default_out)
+        call_command(
+            "export_appointments", salon_id=self.salon.pk,
+            date_from=DAY, date_to=DAY, format="json", stdout=json_out)
+        self.assertEqual(json_out.getvalue(), default_out.getvalue())
+        self.assertEqual(
+            json_out.getvalue(), expected_text(self.salon, DAY, DAY))
+
+    def test_csv_matches_service_rows(self):
+        out = io.StringIO()
+        call_command(
+            "export_appointments", salon_id=self.salon.pk,
+            date_from=DAY, date_to=DAY, format="csv", stdout=out)
+        self.assertEqual(out.getvalue(), expected_csv_text(self._rows()))
+        parsed = list(csv.DictReader(io.StringIO(out.getvalue())))
+        self.assertEqual(
+            [int(row["id"]) for row in parsed],
+            [self.booked.pk, self.cancelled.pk])
+        self.assertEqual(parsed[0]["price"], "85.00")
+
+    def test_csv_header_and_field_order(self):
+        out = io.StringIO()
+        call_command(
+            "export_appointments", salon_id=self.salon.pk,
+            date_from=DAY, date_to=DAY, format="csv", stdout=out)
+        header = out.getvalue().splitlines()[0]
+        self.assertEqual(header, ",".join(EXPORT_FIELDNAMES))
+        self.assertEqual(
+            list(csv.DictReader(io.StringIO(out.getvalue())).fieldnames),
+            EXPORT_FIELDNAMES)
+
+    def test_csv_via_cli_flags(self):
+        out = io.StringIO()
+        call_command(
+            "export_appointments", "--salon-id", str(self.salon.pk),
+            "--date-from", DAY.isoformat(), "--date-to", DAY.isoformat(),
+            "--format", "csv", stdout=out)
+        self.assertEqual(out.getvalue(), expected_csv_text(self._rows()))
+
+    def test_csv_output_file_matches_stdout_and_stdout_stays_empty(self):
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "appointments.csv")
+            call_command(
+                "export_appointments", salon_id=self.salon.pk,
+                date_from=DAY, date_to=DAY, format="csv", output=path,
+                stdout=out)
+            with open(path, encoding="utf-8") as fh:
+                written = fh.read()
+        self.assertEqual(written, expected_csv_text(self._rows()))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_csv_empty_result_is_header_only(self):
+        empty_day = DAY + datetime.timedelta(days=30)
+        out = io.StringIO()
+        call_command(
+            "export_appointments", salon_id=self.salon.pk,
+            date_from=empty_day, date_to=empty_day, format="csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(), ",".join(EXPORT_FIELDNAMES) + "\n")
+
+    def test_csv_nested_values_are_json_encoded_cells(self):
+        row = {key: None for key in EXPORT_FIELDNAMES}
+        row.update({
+            "id": 7, "service_name": {"name": "Haircut", "tags": ["a", "b"]}})
+        with mock.patch(COMMAND_SERVICE, return_value=[row]):
+            out = io.StringIO()
+            call_command(
+                "export_appointments", salon_id=self.salon.pk,
+                date_from=DAY, date_to=DAY, format="csv", stdout=out)
+        parsed = list(csv.DictReader(io.StringIO(out.getvalue())))
+        self.assertEqual(
+            json.loads(parsed[0]["service_name"]),
+            {"name": "Haircut", "tags": ["a", "b"]})
+
+    def test_invalid_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_appointments", salon_id=self.salon.pk,
+                date_from=DAY, date_to=DAY, format="xml",
+                stdout=io.StringIO())
+
+    def test_invalid_format_via_cli_is_rejected(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_appointments", "--salon-id", str(self.salon.pk),
+                "--date-from", DAY.isoformat(), "--format", "xml",
+                stdout=io.StringIO())
