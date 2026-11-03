@@ -7,6 +7,7 @@ that the command reads.
 """
 import csv
 import datetime
+import json
 import tempfile
 from decimal import Decimal
 from io import StringIO
@@ -91,6 +92,21 @@ class ImportTransactionsCsvTests(TestCase):
             salon=self.salon.pk, stdout=out,
         )
         return out.getvalue()
+
+    def _run_dry(self):
+        out = StringIO()
+        call_command(
+            "import_transactions_csv", self.dir.name,
+            salon=self.salon.pk, dry_run=True, stdout=out,
+        )
+        return out.getvalue()
+
+    @staticmethod
+    def _summary_lines(out):
+        return [
+            line for line in out.splitlines()
+            if line.startswith(("IMPORT_SUMMARY", "IMPORT_SKIPPED"))
+        ]
 
     def test_maps_totals_tips_date_and_links(self):
         self._write([
@@ -241,6 +257,80 @@ class ImportTransactionsCsvTests(TestCase):
         self._run()
         item = SaleItem.objects.get()
         self.assertEqual(item.description, "Café Treatment")
+
+    def test_dry_run_writes_nothing_and_counts_match_real_run(self):
+        self._write([
+            row(),
+            row(item_type="PRODUCT", description="Shampoo",
+                service_id="", product_id="prod-1",
+                unit_price="25.00", net_total_amount="25.00"),
+            row(transaction_id="txn-refund", purchase_type="REFUND",
+                unit_price="-100.00", net_total_amount="-100.00",
+                payment_type_amounts="-100.00"),
+            row(transaction_id="txn-void", void="1"),
+            row(transaction_id="txn-fee", item_type="CANCELLATION_FEE",
+                description="Late cancel", service_id="",
+                unit_price="20.00", net_total_amount="20.00",
+                payment_type_amounts="20.00"),
+            row(transaction_id="txn-unknown",
+                client_id="client-not-in-book"),
+        ])
+        dry_out = self._run_dry()
+        # Nothing written: no sales, items or payments, and the
+        # pre-existing book is untouched.
+        self.assertEqual(Sale.objects.count(), 0)
+        self.assertEqual(SaleItem.objects.count(), 0)
+        self.assertEqual(Payment.objects.count(), 0)
+        self.assertEqual(Client.objects.count(), 1)
+        self.assertIn("Dry run: no transactions were imported", dry_out)
+        self.assertIn("files=1 rows_read=6 transactions=5", dry_out)
+        self.assertIn("sales_created=3", dry_out)
+        self.assertIn("refund_sales=1", dry_out)
+        self.assertIn("items_created=4", dry_out)
+        self.assertIn("payments_created=3", dry_out)
+        self.assertIn("clients_unmatched=1", dry_out)
+        self.assertIn("void_transactions=1", dry_out)
+        self.assertIn("nonrevenue_transactions=1", dry_out)
+        # The dry run's summary lines are exactly the real run's.
+        real_out = self._run()
+        self.assertEqual(
+            self._summary_lines(dry_out), self._summary_lines(real_out))
+        self.assertEqual(Sale.objects.count(), 3)
+        self.assertEqual(SaleItem.objects.count(), 4)
+        self.assertEqual(Payment.objects.count(), 3)
+
+    def test_dry_run_after_real_run_counts_existing_and_writes_nothing(self):
+        self._write([row()])
+        self._run()
+        dry_out = self._run_dry()
+        self.assertIn("sales_created=0", dry_out)
+        self.assertIn("sales_existing=1", dry_out)
+        self.assertIn("items_created=0", dry_out)
+        self.assertIn("payments_created=0", dry_out)
+        self.assertEqual(Sale.objects.count(), 1)
+        self.assertEqual(SaleItem.objects.count(), 1)
+        self.assertEqual(Payment.objects.count(), 1)
+
+    def test_dry_run_json_report_counts_records_and_names_unmapped(self):
+        header = HEADER + ["legacy_code"]
+        path = Path(self.dir.name) / "transactions-2026-10.csv"
+        with open(path, "w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=header)
+            writer.writeheader()
+            writer.writerow({**row(), "legacy_code": "LC-1"})
+            writer.writerow({
+                **row(transaction_id="txn-2"), "legacy_code": "LC-2"})
+        out = self._run_dry()
+        # The dry-run report is the leading JSON object (house
+        # pattern); the summary lines follow it.
+        report, _ = json.JSONDecoder().raw_decode(out)
+        file_report = report[str(path)]
+        self.assertEqual(file_report["record_count"], 2)
+        self.assertIn("legacy_code", file_report["unmapped_keys"])
+        self.assertNotIn("legacy_code", file_report["mapped_keys"])
+        self.assertIn("transaction_id", file_report["mapped_keys"])
+        self.assertEqual(Sale.objects.count(), 0)
+        self.assertEqual(Payment.objects.count(), 0)
 
     def test_cash_tender_maps_to_cash(self):
         self._write([
