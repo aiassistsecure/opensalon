@@ -89,7 +89,7 @@ class GraphPaintSourceTests(TestCase):
         handler = self._handler()
         guard = handler.index("still saving")
         paint = handler.index("paintSettledLocally()")
-        fetch = handler.index("fetch(layout.dataset.checkout")
+        fetch = handler.index("fetch(layout.dataset.checkoutUrl")
         self.assertLess(guard, paint)
         self.assertLess(paint, fetch)
 

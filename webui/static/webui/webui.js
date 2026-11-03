@@ -1036,7 +1036,14 @@
           if (d) renderRailKeepingTab(d);
           return;
         }
-        var coBtn = event.target.closest("[data-checkout]");
+        /* Only the Till's own button may open checkout — a bare
+           [data-checkout] match once climbed from any rail click
+           (the check-in toggle included) to the page layout,
+           which carried the checkout endpoint under a lookalike
+           attribute, and launched the modal with no appointment
+           named. The endpoint now lives under data-checkout-url
+           and this match names the button itself. */
+        var coBtn = event.target.closest("button[data-checkout]");
         if (coBtn) {
           openCheckout(parseInt(coBtn.dataset.appt, 10));
           return;
@@ -2281,7 +2288,7 @@
       });
       coEl("coErr").classList.add("hidden");
       var restoreSettledPaint = paintSettledLocally();
-      fetch(layout.dataset.checkout, {
+      fetch(layout.dataset.checkoutUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

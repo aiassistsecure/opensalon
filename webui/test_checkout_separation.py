@@ -94,6 +94,9 @@ class RailSeparationJsTests(TestCase):
     def setUp(self):
         root = Path(__file__).parent
         self.js = (root / "static" / "webui" / "webui.js").read_text()
+        self.main_html = (
+            root / "templates" / "webui" / "_daybook_main.html"
+        ).read_text()
 
     def test_client_rail_gates_checkout_to_in_service(self):
         self.assertIn('d.status === "in_service" && d.stack_price_label', self.js)
@@ -102,3 +105,19 @@ class RailSeparationJsTests(TestCase):
             self.js,
         )
         self.assertIn("rail-till", self.js)
+
+    def test_no_click_can_climb_to_a_checkout_that_is_not_there(self):
+        # The toggle bug: the rail handler matched a bare
+        # [data-checkout], and closest() climbed from the
+        # check-in toggle to the page layout, which carried
+        # the checkout endpoint under the same attribute name
+        # — so a check-in click "found" a checkout button and
+        # launched the modal with no appointment named. The
+        # match now names the button itself, and the endpoint
+        # lives under its own attribute.
+        self.assertIn('closest("button[data-checkout]")', self.js)
+        self.assertNotIn('closest("[data-checkout]")', self.js)
+        self.assertIn("layout.dataset.checkoutUrl", self.js)
+        self.assertNotIn("layout.dataset.checkout,", self.js)
+        self.assertIn("data-checkout-url=", self.main_html)
+        self.assertNotIn('data-checkout="', self.main_html)
