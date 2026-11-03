@@ -79,6 +79,31 @@
 </section>
 
 <section class="roster-card">
+  <h2 class="roster-h">Add a stylist</h2>
+  <p class="roster-note">A new person on the team. Only the name is required — the level prices their services, and the email plus PIN are the account they sign in with. Email and PIN can also be set or changed later, in Time clock PINs below.</p>
+  <form method="post" class="roster-add">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="add_member">
+    <label>Name
+      <input type="text" name="display_name" class="fsel" required autocomplete="off" placeholder="Full name">
+    </label>
+    <label>Level
+      <select name="level" class="fsel">
+        <option value="">No level yet</option>
+        {% for level in levels %}<option value="{{ level.pk }}">{{ level.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Email
+      <input type="email" name="email" class="fsel" autocomplete="off" placeholder="Account email">
+    </label>
+    <label>PIN
+      <input type="text" name="pin" class="fsel pin-input" inputmode="numeric" autocomplete="off" maxlength="8" placeholder="4-8 digits">
+    </label>
+    <button type="submit" class="btn-dark">Add to the team</button>
+  </form>
+</section>
+
+<section class="roster-card">
   <h2 class="roster-h">Time clock PINs</h2>
   <p class="roster-note">The clock at the bottom left of every page asks for a PIN. Each person needs their own — the clock tells the team apart by PIN alone, so no two people can share one. Birthdays work well: day and year, 4 to 8 digits. A PIN itself is never shown here once set; type a new one to change it.</p>
   {% for member in members %}
