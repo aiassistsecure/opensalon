@@ -60,7 +60,7 @@ class ReminderDispatchSummary:
 
 
 def send_due_reminders(now=None, within=DEFAULT_WINDOW, appointments=None,
-                       adapter=None):
+                       adapter=None, dry_run=False):
     """Dispatch email + SMS reminders for due appointments.
 
     ``appointments`` defaults to :func:`due_appointments` for
@@ -80,10 +80,11 @@ def send_due_reminders(now=None, within=DEFAULT_WINDOW, appointments=None,
     # when given a one-pass iterable or a lazy queryset.
     appointments = list(appointments)
     email_summary = send_due_email_reminders(
-        now=now, within=within, appointments=appointments
+        now=now, within=within, appointments=appointments,
+        dry_run=dry_run,
     )
     sms_summary = send_due_sms_reminders(
         now=now, within=within, appointments=appointments,
-        adapter=adapter,
+        adapter=adapter, dry_run=dry_run,
     )
     return ReminderDispatchSummary(email=email_summary, sms=sms_summary)
