@@ -18,9 +18,16 @@ only; it does not import or query the bookings models.
 
 Columns are only real fields: the client's ``external_id`` and
 name (``first_name`` / ``last_name``), the note's ``id``, its
-``created_at``, and its text (``body``). No other client fields
-are included -- in particular no contact details beyond the name
+``created_at``, its author (``author_name``, exactly as the
+salon_data bundle and the bookings appointment-note twin carry
+it), and its text (``body``). No other client fields are
+included -- in particular no contact details beyond the name
 (no email, no phone) -- and no fields are invented.
+
+:func:`note_record` is the one record builder for a client
+record note: :mod:`clients.note_search_export` reuses it (and
+:data:`NOTE_FIELDNAMES`) rather than building a parallel dict,
+so the two standalone note surfaces can never disagree.
 
 Ordering is deterministic: by client (``last_name``, then
 ``first_name``, then client ``id``, matching ``Client``'s model
@@ -37,6 +44,7 @@ from clients.models import ClientNote
 
 __all__ = [
     "NOTE_FIELDNAMES",
+    "note_record",
     "export_notes",
     "export_notes_csv",
     "notes_csv",
@@ -49,6 +57,7 @@ NOTE_FIELDNAMES = [
     "client_last_name",
     "note_id",
     "created_at",
+    "author_name",
     "body",
 ]
 
@@ -57,7 +66,7 @@ def _dt(value):
     return value.isoformat() if value is not None else None
 
 
-def _record(note):
+def note_record(note):
     client = note.client
     return {
         "client_external_id": client.external_id,
@@ -65,8 +74,13 @@ def _record(note):
         "client_last_name": client.last_name,
         "note_id": note.pk,
         "created_at": _dt(note.created_at),
+        "author_name": note.author_name,
         "body": note.body,
     }
+
+
+#: Backwards-compatible private alias for the one record builder.
+_record = note_record
 
 
 def export_notes(salon):

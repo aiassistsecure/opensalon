@@ -47,7 +47,8 @@ class NoteSearchExportTests(TestCase):
         self.assertEqual(
             NOTE_SEARCH_FIELDNAMES,
             ["client_external_id", "client_first_name",
-             "client_last_name", "note_id", "created_at", "body"])
+             "client_last_name", "note_id", "created_at", "author_name",
+             "body"])
 
     def test_header_only_when_no_match(self):
         self.make_note(self.amy, "Prefers quiet room")
@@ -70,10 +71,12 @@ class NoteSearchExportTests(TestCase):
         self.assertEqual(records, [
             {"client_external_id": "ext-2", "client_first_name": "Bob",
              "client_last_name": "Adams", "note_id": new.pk,
-             "created_at": new.created_at.isoformat(), "body": "match new"},
+             "created_at": new.created_at.isoformat(), "author_name": "",
+             "body": "match new"},
             {"client_external_id": "ext-1", "client_first_name": "Amy",
              "client_last_name": "Smith", "note_id": old.pk,
-             "created_at": old.created_at.isoformat(), "body": "match old"},
+             "created_at": old.created_at.isoformat(), "author_name": "",
+             "body": "match old"},
         ])
         parsed = list(csv.DictReader(io.StringIO(
             export_note_search_results_csv(self.salon, "match"))))
