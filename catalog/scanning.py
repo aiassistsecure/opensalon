@@ -29,7 +29,10 @@ class ScanResult:
     ``current_stock`` (the derived stock *after* the movement) are
     set. On a miss every payload field is None and ``movement`` is
     None — no movement was recorded. ``below_zero`` is True only
-    when a sale left the derived stock negative.
+    when a sale left the derived stock negative. On a dry run
+    ``movement`` is the unsaved movement that *would* be recorded
+    (``pk`` is None) and ``current_stock`` is the stock that would
+    result; nothing is written.
     """
 
     found: bool
@@ -76,19 +79,29 @@ def _resolve(salon, code):
     )
 
 
-def _scan(salon, code, quantity, kind, sign):
+def _scan(salon, code, quantity, kind, sign, dry_run=False):
     if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity < 1:
         raise ValueError("quantity must be a positive integer")
     product = _resolve(salon, code)
     if product is None:
         return ScanResult(found=False)
-    movement = StockMovement.objects.create(
-        product=product,
-        kind=kind,
-        quantity_delta=sign * quantity,
-        note=f"Barcode scan ({kind})",
-    )
-    current = product.current_stock
+    delta = sign * quantity
+    if dry_run:
+        movement = StockMovement(
+            product=product,
+            kind=kind,
+            quantity_delta=delta,
+            note=f"Barcode scan ({kind})",
+        )
+        current = product.current_stock + delta
+    else:
+        movement = StockMovement.objects.create(
+            product=product,
+            kind=kind,
+            quantity_delta=delta,
+            note=f"Barcode scan ({kind})",
+        )
+        current = product.current_stock
     return ScanResult(
         found=True,
         product=product,
@@ -98,23 +111,31 @@ def _scan(salon, code, quantity, kind, sign):
     )
 
 
-def scan_receive(salon, code, quantity=1):
+def scan_receive(salon, code, quantity=1, dry_run=False):
     """Record receiving ``quantity`` units of the scanned product.
 
     Appends a RECEIVE movement with a positive delta and returns a
     ``ScanResult`` with the new derived stock. Unknown/blank codes
-    return ``ScanResult(found=False)`` and record nothing.
+    return ``ScanResult(found=False)`` and record nothing. With
+    ``dry_run`` nothing is recorded: the result carries the unsaved
+    movement that would be appended and the stock that would result.
     """
-    return _scan(salon, code, quantity, StockMovement.Kind.RECEIVE, +1)
+    return _scan(
+        salon, code, quantity, StockMovement.Kind.RECEIVE, +1,
+        dry_run=dry_run)
 
 
-def scan_sell(salon, code, quantity=1):
+def scan_sell(salon, code, quantity=1, dry_run=False):
     """Record selling ``quantity`` units of the scanned product.
 
     Appends a SALE movement with a negative delta and returns a
     ``ScanResult`` with the new derived stock. Stock may go
     negative (sell-then-reconcile); when it does, the result's
     ``below_zero`` flag is True. Unknown/blank codes return
-    ``ScanResult(found=False)`` and record nothing.
+    ``ScanResult(found=False)`` and record nothing. With
+    ``dry_run`` nothing is recorded: the result carries the unsaved
+    movement that would be appended and the stock that would result.
     """
-    return _scan(salon, code, quantity, StockMovement.Kind.SALE, -1)
+    return _scan(
+        salon, code, quantity, StockMovement.Kind.SALE, -1,
+        dry_run=dry_run)

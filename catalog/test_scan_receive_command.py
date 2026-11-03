@@ -57,3 +57,45 @@ class ScanReceiveCommandTests(TestCase):
                          code="012345678905", quantity=0,
                          stdout=io.StringIO())
         self.assertEqual(StockMovement.objects.count(), 0)
+
+    def test_dry_run_writes_nothing_and_previews_movement(self):
+        out = io.StringIO()
+        call_command("scan_receive", salon_id=self.salon.pk,
+                     code="012345678905", quantity=4, dry_run=True,
+                     stdout=out)
+        self.assertEqual(StockMovement.objects.count(), 0)
+        self.assertEqual(self.product.current_stock, 0)
+        text = out.getvalue()
+        self.assertIn("Dry run", text)
+        self.assertIn("receive", text)
+        self.assertIn("+4", text)
+        self.assertIn("Shampoo", text)
+        self.assertIn(f"product {self.product.pk}", text)
+        self.assertIn("resulting stock 4", text)
+
+    def test_dry_run_flag_form_previews_from_existing_stock(self):
+        scan_receive(self.salon, "012345678905", quantity=3)
+        out = io.StringIO()
+        call_command("scan_receive", "--salon-id", str(self.salon.pk),
+                     "--code", "SH-001", "--quantity", "2",
+                     "--dry-run", stdout=out)
+        self.assertEqual(StockMovement.objects.count(), 1)
+        self.assertEqual(self.product.current_stock, 3)
+        self.assertIn("resulting stock 5", out.getvalue())
+
+    def test_dry_run_unknown_code_raises_and_records_nothing(self):
+        with self.assertRaises(CommandError):
+            call_command("scan_receive", salon_id=self.salon.pk,
+                         code="999999999999", dry_run=True,
+                         stdout=io.StringIO())
+        self.assertEqual(StockMovement.objects.count(), 0)
+
+    def test_dry_run_does_not_block_real_receive(self):
+        call_command("scan_receive", salon_id=self.salon.pk,
+                     code="012345678905", quantity=4, dry_run=True,
+                     stdout=io.StringIO())
+        call_command("scan_receive", salon_id=self.salon.pk,
+                     code="012345678905", quantity=4,
+                     stdout=io.StringIO())
+        self.assertEqual(StockMovement.objects.count(), 1)
+        self.assertEqual(self.product.current_stock, 4)

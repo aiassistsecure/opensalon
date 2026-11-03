@@ -165,3 +165,57 @@ class ReconcileStocktakeCommandTests(TestCase):
         with self.assertRaises(CommandError):
             self.run_command(counts=["not-a-count"])
         self.assertEqual(self.stocktake_movements().count(), 0)
+
+    def test_dry_run_writes_nothing_and_previews_variances(self):
+        out = io.StringIO()
+        kwargs = dict(salon_id=self.salon.pk, reference="STK-DRY",
+                      counts=self.counts, dry_run=True)
+        call_command("reconcile_stocktake", stdout=out, **kwargs)
+        payload = json.loads(out.getvalue())
+        self.assertTrue(payload["dry_run"])
+        self.assertFalse(payload["already_applied"])
+        self.assertTrue(payload["has_variance"])
+        by_name = {v["product_name"]: v for v in payload["variances"]}
+        self.assertEqual(
+            (by_name["Shampoo"]["expected_stock"],
+             by_name["Shampoo"]["counted_stock"],
+             by_name["Shampoo"]["variance"]), (10, 6, -4))
+        self.assertEqual(
+            (by_name["Serum"]["expected_stock"],
+             by_name["Serum"]["counted_stock"],
+             by_name["Serum"]["variance"]), (3, 5, 2))
+        self.assertIsNone(by_name["Shampoo"]["movement_id"])
+        self.assertIsNone(by_name["Serum"]["movement_id"])
+        self.assertEqual(self.stocktake_movements().count(), 0)
+        self.assertEqual(self.shampoo.current_stock, 10)
+        self.assertEqual(self.serum.current_stock, 3)
+
+    def test_dry_run_flag_form_writes_nothing(self):
+        out = io.StringIO()
+        call_command(
+            "reconcile_stocktake", "--salon-id", str(self.salon.pk),
+            "--reference", "STK-DRY-FLAGS",
+            "--count", f"{self.shampoo.pk}=6",
+            "--count", f"{self.serum.pk}=5",
+            "--dry-run", stdout=out)
+        payload = json.loads(out.getvalue())
+        self.assertTrue(payload["dry_run"])
+        self.assertEqual(self.stocktake_movements().count(), 0)
+        self.assertEqual(self.shampoo.current_stock, 10)
+
+    def test_real_run_reports_dry_run_false(self):
+        payload = json.loads(self.run_command())
+        self.assertFalse(payload["dry_run"])
+        self.assertEqual(self.stocktake_movements().count(), 2)
+
+    def test_dry_run_does_not_consume_reference(self):
+        dry = io.StringIO()
+        call_command("reconcile_stocktake", salon_id=self.salon.pk,
+                     reference="STK-REUSE", counts=self.counts,
+                     dry_run=True, stdout=dry)
+        self.assertEqual(self.stocktake_movements().count(), 0)
+        payload = json.loads(self.run_command(reference="STK-REUSE"))
+        self.assertFalse(payload["already_applied"])
+        self.assertEqual(self.stocktake_movements().count(), 2)
+        self.assertEqual(self.shampoo.current_stock, 6)
+        self.assertEqual(self.serum.current_stock, 5)
