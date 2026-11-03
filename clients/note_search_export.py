@@ -22,10 +22,15 @@ appear here -- the two note kinds never blur.
 
 Columns mirror :mod:`clients.note_export` exactly: the client's
 ``external_id`` and name (``first_name`` / ``last_name``), the
-note's ``id``, its ``created_at``, and its text (``body``). No
-other client fields are included -- in particular no contact
-details beyond the name (no email, no phone) -- and no fields
-are invented.
+note's ``id``, its ``created_at``, its author (``author_name``,
+exactly as the salon_data bundle carries it), and its text
+(``body``). No other client fields are included -- in
+particular no contact details beyond the name (no email, no
+phone) -- and no fields are invented. Both the fieldnames and
+the per-note dict come from :mod:`clients.note_export`
+(:data:`NOTE_FIELDNAMES` / :func:`note_record`) -- one source
+of truth, no parallel record building here; this module only
+adds the search query path on top.
 
 Ordering is the search service's own: newest first
 (``-created_at``, ``-id`` tie-break), unlike the unfiltered
@@ -34,6 +39,7 @@ Ordering is the search service's own: newest first
 import csv
 import io
 
+from clients.note_export import NOTE_FIELDNAMES, note_record
 from clients.note_search import search_client_notes
 
 __all__ = [
@@ -46,31 +52,14 @@ __all__ = [
 ]
 
 #: Column / key order shared by the dict and CSV exports; identical
-#: to ``clients.note_export.NOTE_FIELDNAMES``.
-NOTE_SEARCH_FIELDNAMES = [
-    "client_external_id",
-    "client_first_name",
-    "client_last_name",
-    "note_id",
-    "created_at",
-    "body",
-]
+#: to ``clients.note_export.NOTE_FIELDNAMES`` (a copy of that one
+#: source of truth, so the two constants cannot drift).
+NOTE_SEARCH_FIELDNAMES = list(NOTE_FIELDNAMES)
 
 
-def _dt(value):
-    return value.isoformat() if value is not None else None
-
-
-def _record(note):
-    client = note.client
-    return {
-        "client_external_id": client.external_id,
-        "client_first_name": client.first_name,
-        "client_last_name": client.last_name,
-        "note_id": note.pk,
-        "created_at": _dt(note.created_at),
-        "body": note.body,
-    }
+#: The one per-note record builder, shared with
+#: :mod:`clients.note_export`.
+_record = note_record
 
 
 def export_note_search_results(salon, query=None):

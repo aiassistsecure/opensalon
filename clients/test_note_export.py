@@ -41,7 +41,8 @@ class NoteExportTests(TestCase):
         self.assertEqual(
             NOTE_FIELDNAMES,
             ["client_external_id", "client_first_name",
-             "client_last_name", "note_id", "created_at", "body"],
+             "client_last_name", "note_id", "created_at", "author_name",
+             "body"],
         )
         rows = list(csv.reader(io.StringIO(export_notes_csv(self.salon))))
         self.assertEqual(rows, [NOTE_FIELDNAMES])
@@ -70,6 +71,7 @@ class NoteExportTests(TestCase):
             "client_last_name": "Smith",
             "note_id": note.pk,
             "created_at": when.isoformat(),
+            "author_name": "",
             "body": "Allergic to X",
         }])
         self.assertEqual(json.loads(json.dumps(records)), records)
