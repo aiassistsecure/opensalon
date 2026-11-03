@@ -10,19 +10,20 @@ verbatim. This command adds no seen logic of its own, so
 command and My Day can never disagree about which rows are
 stamped -- exactly that member's unseen pings, nothing else.
 
-With ``--dry-run`` nothing is written: the service runs
-inside a transaction that is rolled back (the established
-pattern from ``team.set_shift_override``), so the preview
-prints the seen-count that WOULD result and stamps nothing.
+With ``--dry-run`` nothing is written: the command counts
+the member's unseen notifications with the service's
+read-only counter, prints the seen-count that WOULD result,
+and returns before the writer runs -- no write happens at
+all, so the preview is safe on every backend (NEDB does
+not roll back transaction writes).
 
 An unknown staff member raises ``CommandError`` and nothing
 is written. Backend only -- no views, templates, or UI.
 """
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
 
 from team.models import StaffMember
-from team.notifications import mark_seen
+from team.notifications import mark_seen, unseen_notification_count
 
 
 class Command(BaseCommand):
@@ -35,10 +36,9 @@ class Command(BaseCommand):
                  "notifications to mark seen.")
         parser.add_argument(
             "--dry-run", action="store_true",
-            help="Preview only: run the service inside a "
-                 "transaction that is rolled back, print the "
-                 "count that would be marked seen, write "
-                 "nothing.")
+            help="Preview only: count the unseen notifications "
+                 "without writing, print the count that would "
+                 "be marked seen, write nothing.")
 
     def handle(self, *args, **options):
         try:
@@ -49,9 +49,7 @@ class Command(BaseCommand):
                 f"No staff member with id "
                 f"{options.get('staff_member_id')}.") from None
         if options.get("dry_run"):
-            with transaction.atomic():
-                count = mark_seen(member)
-                transaction.set_rollback(True)
+            count = unseen_notification_count(member)
             self.stdout.write(
                 f"Dry run: would mark {count} notification(s) "
                 f"seen for staff_member_id={member.pk} "

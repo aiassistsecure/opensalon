@@ -3,7 +3,7 @@
 The service (team.shift_overrides) is the roster OFF-switch
 write path: one member, one date, a placed shift or a full
 day off; undo clears the override. The command is a thin
-wrapper around it, with --dry-run previewing via rollback.
+wrapper around it, with --dry-run previewing without writing.
 Every write is verified through the one resolver,
 team.availability.roster_availability (override-first).
 Fixtures are tiny synthetic records -- unit logic only.

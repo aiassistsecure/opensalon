@@ -12,11 +12,11 @@ stays the single source of truth and surfaces here as
 of its own, so command and webui check-in can never disagree
 about the ping's shape.
 
-With ``--dry-run`` nothing is written: the service runs
-inside a transaction that is rolled back (the established
-pattern from ``team.set_shift_override``), so the preview
-applies the service's own validation and prints the ping
-that WOULD be created.
+With ``--dry-run`` nothing is written: the command calls
+the service's validate-only helper, prints the ping that
+WOULD be created, and returns before the writer runs --
+no write happens at all, so the preview is safe on every
+backend (NEDB does not roll back transaction writes).
 
 Invalid input -- an unknown staff member, an unknown
 appointment, or a service ``ValidationError`` -- raises
@@ -25,11 +25,10 @@ no views, templates, or UI.
 """
 from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
 
 from bookings.models import Appointment
 from team.models import StaffMember
-from team.notifications import notify_staff
+from team.notifications import notify_staff, validate_notify_staff
 
 
 def _describe(member, appointment, kind):
@@ -53,9 +52,9 @@ class Command(BaseCommand):
             help="Notification kind (default: arrived).")
         parser.add_argument(
             "--dry-run", action="store_true",
-            help="Preview only: run the service inside a "
-                 "transaction that is rolled back, print the "
-                 "ping that would be created, write nothing.")
+            help="Preview only: validate with the service's "
+                 "validate-only helper, print the ping that "
+                 "would be created, write nothing.")
 
     def handle(self, *args, **options):
         try:
@@ -75,14 +74,11 @@ class Command(BaseCommand):
         kind = options.get("kind") or "arrived"
         if options.get("dry_run"):
             try:
-                with transaction.atomic():
-                    note = notify_staff(member, appointment, kind)
-                    preview = _describe(
-                        member, appointment, note.kind)
-                    transaction.set_rollback(True)
+                kind = validate_notify_staff(member, appointment, kind)
             except ValidationError as exc:
                 raise CommandError(
                     "; ".join(exc.messages)) from exc
+            preview = _describe(member, appointment, kind)
             self.stdout.write(
                 f"Dry run: would create {preview} "
                 f"-- no notification written.")

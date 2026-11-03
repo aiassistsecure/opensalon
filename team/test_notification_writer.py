@@ -4,7 +4,7 @@ The writer half of team.notifications: notify_staff creates
 the arrival ping in webui's exact shape, mark_seen stamps
 only that member's unseen pings. Commands notify_staff and
 mark_notifications_seen are thin wrappers, with --dry-run
-previewing via rollback and writing nothing. Fixtures are
+previewing without writing anything. Fixtures are
 tiny synthetic records -- unit logic only.
 """
 import datetime

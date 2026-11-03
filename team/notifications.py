@@ -20,7 +20,10 @@ from django.utils import timezone
 
 from team.models import StaffNotification
 
-__all__ = ["mark_seen", "notify_staff", "staff_notifications"]
+__all__ = [
+    "mark_seen", "notify_staff", "staff_notifications",
+    "unseen_notification_count", "validate_notify_staff",
+]
 
 
 def staff_notifications(salon):
@@ -38,6 +41,40 @@ def staff_notifications(salon):
     )
 
 
+def validate_notify_staff(member, appointment, kind="arrived"):
+    """Validate a ``notify_staff`` call, writing nothing.
+
+    Performs every check :func:`notify_staff` performs and
+    returns the normalized ``kind`` the writer would store.
+    Raises the same ``ValidationError`` the writer would
+    raise. Writes nothing, so it is safe for ``--dry-run``
+    previews on every backend (including NEDB, where a
+    rolled-back transaction does not undo writes).
+    """
+    if member is None:
+        raise ValidationError("A staff member is required.")
+    if appointment is None:
+        raise ValidationError("An appointment is required.")
+    kind = str(kind).strip() if kind is not None else ""
+    if not kind:
+        raise ValidationError("A notification kind is required.")
+    return kind
+
+
+def unseen_notification_count(member):
+    """Return how many of ``member``'s notifications are unseen.
+
+    Read-only: exactly the rows :func:`mark_seen` would stamp
+    (that member's rows where ``seen_at`` is null), counted
+    without stamping any of them.
+    """
+    if member is None:
+        raise ValidationError("A staff member is required.")
+    return StaffNotification.objects.filter(
+        staff_member=member, seen_at__isnull=True
+    ).count()
+
+
 def notify_staff(member, appointment, kind="arrived"):
     """Create one notification ping for ``member``.
 
@@ -50,13 +87,7 @@ def notify_staff(member, appointment, kind="arrived"):
     writing nothing -- for a missing member/appointment or
     a blank kind.
     """
-    if member is None:
-        raise ValidationError("A staff member is required.")
-    if appointment is None:
-        raise ValidationError("An appointment is required.")
-    kind = str(kind).strip() if kind is not None else ""
-    if not kind:
-        raise ValidationError("A notification kind is required.")
+    kind = validate_notify_staff(member, appointment, kind)
     return StaffNotification.objects.create(
         staff_member=member, appointment=appointment, kind=kind
     )
