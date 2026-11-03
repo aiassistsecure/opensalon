@@ -7,7 +7,15 @@ Usage:
 With ``--dry-run`` the source is loaded exactly as below, then a
 JSON dry-run report (see ``saloncore.dry_run``) is printed to
 stdout and the command exits without writing anything — no salon
-is created or updated and no appointment is imported.
+is created or updated and no appointment is imported. The report
+keeps that shape report verbatim and adds a ``preview`` section:
+the salon is resolved by name from reads only (never created),
+and every record is classified exactly as the real import would
+classify it — ``would_create`` / ``would_update`` /
+``would_unchanged`` (by ``external_id``) or ``would_refuse``
+with the refusal reason, naming unresolved client / staff /
+service references by row index. The write phase is never
+entered, so a dry run writes nothing on any backend.
 
 PATH is one JSON file or a directory of monthly JSON files (the
 verbatim extract layout: one ``YYYY-MM.json`` per month); directory
@@ -236,6 +244,169 @@ def _flush_appointments(batch):
                 })
 
 
+def _preview_records(records, salon, tz):
+    """Read-only preview twin of the real import loop below.
+
+    Mirrors the write path's checks in the same order and counts
+    each record as would-create / would-update / would-unchanged
+    (keyed by ``external_id`` against the stored appointments,
+    with in-file duplicates folded through a simulated copy of
+    the preloaded ``existing`` map) or would-refuse, with the
+    refusal reason and, for unresolved references, the row index
+    and the unresolved id. Service references that would still
+    import via a ``serviceName`` snapshot are named as unresolved
+    but are not refusals. Reads only: this function never saves,
+    creates, or updates anything, and the caller never enters
+    the write phase on a dry run.
+    """
+    preview = {
+        "salon": salon.name if salon is not None else None,
+        "salon_found": salon is not None,
+        "total": len(records),
+        "would_create": 0,
+        "would_update": 0,
+        "would_unchanged": 0,
+        "would_refuse": 0,
+        "refusals_by_reason": {},
+        "refusals": [],
+        "unresolved_client": [],
+        "unresolved_staff": [],
+        "unresolved_service": [],
+        "would_import_with_service_snapshot": 0,
+    }
+    if salon is None:
+        clients, staff, services = {}, {}, {}
+    else:
+        clients = {c.external_id: c for c in
+                   Client.objects.filter(salon=salon)
+                   .exclude(external_id="")}
+        staff = {s.external_id: s for s in
+                 StaffMember.objects.filter(salon=salon)
+                 .exclude(external_id="")}
+        services = {s.external_id: s for s in
+                    Service.objects.filter(category__salon=salon)
+                    .exclude(external_id="")}
+    existing = {
+        row["external_id"]: row
+        for row in Appointment.objects.exclude(external_id="")
+        .values("external_id", "client_id", "staff_member_id",
+                "service_id", "service_name", "start", "end",
+                "status", "payload")
+    }
+
+    def refuse(index, reason, detail, appointment_id=None,
+               reference_id=None):
+        preview["would_refuse"] += 1
+        reasons = preview["refusals_by_reason"]
+        reasons[reason] = reasons.get(reason, 0) + 1
+        entry = {"row": index, "reason": reason, "detail": detail,
+                 "appointment_id": appointment_id or None}
+        if reference_id is not None:
+            entry["reference_id"] = reference_id
+        preview["refusals"].append(entry)
+
+    for index, row in enumerate(records):
+        if not isinstance(row, dict):
+            refuse(index, "skipped", "record is not an object")
+            continue
+        deleted = _parse_deleted(row)
+        if deleted is None:
+            refuse(index, "skipped", "unparseable deleted flag",
+                   str(row.get("appointmentId") or ""))
+            continue
+        if deleted:
+            refuse(index, "skipped", "record is flagged deleted",
+                   str(row.get("appointmentId") or ""))
+            continue
+        raw_state = row.get("state")
+        status = STATE_MAP.get(
+            raw_state.strip().upper()
+            if isinstance(raw_state, str) else "")
+        if status is None:
+            refuse(index, "unknown_state", "unknown or missing state",
+                   str(row.get("appointmentId") or ""))
+            continue
+        external_id = str(row.get("appointmentId") or "")
+        client_id = str(row.get("clientId") or "")
+        staff_id = str(row.get("staffId") or "")
+        service_id = str(row.get("serviceId") or "")
+        if (len(external_id) > Appointment._meta.get_field(
+                "external_id").max_length
+                or len(client_id) > Client._meta.get_field(
+                    "external_id").max_length
+                or len(staff_id) > StaffMember._meta.get_field(
+                    "external_id").max_length
+                or len(service_id) > Service._meta.get_field(
+                    "external_id").max_length):
+            refuse(index, "oversized_id", "an id exceeds its limit",
+                   external_id)
+            continue
+        start = _combine(row.get("appointmentDate"),
+                         row.get("startTime"), tz)
+        end = _combine(row.get("appointmentDate"),
+                       row.get("endTime"), tz)
+        if not external_id or start is None or end is None:
+            refuse(index, "skipped",
+                   "missing appointmentId or unparseable date/times",
+                   external_id)
+            continue
+        if end <= start:
+            end += timedelta(days=1)
+        client = clients.get(client_id)
+        if client is None:
+            preview["unresolved_client"].append(
+                {"row": index, "client_id": client_id})
+            refuse(index, "unresolved_client",
+                   "client id does not resolve", external_id, client_id)
+            continue
+        member = staff.get(staff_id)
+        if member is None:
+            preview["unresolved_staff"].append(
+                {"row": index, "staff_id": staff_id})
+            refuse(index, "unresolved_staff",
+                   "staff id does not resolve", external_id, staff_id)
+            continue
+        service = services.get(service_id)
+        snapshot = str(row.get("serviceName") or "").strip()[:200]
+        if service is None:
+            preview["unresolved_service"].append(
+                {"row": index, "service_id": service_id,
+                 "would_import_with_snapshot": bool(snapshot)})
+            if not snapshot:
+                refuse(index, "unresolved_service",
+                       "service id does not resolve and the record "
+                       "carries no serviceName", external_id, service_id)
+                continue
+            preview["would_import_with_service_snapshot"] += 1
+        else:
+            snapshot = snapshot or service.name[:200]
+        payload = dict(row)
+        service_pk = service.id if service is not None else None
+        current = existing.get(external_id)
+        if current is not None and (
+                current["client_id"] == client.id
+                and current["staff_member_id"] == member.id
+                and current["service_id"] == service_pk
+                and current["service_name"] == snapshot
+                and current["start"] == start
+                and current["end"] == end
+                and current["status"] == status
+                and current.get("payload") == payload):
+            preview["would_unchanged"] += 1
+            continue
+        if current is not None:
+            preview["would_update"] += 1
+        else:
+            preview["would_create"] += 1
+        existing[external_id] = {
+            "external_id": external_id, "client_id": client.id,
+            "staff_member_id": member.id, "service_id": service_pk,
+            "service_name": snapshot, "start": start, "end": end,
+            "status": status, "payload": payload,
+        }
+    return preview
+
+
 class Command(BaseCommand):
     help = "Import appointments from a verbatim appointments JSON extract."
 
@@ -255,8 +426,11 @@ class Command(BaseCommand):
                             help="Print a JSON dry-run report for the "
                                  "source (record count, inferred types, "
                                  "distinct null/missing/empty-string "
-                                 "counts, unmapped keys) and exit "
-                                 "without writing anything.")
+                                 "counts, unmapped keys) plus a preview "
+                                 "section counting would-create / "
+                                 "would-update / would-refuse per record "
+                                 "from reads only, and exit without "
+                                 "writing anything.")
 
     def handle(self, *args, **options):
         tz_name = (options.get("timezone") or "").strip() or None
@@ -269,9 +443,49 @@ class Command(BaseCommand):
                     f"Unknown timezone {tz_name!r}: {exc}") from exc
         records = _load_records(options["path"])
         if options.get("dry_run"):
-            # Zero writes: report before any salon/appointment access.
+            # Zero writes: the shape report is built exactly as
+            # before, then the preview twin resolves the salon and
+            # the stored book from reads only — the salon is never
+            # created or updated and the write phase is never
+            # entered, on any backend.
             report = build_dry_run_report(
                 records, MAPPED_KEYS, source_name=options["path"])
+            salon = Salon.objects.filter(
+                name=options["salon"]).order_by("pk").first()
+            if tz_override is not None:
+                preview_tz = tz_override
+            elif salon is None:
+                preview_tz = ZoneInfo("UTC")
+            else:
+                stored_tz = (salon.timezone or "").strip()
+                if not stored_tz:
+                    preview_tz = ZoneInfo("UTC")
+                else:
+                    try:
+                        preview_tz = ZoneInfo(stored_tz)
+                    except Exception:
+                        preview_tz = None
+            if preview_tz is None:
+                report["preview"] = {
+                    "salon": salon.name, "salon_found": True,
+                    "total": len(records), "would_create": 0,
+                    "would_update": 0, "would_unchanged": 0,
+                    "would_refuse": len(records),
+                    "refusals_by_reason": {
+                        "invalid_salon_timezone": len(records)},
+                    "refusals": [
+                        {"row": index,
+                         "reason": "invalid_salon_timezone",
+                         "detail": "the salon's stored timezone is "
+                                   "not a valid IANA name"}
+                        for index in range(len(records))],
+                    "unresolved_client": [], "unresolved_staff": [],
+                    "unresolved_service": [],
+                    "would_import_with_service_snapshot": 0,
+                }
+            else:
+                report["preview"] = _preview_records(
+                    records, salon, preview_tz)
             self.stdout.write(json.dumps(report, sort_keys=True))
             return
         stats = dict.fromkeys(
