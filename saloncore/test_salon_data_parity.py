@@ -40,13 +40,15 @@ Documented one-sided keys, by design:
   bundle deliberately NEVER does (provider-agnostic founding
   rule) -- pinned by its own test below.
 
-Sections with NO standalone per-record counterpart (asserted
-present and exactly keyed in the bundle, excluded on purpose):
-``campaign_sends`` -- messaging's standalone campaign-send
-surfaces are aggregate totals only; no per-record verbatim
-export exists to drift from. ``services`` and
-``service_prices`` share one standalone surface: the joined
-price-book export (one row per service+price pair).
+Every bundle section now has a standalone per-record
+counterpart: ``campaign_sends`` is pinned against messaging's
+per-record verbatim export (``campaign_send_detail``,
+fieldnames ``id``, ``salon_id``, ``campaign_id``,
+``client_id``, ``channel``, ``status``, ``sent_at``,
+``detail``), with ``salon_id`` declared as a standalone-only
+scoping column. ``services`` and ``service_prices`` share
+one standalone surface: the joined price-book export (one
+row per service+price pair).
 
 Synthetic records only -- no real salon/client data.
 """
@@ -77,6 +79,9 @@ from clients.export import export_client
 from clients.models import Client, ClientNote
 from clients.note_export import export_notes
 from messaging.campaign_export import export_campaigns
+from messaging.campaign_send_detail import (
+    export_campaign_send_detail,
+)
 from messaging.models import Campaign, CampaignSend, ReminderSend
 from messaging.send_export import export_sends
 from saloncore.models import (
@@ -114,7 +119,8 @@ WIDE = (date(2020, 1, 1), date(2030, 1, 1))
 YEAR_2026 = (date(2026, 1, 1), date(2026, 12, 31))
 
 #: Bundle sections with no standalone per-record counterpart.
-NO_STANDALONE = {"campaign_sends"}
+#: Empty: every section is now wired to a standalone export.
+NO_STANDALONE = set()
 
 
 def _norm(value):
@@ -431,6 +437,11 @@ class SalonDataParityTests(TestCase):
              ident("id", "salon_id", "name", "channel", "subject",
                    "body", "status", "sent_at", "created_at",
                    "updated_at"), (), ()),
+            ("campaign_sends", self.campaign_send,
+             export_campaign_send_detail(s, *WIDE), "id",
+             ident("id", "campaign_id", "client_id", "channel",
+                   "status", "sent_at", "detail"),
+             (), ("salon_id",)),
             ("staff_notifications", self.notification,
              export_staff_notifications(s), "id",
              ident("id", "staff_member_id", "appointment_id", "kind",
@@ -486,14 +497,9 @@ class SalonDataParityTests(TestCase):
         bundle = self.data["sale_payments"][0]
         self.assertNotIn("provider_reference", bundle)
 
-    def test_no_standalone_sections_present_and_exactly_keyed(self):
-        # campaign_sends: no per-record standalone counterpart
-        # exists (aggregate totals only) -- the bundle section is
-        # asserted present, non-empty, and exactly keyed instead.
-        rows = self.data["campaign_sends"]
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["id"], self.campaign_send.pk)
-        self.assertEqual(set(rows[0]), {
-            "id", "campaign_id", "client_id", "channel", "status",
-            "sent_at", "detail"})
-        self.assertEqual(rows[0]["detail"], "ref-456")
+    def test_no_standalone_set_is_empty(self):
+        # campaign_sends was the last blind spot: it now has a
+        # per-record standalone counterpart
+        # (campaign_send_detail) and is wired into specs() above,
+        # so no bundle section is excluded from parity checks.
+        self.assertEqual(NO_STANDALONE, set())
