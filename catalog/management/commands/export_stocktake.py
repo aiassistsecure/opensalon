@@ -1,20 +1,25 @@
-"""Export a salon's completed stocktake counts as JSON.
+"""Export a salon's completed stocktake counts as JSON or CSV.
 
 Usage:
     python manage.py export_stocktake --salon-id ID
-        [--count PRODUCT_ID=COUNT ...] [--output PATH]
+        [--count PRODUCT_ID=COUNT ...] [--format json|csv]
+        [--output PATH]
 
 Backend only — no views, templates, or UI. This command is a thin
-wrapper around :func:`catalog.stocktake_export.export_stocktake_counts`:
-it resolves the salon by id, parses the optional counted quantities
-into the ``counts`` mapping that service accepts, delegates to that
-service verbatim, and writes the returned list of dicts — which the
-service builds to be JSON-serializable — as JSON to ``--output``
-when given, otherwise to stdout. It adds no fields, filtering, or
-export logic of its own (JSON serialization of the service result,
-as in the ``export_movement`` command, is the only rendering here),
-so the command output and the service output can never disagree —
-one source of truth.
+wrapper around :mod:`catalog.stocktake_export`: it resolves the
+salon by id, parses the optional counted quantities into the
+``counts`` mapping the services accept, and delegates verbatim —
+to :func:`~catalog.stocktake_export.export_stocktake_counts` for
+``--format json`` (the default; the returned list of dicts, which
+the service builds to be JSON-serializable, is written as JSON),
+or to :func:`~catalog.stocktake_export.export_stocktake_counts_csv`
+for ``--format csv`` (that service's CSV string is written as-is).
+Output goes to ``--output`` when given, otherwise to stdout. The
+command adds no fields, filtering, or export logic of its own
+(JSON serialization of the service result, as in the
+``export_movement`` command, is the only rendering here), so the
+command output and the service output can never disagree — one
+source of truth.
 
 Counts semantics are the service's own: each ``--count`` names a
 product of this salon by id with its counted quantity; a foreign
@@ -30,8 +35,13 @@ import json
 
 from django.core.management.base import BaseCommand, CommandError
 
-from catalog.stocktake_export import export_stocktake_counts
+from catalog.stocktake_export import (
+    export_stocktake_counts,
+    export_stocktake_counts_csv,
+)
 from saloncore.models import Salon
+
+_FORMATS = ("json", "csv")
 
 
 def _parse_count(value):
@@ -71,7 +81,7 @@ def _coerce_counts(raw):
 
 
 class Command(BaseCommand):
-    help = "Export a salon's completed stocktake counts as JSON."
+    help = "Export a salon's completed stocktake counts as JSON or CSV."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -86,11 +96,19 @@ class Command(BaseCommand):
                  "counts, which the service exports as an empty list).",
         )
         parser.add_argument(
+            "--format", dest="format", default="json", choices=_FORMATS,
+            help="Export format: json (default) or csv.",
+        )
+        parser.add_argument(
             "--output", default=None,
-            help="Path of the JSON file to write (default: stdout).",
+            help="Path of the export file to write (default: stdout).",
         )
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "json"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist as exc:
@@ -98,10 +116,13 @@ class Command(BaseCommand):
                 f"No salon with id {options['salon_id']}.") from exc
         counts = _coerce_counts(options.get("counts"))
         try:
-            records = export_stocktake_counts(salon, counts)
+            if fmt == "csv":
+                text = export_stocktake_counts_csv(salon, counts)
+            else:
+                records = export_stocktake_counts(salon, counts)
+                text = json.dumps(records, indent=2) + "\n"
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
-        text = json.dumps(records, indent=2) + "\n"
         if options["output"]:
             try:
                 with open(options["output"], "w", encoding="utf-8") as fh:
