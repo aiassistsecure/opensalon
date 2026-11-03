@@ -9,7 +9,14 @@ but NOTHING is written (no salon, client or note rows): a JSON
 dry-run report from ``saloncore.dry_run`` is printed to stdout
 instead -- per-key inferred types, distinct null / missing /
 empty-string counts, and the source keys this importer does not
-map -- and the command exits 0.
+map -- and the command exits 0. The same JSON document carries an
+``import_preview`` section from the read-only counting twin
+(``_build_import_preview``): per-record would-create /
+would-update / would-unchanged / would-refuse counts keyed on
+this importer's own identity rule, refused rows named by index
+with their reason, and each accepted row's opt-in / active flags
+previewed exactly as they would land. The twin reads the salon
+and its stored clients/notes only; the writer is never entered.
 
 The input is a JSON list of client objects with ``clientId``,
 ``firstName``, ``lastName``, ``email``, ``mobile``, the flags
@@ -381,6 +388,151 @@ def _flush_clients(batch):
                 })
 
 
+def _preview_defaults(row):
+    """One row's mapped defaults, exactly as the real import builds
+    them (same helpers, same order, same AND consent rule). Raises
+    ``_OverlongExternalId`` / ``_InvalidBool`` like the writer path.
+
+    Returns ``(external_id, defaults)``; ``external_id`` is ``""``
+    when the row carries no stable identity.
+    """
+    if _is_export_shape(row):
+        external_id = _id_value(row, "external_id")
+        defaults = {
+            "first_name": _text(row, "first_name", 80),
+            "last_name": _text(row, "last_name", 80),
+            "email": _text(row, "email", 254),
+            "phone": _text(row, "phone", 32),
+            "email_opt_in": _bool_field(row, "email_opt_in", False),
+            "sms_opt_in": _bool_field(row, "sms_opt_in", False),
+            "active": _bool_field(row, "active", True),
+            "payload": (
+                dict(row["payload"])
+                if isinstance(row.get("payload"), dict) else {}),
+        }
+    else:
+        external_id = (
+            _id_value(row, "clientId") or _id_value(row, "id"))
+        defaults = {
+            "first_name": _text(row, "firstName", 80),
+            "last_name": _text(row, "lastName", 80),
+            "email": _text(row, "email", 254),
+            "phone": _text(row, "mobile", 32),
+            "email_opt_in": _bool_field(
+                row, "emailMarketingConsent", False)
+            and _bool_field(row, "emailReminderConsent", False),
+            "sms_opt_in": _bool_field(
+                row, "smsMarketingConsent", False)
+            and _bool_field(row, "smsReminderConsent", False),
+            "active": True,
+            "payload": dict(row),
+        }
+    return external_id, defaults
+
+
+def _build_import_preview(data, salon_name):
+    """Read-only counting twin of the real import (the
+    ``import_transactions_csv._count_transaction`` pattern).
+
+    Mirrors the writer's identity rule, skip rules and in-file
+    duplicate folding against a planned-state dict seeded from the
+    salon's stored clients, so the counts are the counts a real run
+    on the same file and salon produces. Reads only: no salon,
+    client or note is created, updated or deleted here, on any
+    backend. Refused rows are named by index with a reason that
+    carries no client name or contact detail.
+    """
+    salon = Salon.objects.filter(name=salon_name).first()
+    planned = {}
+    planned_notes = {}
+    if salon is not None:
+        planned = {
+            row["external_id"]: row
+            for row in Client.objects.filter(salon=salon)
+            .exclude(external_id="")
+            .values("external_id", "first_name", "last_name", "email",
+                    "phone", "email_opt_in", "sms_opt_in", "active",
+                    "payload")
+        }
+        for client in Client.objects.filter(salon=salon):
+            planned_notes[client.external_id] = {
+                (n.body, n.author_name) for n in client.notes.all()}
+    preview = {
+        "salon": salon_name,
+        "salon_exists": salon is not None,
+        "records_total": len(data),
+        "would_create": 0, "would_update": 0, "would_unchanged": 0,
+        "would_refuse": 0, "refused": [], "records": [],
+        "notes_would_create": 0, "notes_would_skip": 0,
+        "opt_in_totals": {
+            "email_opt_in_true": 0, "sms_opt_in_true": 0},
+    }
+
+    def refuse(index, reason):
+        preview["would_refuse"] += 1
+        preview["refused"].append({"index": index, "reason": reason})
+
+    for index, row in enumerate(data):
+        if not isinstance(row, dict):
+            refuse(index, "record is not an object")
+            continue
+        try:
+            flagged = None
+            for key in ("archived", "deleted", "banned"):
+                if _bool_field(row, key, False):
+                    flagged = key
+                    break
+            if flagged is not None:
+                refuse(index, f"flagged {flagged}")
+                continue
+            external_id, defaults = _preview_defaults(row)
+        except _OverlongExternalId as exc:
+            refuse(index, str(exc))
+            continue
+        except _InvalidBool as exc:
+            refuse(index, str(exc))
+            continue
+        if not external_id:
+            refuse(index, "missing external_id"
+                   if _is_export_shape(row) else "missing clientId")
+            continue
+        current = planned.get(external_id)
+        if current is not None and all(
+                current[key] == value
+                for key, value in defaults.items()):
+            outcome = "would_unchanged"
+        elif current is not None:
+            outcome = "would_update"
+        else:
+            outcome = "would_create"
+        preview[outcome] += 1
+        preview["records"].append({
+            "index": index, "outcome": outcome,
+            "email_opt_in": defaults["email_opt_in"],
+            "sms_opt_in": defaults["sms_opt_in"],
+            "active": defaults["active"],
+        })
+        for flag in ("email_opt_in", "sms_opt_in"):
+            if defaults[flag]:
+                preview["opt_in_totals"][flag + "_true"] += 1
+        planned[external_id] = {"external_id": external_id, **defaults}
+        notes = row.get("notes")
+        if isinstance(notes, list) and notes:
+            seen = planned_notes.setdefault(external_id, set())
+            for note in notes:
+                body = (str(note.get("body"))
+                        if isinstance(note, dict) and note.get("body")
+                        else "")
+                author = _text(note, "author_name", 120) \
+                    if isinstance(note, dict) else ""
+                if not body.strip() or (body, author) in seen:
+                    preview["notes_would_skip"] += 1
+                    continue
+                seen.add((body, author))
+                preview["notes_would_create"] += 1
+    return preview
+
+
 class Command(BaseCommand):
     help = "Import clients from a Phorest-style clients JSON export."
 
@@ -391,7 +543,10 @@ class Command(BaseCommand):
         parser.add_argument(
             "--dry-run", action="store_true",
             help="Print a JSON dry-run report (saloncore.dry_run) for "
-                 "the source file and write nothing.")
+                 "the source file plus a read-only import_preview "
+                 "(would-create / would-update / would-unchanged / "
+                 "would-refuse counts, refused rows by index, opt-in "
+                 "flags as they would land) and write nothing.")
 
     def handle(self, *args, **options):
         data = _load_json(options["path"])
@@ -401,10 +556,20 @@ class Command(BaseCommand):
             raise CommandError("Clients file must be a JSON list of clients.")
 
         if options["dry_run"]:
-            # Zero writes: report before any salon/client lookup or
-            # creation, then return (exit 0).
-            report = build_dry_run_report(
-                data, _MAPPED_KEYS, source_name=options["path"])
+            # Zero writes: the shape report is kept verbatim and the
+            # preview twin only reads the salon's stored book, then
+            # return (exit 0). The shape helper rejects non-object
+            # records; those rows are named in the preview's refused
+            # list, so the shape report is built over object records.
+            try:
+                report = build_dry_run_report(
+                    data, _MAPPED_KEYS, source_name=options["path"])
+            except TypeError:
+                report = build_dry_run_report(
+                    [row for row in data if isinstance(row, dict)],
+                    _MAPPED_KEYS, source_name=options["path"])
+            report["import_preview"] = _build_import_preview(
+                data, options["salon"])
             self.stdout.write(json.dumps(report, indent=2, sort_keys=True))
             return
 
