@@ -1,9 +1,15 @@
+import csv
+import io
 import json
 
 from django.test import TestCase
 
 from clients.export import export_client
-from clients.export_all import export_all_clients
+from clients.export_all import (
+    CLIENTS_FIELDNAMES,
+    export_all_clients,
+    export_all_clients_csv,
+)
 from clients.models import Client, ClientNote
 from saloncore.models import Salon
 
@@ -84,6 +90,37 @@ class ExportAllClientsTests(TestCase):
             self.assertNotIn("appointments", record)
             self.assertNotIn("appointment_notes", record)
         self.assertEqual(json.loads(json.dumps(data)), data)
+
+    def test_csv_header_order_and_empty_book(self):
+        text = export_all_clients_csv()
+        self.assertEqual(text, ",".join(CLIENTS_FIELDNAMES) + "\n")
+        self.assertEqual(
+            CLIENTS_FIELDNAMES,
+            list(export_client(self._client("Amy", "Smith")).keys())
+            [:11] + ["notes", "payload", "note_count"],
+        )
+
+    def test_csv_matches_list_export(self):
+        amy = self._client(
+            "Amy", "Smith", email="amy@example.com", sms_opt_in=True,
+            payload={"source_ref": "abc-1"},
+        )
+        self._client("Bob", "Adams")
+        ClientNote.objects.create(client=amy, body="A note")
+        records = export_all_clients()
+        parsed = list(csv.DictReader(
+            io.StringIO(export_all_clients_csv())))
+        self.assertEqual(len(parsed), len(records))
+        for row, record in zip(parsed, records):
+            self.assertEqual(row["first_name"], record["first_name"])
+            self.assertEqual(
+                int(row["note_count"]), record["note_count"])
+            self.assertEqual(json.loads(row["notes"]), record["notes"])
+            if "payload" in record:
+                self.assertEqual(
+                    json.loads(row["payload"]), record["payload"])
+            else:
+                self.assertEqual(row["payload"], "")
 
     def test_optional_salon_filter(self):
         other_salon = Salon.objects.create(name="Other Salon")
