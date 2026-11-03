@@ -39,6 +39,7 @@ __all__ = [
     "import_roster_rows",
     "parse_time",
     "parse_weekday",
+    "preview_roster_rows",
     "resolve_member",
 ]
 
@@ -155,3 +156,91 @@ def import_roster_rows(salon, rows):
     stats["skipped"] = (
         stats["skipped_unknown_member"] + stats["skipped_bad_row"])
     return stats
+
+
+def preview_roster_rows(salon, rows):
+    """Read-only counting twin of :func:`import_roster_rows`.
+
+    Mirrors the writer's validation and identity rules exactly,
+    in the writer's own order and through the same helpers
+    (``_text`` / ``resolve_member`` / ``parse_weekday`` /
+    ``parse_time``): missing identifier or unparseable
+    weekday/time or end not after start is refused as a bad row,
+    an identifier resolving to nobody is refused as an unknown
+    member, and identity is ``get_or_create`` on (member,
+    weekday, start_time, end_time). The writer never updates --
+    an existing pattern is preserved verbatim -- so an identity
+    already stored (or already would-created by an earlier row
+    in the same file) counts ``would_unchanged`` and
+    ``would_update`` is always zero. ``salon`` may be ``None``
+    (a salon the real import would create has no members, so
+    every identified row is refused as unknown). Reads only:
+    nothing is created, updated, or deleted here, on any
+    backend. Refused rows are named by index with a reason that
+    carries no staff name or identifier.
+    """
+    preview = {
+        "salon_exists": salon is not None,
+        "records_total": len(rows),
+        "would_create": 0,
+        "would_update": 0,
+        "would_unchanged": 0,
+        "would_refuse": 0,
+        "refused": [],
+        "records": [],
+    }
+
+    def refuse(index, reason):
+        preview["would_refuse"] += 1
+        preview["refused"].append({"index": index, "reason": reason})
+        preview["records"].append(
+            {"index": index, "action": "would_refuse", "reason": reason})
+
+    if salon is None:
+        maps = ({}, {}, {})
+        planned = set()
+    else:
+        maps = _member_maps(salon)
+        planned = {
+            (p.staff_member_id, p.weekday, p.start_time, p.end_time)
+            for p in RosterPattern.objects.filter(
+                staff_member__salon=salon)}
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            refuse(index, "not_a_record")
+            continue
+        identifier = _text(row, _MEMBER_KEYS)
+        if not identifier:
+            refuse(index, "missing_member_identifier")
+            continue
+        member = resolve_member(identifier, maps)
+        if member is None:
+            refuse(index, "unknown_member")
+            continue
+        weekday = parse_weekday(
+            row.get("weekday") if "weekday" in row else None)
+        start = parse_time(_text(row, ("start_time", "start")))
+        end = parse_time(_text(row, ("end_time", "end")))
+        if weekday is None:
+            refuse(index, "invalid_weekday")
+            continue
+        if start is None:
+            refuse(index, "invalid_start_time")
+            continue
+        if end is None:
+            refuse(index, "invalid_end_time")
+            continue
+        if end <= start:
+            refuse(index, "end_not_after_start")
+            continue
+        key = (member.pk, weekday, start, end)
+        if key in planned:
+            action = "would_unchanged"
+        else:
+            action = "would_create"
+            planned.add(key)
+        preview[action] += 1
+        preview["records"].append({
+            "index": index, "action": action, "weekday": weekday,
+            "start_time": start.isoformat(), "end_time": end.isoformat()})
+    return preview

@@ -9,7 +9,13 @@ import but NOTHING is written (no salon or roster-pattern
 rows): a JSON dry-run report from ``saloncore.dry_run`` is
 printed to stdout instead -- per-key inferred types, distinct
 null / missing / empty-string counts, and the source keys this
-importer does not map -- and the command exits 0.
+importer does not map -- extended with an ``import_preview``
+(read-only counting twin of the writer, from
+``team.roster_import.preview_roster_rows``): per-row
+would-create / would-update / would-unchanged / would-refuse
+counts, refused rows named by index and reason only, and the
+command exits 0. The preview only reads: the salon is looked
+up, never created, and the writer is never entered.
 
 The input is a CSV with a header row. The canonical columns
 are ``staff_member_external_id``, ``weekday``, ``start_time``
@@ -40,7 +46,8 @@ from django.db import transaction
 
 from saloncore.dry_run import build_dry_run_report
 from saloncore.models import Salon
-from team.roster_import import MAPPED_KEYS, import_roster_rows
+from team.roster_import import (
+    MAPPED_KEYS, import_roster_rows, preview_roster_rows)
 
 
 def _load_csv(path):
@@ -69,16 +76,26 @@ class Command(BaseCommand):
         parser.add_argument(
             "--dry-run", action="store_true",
             help="Print a JSON dry-run report (saloncore.dry_run) for "
-                 "the source file and write nothing.")
+                 "the source file plus a read-only import_preview "
+                 "(would-create / would-update / would-unchanged / "
+                 "would-refuse counts, refused rows by index) and "
+                 "write nothing.")
 
     def handle(self, *args, **options):
         rows = _load_csv(options["path"])
 
         if options["dry_run"]:
-            # Zero writes: report before any salon/member lookup
-            # or creation, then return (exit 0).
+            # Zero writes: the shape report is kept verbatim, then
+            # extended with the read-only import preview (salon
+            # lookup only -- no get_or_create, and
+            # import_roster_rows below is never entered), then
+            # return (exit 0).
             report = build_dry_run_report(
                 rows, MAPPED_KEYS, source_name=options["path"])
+            salon = Salon.objects.filter(name=options["salon"]).first()
+            preview = preview_roster_rows(salon, rows)
+            preview["salon"] = options["salon"]
+            report["import_preview"] = preview
             self.stdout.write(json.dumps(report, indent=2, sort_keys=True))
             return
 
