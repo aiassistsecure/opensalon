@@ -23,7 +23,7 @@ from saloncore.test_import_salon_data import _minimal_data
 
 SLICE1 = ("salons", "service_categories", "services",
           "staff_levels", "service_prices")
-# Slices 2-5 also carry a preview; shape checks below exclude
+# Slices 2-6 also carry a preview; shape checks below exclude
 # every previewed section, not just slice 1.
 PREVIEWED = SLICE1 + ("clients", "client_notes", "staff_members",
                       "staff_services", "appointments",
@@ -31,7 +31,9 @@ PREVIEWED = SLICE1 + ("clients", "client_notes", "staff_members",
                       "roster_patterns", "shift_overrides",
                       "attendance_records", "breaks", "sales",
                       "sale_items", "sale_payments", "refunds",
-                      "cashups", "receipts")
+                      "cashups", "receipts", "stock_movements",
+                      "price_changes", "reminder_sends", "campaigns",
+                      "campaign_sends", "staff_notifications")
 MODELS = (Salon, ServiceCategory, Service, StaffLevel, ServicePrice)
 
 
