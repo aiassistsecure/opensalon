@@ -19,10 +19,11 @@ class ProductExportTests(TestCase):
         self.salon = Salon.objects.create(name="Example Salon")
 
     def make_product(self, name, price="24.00", sku="", barcode="",
-                     salon=None, active=True):
+                     salon=None, active=True, **extra):
         return Product.objects.create(
             salon=salon or self.salon, name=name, sku=sku,
             barcode=barcode, price=Decimal(price), active=active,
+            **extra,
         )
 
     def move(self, product, delta, kind=StockMovement.Kind.RECEIVE):
@@ -40,7 +41,61 @@ class ProductExportTests(TestCase):
             "id": p.pk, "salon_id": self.salon.pk, "name": "Shampoo",
             "sku": "SH-001", "barcode": "012345678905",
             "price": "10.50", "active": True, "stock_on_hand": 7,
+            "brand_name": "", "category_name": "", "product_type": "",
+            "cost_price": None, "external_id": "", "payload": {},
         })
+        self.assertEqual(list(record.keys()), EXPORT_FIELDNAMES)
+
+    def test_exports_stored_verbatim_fields(self):
+        payload = {"source": "phorest", "nested": {"size": "250ml"}}
+        p = self.make_product(
+            "Shampoo", brand_name="Aveda", category_name="Hair Care",
+            product_type="retail", external_id="ext-42",
+            cost_price=Decimal("6.25"), payload=payload)
+        self.move(p, 1)
+        (record,) = export_products(self.salon)
+        self.assertEqual(record["brand_name"], "Aveda")
+        self.assertEqual(record["category_name"], "Hair Care")
+        self.assertEqual(record["product_type"], "retail")
+        self.assertEqual(record["cost_price"], "6.25")
+        self.assertEqual(record["external_id"], "ext-42")
+        self.assertEqual(record["payload"], payload)
+        self.assertEqual(json.loads(json.dumps(record)), record)
+
+    def test_verbatim_fields_on_inactive_products(self):
+        inactive = self.make_product(
+            "Retired", active=False, brand_name="BrandX",
+            category_name="Old", product_type="backbar",
+            external_id="ext-9", cost_price=Decimal("3.00"),
+            payload={"legacy": True})
+        self.move(inactive, 2)
+        (record,) = export_products(self.salon, include_inactive=True)
+        self.assertEqual(record["brand_name"], "BrandX")
+        self.assertEqual(record["cost_price"], "3.00")
+        self.assertEqual(record["external_id"], "ext-9")
+        self.assertEqual(record["payload"], {"legacy": True})
+
+    def test_csv_verbatim_fields_and_payload_json_cell(self):
+        payload = {"b": 2, "a": 1}
+        self.make_product(
+            "Shampoo", brand_name="Aveda", category_name="Hair Care",
+            product_type="retail", external_id="ext-42",
+            cost_price=Decimal("6.25"), payload=payload)
+        self.make_product("No Cost")
+        text = export_products_csv(self.salon)
+        rows = list(csv.DictReader(io.StringIO(text)))
+        self.assertEqual(list(rows[0].keys()), EXPORT_FIELDNAMES)
+        by_name = {r["name"]: r for r in rows}
+        row = by_name["Shampoo"]
+        self.assertEqual(row["brand_name"], "Aveda")
+        self.assertEqual(row["category_name"], "Hair Care")
+        self.assertEqual(row["product_type"], "retail")
+        self.assertEqual(row["cost_price"], "6.25")
+        self.assertEqual(row["external_id"], "ext-42")
+        self.assertEqual(json.loads(row["payload"]), payload)
+        # No cost recorded exports an empty cell, never zero.
+        self.assertEqual(by_name["No Cost"]["cost_price"], "")
+        self.assertEqual(json.loads(by_name["No Cost"]["payload"]), {})
 
     def test_result_is_json_serializable(self):
         p = self.make_product("Serum", price="19.99")
