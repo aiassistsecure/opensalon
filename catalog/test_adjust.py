@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from django.test import TestCase
 
-from catalog.adjust import adjust_stock
+from catalog.adjust import adjust_stock, validate_adjust_stock
 from catalog.models import Product, StockMovement
 from saloncore.models import Salon
 
@@ -111,6 +111,29 @@ class AdjustStockTests(TestCase):
         with self.assertRaises(ValueError):
             adjust_stock(self.product, 1, "x" * 256)
         self.assertEqual(self.adjustments().count(), 0)
+
+    def test_validate_adjust_stock_writes_nothing(self):
+        self.seed(10)
+        before = StockMovement.objects.count()
+        self.assertEqual(
+            validate_adjust_stock(self.product, -4, "Damaged"), 6)
+        self.assertEqual(
+            validate_adjust_stock(self.product, 5, "Found"), 15)
+        self.assertEqual(StockMovement.objects.count(), before)
+        self.assertEqual(self.product.current_stock, 10)
+
+    def test_validate_adjust_stock_same_errors_writes_nothing(self):
+        self.seed(3)
+        before = StockMovement.objects.count()
+        for args in ((self.product, -4, "Damaged"),
+                     (self.product, 0, "No-op"),
+                     (self.product, 1, "   "),
+                     (self.product, 1, "x" * 256),
+                     (None, 1, "Recount")):
+            with self.assertRaises(ValueError):
+                validate_adjust_stock(*args)
+        self.assertEqual(StockMovement.objects.count(), before)
+        self.assertEqual(self.product.current_stock, 3)
 
     def test_unsaved_or_missing_product_is_rejected(self):
         unsaved = Product(

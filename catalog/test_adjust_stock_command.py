@@ -87,6 +87,18 @@ class AdjustStockCommandTests(TestCase):
         self.assertEqual(self.adjustments().count(), 0)
         self.assertIn("resulting stock 15", out.getvalue())
 
+    def test_dry_run_invalid_writes_nothing_before_equals_after(self):
+        before = StockMovement.objects.count()
+        for kwargs in ({"delta": 0, "reason": "No-op"},
+                       {"delta": 1, "reason": "   "}):
+            with self.assertRaises(CommandError):
+                call_command(
+                    "adjust_stock", salon_id=self.salon.pk,
+                    product_id=self.product.pk, dry_run=True,
+                    stdout=io.StringIO(), **kwargs)
+        self.assertEqual(StockMovement.objects.count(), before)
+        self.assertEqual(self.product.current_stock, 10)
+
     def test_dry_run_below_zero_raises_and_writes_nothing(self):
         before = StockMovement.objects.count()
         with self.assertRaises(CommandError):

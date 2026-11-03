@@ -4,11 +4,13 @@ Usage:
     python manage.py adjust_stock --salon-id ID --product-id ID
         --delta N --reason TEXT [--dry-run]
 
-With ``--dry-run`` nothing is recorded: the command runs the
-service inside a transaction it rolls back, and prints a preview
-of the ``StockMovement`` that would be recorded — its kind, signed
-delta, and reason — together with the on-hand quantity that would
-result.
+With ``--dry-run`` nothing is recorded: the command calls the
+service's read-only ``validate_adjust_stock`` helper and prints
+a preview of the ``StockMovement`` that would be recorded — its
+kind, signed delta, and reason — together with the on-hand
+quantity that would result. The writer is never called, so the
+preview is safe on every backend (including NEDB, where a
+rolled-back transaction does not undo writes).
 
 Backend only — no views, templates, or UI. This command is a thin
 wrapper around :func:`catalog.adjust.adjust_stock`: it resolves
@@ -28,9 +30,8 @@ here as ``CommandError``; an unknown salon or a product outside
 that salon is also a ``CommandError``.
 """
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
 
-from catalog.adjust import adjust_stock
+from catalog.adjust import adjust_stock, validate_adjust_stock
 from catalog.models import Product
 from saloncore.models import Salon
 
@@ -79,9 +80,7 @@ class Command(BaseCommand):
         reason = options["reason"]
         if options.get("dry_run"):
             try:
-                with transaction.atomic():
-                    new_stock = adjust_stock(product, delta, reason)
-                    transaction.set_rollback(True)
+                new_stock = validate_adjust_stock(product, delta, reason)
             except (TypeError, ValueError) as exc:
                 raise CommandError(str(exc)) from exc
             self.stdout.write(

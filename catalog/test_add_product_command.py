@@ -51,6 +51,19 @@ class AddProductCommandTests(TestCase):
         self.assertIn("24.00", text)
         self.assertIn("no product written", text)
 
+    def test_dry_run_invalid_writes_nothing_before_equals_after(self):
+        Product.objects.create(
+            salon=self.salon, name="Existing",
+            barcode="999", price=Decimal("10.00"))
+        before = Product.objects.count()
+        for kwargs in ({"name": "  ", "price": "1.00"},
+                       {"name": "X", "price": "abc"},
+                       {"name": "X", "price": "-2.00"}):
+            with self.assertRaises(CommandError):
+                self.run_cmd(
+                    salon_id=self.salon.pk, dry_run=True, **kwargs)
+        self.assertEqual(Product.objects.count(), before)
+
     def test_dry_run_duplicate_barcode_refused_writes_nothing(self):
         Product.objects.create(
             salon=self.salon, name="Existing",

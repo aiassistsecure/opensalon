@@ -5,10 +5,13 @@ Usage:
         --price AMOUNT [--sku CODE] [--barcode CODE] [--inactive]
         [--dry-run]
 
-With ``--dry-run`` nothing is written: the command runs the
-service inside a transaction it rolls back, and prints the
-product that WOULD be created — its name, SKU, barcode, price,
-and active flag in the salon's scope.
+With ``--dry-run`` nothing is written: the command calls the
+service's read-only ``validate_add_product`` helper and prints
+the product that WOULD be created — its name, SKU, barcode,
+price, and active flag in the salon's scope. The writer is
+never called, so the preview is safe on every backend
+(including NEDB, where a rolled-back transaction does not
+undo writes).
 
 Backend only — no views, templates, or UI. This command is a
 thin wrapper around :func:`catalog.add_product.add_product`: it
@@ -24,9 +27,8 @@ name, over-long SKU/barcode, bad or negative price, duplicate
 barcode) is surfaced here as ``CommandError``.
 """
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
 
-from catalog.add_product import add_product
+from catalog.add_product import add_product, validate_add_product
 from saloncore.models import Salon
 
 
@@ -74,15 +76,14 @@ class Command(BaseCommand):
             barcode=options.get("barcode") or "", active=active)
         if options.get("dry_run"):
             try:
-                with transaction.atomic():
-                    product = add_product(salon, **kwargs)
-                    preview = (product.name, product.sku,
-                               product.barcode, product.price,
-                               product.active)
-                    transaction.set_rollback(True)
+                cleaned = validate_add_product(salon, **kwargs)
             except (TypeError, ValueError) as exc:
                 raise CommandError(str(exc)) from exc
-            name, sku, barcode, price, is_active = preview
+            name = cleaned["name"]
+            sku = cleaned["sku"]
+            barcode = cleaned["barcode"]
+            price = cleaned["price"]
+            is_active = cleaned["active"]
             self.stdout.write(
                 f"Dry run: would create product {name!r} "
                 f"in salon {salon.pk}: sku={sku!r} "
