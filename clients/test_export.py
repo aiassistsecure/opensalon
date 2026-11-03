@@ -1,10 +1,16 @@
+import csv
+import io
 import json
 from datetime import timedelta
 
 from django.test import TestCase
 from django.utils import timezone
 
-from clients.export import export_client
+from clients.export import (
+    CLIENT_FIELDNAMES,
+    export_client,
+    export_client_csv,
+)
 from clients.models import Client, ClientNote
 from saloncore.models import Salon
 
@@ -120,3 +126,44 @@ class ExportClientTests(TestCase):
         ClientNote.objects.create(client=other, body="Someone else's note")
         data = export_client(self.client)
         self.assertEqual(data["notes"], [])
+
+
+class ExportClientCsvTests(TestCase):
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon")
+        self.client = Client.objects.create(
+            salon=self.salon,
+            external_id="ext-42",
+            first_name="Amy",
+            last_name="Smith",
+            email="amy@example.com",
+            phone="555-0101",
+            sms_opt_in=True,
+            email_opt_in=False,
+        )
+
+    def test_csv_header_and_single_row_match_dict_export(self):
+        ClientNote.objects.create(client=self.client, body="A note")
+        text = export_client_csv(self.client)
+        self.assertEqual(
+            text.splitlines()[0], ",".join(CLIENT_FIELDNAMES))
+        parsed = list(csv.DictReader(io.StringIO(text)))
+        self.assertEqual(len(parsed), 1)
+        expected = export_client(self.client)
+        row = parsed[0]
+        for field in (
+            "id", "salon_id", "external_id", "first_name",
+            "last_name", "email", "phone", "sms_opt_in",
+            "email_opt_in", "active", "created_at",
+        ):
+            self.assertEqual(row[field], str(expected[field]))
+        self.assertEqual(json.loads(row["notes"]), expected["notes"])
+        self.assertEqual(row["payload"], "")
+
+    def test_csv_payload_json_encoded_when_present(self):
+        payload = {"clientId": "ext-42", "nested": {"flags": ["a"]}}
+        self.client.payload = payload
+        self.client.save()
+        parsed = list(
+            csv.DictReader(io.StringIO(export_client_csv(self.client))))
+        self.assertEqual(json.loads(parsed[0]["payload"]), payload)
