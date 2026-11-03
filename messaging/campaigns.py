@@ -1,9 +1,10 @@
-"""Marketing campaign audience selection (Marketing M1).
+"""Marketing campaign creation and audience selection.
 
-Pure service module -- no views, no UI, and no sending. A campaign
-is draft-only (see ``messaging.models.Campaign``); this module only
-answers "who would this campaign reach?" from the one source of
-truth for consent, ``clients.Client``:
+Pure service module -- no views, no UI, and no sending.
+:func:`create_campaign` is the one validated path for creating
+a campaign: it always creates a DRAFT and never sends anything.
+This module also answers "who would this campaign reach?" from
+the one source of truth for consent, ``clients.Client``:
 
 - SMS audience: clients of the campaign's salon with
   ``sms_opt_in=True``.
@@ -22,6 +23,7 @@ from dataclasses import dataclass
 from django.core.exceptions import ValidationError
 
 from clients.models import Client
+from saloncore.models import Salon
 
 from .models import Campaign
 
@@ -33,6 +35,7 @@ __all__ = [
     "audience_summary",
     "campaign_audience",
     "count_audience",
+    "create_campaign",
 ]
 
 _CHANNEL_FIELD = {
@@ -48,6 +51,38 @@ def _channel_field(channel):
         raise ValidationError(
             {"channel": f"Unknown campaign channel: {channel!r}."}
         ) from None
+
+
+def create_campaign(salon, name, channel, subject="", body=""):
+    """Create one DRAFT campaign for ``salon``; never sends.
+
+    The one validated creation path: ``salon`` must be a saved
+    Salon, ``name`` and ``body`` must be non-blank, ``channel``
+    must be a known campaign channel, and an email campaign
+    must carry a non-blank ``subject`` (SMS subjects are stored
+    as given and may be blank). Any violation raises
+    ``ValidationError`` and nothing is created.
+    """
+    if not isinstance(salon, Salon) or salon.pk is None:
+        raise ValidationError("salon must be a saved Salon instance.")
+    _channel_field(channel)
+    name = (name or "").strip()
+    if not name:
+        raise ValidationError({"name": "Campaign name must not be empty."})
+    body = body or ""
+    if not body.strip():
+        raise ValidationError({"body": "Campaign body must not be empty."})
+    subject = subject or ""
+    if channel == Campaign.Channel.EMAIL and not subject.strip():
+        raise ValidationError(
+            {"subject": "An email campaign must carry a subject."})
+    campaign = Campaign(
+        salon=salon, name=name, channel=channel,
+        subject=subject, body=body, status=Campaign.Status.DRAFT,
+    )
+    campaign.full_clean()
+    campaign.save()
+    return campaign
 
 
 def audience_queryset(campaign):
