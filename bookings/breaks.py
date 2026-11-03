@@ -1,6 +1,6 @@
-"""Verbatim Break rows for one salon.
+"""Verbatim Break rows for one salon, plus the Break writer.
 
-Backend only. Read-only service derived only from ``Break``
+Backend only. The read service is derived only from ``Break``
 rows, returned VERBATIM as stored -- unlike
 :mod:`bookings.break_totals`, this module never aggregates,
 counts, sums minutes, or splits paid/unpaid into totals: one
@@ -13,14 +13,68 @@ range filters by ``start`` local date in the salon timezone
 convention); no range returns every break for the salon.
 Optional ``staff_member`` scopes to one member. ``None``
 salon returns no rows. Ordering is by ``start``, then ``id``.
+
+:func:`add_break` is the single write path for ``Break``
+rows: it mirrors the model's fields exactly (``staff_member``,
+``start``, ``end``, ``paid`` -- ``paid`` is payroll-relevant,
+whether the blocked time is on the clock) and refuses invalid
+shapes with ``ValidationError``, writing nothing.
 """
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 
+from django.core.exceptions import ValidationError
+from django.utils import timezone
+
 from bookings.availability import _tz
 from bookings.models import Break
+from team.models import StaffMember
 
-__all__ = ["BreakRecord", "breaks", "list_breaks"]
+__all__ = ["BreakRecord", "add_break", "breaks", "list_breaks"]
+
+
+def add_break(staff_member, start=None, end=None, paid=False, **kwargs):
+    """Create a ``Break`` for ``staff_member`` and return it.
+
+    ``start``/``end`` are timezone-aware datetimes (the
+    ``starts_at``/``ends_at`` keyword aliases are also accepted);
+    ``paid`` records whether the time is on the clock. Raises
+    ``ValidationError`` -- writing nothing -- for a missing or
+    unknown staff member, missing/naive start or end, or an
+    ``end`` that is not after ``start``.
+    """
+    if "starts_at" in kwargs:
+        if start is not None:
+            raise ValidationError(
+                {"start": "Pass either start or starts_at, not both."})
+        start = kwargs.pop("starts_at")
+    if "ends_at" in kwargs:
+        if end is not None:
+            raise ValidationError(
+                {"end": "Pass either end or ends_at, not both."})
+        end = kwargs.pop("ends_at")
+    if kwargs:
+        raise ValidationError(
+            {next(iter(kwargs)): "Unknown argument."})
+    if staff_member is None or not isinstance(staff_member, StaffMember):
+        raise ValidationError(
+            {"staff_member": "A staff member is required."})
+    if staff_member.pk is None or not StaffMember.objects.filter(
+            pk=staff_member.pk).exists():
+        raise ValidationError(
+            {"staff_member": "That staff member does not exist."})
+    for field, value in (("start", start), ("end", end)):
+        if value is None:
+            raise ValidationError({field: f"A break {field} is required."})
+        if not isinstance(value, datetime) or timezone.is_naive(value):
+            raise ValidationError(
+                {field: f"Break {field} must be a timezone-aware datetime."})
+    if end <= start:
+        raise ValidationError(
+            {"end": "Break end must be after its start."})
+    return Break.objects.create(
+        staff_member=staff_member, start=start, end=end,
+        paid=bool(paid))
 
 
 @dataclass(frozen=True)
