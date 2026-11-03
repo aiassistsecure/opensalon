@@ -36,7 +36,7 @@ from django.db import transaction
 from catalog.models import Product
 from saloncore.models import Salon
 
-__all__ = ["add_product"]
+__all__ = ["add_product", "validate_add_product"]
 
 _NAME_LIMIT = Product._meta.get_field("name").max_length
 _SKU_LIMIT = Product._meta.get_field("sku").max_length
@@ -92,6 +92,32 @@ def _clean_active(active):
     return active
 
 
+def validate_add_product(salon, name, price, sku="", barcode="",
+                         active=True):
+    """Validate an ``add_product`` call, writing nothing.
+
+    Performs every check :func:`add_product` performs and returns
+    the cleaned fields the writer would store, as a dict with keys
+    ``salon``, ``name``, ``price``, ``sku``, ``barcode``, ``active``.
+    Raises the same ``ValueError`` the writer would raise. Writes
+    nothing, so it is safe for ``--dry-run`` previews on every
+    backend (including NEDB, where a rolled-back transaction
+    does not undo writes).
+    """
+    salon = _clean_salon(salon)
+    cleaned = dict(
+        salon=salon, name=_clean_name(name), price=_clean_price(price),
+        sku=_clean_code(sku, "sku", _SKU_LIMIT),
+        barcode=_clean_code(barcode, "barcode", _BARCODE_LIMIT),
+        active=_clean_active(active))
+    if cleaned["barcode"] and Product.objects.filter(
+            salon=salon, barcode=cleaned["barcode"]).exists():
+        raise ValueError(
+            f"barcode {cleaned['barcode']!r} is already used by "
+            f"another product in salon {salon.pk}")
+    return cleaned
+
+
 def add_product(salon, name, price, sku="", barcode="", active=True):
     """Create one product in ``salon`` and return it.
 
@@ -101,18 +127,7 @@ def add_product(salon, name, price, sku="", barcode="", active=True):
     a non-blank ``barcode`` already carried by another product
     in the same salon.
     """
-    salon = _clean_salon(salon)
-    name = _clean_name(name)
-    price = _clean_price(price)
-    sku = _clean_code(sku, "sku", _SKU_LIMIT)
-    barcode = _clean_code(barcode, "barcode", _BARCODE_LIMIT)
-    active = _clean_active(active)
     with transaction.atomic():
-        if barcode and Product.objects.filter(
-                salon=salon, barcode=barcode).exists():
-            raise ValueError(
-                f"barcode {barcode!r} is already used by another "
-                f"product in salon {salon.pk}")
-        return Product.objects.create(
-            salon=salon, name=name, sku=sku, barcode=barcode,
-            price=price, active=active)
+        cleaned = validate_add_product(
+            salon, name, price, sku=sku, barcode=barcode, active=active)
+        return Product.objects.create(**cleaned)

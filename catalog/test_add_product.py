@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from django.test import TestCase
 
-from catalog.add_product import add_product
+from catalog.add_product import add_product, validate_add_product
 from catalog.models import Product
 from saloncore.models import Salon
 
@@ -87,3 +87,28 @@ class AddProductTests(TestCase):
         with self.assertRaises(ValueError):
             add_product(self.salon, "Shampoo", "1.00", active="yes")
         self.assertEqual(Product.objects.count(), 0)
+
+    def test_validate_add_product_writes_nothing(self):
+        cleaned = validate_add_product(
+            self.salon, "  Shampoo  ", "24.00",
+            sku="SH-001", barcode="012345678905")
+        self.assertEqual(Product.objects.count(), 0)
+        self.assertEqual(
+            (cleaned["name"], cleaned["sku"], cleaned["barcode"],
+             cleaned["price"], cleaned["active"]),
+            ("Shampoo", "SH-001", "012345678905",
+             Decimal("24.00"), True))
+
+    def test_validate_add_product_same_errors_writes_nothing(self):
+        add_product(self.salon, "Existing", "10.00",
+                    barcode="012345678905")
+        before = Product.objects.count()
+        for kwargs in ({"name": "  ", "price": "1.00"},
+                       {"name": "X", "price": "abc"},
+                       {"name": "X", "price": "-1.00"},
+                       {"name": "Copy", "price": "1.00",
+                        "barcode": "012345678905"},
+                       {"name": "x" * 161, "price": "1.00"}):
+            with self.assertRaises(ValueError):
+                validate_add_product(self.salon, **kwargs)
+        self.assertEqual(Product.objects.count(), before)

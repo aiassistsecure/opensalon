@@ -48,6 +48,28 @@ def _clean_reason(reason):
     return text
 
 
+def validate_adjust_stock(product, delta, reason):
+    """Validate an ``adjust_stock`` call, writing nothing.
+
+    Performs every check :func:`adjust_stock` performs and returns
+    the on-hand quantity that would result. Raises the same
+    ``ValueError`` the writer would raise. Writes nothing, so it
+    is safe for ``--dry-run`` previews on every backend (including
+    NEDB, where a rolled-back transaction does not undo writes).
+    """
+    product = _clean_product(product)
+    delta = _clean_delta(delta)
+    _clean_reason(reason)
+    current = product.current_stock
+    new_stock = current + delta
+    if new_stock < 0:
+        raise ValueError(
+            f"adjustment of {delta:+d} would drive stock negative "
+            f"({current} on hand)"
+        )
+    return new_stock
+
+
 def adjust_stock(product, delta, reason):
     """Adjust ``product``'s stock by signed ``delta`` for ``reason``.
 
@@ -65,13 +87,7 @@ def adjust_stock(product, delta, reason):
     delta = _clean_delta(delta)
     reason = _clean_reason(reason)
     with transaction.atomic():
-        current = product.current_stock
-        new_stock = current + delta
-        if new_stock < 0:
-            raise ValueError(
-                f"adjustment of {delta:+d} would drive stock negative "
-                f"({current} on hand)"
-            )
+        validate_adjust_stock(product, delta, reason)
         StockMovement.objects.create(
             product=product,
             kind=StockMovement.Kind.ADJUSTMENT,
