@@ -99,6 +99,71 @@ class TransitionStatusCommandTests(TestCase):
                 status="done", stdout=io.StringIO())
         self.assertEqual(self._status(), Appointment.Status.BOOKED)
 
+    def test_dry_run_valid_prints_preview_and_writes_nothing(self):
+        out = io.StringIO()
+        call_command(
+            "transition_status", appointment_id=self.appointment.pk,
+            status="confirmed", dry_run=True, stdout=out)
+        self.assertEqual(self._status(), Appointment.Status.BOOKED)
+        text = out.getvalue()
+        self.assertIn("Dry run", text)
+        self.assertIn("booked -> confirmed", text)
+        self.assertIn(str(self.appointment.pk), text)
+
+    def test_dry_run_flag_form(self):
+        out = io.StringIO()
+        call_command(
+            "transition_status", "--appointment-id",
+            str(self.appointment.pk), "--status", "cancelled",
+            "--dry-run", stdout=out)
+        self.assertEqual(self._status(), Appointment.Status.BOOKED)
+        self.assertIn("booked -> cancelled", out.getvalue())
+
+    def test_dry_run_then_real_run_still_transitions(self):
+        call_command(
+            "transition_status", appointment_id=self.appointment.pk,
+            status="confirmed", dry_run=True, stdout=io.StringIO())
+        self.assertEqual(self._status(), Appointment.Status.BOOKED)
+        call_command(
+            "transition_status", appointment_id=self.appointment.pk,
+            status="confirmed", stdout=io.StringIO())
+        self.assertEqual(self._status(), Appointment.Status.CONFIRMED)
+
+    def test_dry_run_invalid_transition_same_error_and_unchanged(self):
+        with self.assertRaises(CommandError) as real:
+            call_command(
+                "transition_status", appointment_id=self.appointment.pk,
+                status="completed", stdout=io.StringIO())
+        with self.assertRaises(CommandError) as preview:
+            call_command(
+                "transition_status", appointment_id=self.appointment.pk,
+                status="completed", dry_run=True, stdout=io.StringIO())
+        self.assertEqual(str(preview.exception), str(real.exception))
+        self.assertEqual(self._status(), Appointment.Status.BOOKED)
+
+    def test_dry_run_terminal_status_is_command_error_and_unchanged(self):
+        call_command(
+            "transition_status", appointment_id=self.appointment.pk,
+            status="no_show", stdout=io.StringIO())
+        with self.assertRaises(CommandError):
+            call_command(
+                "transition_status", appointment_id=self.appointment.pk,
+                status="confirmed", dry_run=True, stdout=io.StringIO())
+        self.assertEqual(self._status(), Appointment.Status.NO_SHOW)
+
+    def test_dry_run_unknown_status_is_command_error_and_unchanged(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "transition_status", appointment_id=self.appointment.pk,
+                status="done", dry_run=True, stdout=io.StringIO())
+        self.assertEqual(self._status(), Appointment.Status.BOOKED)
+
+    def test_dry_run_unknown_appointment_is_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "transition_status", appointment_id=999999,
+                status="confirmed", dry_run=True, stdout=io.StringIO())
+
     def test_unknown_appointment_is_command_error(self):
         with self.assertRaises(CommandError):
             call_command(
