@@ -41,6 +41,7 @@ __all__ = [
     "count_audience",
     "create_campaign",
     "discard_campaign",
+    "validate_create_campaign",
 ]
 
 _CHANNEL_FIELD = {
@@ -58,15 +59,15 @@ def _channel_field(channel):
         ) from None
 
 
-def create_campaign(salon, name, channel, subject="", body=""):
-    """Create one DRAFT campaign for ``salon``; never sends.
+def validate_create_campaign(salon, name, channel, subject="", body=""):
+    """Validate a ``create_campaign`` call, writing nothing.
 
-    The one validated creation path: ``salon`` must be a saved
-    Salon, ``name`` and ``body`` must be non-blank, ``channel``
-    must be a known campaign channel, and an email campaign
-    must carry a non-blank ``subject`` (SMS subjects are stored
-    as given and may be blank). Any violation raises
-    ``ValidationError`` and nothing is created.
+    Performs every check :func:`create_campaign` performs and
+    returns the unsaved DRAFT campaign the writer would store.
+    Raises the same ``ValidationError`` the writer would raise.
+    Writes nothing, so it is safe for ``--dry-run`` previews on
+    every backend (including NEDB, where a rolled-back
+    transaction does not undo writes).
     """
     if not isinstance(salon, Salon) or salon.pk is None:
         raise ValidationError("salon must be a saved Salon instance.")
@@ -86,6 +87,21 @@ def create_campaign(salon, name, channel, subject="", body=""):
         subject=subject, body=body, status=Campaign.Status.DRAFT,
     )
     campaign.full_clean()
+    return campaign
+
+
+def create_campaign(salon, name, channel, subject="", body=""):
+    """Create one DRAFT campaign for ``salon``; never sends.
+
+    The one validated creation path: ``salon`` must be a saved
+    Salon, ``name`` and ``body`` must be non-blank, ``channel``
+    must be a known campaign channel, and an email campaign
+    must carry a non-blank ``subject`` (SMS subjects are stored
+    as given and may be blank). Any violation raises
+    ``ValidationError`` and nothing is created.
+    """
+    campaign = validate_create_campaign(
+        salon, name, channel, subject=subject, body=body)
     campaign.save()
     return campaign
 

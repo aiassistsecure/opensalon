@@ -13,22 +13,26 @@ single source of truth and surfaces here as ``CommandError``.
 The service only ever creates a DRAFT; this command never
 sends anything and writes no ``CampaignSend`` rows.
 
-With ``--dry-run`` nothing is created: the command runs the
-service inside a transaction it rolls back (so the preview
-applies the service's own validation), resolves the audience
-via :func:`messaging.campaigns.audience_for` for the named
-channel, and prints that audience count only -- no client
-names or contact details. Output is counts/ids of the
-campaign itself only. An unknown salon raises
-``CommandError``, as does any service ``ValidationError``.
-Backend only -- no views, templates, or UI. Core stays
-provider-agnostic -- no provider SDK, field, or name here.
+With ``--dry-run`` nothing is created: the command calls the
+service's validate-only helper
+(:func:`messaging.campaigns.validate_create_campaign`, so the
+preview applies the service's own validation with no write at
+all -- safe on every backend, including NEDB, where a
+rolled-back transaction does not undo writes), resolves the
+audience via :func:`messaging.campaigns.audience_for` for the
+named channel from reads only, and prints that audience count
+only -- no client names or contact details. Output is
+counts/ids of the campaign itself only. An unknown salon
+raises ``CommandError``, as does any service
+``ValidationError``. Backend only -- no views, templates, or
+UI. Core stays provider-agnostic -- no provider SDK, field,
+or name here.
 """
 from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
 
-from messaging.campaigns import audience_for, create_campaign
+from messaging.campaigns import (
+    audience_for, create_campaign, validate_create_campaign)
 from saloncore.models import Salon
 
 
@@ -79,12 +83,9 @@ class Command(BaseCommand):
         body = options.get("body")
         if options.get("dry_run"):
             try:
-                with transaction.atomic():
-                    create_campaign(
-                        salon, name, channel,
-                        subject=subject, body=body)
-                    count = audience_for(salon, channel).count()
-                    transaction.set_rollback(True)
+                validate_create_campaign(
+                    salon, name, channel, subject=subject, body=body)
+                count = audience_for(salon, channel).count()
             except ValidationError as exc:
                 raise _as_command_error(exc) from exc
             self.stdout.write(
