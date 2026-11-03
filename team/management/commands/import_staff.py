@@ -9,7 +9,18 @@ but NOTHING is written (no salon, staff member or staff level
 rows): a JSON dry-run report from ``saloncore.dry_run`` is
 printed to stdout instead -- per-key inferred types, distinct
 null / missing / empty-string counts, and the source keys this
-importer does not map -- and the command exits 0.
+importer does not map -- extended with an ``import_preview``
+(read-only counting twin of the write loop below, modelled on
+``import_transactions_csv``): per-record would-create /
+would-update / would-skip counts keyed by (salon, external_id),
+level references resolved against the salon's stored
+``StaffLevel`` rows with unresolved levels named by row index
+(a level the real import would ``get_or_create`` is reported
+as would-create, and resolves later rows naming it), and the
+``active`` / ``online_bookable`` state each record would land
+in -- and the command exits 0. The preview only reads: the
+salon is looked up, never created, and the writer is never
+entered.
 
 The input is a JSON list of staff objects in the source system's own
 shape: ``staffId``, ``firstName`` and ``lastName`` (a single ``name``
@@ -95,6 +106,105 @@ def _display_name(row):
             or _text(row, "name", 120))[:120]
 
 
+def _build_import_preview(data, salon_name):
+    """Read-only counting twin of the write loop in ``handle``.
+
+    Mirrors the writer's identity and field rules exactly --
+    (salon, external_id) key, skip when the id or the name is
+    missing, level linked only when a category name is present,
+    ``online_bookable`` set only when ``hideFromOnlineBookings``
+    is present, ``active`` never in the update defaults -- but
+    only reads. Sequential like the writer: an id or level a
+    row would create is known to later rows, so a repeated id
+    counts as would-update and a repeated new level resolves.
+    Returns counts plus one entry per record (row index and
+    external_id only -- never a staff name).
+    """
+    salon = Salon.objects.filter(name=salon_name).first()
+    members = {}
+    level_names = set()
+    if salon is not None:
+        members = {
+            m.external_id: m for m in StaffMember.objects.filter(
+                salon=salon).exclude(external_id="")
+        }
+        level_names = set(
+            StaffLevel.objects.filter(salon=salon).values_list(
+                "name", flat=True))
+    preview = {
+        "salon": salon_name,
+        "salon_exists": salon is not None,
+        "would_create": 0,
+        "would_update": 0,
+        "would_skip": 0,
+        "levels_linked": 0,
+        "levels_resolved": 0,
+        "levels_would_create": [],
+        "unresolved_levels": [],
+        "records": [],
+    }
+    seen_ids = set()
+    seen_online = {}
+    for index, row in enumerate(data):
+        entry = {"row": index}
+        preview["records"].append(entry)
+        if not isinstance(row, dict):
+            entry.update(action="would_skip", reason="not_a_record")
+            preview["would_skip"] += 1
+            continue
+        external_id = _text(row, "staffId", 64) or _text(row, "id", 64)
+        entry["external_id"] = external_id
+        if not external_id or not _display_name(row):
+            entry.update(
+                action="would_skip",
+                reason=("missing_external_id" if not external_id
+                        else "missing_display_name"),
+                active=None, online_bookable=None, level=None,
+                level_resolved=None)
+            preview["would_skip"] += 1
+            continue
+        existing = members.get(external_id)
+        is_update = existing is not None or external_id in seen_ids
+        entry["action"] = "would_update" if is_update else "would_create"
+        preview["would_update" if is_update else "would_create"] += 1
+        seen_ids.add(external_id)
+        category = _text(row, "staffCategoryName", 120)
+        entry["level"] = category or None
+        if category:
+            preview["levels_linked"] += 1
+            if category in level_names:
+                entry["level_resolved"] = True
+                entry["level_would_create"] = False
+                preview["levels_resolved"] += 1
+            else:
+                entry["level_resolved"] = False
+                entry["level_would_create"] = True
+                preview["unresolved_levels"].append(
+                    {"row": index, "external_id": external_id,
+                     "level": category})
+                preview["levels_would_create"].append(category)
+                level_names.add(category)
+        else:
+            entry["level_resolved"] = None
+            entry["level_would_create"] = False
+        # active is never written by the importer: a create lands
+        # the model default (True), an update keeps the stored
+        # value (a within-file repeat has no stored row, so it
+        # keeps the would-create default).
+        entry["active"] = existing.active if existing is not None else True
+        if row.get("hideFromOnlineBookings") is not None:
+            entry["online_bookable"] = not bool(
+                row["hideFromOnlineBookings"])
+        elif existing is not None:
+            entry["online_bookable"] = existing.online_bookable
+        elif external_id in seen_online:
+            entry["online_bookable"] = seen_online[external_id]
+        else:
+            entry["online_bookable"] = True
+        seen_online[external_id] = entry["online_bookable"]
+    return preview
+
+
 class Command(BaseCommand):
     help = "Import staff members from a staff JSON export."
 
@@ -115,10 +225,14 @@ class Command(BaseCommand):
             raise CommandError("Staff file must be a JSON list of staff.")
 
         if options["dry_run"]:
-            # Zero writes: report before any salon/staff lookup or
-            # creation, then return (exit 0).
+            # Zero writes: the shape report is kept verbatim, then
+            # extended with the read-only import preview (salon /
+            # member / level lookups only -- no get_or_create, the
+            # writer below is never entered), then return (exit 0).
             report = build_dry_run_report(
                 data, MAPPED_KEYS, source_name=options["path"])
+            report["import_preview"] = _build_import_preview(
+                data, options["salon"])
             self.stdout.write(json.dumps(report, indent=2, sort_keys=True))
             return
 
