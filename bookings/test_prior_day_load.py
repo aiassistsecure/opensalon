@@ -102,7 +102,10 @@ class PriorDayLoadTests(TestCase):
         text = export_prior_day_load_csv(self.salon, DAY)
         self.assertEqual(list(csv.reader(io.StringIO(text)))[0], PRIOR_DAY_LOAD_EXPORT_FIELDNAMES)
         rows = list(csv.DictReader(io.StringIO(text)))
-        self.assertEqual(len(rows), 4)  # total + 3 staff
+        self.assertEqual(len(rows), 7)  # total + 3 staff + 3 staff_day cross
+        self.assertEqual([x["section"] for x in rows],
+                         ["total", "staff", "staff", "staff",
+                          "staff_day", "staff_day", "staff_day"])
         self.assertEqual((rows[0]["staff_member_id"], rows[0]["staff_name"]), ("", ""))
         self.assertEqual((rows[0]["current_appointment_count"], rows[0]["prior_appointment_count"], rows[0]["appointment_count_delta"], rows[0]["appointment_count_percent_change"]), ("4", "3", "1", "33.33"))
         self.assertEqual(rows[0]["prior_start_date"], PRIOR.isoformat())
@@ -114,6 +117,83 @@ class PriorDayLoadTests(TestCase):
         self.assertEqual(d["appointment_count"]["current"], 4)
         self.assertEqual(d["by_staff"][0]["staff_name"], "Stylist One")
         self.assertEqual(d["rows"][0]["appointment_count_percent_change"], Decimal("33.33"))
+        self.assertEqual(len(d["rows"]), 7)
+        self.assertEqual(d["per_staff_per_day"][0]["staff_name"], "Stylist One")
+        self.assertEqual(d["by_staff_per_day"], d["per_staff_per_day"])
+
+    def test_per_staff_per_day_cross_and_zero_fill(self):
+        self._book()
+        r = prior_day_load_report(self.salon, DAY)
+        # One offset (single-day windows); by_staff display-name order.
+        self.assertEqual([(e.staff_name, e.day, e.prior_day, e.offset)
+                          for e in r.per_staff_per_day],
+                         [("Stylist One", DAY, PRIOR, 0),
+                          ("Stylist Three", DAY, PRIOR, 0),
+                          ("Stylist Two", DAY, PRIOR, 0)])
+        self.assertIs(r.by_staff_per_day, r.per_staff_per_day)
+        self.assertIs(r.staff_per_day, r.per_staff_per_day)
+        one = r.for_staff_day(self.one, DAY)
+        self.assertEqual((one.appointment_count.current, one.appointment_count.prior,
+                          one.appointment_count.delta, one.appointment_count.percent_change),
+                         (3, 2, 1, Decimal("50.00")))
+        self.assertEqual((one.booked_minutes.current, one.booked_minutes.prior), (165, 105))
+        self.assertEqual(one.current_last_end, at(DAY, 16))
+        # Two is current-side empty, Three prior-side empty: zero-fill.
+        two = r.for_staff_day(self.two, DAY)
+        self.assertEqual((two.appointment_count.current, two.booked_minutes.current), (0, 0))
+        self.assertIsNone(two.current_first_start)
+        three = r.for_staff_day(self.three, DAY)
+        self.assertEqual((three.appointment_count.prior, three.booked_minutes.prior), (0, 0))
+        self.assertIsNone(three.appointment_count.percent_change)
+        self.assertEqual(r.as_dict()["per_staff_per_day"][0]["staff_name"], "Stylist One")
+        self.assertEqual(r.as_dict()["by_staff_per_day"], r.as_dict()["per_staff_per_day"])
+
+    def test_per_staff_per_day_reconciles_verbatim(self):
+        self._book()
+        r = prior_day_load_report(self.salon, DAY)
+        # Cross totals reconcile verbatim against the day_load totals.
+        for m in ("appointment_count", "booked_minutes"):
+            self.assertEqual(sum(getattr(e, m).current for e in r.per_staff_per_day),
+                             getattr(r, m).current)
+            self.assertEqual(sum(getattr(e, m).prior for e in r.per_staff_per_day),
+                             getattr(r, m).prior)
+        # Per-staff cross deltas are exactly the by_staff deltas.
+        by = {s.staff_member_id: s for s in r.by_staff}
+        for e in r.per_staff_per_day:
+            for m in ("appointment_count", "booked_minutes"):
+                self.assertEqual(getattr(e, m), getattr(by[e.staff_member_id], m))
+            self.assertEqual((e.current_first_start, e.prior_first_start),
+                             (by[e.staff_member_id].current_first_start,
+                              by[e.staff_member_id].prior_first_start))
+        # Cross rows are the source's own single-day rows, verbatim.
+        cur = {x.staff_member_id: x for x in staff_day_load(self.salon, DAY)}
+        pri = {x.staff_member_id: x for x in staff_day_load(self.salon, PRIOR)}
+        for e in r.per_staff_per_day:
+            self.assertEqual(e.current, cur[e.staff_member_id])
+            self.assertEqual(e.prior, pri[e.staff_member_id])
+
+    def test_per_staff_per_day_export_csv(self):
+        self._book()
+        rows = list(csv.DictReader(io.StringIO(export_prior_day_load_csv(self.salon, DAY))))
+        cross = [x for x in rows if x["section"] == "staff_day"]
+        report = prior_day_load_report(self.salon, DAY)
+        self.assertEqual(len(cross), len(report.per_staff_per_day))
+        self.assertEqual([(x["staff_name"], x["date"], x["prior_date"]) for x in cross],
+                         [("Stylist One", DAY.isoformat(), PRIOR.isoformat()),
+                          ("Stylist Three", DAY.isoformat(), PRIOR.isoformat()),
+                          ("Stylist Two", DAY.isoformat(), PRIOR.isoformat())])
+        one_row, one = cross[0], report.per_staff_per_day[0]
+        for m in ("appointment_count", "booked_minutes"):
+            d = getattr(one, m)
+            self.assertEqual((one_row[f"current_{m}"], one_row[f"prior_{m}"],
+                              one_row[f"{m}_delta"]),
+                             (str(d.current), str(d.prior), str(d.delta)))
+        self.assertEqual(one_row["current_last_end"], at(DAY, 16).isoformat())
+        three = [x for x in cross if x["staff_name"] == "Stylist Three"][0]
+        self.assertEqual(three["appointment_count_percent_change"], "")
+        # Empty salon: no cross rows.
+        other = Salon.objects.create(name="Other2", timezone="UTC")
+        self.assertEqual(prior_day_load_report(other, DAY).per_staff_per_day, ())
 
     def test_command_stdout_file_and_errors(self):
         self._book()
