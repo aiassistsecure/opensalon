@@ -23,6 +23,10 @@ from saloncore.test_import_salon_data import _minimal_data
 
 SLICE1 = ("salons", "service_categories", "services",
           "staff_levels", "service_prices")
+# Slice 2 (cycle 143) also carries a preview; shape checks below
+# exclude every previewed section, not just slice 1.
+PREVIEWED = SLICE1 + ("clients", "client_notes", "staff_members",
+                      "staff_services")
 MODELS = (Salon, ServiceCategory, Service, StaffLevel, ServicePrice)
 
 
@@ -64,9 +68,9 @@ class ImportSalonDataPreviewTests(TestCase):
         data = _minimal_data()
         reports = self.run_dry(data)
         self.assertEqual(set(reports), set(SECTIONS))
-        for section in SLICE1:
+        for section in PREVIEWED:
             self.assertIn("import_preview", reports[section], section)
-        for section in set(SECTIONS) - set(SLICE1):
+        for section in set(SECTIONS) - set(PREVIEWED):
             self.assertNotIn("import_preview", reports[section], section)
 
     def test_other_sections_shape_report_byte_identical(self):
@@ -83,9 +87,9 @@ class ImportSalonDataPreviewTests(TestCase):
                         row[key] = str(value)
         expected = build_dry_run_reports({
             s: (normalised.get(s, []), KNOWN_KEYS[s]) for s in SECTIONS})
-        for section in set(SECTIONS) - set(SLICE1):
+        for section in set(SECTIONS) - set(PREVIEWED):
             self.assertEqual(reports[section], expected[section], section)
-        for section in SLICE1:  # shape keys unchanged, preview added
+        for section in PREVIEWED:  # shape keys unchanged, preview added
             shape = {k: v for k, v in reports[section].items()
                      if k != "import_preview"}
             self.assertEqual(shape, expected[section], section)

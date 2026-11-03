@@ -370,12 +370,15 @@ exactly the keys TF-11 would list as dropped for that section,
 keeping null / missing / empty-string counts distinct) — and the
 command returns before phase 2 writes a single row.
 
-Dry-run preview (slice 1): the salon / price-book sections listed
-in ``PREVIEW_SECTIONS`` additionally carry an ``import_preview``
-— read-only would-create / would-update / would-unchanged /
-would-skip counts from ``_build_slice1_previews``, following the
-preview-twin pattern of ``import_clients`` / ``import_products``.
-Every other section's report is shape-only, exactly as before.
+Dry-run preview (slices 1–2): the salon / price-book sections
+listed in ``PREVIEW_SECTIONS`` and the client / team sections in
+``SLICE2_PREVIEW_SECTIONS`` additionally carry an
+``import_preview`` — read-only would-create / would-update /
+would-unchanged / would-skip counts from
+``_build_slice1_previews`` / ``_build_slice2_previews``,
+following the preview-twin pattern of ``import_clients`` /
+``import_products``. Every other section's report is
+shape-only, exactly as before.
 """
 
 import json
@@ -1488,6 +1491,11 @@ PREVIEW_SECTIONS = (
     "service_prices",
 )
 
+# Slice-2 preview sections: clients and the team group.
+SLICE2_PREVIEW_SECTIONS = (
+    "clients", "client_notes", "staff_members", "staff_services",
+)
+
 
 def _preview_counter(total):
     return {"total": total, "would_create": 0, "would_update": 0,
@@ -1623,6 +1631,141 @@ def _build_slice1_previews(data):
     return previews
 
 
+def _build_slice2_previews(data):
+    """Read-only preview twin for SLICE2_PREVIEW_SECTIONS only.
+
+    Mirrors phase 2's identity rules and defaults for clients,
+    client notes, staff members and staff services against
+    planned state seeded from the database and folded in file
+    order (the writer's order), so in-file repeats and parents
+    created earlier in the file are judged as the writer sees
+    them. Identities are comparable tuples, never DB objects.
+    Reads only: the writer is never entered.
+    """
+    salon_name = {str(r["id"]): r["name"] for r in data["salons"]}
+    level_key = {str(r["id"]): (salon_name.get(str(r["salon_id"])),
+                                r["name"])
+                 for r in data["staff_levels"]}
+    cat_key = {str(r["id"]): (salon_name.get(str(r["salon_id"])),
+                              r["name"])
+               for r in data["service_categories"]}
+
+    def client_key(salon, ext, first, last, email, phone):
+        ext = _norm_id(ext) or ""
+        return ((salon, "ext", ext) if ext else
+                (salon, "name", first, last, email, phone))
+
+    def staff_key(salon, ext, display_name):
+        ext = _norm_id(ext) or ""
+        return ((salon, "ext", ext) if ext else
+                (salon, "name", display_name))
+
+    def service_key(row, cat):
+        ext = _norm_id(row.get("external_id")) or ""
+        return ("ext", ext) if ext else ("cat", cat, row["name"])
+
+    def db_client_key(c):
+        return client_key(c.salon.name, c.external_id, c.first_name,
+                          c.last_name, c.email, c.phone)
+
+    def db_staff_key(m):
+        return staff_key(m.salon.name, m.external_id, m.display_name)
+
+    file_client = {str(r["id"]): client_key(
+        salon_name.get(str(r["salon_id"])), r.get("external_id"),
+        r["first_name"], r["last_name"], r.get("email", ""),
+        r.get("phone", "")) for r in data["clients"]}
+    file_staff = {str(r["id"]): staff_key(
+        salon_name.get(str(r["salon_id"])), r.get("external_id"),
+        r["display_name"]) for r in data["staff_members"]}
+    file_svc = {str(r["id"]): service_key(
+        r, cat_key.get(str(r["category_id"]))) for r in data["services"]}
+    staff_by_ext = {_norm_id(r["external_id"]): file_staff[str(r["id"])]
+                    for r in data["staff_members"] if r.get("external_id")}
+    svc_by_ext = {_norm_id(r["external_id"]): file_svc[str(r["id"])]
+                  for r in data["services"] if r.get("external_id")}
+
+    def resolve(by_id, by_ext, row, id_field, ext_field):
+        ext = _norm_id(row.get(ext_field))
+        if ext and ext in by_ext:
+            return by_ext[ext]
+        return by_id.get(str(row.get(id_field)))
+
+    previews = {s: _preview_counter(len(data[s]))
+                for s in SLICE2_PREVIEW_SECTIONS}
+
+    planned = {}
+    for c in Client.objects.select_related("salon"):
+        planned[db_client_key(c)] = {
+            "first_name": c.first_name, "last_name": c.last_name,
+            "email": c.email, "phone": c.phone,
+            "sms_opt_in": c.sms_opt_in, "email_opt_in": c.email_opt_in,
+            "active": c.active, "payload": c.payload}
+    for i, row in enumerate(data["clients"]):
+        defaults = {
+            "first_name": row["first_name"],
+            "last_name": row["last_name"],
+            "email": row.get("email", ""), "phone": row.get("phone", ""),
+            "sms_opt_in": row.get("sms_opt_in", False),
+            "email_opt_in": row.get("email_opt_in", False),
+            "active": row["active"]}
+        if "payload" in row:
+            defaults["payload"] = row["payload"]
+        _preview_tally(previews["clients"], planned,
+                       file_client.get(str(row["id"])), defaults, i)
+
+    planned = {(db_client_key(n.client), n.body, n.author_name): {}
+               for n in ClientNote.objects.select_related(
+                   "client__salon")}
+    for i, row in enumerate(data["client_notes"]):
+        client = file_client.get(str(row["client_id"]))
+        key = ((client, row["body"], row.get("author_name", ""))
+               if client is not None else None)
+        _preview_tally(previews["client_notes"], planned, key, {}, i)
+
+    planned = {}
+    for m in StaffMember.objects.select_related("salon", "staff_level"):
+        planned[db_staff_key(m)] = {
+            "display_name": m.display_name,
+            "staff_level": ((m.staff_level.salon.name, m.staff_level.name)
+                            if m.staff_level_id is not None else None),
+            "online_bookable": m.online_bookable, "active": m.active,
+            "pin": m.pin, "email": m.email}
+    for i, row in enumerate(data["staff_members"]):
+        _preview_tally(previews["staff_members"], planned,
+                       file_staff.get(str(row["id"])), {
+                           "display_name": row["display_name"],
+                           "staff_level": (
+                               level_key.get(str(row["staff_level_id"]))
+                               if row.get("staff_level_id") is not None
+                               else None),
+                           "online_bookable": row["online_bookable"],
+                           "active": row["active"],
+                           "pin": row.get("pin", ""),
+                           "email": row.get("email", "")}, i)
+
+    db_cat = {c.pk: (c.salon.name, c.name)
+              for c in ServiceCategory.objects.select_related("salon")}
+    planned = {}
+    for link in StaffService.objects.select_related(
+            "staff_member__salon", "service__category"):
+        svc = link.service
+        key = (db_staff_key(link.staff_member), service_key(
+            {"external_id": svc.external_id, "name": svc.name},
+            db_cat.get(svc.category_id)))
+        planned[key] = {"enabled": link.enabled}
+    for i, row in enumerate(data["staff_services"]):
+        member = resolve(file_staff, staff_by_ext, row,
+                         "staff_member_id", "staff_member_external_id")
+        service = resolve(file_svc, svc_by_ext, row,
+                          "service_id", "service_external_id")
+        key = ((member, service)
+               if member is not None and service is not None else None)
+        _preview_tally(previews["staff_services"], planned, key,
+                       {"enabled": row["enabled"]}, i)
+    return previews
+
+
 class Command(BaseCommand):
     help = "Import salon core data from an export_salon_data JSON file."
 
@@ -1633,7 +1776,8 @@ class Command(BaseCommand):
             help="Print a per-section JSON dry-run report "
                  "(saloncore.dry_run) for the source file — with "
                  "read-only import_preview counts on the slice-1 "
-                 "salon/price-book sections — and write nothing.")
+                 "salon/price-book and slice-2 client/team "
+                 "sections — and write nothing.")
 
     @transaction.atomic
     def handle(self, *args, **options):
@@ -1650,9 +1794,11 @@ class Command(BaseCommand):
                 for section in SECTIONS if section in data
             }
             reports = build_dry_run_reports(record_sets)
-            # Slice 1 only: preview counts attach to those
+            # Slices 1–2 only: preview counts attach to those
             # sections' reports; all others stay shape-only.
-            for section, preview in _build_slice1_previews(data).items():
+            previews = _build_slice1_previews(data)
+            previews.update(_build_slice2_previews(data))
+            for section, preview in previews.items():
                 reports[section]["import_preview"] = preview
             self.stdout.write(json.dumps(reports, sort_keys=True))
             return
