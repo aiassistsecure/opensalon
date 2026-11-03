@@ -153,6 +153,61 @@ class ClientHistoryTests(ReminderHistoryBase):
         self.assertEqual(len(client_send_history(client, limit=1)), 1)
 
 
+class SalonScopeTests(ReminderHistoryBase):
+    def setUp(self):
+        super().setUp()
+        self.other_salon = Salon.objects.create(name="Other Salon")
+        self.other_staff = StaffMember.objects.create(
+            salon=self.other_salon, display_name="Other Stylist")
+        other_category = ServiceCategory.objects.create(
+            salon=self.other_salon, name="Other Haircuts")
+        self.other_service = Service.objects.create(
+            category=other_category, name="Other Haircut",
+            service_minutes=45)
+
+    def _other_client_and_send(self, channel, when):
+        client = Client.objects.create(
+            salon=self.other_salon, first_name="Other",
+            last_name="Example", email="other@example.com",
+            phone="555-0200", sms_opt_in=True, email_opt_in=True)
+        start = timezone.now() + timedelta(days=1)
+        appt = Appointment.objects.create(
+            client=client, staff_member=self.other_staff,
+            service=self.other_service, start=start,
+            end=start + timedelta(minutes=45),
+            status=Appointment.Status.BOOKED)
+        return ReminderSend.objects.create(
+            appointment=appt, client=client, channel=channel,
+            status=ReminderSend.Status.SENT, sent_at=when)
+
+    def test_unscoped_includes_all_salons_scoped_excludes_other(self):
+        mine = self._client()
+        self._send(mine, "email", _at(DAY1, 9))
+        self._send(mine, "sms", _at(DAY1, 10))
+        self._other_client_and_send("email", _at(DAY1, 11))
+        unscoped = reminder_history_summary(DAY1, DAY3)
+        self.assertEqual(unscoped.total, 3)
+        self.assertEqual(unscoped.by_channel, {"email": 2, "sms": 1})
+        scoped = reminder_history_summary(DAY1, DAY3, salon=self.salon)
+        self.assertEqual(scoped.total, 2)
+        self.assertEqual(scoped.by_channel, {"email": 1, "sms": 1})
+        self.assertEqual(scoped.by_day[DAY1], 2)
+        other = reminder_history_summary(
+            DAY1, DAY3, salon_id=self.other_salon.pk)
+        self.assertEqual(other.total, 1)
+        self.assertEqual(other.by_channel, {"email": 1, "sms": 0})
+        self.assertEqual(
+            counts_by_channel(DAY1, DAY3, salon=self.salon),
+            scoped.by_channel)
+
+    def test_scoped_salon_with_no_sends_is_zeroed(self):
+        self._send(self._client(), "email", _at(DAY1, 9))
+        scoped = reminder_history_summary(
+            DAY1, DAY3, salon=self.other_salon)
+        self.assertEqual(scoped.total, 0)
+        self.assertEqual(scoped.by_channel, {"email": 0, "sms": 0})
+
+
 class EmptyCaseTests(ReminderHistoryBase):
     def test_empty_range_is_zeroed_not_none(self):
         summary = reminder_history_summary(DAY1, DAY3)

@@ -115,6 +115,48 @@ class SummaryEmptyTests(HistoryExportBase):
         self.assertEqual([int(r["count"]) for r in parsed], [0, 0, 0, 0])
 
 
+class SummarySalonScopeTests(HistoryExportBase):
+    def _other_send(self, channel, when):
+        other_salon = Salon.objects.create(name="Other Salon")
+        other_staff = StaffMember.objects.create(
+            salon=other_salon, display_name="Other Stylist")
+        other_category = ServiceCategory.objects.create(
+            salon=other_salon, name="Other Haircuts")
+        other_service = Service.objects.create(
+            category=other_category, name="Other Haircut",
+            service_minutes=45)
+        client = Client.objects.create(
+            salon=other_salon, first_name="Other", last_name="Example",
+            email="other@example.com", phone="555-0200",
+            sms_opt_in=True, email_opt_in=True)
+        start = timezone.now() + timedelta(days=1)
+        appt = Appointment.objects.create(
+            client=client, staff_member=other_staff,
+            service=other_service, start=start,
+            end=start + timedelta(minutes=45),
+            status=Appointment.Status.BOOKED)
+        return ReminderSend.objects.create(
+            appointment=appt, client=client, channel=channel,
+            status=ReminderSend.Status.SENT, sent_at=when)
+
+    def test_scoped_export_excludes_other_salon_unscoped_includes(self):
+        self._send(self._client(), "email", _at(DAY1, 9))
+        self._other_send("sms", _at(DAY1, 10))
+        unscoped = export_history_summary(DAY1, DAY1)
+        self.assertEqual(sum(r["count"] for r in unscoped), 2)
+        scoped = export_history_summary(DAY1, DAY1, salon=self.salon)
+        self.assertEqual(sum(r["count"] for r in scoped), 1)
+        self.assertEqual(
+            [r["count"] for r in scoped if r["channel"] == "email"], [1])
+        self.assertEqual(
+            export_history_summary_csv(DAY1, DAY1, salon=self.salon),
+            export_history_summary_csv(
+                DAY1, DAY1, salon_id=self.salon.pk))
+        parsed = _rows(export_history_summary_csv(
+            DAY1, DAY1, salon=self.salon))
+        self.assertEqual(sum(int(r["count"]) for r in parsed), 1)
+
+
 class ClientHistoryTests(HistoryExportBase):
     def test_header_and_rows_match_service_output(self):
         alice = self._client()
