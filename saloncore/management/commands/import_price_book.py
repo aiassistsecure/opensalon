@@ -531,6 +531,183 @@ def _normalise_row(row, index, category_names, user_category):
     }
 
 
+def _preview_price_entries(plan, base_level_name):
+    """Price entries a plan would set, in writer order: the base
+    price (at ``base_level_name``) then each resolved level price.
+    Entries whose level resolved to None are per-person prices the
+    writer skips — they never affect the preview counts."""
+    entries = []
+    if plan["base_amount"] is not None:
+        entries.append({"level_name": base_level_name,
+                        "amount": plan["base_amount"],
+                        "is_from": None, "price_active": None})
+    for entry in plan["level_prices"]:
+        if entry["level_name"] is not None:
+            entries.append(entry)
+    return entries
+
+
+def _effective_price(entry, current):
+    """The stored price state after the writer's ``set_price`` for
+    one entry: amount always lands; ``price_active=None`` means
+    active; ``is_from=None`` leaves a stored flag (model default
+    False on create). Mirrors ``saloncore.pricing.set_price``."""
+    return {
+        "amount": entry["amount"],
+        "is_from": (current["is_from"] if current is not None
+                    and entry.get("is_from") is None
+                    else bool(entry.get("is_from"))),
+        "active": (True if entry.get("price_active") is None
+                   else entry["price_active"]),
+    }
+
+
+def _stored_service_state(service):
+    """Simulated state for one stored service, shaped for plan
+    comparison: its mapped fields plus prices by level name."""
+    return {
+        "external_id": service.external_id,
+        "cat_name": service.category.name, "name": service.name,
+        "description": service.description,
+        "service_minutes": service.service_minutes,
+        "processing_minutes": service.processing_minutes,
+        "finishing_minutes": service.finishing_minutes,
+        "active": service.active, "payload": service.payload,
+        "prices": {
+            price.staff_level.name: {
+                "amount": price.amount, "is_from": price.is_from,
+                "active": price.active}
+            for price in service.prices.all()},
+    }
+
+
+def _build_import_preview(plans, refused, salon_name, base_level_name):
+    """Read-only preview counts for --dry-run (counts only, not a
+    per-row twin). Each validated plan is judged as one unit — the
+    service plus the prices it would set — against a SIMULATED
+    state seeded from stored services, so a repeated service in
+    one file is judged against what earlier rows would have
+    landed, exactly as the writer sees it. Identity mirrors the
+    writer: ``external_id`` when present (with its legacy attach
+    of an id-less (category, name) row), else (category, name).
+    Rows the writer skips or whose validation raises arrive here
+    pre-counted in ``refused``. Reads only: no salon, category,
+    level, service or price is created or updated here."""
+    salon = Salon.objects.filter(name=salon_name).first()
+    preview = {
+        "salon": salon_name, "salon_found": salon is not None,
+        "total": len(plans) + refused,
+        "would_create": 0, "would_update": 0, "would_unchanged": 0,
+        "would_refuse": refused,
+    }
+    by_external, by_key = {}, {}
+    if salon is not None:
+        stored = list(Service.objects.filter(category__salon=salon))
+        stored += list(Service.objects.exclude(
+            category__salon=salon).exclude(external_id=""))
+        for service in stored:
+            state = _stored_service_state(service)
+            by_key[(state["cat_name"], state["name"])] = state
+            if state["external_id"]:
+                by_external[state["external_id"]] = state
+    for plan in plans:
+        entries = _preview_price_entries(plan, base_level_name)
+        state = None
+        if plan["external_id"]:
+            state = by_external.get(plan["external_id"])
+            if state is None:
+                legacy = by_key.get((plan["cat_name"], plan["name"]))
+                if legacy is not None and not legacy["external_id"]:
+                    state = legacy
+        else:
+            state = by_key.get((plan["cat_name"], plan["name"]))
+        if state is None:
+            preview["would_create"] += 1
+            state = {
+                "external_id": plan["external_id"],
+                "finishing_minutes": 0, "prices": {},
+            }
+        else:
+            changed = any([
+                state["cat_name"] != plan["cat_name"],
+                state["name"] != plan["name"],
+                bool(plan["external_id"]) and
+                state["external_id"] != plan["external_id"],
+                state["description"] != plan["description"],
+                state["service_minutes"] != plan["service_minutes"],
+                state["processing_minutes"]
+                != plan["processing_minutes"],
+                plan["finishing_minutes"] is not None and
+                state["finishing_minutes"]
+                != plan["finishing_minutes"],
+                state["active"] != plan["active"],
+                state["payload"] != plan["payload"],
+            ])
+            for entry in entries:
+                current = state["prices"].get(entry["level_name"])
+                if current is None or _effective_price(
+                        entry, current) != current:
+                    changed = True
+            preview["would_update" if changed
+                    else "would_unchanged"] += 1
+        # Fold the plan into the simulated state, as the writer
+        # would land it, for any later row naming the same service.
+        state.update({
+            "cat_name": plan["cat_name"], "name": plan["name"],
+            "description": plan["description"],
+            "service_minutes": plan["service_minutes"],
+            "processing_minutes": plan["processing_minutes"],
+            "active": plan["active"], "payload": plan["payload"],
+        })
+        if plan["external_id"]:
+            state["external_id"] = plan["external_id"]
+        if plan["finishing_minutes"] is not None:
+            state["finishing_minutes"] = plan["finishing_minutes"]
+        for entry in entries:
+            state["prices"][entry["level_name"]] = _effective_price(
+                entry, state["prices"].get(entry["level_name"]))
+        by_key[(state["cat_name"], state["name"])] = state
+        if state["external_id"]:
+            by_external[state["external_id"]] = state
+    return preview
+
+
+def _preview_json(data, category_names, user_category, salon_name,
+                  base_level_name):
+    """Preview counts for the JSON shape: phase 1 per row via the
+    writer's own ``_normalise_row`` — a row it returns None for
+    (skipped) or raises CommandError for counts as would-refuse,
+    instead of aborting the preview the way a real import aborts."""
+    plans, refused = [], 0
+    for index, row in enumerate(data):
+        try:
+            plan = _normalise_row(row, index, category_names,
+                                  user_category)
+        except CommandError:
+            refused += 1
+            continue
+        if plan is None:
+            refused += 1
+        else:
+            plans.append(plan)
+    return _build_import_preview(plans, refused, salon_name,
+                                 base_level_name)
+
+
+def _preview_csv(csv_rows, salon_name, base_level_name):
+    """Preview counts for the CSV shape via the writer's own
+    ``_normalise_csv_rows``. Its validation is whole-file: a
+    CommandError refuses the whole file in the writer, so every
+    row counts as would-refuse here."""
+    try:
+        plans, skipped = _normalise_csv_rows(csv_rows)
+    except CommandError:
+        return _build_import_preview([], len(csv_rows), salon_name,
+                                     base_level_name)
+    return _build_import_preview(plans, skipped, salon_name,
+                                 base_level_name)
+
+
 class Command(BaseCommand):
     help = "Import service categories, services, staff levels and prices from a JSON or price-book CSV export."
 
@@ -546,7 +723,11 @@ class Command(BaseCommand):
         parser.add_argument("--dry-run", action="store_true",
                             help="Report per-file field types, null / "
                                  "missing / empty-string counts and "
-                                 "unmapped keys as JSON; write nothing.")
+                                 "unmapped keys as JSON, plus read-only "
+                                 "import_preview counts (would-create / "
+                                 "would-update / would-unchanged / "
+                                 "would-refuse) in the services report; "
+                                 "write nothing.")
 
     def handle(self, *args, **options):
         # Phase 1: validate + normalise the whole file, pre-resolving
@@ -556,9 +737,14 @@ class Command(BaseCommand):
         if _is_csv_import(options["path"]):
             csv_rows = _load_csv_rows(options["path"])
             if options["dry_run"]:
-                self.stdout.write(json.dumps(build_dry_run_reports(
-                    {options["path"]: (csv_rows, CSV_MAPPED_KEYS)}),
-                    sort_keys=True))
+                # Shape report verbatim, plus read-only preview
+                # counts; the write phase is never entered.
+                reports = build_dry_run_reports(
+                    {options["path"]: (csv_rows, CSV_MAPPED_KEYS)})
+                reports[options["path"]]["import_preview"] = (
+                    _preview_csv(csv_rows, options["salon"],
+                                 options["base_level"]))
+                self.stdout.write(json.dumps(reports, sort_keys=True))
                 return
             plans, pre_skipped = _normalise_csv_rows(csv_rows)
         else:
@@ -579,8 +765,29 @@ class Command(BaseCommand):
                     record_sets[options["staff"]] = (
                         staff if isinstance(staff, list) else [],
                         STAFF_MAPPED_KEYS)
-                self.stdout.write(json.dumps(
-                    build_dry_run_reports(record_sets), sort_keys=True))
+                # Shape reports verbatim, plus read-only preview
+                # counts in the services report. The level plan is
+                # pre-resolved exactly as phase 1 below resolves it;
+                # the write phase is never entered.
+                reports = build_dry_run_reports(record_sets)
+                category_names, user_category = {}, {}
+                if options["staff"]:
+                    for row in staff if isinstance(staff, list) else []:
+                        if not isinstance(row, dict):
+                            continue
+                        name = row.get("staffCategoryName")
+                        cid = _str_id(row.get("staffCategoryId"))
+                        if cid and name:
+                            category_names[cid] = name
+                        uid = _str_id(row.get("userId")
+                                      or row.get("staffId"))
+                        if uid and name:
+                            user_category[uid] = name
+                reports[options["path"]]["import_preview"] = (
+                    _preview_json(data, category_names, user_category,
+                                  options["salon"],
+                                  options["base_level"]))
+                self.stdout.write(json.dumps(reports, sort_keys=True))
                 return
 
             category_names, user_category = {}, {}
