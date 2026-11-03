@@ -34,9 +34,13 @@ Source rules
 from django.core.exceptions import ValidationError
 
 from bookings.models import Appointment
-from onlinebooking.services import create_online_booking
+from onlinebooking.services import (
+    create_online_booking,
+    validate_create_online_booking,
+)
 
-__all__ = ["rebook_appointment", "rebook_booking", "book_again"]
+__all__ = ["rebook_appointment", "rebook_booking", "book_again",
+           "validate_rebook_appointment"]
 
 
 def _resolve_source(source):
@@ -49,6 +53,39 @@ def _resolve_source(source):
         ).get(pk=source)
     except (Appointment.DoesNotExist, ValueError, TypeError):
         raise ValidationError("Source appointment does not exist.")
+
+
+def _check_source(appointment):
+    if appointment.status == Appointment.Status.CANCELLED:
+        raise ValidationError(
+            "A cancelled appointment cannot be rebooked."
+        )
+    if appointment.service is None:
+        raise ValidationError(
+            "This appointment has no service to rebook."
+        )
+
+
+def validate_rebook_appointment(source, new_start, new_end=None, *,
+                                note="", note_author=""):
+    """Validate a ``rebook_appointment`` call, writing nothing.
+
+    Performs every check the writer performs and returns the
+    resolved ``new_end`` for the booking that would be created
+    (status ``booked``). Raises the same ``ValidationError`` the
+    writer would raise. Safe for ``--dry-run`` previews on every
+    backend (including NEDB, where a rolled-back transaction
+    does not undo writes).
+    """
+    appointment = _resolve_source(source)
+    _check_source(appointment)
+    return validate_create_online_booking(
+        client=appointment.client,
+        staff_member=appointment.staff_member,
+        service=appointment.service,
+        start=new_start,
+        end=new_end,
+    )
 
 
 def rebook_appointment(source, new_start, new_end=None, *,
@@ -72,14 +109,7 @@ def rebook_appointment(source, new_start, new_end=None, *,
             delegated creation service).
     """
     appointment = _resolve_source(source)
-    if appointment.status == Appointment.Status.CANCELLED:
-        raise ValidationError(
-            "A cancelled appointment cannot be rebooked."
-        )
-    if appointment.service is None:
-        raise ValidationError(
-            "This appointment has no service to rebook."
-        )
+    _check_source(appointment)
     return create_online_booking(
         client=appointment.client,
         staff_member=appointment.staff_member,

@@ -119,6 +119,32 @@ def _check_bookable(salon, staff_member, service, start, end, *,
         )
 
 
+def validate_create_appointment(*, client, staff_member, service, start,
+                                end=None, online=False):
+    """Validate a ``create_appointment`` call, writing nothing.
+
+    Performs every check the writer performs and returns the
+    resolved ``end`` (``start`` plus the service's total minutes
+    when omitted). Raises the same ``ValidationError`` the writer
+    would raise. Safe for ``--dry-run`` previews on every backend
+    (including NEDB, where a rolled-back transaction does not
+    undo writes).
+    """
+    _require_aware(start, "start")
+    end = _resolve_end(start, end, service)
+    salon = staff_member.salon
+    if client.salon_id != salon.pk:
+        raise ValidationError("Client belongs to a different salon.")
+    if service.category.salon_id != salon.pk:
+        raise ValidationError("Service belongs to a different salon.")
+    if not staff_member.active:
+        raise ValidationError("Staff member is not active.")
+    if not service.active:
+        raise ValidationError("Service is not active.")
+    _check_bookable(salon, staff_member, service, start, end, online=online)
+    return end
+
+
 @transaction.atomic
 def create_appointment(*, client, staff_member, service, start, end=None,
                        note="", note_author="", online=False):
@@ -133,18 +159,9 @@ def create_appointment(*, client, staff_member, service, start, end=None,
     becomes one appointment-only ``AppointmentNote`` on the new
     appointment — never a client record note.
     """
-    _require_aware(start, "start")
-    end = _resolve_end(start, end, service)
-    salon = staff_member.salon
-    if client.salon_id != salon.pk:
-        raise ValidationError("Client belongs to a different salon.")
-    if service.category.salon_id != salon.pk:
-        raise ValidationError("Service belongs to a different salon.")
-    if not staff_member.active:
-        raise ValidationError("Staff member is not active.")
-    if not service.active:
-        raise ValidationError("Service is not active.")
-    _check_bookable(salon, staff_member, service, start, end, online=online)
+    end = validate_create_appointment(
+        client=client, staff_member=staff_member, service=service,
+        start=start, end=end, online=online)
     appointment = Appointment.objects.create(
         client=client, staff_member=staff_member, service=service,
         start=start, end=end,
@@ -180,17 +197,16 @@ def transition_status(appointment, new_status):
     return appointment
 
 
-@transaction.atomic
-def reschedule_appointment(appointment, new_start, new_end=None, *,
-                           new_staff_member=None):
-    """Move an appointment to a new time (and optionally staff member).
+def validate_reschedule_appointment(appointment, new_start, new_end=None, *,
+                                    new_staff_member=None):
+    """Validate a ``reschedule_appointment`` call, writing nothing.
 
-    Only booked/confirmed appointments can move. When ``new_end``
-    is omitted the original duration is preserved. The target slot
-    must be available for the (possibly new) staff member,
-    excluding this appointment itself. The appointment row is
-    updated in place, so its appointment-only notes stay attached
-    to it, unchanged, and are never copied to the client record.
+    Performs every check the writer performs and returns
+    ``(new_end, staff_member)`` with defaults resolved (original
+    duration preserved when ``new_end`` is omitted). Raises the
+    same ``ValidationError`` the writer would raise. Safe for
+    ``--dry-run`` previews on every backend (including NEDB,
+    where a rolled-back transaction does not undo writes).
     """
     if appointment.status not in RESCHEDULABLE_STATUSES:
         raise ValidationError(
@@ -212,6 +228,23 @@ def reschedule_appointment(appointment, new_start, new_end=None, *,
         staff_member.salon, staff_member, appointment.service,
         new_start, new_end, exclude_id=appointment.pk,
     )
+    return new_end, staff_member
+
+
+@transaction.atomic
+def reschedule_appointment(appointment, new_start, new_end=None, *,
+                           new_staff_member=None):
+    """Move an appointment to a new time (and optionally staff member).
+
+    Only booked/confirmed appointments can move. When ``new_end``
+    is omitted the original duration is preserved. The target slot
+    must be available for the (possibly new) staff member,
+    excluding this appointment itself. The appointment row is
+    updated in place, so its appointment-only notes stay attached
+    to it, unchanged, and are never copied to the client record.
+    """
+    new_end, staff_member = validate_reschedule_appointment(
+        appointment, new_start, new_end, new_staff_member=new_staff_member)
     appointment.start = new_start
     appointment.end = new_end
     appointment.staff_member = staff_member

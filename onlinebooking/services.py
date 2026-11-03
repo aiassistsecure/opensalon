@@ -41,6 +41,9 @@ from bookings.lifecycle import (
     cancel_appointment,
     create_appointment,
     reschedule_appointment,
+    validate_create_appointment,
+    validate_reschedule_appointment,
+    validate_transition_status,
 )
 from bookings.models import Appointment
 
@@ -88,6 +91,54 @@ def create_online_booking(*, client, staff_member, service, start,
     appointment.origin = Appointment.Origin.ONLINE
     appointment.save(update_fields=["origin", "updated_at"])
     return appointment
+
+
+def validate_create_online_booking(*, client, staff_member, service, start,
+                                   end=None):
+    """Validate a ``create_online_booking`` call, writing nothing.
+
+    Returns the resolved ``end``. Raises the same
+    ``ValidationError`` the writer would raise. Safe for
+    ``--dry-run`` previews on every backend (including NEDB,
+    where a rolled-back transaction does not undo writes).
+    """
+    if not staff_member.online_bookable:
+        raise ValidationError(
+            "This staff member is not bookable online."
+        )
+    return validate_create_appointment(
+        client=client, staff_member=staff_member, service=service,
+        start=start, end=end, online=True)
+
+
+def validate_reschedule_online_booking(appointment, new_start, new_end=None):
+    """Validate a ``reschedule_online_booking`` call, writing nothing.
+
+    Returns the resolved ``new_end``. Raises the same
+    ``ValidationError`` the writer would raise. Safe for
+    ``--dry-run`` previews on every backend (including NEDB).
+    """
+    if not appointment.staff_member.online_bookable:
+        raise ValidationError(
+            "This staff member is not bookable online."
+        )
+    resolved_end, _staff = validate_reschedule_appointment(
+        appointment, new_start, new_end)
+    return resolved_end
+
+
+def validate_cancel_online_booking(appointment):
+    """Validate a ``cancel_online_booking`` call, writing nothing.
+
+    Returns the status the writer would leave: ``cancelled`` —
+    including for an already-cancelled appointment, which the
+    writer returns unchanged (idempotent). Raises the same
+    ``ValidationError`` the writer would raise otherwise. Safe
+    for ``--dry-run`` previews on every backend (including NEDB).
+    """
+    if appointment.status != Appointment.Status.CANCELLED:
+        validate_transition_status(appointment, Appointment.Status.CANCELLED)
+    return Appointment.Status.CANCELLED
 
 
 def reschedule_online_booking(appointment, new_start, new_end=None):

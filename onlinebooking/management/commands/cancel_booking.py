@@ -15,20 +15,25 @@ truth and surfaces here as ``CommandError``. Cancellation is
 idempotent per the service: an already-cancelled appointment
 is reported unchanged, not an error. The row is kept.
 
-With ``--dry-run`` nothing is written: the service runs inside
-a transaction that is rolled back, so the preview applies the
-service's own validation and prints the cancellation that
-WOULD apply. Invalid input -- unknown salon/appointment,
-appointment outside the salon, or a service
-``ValidationError`` -- raises ``CommandError``, nothing written.
+With ``--dry-run`` nothing is written: the preview runs the
+service layer's read-only ``validate_cancel_online_booking``
+helper, which applies the service's own validation without
+calling the writer, and prints the cancellation that WOULD
+apply. (No transaction rollback is relied on -- on NEDB a
+rolled-back transaction does not undo writes.) Invalid input
+-- unknown salon/appointment, appointment outside the salon,
+or a service ``ValidationError`` -- raises ``CommandError``,
+nothing written.
 Backend only -- no views, templates, or UI.
 """
 from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
 
 from bookings.models import Appointment
-from onlinebooking.services import cancel_online_booking
+from onlinebooking.services import (
+    cancel_online_booking,
+    validate_cancel_online_booking,
+)
 from saloncore.models import Salon
 
 
@@ -68,10 +73,7 @@ class Command(BaseCommand):
         old_status = appointment.status
         if options.get("dry_run"):
             try:
-                with transaction.atomic():
-                    cancelled = cancel_online_booking(appointment)
-                    preview_status = cancelled.status
-                    transaction.set_rollback(True)
+                preview_status = validate_cancel_online_booking(appointment)
             except ValidationError as exc:
                 raise CommandError("; ".join(exc.messages)) from exc
             self.stdout.write(
