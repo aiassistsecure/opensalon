@@ -1,31 +1,37 @@
-"""Export one salon's appointments for a date range as JSON.
+"""Export one salon's appointments for a date range as JSON or CSV.
 
 Usage:
     python manage.py export_appointments --salon-id ID
         --date-from YYYY-MM-DD [--date-to YYYY-MM-DD]
-        [--no-include-cancelled] [--output PATH]
+        [--no-include-cancelled] [--format json|csv] [--output PATH]
 
 Thin wrapper around the existing
 :func:`bookings.export.export_appointments` service: the salon
 is resolved by id, the dates are parsed to ``datetime.date``
 objects, and both are passed to the service verbatim (with its
 ``include_cancelled`` flag) -- its JSON-serializable list is
-serialized as JSON, to ``--output`` when given and to stdout
-otherwise. The service has no CSV variant; JSON serialization
-of its result, as in the ``export_clients`` and
-``export_movement`` commands, is the only rendering here. This
-command adds no export logic of its own, so command and
-service output can never disagree -- one source of truth.
-Backend only; read-only.
+rendered as JSON for ``--format json`` (the default, exactly as
+before), or as CSV for ``--format csv`` (the same rows written
+with :data:`bookings.export.EXPORT_FIELDNAMES` as the header,
+in that order; a nested dict/list value is JSON-encoded into
+its cell so nothing is dropped). Output goes to ``--output``
+when given and to stdout otherwise. This command adds no
+export logic of its own -- no new querying, filtering, or
+field changes -- so command and service output can never
+disagree -- one source of truth. Backend only; read-only.
 """
 import argparse
+import csv
 import datetime
+import io
 import json
 
 from django.core.management.base import BaseCommand, CommandError
 
-from bookings.export import export_appointments
+from bookings.export import EXPORT_FIELDNAMES, export_appointments
 from saloncore.models import Salon
+
+_FORMATS = ("json", "csv")
 
 
 def _parse_date(value):
@@ -61,8 +67,25 @@ def _coerce_include_cancelled(value):
     return bool(value)
 
 
+def _csv_cell(value):
+    if isinstance(value, (dict, list, tuple, set)):
+        return json.dumps(value, sort_keys=isinstance(value, dict))
+    return value
+
+
+def _rows_to_csv(rows):
+    buffer = io.StringIO()
+    writer = csv.DictWriter(
+        buffer, fieldnames=EXPORT_FIELDNAMES, lineterminator="\n")
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({key: _csv_cell(row.get(key))
+                         for key in EXPORT_FIELDNAMES})
+    return buffer.getvalue()
+
+
 class Command(BaseCommand):
-    help = "Export one salon's appointments for a date range as JSON."
+    help = "Export one salon's appointments for a date range as JSON or CSV."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -86,11 +109,19 @@ class Command(BaseCommand):
                  "use --no-include-cancelled to exclude them).",
         )
         parser.add_argument(
+            "--format", dest="format", default="json", choices=_FORMATS,
+            help="Export format: json (default) or csv.",
+        )
+        parser.add_argument(
             "--output", default=None,
-            help="Path to write the JSON to (default: stdout).",
+            help="Path to write the export to (default: stdout).",
         )
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "json"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except (Salon.DoesNotExist, TypeError, ValueError) as exc:
@@ -110,7 +141,10 @@ class Command(BaseCommand):
             )
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
-        text = json.dumps(rows, indent=2) + "\n"
+        if fmt == "csv":
+            text = _rows_to_csv(rows)
+        else:
+            text = json.dumps(rows, indent=2) + "\n"
         if options.get("output"):
             try:
                 with open(options["output"], "w", encoding="utf-8") as fh:
