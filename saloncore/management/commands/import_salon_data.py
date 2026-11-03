@@ -369,6 +369,13 @@ report per section, over that section's rows, with that section's
 exactly the keys TF-11 would list as dropped for that section,
 keeping null / missing / empty-string counts distinct) — and the
 command returns before phase 2 writes a single row.
+
+Dry-run preview (slice 1): the salon / price-book sections listed
+in ``PREVIEW_SECTIONS`` additionally carry an ``import_preview``
+— read-only would-create / would-update / would-unchanged /
+would-skip counts from ``_build_slice1_previews``, following the
+preview-twin pattern of ``import_clients`` / ``import_products``.
+Every other section's report is shape-only, exactly as before.
 """
 
 import json
@@ -1474,6 +1481,148 @@ def _restore_sent_at(obj, raw):
         obj.sent_at = parsed
 
 
+# Slice-1 preview sections: salon profile/settings plus the
+# price-book group. All other sections stay shape-only in dry-run.
+PREVIEW_SECTIONS = (
+    "salons", "service_categories", "services", "staff_levels",
+    "service_prices",
+)
+
+
+def _preview_counter(total):
+    return {"total": total, "would_create": 0, "would_update": 0,
+            "would_unchanged": 0, "would_skip": 0, "skipped_rows": []}
+
+
+def _preview_tally(preview, planned, key, defaults, row_index):
+    """Judge one row against planned state; fold it in (twin rule)."""
+    if key is None:
+        preview["would_skip"] += 1
+        preview["skipped_rows"].append(
+            {"row": row_index, "reason": "unresolved_reference"})
+        return
+    current = planned.get(key)
+    if current is None:
+        preview["would_create"] += 1
+    elif all(current.get(k) == v for k, v in defaults.items()):
+        preview["would_unchanged"] += 1
+    else:
+        preview["would_update"] += 1
+    planned[key] = {**current, **defaults} if current else dict(defaults)
+
+
+def _build_slice1_previews(data):
+    """Read-only preview twin for PREVIEW_SECTIONS only.
+
+    Mirrors phase 2's identity rules and defaults for those
+    sections against planned state seeded from the database and
+    folded in file order (salons, categories, levels, services,
+    prices — the writer's order), so in-file repeats and parents
+    created earlier in the file are judged as the writer sees
+    them. Identities are comparable tuples (names / external ids),
+    never DB objects. Reads only: the writer is never entered.
+    """
+    salon_name = {str(r["id"]): r["name"] for r in data["salons"]}
+    cat_key = {str(r["id"]): (salon_name.get(str(r["salon_id"])),
+                              r["name"])
+               for r in data["service_categories"]}
+    level_key = {str(r["id"]): (salon_name.get(str(r["salon_id"])),
+                                r["name"])
+                 for r in data["staff_levels"]}
+
+    def service_key(row, cat):
+        ext = _norm_id(row.get("external_id")) or ""
+        return ("ext", ext) if ext else ("cat", cat, row["name"])
+
+    file_svc_key = {str(r["id"]): service_key(
+        r, cat_key.get(str(r["category_id"]))) for r in data["services"]}
+
+    previews = {s: _preview_counter(len(data[s]))
+                for s in PREVIEW_SECTIONS}
+
+    planned = {s.name: {
+        "timezone": s.timezone, "currency": s.currency,
+        "tagline": s.tagline, "logo_url": s.logo_url,
+        "primary_color": s.primary_color,
+        "accent_color": s.accent_color}
+        for s in Salon.objects.all()}
+    for i, row in enumerate(data["salons"]):
+        _preview_tally(previews["salons"], planned, row["name"], {
+            "timezone": row.get("timezone", "UTC"),
+            "currency": row.get("currency", "USD"),
+            "tagline": row.get("tagline", ""),
+            "logo_url": row.get("logo_url", ""),
+            "primary_color": row.get("primary_color", ""),
+            "accent_color": row.get("accent_color", "")}, i)
+
+    db_cat = {c.pk: (c.salon.name, c.name)
+              for c in ServiceCategory.objects.select_related("salon")}
+    planned = {key: {"sort_order": c.sort_order, "active": c.active}
+               for c in ServiceCategory.objects.all()
+               for key in [db_cat[c.pk]]}
+    for i, row in enumerate(data["service_categories"]):
+        _preview_tally(previews["service_categories"], planned,
+                       cat_key.get(str(row["id"])),
+                       {"sort_order": row.get("sort_order", 0),
+                        "active": row["active"]}, i)
+
+    planned = {(lv.salon.name, lv.name): {
+        "sort_order": lv.sort_order, "active": lv.active}
+        for lv in StaffLevel.objects.select_related("salon")}
+    for i, row in enumerate(data["staff_levels"]):
+        _preview_tally(previews["staff_levels"], planned,
+                       level_key.get(str(row["id"])),
+                       {"sort_order": row.get("sort_order", 0),
+                        "active": row["active"]}, i)
+
+    planned = {}
+    for svc in Service.objects.select_related("category__salon"):
+        key = service_key(
+            {"external_id": svc.external_id, "name": svc.name},
+            db_cat.get(svc.category_id))
+        planned[key] = {
+            "name": svc.name, "category": db_cat.get(svc.category_id),
+            "description": svc.description,
+            "service_minutes": svc.service_minutes,
+            "processing_minutes": svc.processing_minutes,
+            "finishing_minutes": svc.finishing_minutes,
+            "active": svc.active, "payload": svc.payload}
+    for i, row in enumerate(data["services"]):
+        defaults = {
+            "name": row["name"],
+            "category": cat_key.get(str(row["category_id"])),
+            "description": row.get("description", ""),
+            "service_minutes": row["service_minutes"],
+            "processing_minutes": row.get("processing_minutes", 0),
+            "finishing_minutes": row.get("finishing_minutes", 0),
+            "active": row["active"]}
+        if "payload" in row:
+            defaults["payload"] = row["payload"]
+        key = file_svc_key.get(str(row["id"]))
+        if key and key[0] == "cat" and key[1] is None:
+            key = None
+        _preview_tally(previews["services"], planned, key, defaults, i)
+
+    db_level = {lv.pk: (lv.salon.name, lv.name) for lv in
+                StaffLevel.objects.select_related("salon")}
+    db_svc = {}
+    for svc in Service.objects.select_related("category__salon"):
+        db_svc[svc.pk] = service_key(
+            {"external_id": svc.external_id, "name": svc.name},
+            db_cat.get(svc.category_id))
+    planned = {(db_svc.get(p.service_id), db_level.get(p.staff_level_id)): {
+        "amount": p.amount, "is_from": p.is_from, "active": p.active}
+        for p in ServicePrice.objects.all()}
+    for i, row in enumerate(data["service_prices"]):
+        svc = file_svc_key.get(str(row["service_id"]))
+        lvl = level_key.get(str(row["staff_level_id"]))
+        key = (svc, lvl) if svc and lvl else None
+        _preview_tally(previews["service_prices"], planned, key, {
+            "amount": Decimal(str(row["amount"])),
+            "is_from": row["is_from"], "active": row["active"]}, i)
+    return previews
+
+
 class Command(BaseCommand):
     help = "Import salon core data from an export_salon_data JSON file."
 
@@ -1482,8 +1631,9 @@ class Command(BaseCommand):
         parser.add_argument(
             "--dry-run", action="store_true",
             help="Print a per-section JSON dry-run report "
-                 "(saloncore.dry_run) for the source file and "
-                 "write nothing to the database.")
+                 "(saloncore.dry_run) for the source file — with "
+                 "read-only import_preview counts on the slice-1 "
+                 "salon/price-book sections — and write nothing.")
 
     @transaction.atomic
     def handle(self, *args, **options):
@@ -1499,8 +1649,12 @@ class Command(BaseCommand):
                 section: (data[section], KNOWN_KEYS[section])
                 for section in SECTIONS if section in data
             }
-            self.stdout.write(json.dumps(
-                build_dry_run_reports(record_sets), sort_keys=True))
+            reports = build_dry_run_reports(record_sets)
+            # Slice 1 only: preview counts attach to those
+            # sections' reports; all others stay shape-only.
+            for section, preview in _build_slice1_previews(data).items():
+                reports[section]["import_preview"] = preview
+            self.stdout.write(json.dumps(reports, sort_keys=True))
             return
 
         # Phase 2: write (all references/required data already proven).
