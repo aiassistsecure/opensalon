@@ -370,21 +370,26 @@ exactly the keys TF-11 would list as dropped for that section,
 keeping null / missing / empty-string counts distinct) — and the
 command returns before phase 2 writes a single row.
 
-Dry-run preview (slices 1–4): the salon / price-book sections
+Dry-run preview (slices 1–5): the salon / price-book sections
 listed in ``PREVIEW_SECTIONS``, the client / team sections in
 ``SLICE2_PREVIEW_SECTIONS``, the bookings / catalog sections
-in ``SLICE3_PREVIEW_SECTIONS`` and the roster / attendance
-sections in ``SLICE4_PREVIEW_SECTIONS`` additionally carry an
+in ``SLICE3_PREVIEW_SECTIONS``, the roster / attendance
+sections in ``SLICE4_PREVIEW_SECTIONS`` and the sales-family
+sections in ``SLICE5_PREVIEW_SECTIONS`` additionally carry an
 ``import_preview`` — read-only would-create / would-update /
 would-unchanged / would-skip counts from
 ``_build_slice1_previews`` / ``_build_slice2_previews`` /
-``_build_slice3_previews`` / ``_build_slice4_previews``,
-following the preview-twin pattern
+``_build_slice3_previews`` / ``_build_slice4_previews`` /
+``_build_slice5_previews``, following the preview-twin pattern
 of ``import_clients`` / ``import_products``. Every other
 section's report is shape-only, exactly as before. Breaks are
 ``get_or_create`` in the writer, so an existing break is
 previewed as would-unchanged even when ``paid`` differs —
-the writer returns it untouched, never updated.
+the writer returns it untouched, never updated. The same
+``get_or_create`` rule covers refunds, cashups and receipts
+in slice 5 (creation-only defaults, never an update), and a
+sale payment without ``created_at`` (empty defaults in the
+writer's fallback lookup, so amount/status form its identity).
 """
 
 import json
@@ -1513,6 +1518,12 @@ SLICE4_PREVIEW_SECTIONS = (
     "breaks",
 )
 
+# Slice-5 preview sections: the sales family (checkout app).
+SLICE5_PREVIEW_SECTIONS = (
+    "sales", "sale_items", "sale_payments", "refunds", "cashups",
+    "receipts",
+)
+
 
 def _preview_counter(total):
     return {"total": total, "would_create": 0, "would_update": 0,
@@ -2063,6 +2074,243 @@ def _build_slice4_previews(data):
     return previews
 
 
+def _build_slice5_previews(data):
+    """Read-only preview twin for SLICE5_PREVIEW_SECTIONS only.
+
+    Mirrors phase 2's identity rules and defaults for the sales
+    family against planned state seeded from the database and
+    folded in file order (the writer's order). Identities are
+    comparable tuples, never DB objects. Reads only.
+
+    Sales and payments each have two writer lookups: with
+    ``created_at`` it anchors the lookup, without it the
+    remaining lookup fields do (payments then carry empty
+    defaults, so amount/status are identity, never updated).
+    Planned sales/payments are seeded under BOTH lookup keys
+    and each fold syncs the alias key. A sale's planned entity
+    (its DB pk, or a fresh negative id for a file-only sale)
+    keys every child section, mirroring the writer's file-local
+    ``sale_id`` map. Refunds, cashups and receipts are
+    ``get_or_create`` — creation-only defaults, tallied against
+    empty defaults: existing rows are would-unchanged.
+    """
+    salon_name = {str(r["id"]): r["name"] for r in data["salons"]}
+    cat_key = {str(r["id"]): (salon_name.get(str(r["salon_id"])),
+                              r["name"])
+               for r in data["service_categories"]}
+
+    def client_key(salon, ext, first, last, email, phone):
+        ext = _norm_id(ext) or ""
+        return ((salon, "ext", ext) if ext else
+                (salon, "name", first, last, email, phone))
+
+    def service_key(row, cat):
+        ext = _norm_id(row.get("external_id")) or ""
+        return ("ext", ext) if ext else ("cat", cat, row["name"])
+
+    def product_key(salon, ext, name, sku, barcode):
+        ext = _norm_id(ext) or ""
+        return (("ext", ext) if ext else
+                (salon, "name", name, sku, barcode))
+
+    def db_client_key(c):
+        return client_key(c.salon.name, c.external_id, c.first_name,
+                          c.last_name, c.email, c.phone)
+
+    def db_service_key(svc):
+        if svc is None:
+            return None
+        cat = (svc.category.salon.name, svc.category.name)
+        return service_key(
+            {"external_id": svc.external_id, "name": svc.name}, cat)
+
+    def db_product_key(p):
+        if p is None:
+            return None
+        return product_key(p.salon.name, p.external_id, p.name,
+                           p.sku, p.barcode)
+
+    file_client = {str(r["id"]): client_key(
+        salon_name.get(str(r["salon_id"])), r.get("external_id"),
+        r["first_name"], r["last_name"], r.get("email", ""),
+        r.get("phone", "")) for r in data["clients"]}
+    file_svc = {str(r["id"]): service_key(
+        r, cat_key.get(str(r["category_id"]))) for r in data["services"]}
+    file_product = {str(r["id"]): product_key(
+        salon_name.get(str(r["salon_id"])), r.get("external_id"),
+        r["name"], r.get("sku", ""), r.get("barcode", ""))
+        for r in data["products"]}
+    client_by_ext = {_norm_id(r["external_id"]): file_client[str(r["id"])]
+                     for r in data["clients"] if r.get("external_id")}
+    svc_by_ext = {_norm_id(r["external_id"]): file_svc[str(r["id"])]
+                  for r in data["services"] if r.get("external_id")}
+    product_by_ext = {
+        _norm_id(r["external_id"]): file_product[str(r["id"])]
+        for r in data["products"] if r.get("external_id")}
+
+    def resolve(by_id, by_ext, row, id_field, ext_field):
+        ext = _norm_id(row.get(ext_field))
+        if ext and ext in by_ext:
+            return by_ext[ext]
+        return by_id.get(str(row.get(id_field)))
+
+    def opt_dt(row, field, label):
+        return (_checked_datetime(row[field], label)
+                if row.get(field) is not None else None)
+
+    def sale_keys(salon, client, created, status, completed, voided):
+        return (("c", salon, client, created, completed, voided),
+                ("n", salon, client, status, completed, voided))
+
+    def sale_defaults(row, completed, voided):
+        return {
+            "status": row["status"],
+            "discount_amount": (
+                Decimal(str(row["discount_amount"]))
+                if row.get("discount_amount") is not None
+                else Decimal("0.00")),
+            "completed_at": completed, "voided_at": voided,
+            "void_reason": row.get("void_reason", "")}
+
+    previews = {s: _preview_counter(len(data[s]))
+                for s in SLICE5_PREVIEW_SECTIONS}
+
+    planned = {}
+    sale_index = {}
+    for s in Sale.objects.select_related("salon", "client__salon"):
+        client = db_client_key(s.client) if s.client_id else None
+        key_c, key_n = sale_keys(s.salon.name, client, s.created_at,
+                                 s.status, s.completed_at, s.voided_at)
+        planned[key_c] = planned[key_n] = {
+            "status": s.status, "discount_amount": s.discount_amount,
+            "completed_at": s.completed_at, "voided_at": s.voided_at,
+            "void_reason": s.void_reason, "_created": s.created_at}
+        sale_index[key_c] = sale_index[key_n] = s.pk
+    file_sale = {}
+    next_entity = 0
+    for i, row in enumerate(data["sales"]):
+        salon = salon_name.get(str(row["salon_id"]))
+        if (row.get("client_id") is None
+                and not row.get("client_external_id")):
+            client = None
+        else:
+            client = resolve(file_client, client_by_ext, row,
+                             "client_id", "client_external_id")
+        created = opt_dt(row, "created_at", "sales created_at")
+        completed = opt_dt(row, "completed_at", "sales completed_at")
+        voided = opt_dt(row, "voided_at", "sales voided_at")
+        defaults = sale_defaults(row, completed, voided)
+        key_c, key_n = sale_keys(salon, client, created,
+                                 row["status"], completed, voided)
+        key = key_c if created is not None else key_n
+        if salon is None or (client is None and (
+                row.get("client_id") is not None
+                or row.get("client_external_id"))):
+            key = None
+        _preview_tally(previews["sales"], planned, key, defaults, i)
+        if key is None:
+            continue
+        planned[key_n if key == key_c else key_c] = planned[key]
+        entity = sale_index.get(key)
+        if entity is None:
+            next_entity -= 1
+            entity = next_entity
+        sale_index[key_c] = sale_index[key_n] = entity
+        file_sale[str(row["id"])] = entity
+
+    planned = {}
+    for it in SaleItem.objects.select_related(
+            "service__category__salon", "product__salon"):
+        planned[(it.sale_id, it.kind, db_service_key(it.service),
+                 db_product_key(it.product), it.description)] = {
+            "quantity": it.quantity, "unit_price": it.unit_price,
+            "discount_amount": it.discount_amount}
+    for i, row in enumerate(data["sale_items"]):
+        sale = file_sale.get(str(row["sale_id"]))
+        if (row.get("service_id") is not None
+                or row.get("service_external_id")):
+            service = resolve(file_svc, svc_by_ext, row,
+                              "service_id", "service_external_id")
+            service_ok = service is not None
+        else:
+            service, service_ok = None, True
+        if (row.get("product_id") is not None
+                or row.get("product_external_id")):
+            product = resolve(file_product, product_by_ext, row,
+                              "product_id", "product_external_id")
+            product_ok = product is not None
+        else:
+            product, product_ok = None, True
+        key = ((sale, row["kind"], service, product,
+                row.get("description", ""))
+               if sale is not None and service_ok and product_ok
+               else None)
+        _preview_tally(previews["sale_items"], planned, key, {
+            "quantity": row.get("quantity", 1),
+            "unit_price": Decimal(str(row["unit_price"])),
+            "discount_amount": (
+                Decimal(str(row["discount_amount"]))
+                if row.get("discount_amount") is not None
+                else Decimal("0.00"))}, i)
+
+    planned = {}
+    for p in Payment.objects.all():
+        key_c = ("c", p.sale_id, p.method, p.created_at)
+        key_n = ("n", p.sale_id, p.method, p.amount, p.status)
+        planned[key_c] = planned[key_n] = {
+            "amount": p.amount, "status": p.status,
+            "_created": p.created_at}
+    for i, row in enumerate(data["sale_payments"]):
+        sale = file_sale.get(str(row["sale_id"]))
+        created = opt_dt(row, "created_at",
+                         "sale_payments created_at")
+        amount = Decimal(str(row["amount"]))
+        key_c = ("c", sale, row["method"], created)
+        key_n = ("n", sale, row["method"], amount, row["status"])
+        if created is not None:
+            key, defaults = key_c, {"amount": amount,
+                                    "status": row["status"]}
+        else:
+            key, defaults = key_n, {}
+        if sale is None:
+            key = None
+        _preview_tally(previews["sale_payments"], planned, key,
+                       defaults, i)
+        if key is not None:
+            planned[key_n if key == key_c else key_c] = planned[key]
+
+    planned = {(r.sale_id, r.amount, r.reason, r.tender,
+                r.created_at): {}
+               for r in Refund.objects.all()}
+    for i, row in enumerate(data["refunds"]):
+        sale = file_sale.get(str(row["sale_id"]))
+        key = ((sale, Decimal(str(row["amount"])),
+                row.get("reason", ""), row["tender"],
+                _checked_datetime(row["created_at"],
+                                  "refunds created_at"))
+               if sale is not None else None)
+        _preview_tally(previews["refunds"], planned, key, {}, i)
+
+    planned = {(c.salon.name, c.period_start, c.period_end,
+                c.created_at): {}
+               for c in Cashup.objects.select_related("salon")}
+    for i, row in enumerate(data["cashups"]):
+        salon = salon_name.get(str(row["salon_id"]))
+        key = ((salon, _checked_datetime(
+            row["period_start"], "cashups period_start"),
+            _checked_datetime(row["period_end"], "cashups period_end"),
+            _checked_datetime(row["created_at"], "cashups created_at"))
+            if salon is not None else None)
+        _preview_tally(previews["cashups"], planned, key, {}, i)
+
+    planned = {(r.sale_id,): {} for r in Receipt.objects.all()}
+    for i, row in enumerate(data["receipts"]):
+        sale = file_sale.get(str(row["sale_id"]))
+        key = (sale,) if sale is not None else None
+        _preview_tally(previews["receipts"], planned, key, {}, i)
+    return previews
+
+
 class Command(BaseCommand):
     help = "Import salon core data from an export_salon_data JSON file."
 
@@ -2074,8 +2322,8 @@ class Command(BaseCommand):
                  "(saloncore.dry_run) for the source file — with "
                  "read-only import_preview counts on the slice-1 "
                  "salon/price-book, slice-2 client/team, "
-                 "slice-3 bookings/catalog and slice-4 "
-                 "roster/attendance "
+                 "slice-3 bookings/catalog, slice-4 "
+                 "roster/attendance and slice-5 sales-family "
                  "sections — and write nothing.")
 
     @transaction.atomic
@@ -2093,12 +2341,13 @@ class Command(BaseCommand):
                 for section in SECTIONS if section in data
             }
             reports = build_dry_run_reports(record_sets)
-            # Slices 1–4 only: preview counts attach to those
+            # Slices 1–5 only: preview counts attach to those
             # sections' reports; all others stay shape-only.
             previews = _build_slice1_previews(data)
             previews.update(_build_slice2_previews(data))
             previews.update(_build_slice3_previews(data))
             previews.update(_build_slice4_previews(data))
+            previews.update(_build_slice5_previews(data))
             for section, preview in previews.items():
                 reports[section]["import_preview"] = preview
             self.stdout.write(json.dumps(reports, sort_keys=True))
