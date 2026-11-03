@@ -9,6 +9,7 @@ from bookings.lifecycle import (
     create_appointment,
     reschedule_appointment,
     transition_status,
+    validate_transition_status,
 )
 from bookings.models import Appointment, AppointmentNote
 from clients.models import Client, ClientNote
@@ -122,6 +123,17 @@ class TransitionStatusTests(LifecycleBase):
         for status in ("confirmed", "arrived", "in_service", "completed"):
             transition_status(appt, status)
             self.assertEqual(appt.status, status)
+
+    def test_validate_transition_status_writes_nothing(self):
+        appt = self._create()
+        before = (appt.status, appt.updated_at)
+        validate_transition_status(appt, Appointment.Status.CONFIRMED)
+        appt.refresh_from_db()
+        self.assertEqual((appt.status, appt.updated_at), before)
+        with self.assertRaises(ValidationError):
+            validate_transition_status(appt, Appointment.Status.COMPLETED)
+        appt.refresh_from_db()
+        self.assertEqual((appt.status, appt.updated_at), before)
 
     def test_invalid_and_terminal_transitions_rejected(self):
         appt = self._create()

@@ -24,22 +24,23 @@ from django.utils import timezone
 
 from bookings.models import Appointment
 
-__all__ = ["set_appointment_price"]
+__all__ = ["set_appointment_price", "validate_set_appointment_price"]
 
 _CENT = Decimal("0.01")
 _MAX_PRICE = Decimal("99999.99")
 
 
-def set_appointment_price(appointment, raw=None, **kwargs):
-    """Set (or clear) ``appointment``'s price override.
+def validate_set_appointment_price(appointment, raw=None, **kwargs):
+    """Validate a ``set_appointment_price`` call, writing nothing.
 
-    ``raw`` (alias ``price``) is the desk's price as entered:
-    a string, ``Decimal``, or int. ``None`` or an empty /
-    whitespace-only string CLEARS the override. Returns the
-    updated appointment. Raises ``ValidationError`` --
-    writing nothing -- for a missing or unknown appointment,
-    a non-numeric or non-finite value, a negative value, a
-    value over 99999.99, or sub-cent precision.
+    Performs every check :func:`set_appointment_price` performs
+    (including the appointment existence read) and returns the
+    normalized override the writer would store: ``None`` for a
+    clear, otherwise a cent-quantized ``Decimal``. Raises the
+    same ``ValidationError`` the writer would raise. Writes
+    nothing, so it is safe for ``--dry-run`` previews on every
+    backend (including NEDB, where a rolled-back transaction
+    does not undo writes).
     """
     if "price" in kwargs:
         if raw is not None:
@@ -57,10 +58,7 @@ def set_appointment_price(appointment, raw=None, **kwargs):
         raise ValidationError(
             {"appointment": "That appointment does not exist."})
     if raw is None or (isinstance(raw, str) and not raw.strip()):
-        appointment.price_override = None
-        appointment.updated_at = timezone.now()
-        appointment.save(update_fields=["price_override", "updated_at"])
-        return appointment
+        return None
     try:
         value = Decimal(str(raw).strip())
     except (InvalidOperation, ValueError):
@@ -75,7 +73,22 @@ def set_appointment_price(appointment, raw=None, **kwargs):
     if value != value.quantize(_CENT):
         raise ValidationError(
             {"price": "price must be to the cent"})
-    appointment.price_override = value.quantize(_CENT)
+    return value.quantize(_CENT)
+
+
+def set_appointment_price(appointment, raw=None, **kwargs):
+    """Set (or clear) ``appointment``'s price override.
+
+    ``raw`` (alias ``price``) is the desk's price as entered:
+    a string, ``Decimal``, or int. ``None`` or an empty /
+    whitespace-only string CLEARS the override. Returns the
+    updated appointment. Raises ``ValidationError`` --
+    writing nothing -- for a missing or unknown appointment,
+    a non-numeric or non-finite value, a negative value, a
+    value over 99999.99, or sub-cent precision.
+    """
+    value = validate_set_appointment_price(appointment, raw, **kwargs)
+    appointment.price_override = value
     appointment.updated_at = timezone.now()
     appointment.save(update_fields=["price_override", "updated_at"])
     return appointment

@@ -5,10 +5,12 @@ Usage:
         --starts-at ISO-8601-DATETIME --ends-at ISO-8601-DATETIME
         [--paid] [--salon-id ID] [--dry-run]
 
-With ``--dry-run`` nothing is written: the command runs the
-service inside a transaction it rolls back, so the preview
-applies the service's own validation and prints the break that
-WOULD be created (its staff member, start, end, and paid flag).
+With ``--dry-run`` nothing is written: the command calls the
+service's validate-only helper (no write happens at all, so
+the preview is safe on every backend -- NEDB does not roll
+back transaction writes), so the preview applies the
+service's own validation and prints the break that WOULD be
+created (its staff member, start, end, and paid flag).
 
 Thin wrapper around :func:`bookings.breaks.add_break`: the
 staff member is resolved by id (scoped to the salon when
@@ -27,9 +29,7 @@ import datetime
 
 from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
-
-from bookings.breaks import add_break
+from bookings.breaks import add_break, validate_add_break
 from saloncore.models import Salon
 from team.models import StaffMember
 
@@ -89,9 +89,9 @@ class Command(BaseCommand):
             help="Mark the break as unpaid (the default).")
         parser.add_argument(
             "--dry-run", action="store_true",
-            help="Preview only: run the service inside a "
-                 "transaction that is rolled back, print the "
-                 "break that would be created, and write nothing.")
+            help="Preview only: validate with the service's "
+                 "validate-only helper, print the break that "
+                 "would be created, and write nothing.")
 
     def handle(self, *args, **options):
         staff_member_id = options.get("staff_member_id")
@@ -129,16 +129,12 @@ class Command(BaseCommand):
                 f"No staff member with id {staff_member_id}.") from None
         if options.get("dry_run"):
             try:
-                with transaction.atomic():
-                    created = add_break(
-                        staff_member, start=starts_at, end=ends_at,
-                        paid=paid)
-                    preview = (created.start, created.end, created.paid)
-                    transaction.set_rollback(True)
+                start, end, is_paid = validate_add_break(
+                    staff_member, start=starts_at, end=ends_at,
+                    paid=paid)
             except ValidationError as exc:
                 raise CommandError(
                     "; ".join(exc.messages)) from exc
-            start, end, is_paid = preview
             self.stdout.write(
                 f"Dry run: would create break for staff member "
                 f"{staff_member.pk} ({staff_member}): "

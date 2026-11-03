@@ -4,7 +4,7 @@ from django.core.exceptions import ValidationError
 from django.test import TestCase
 
 from bookings.models import Appointment, AppointmentNote
-from bookings.notes import add_note, list_notes
+from bookings.notes import add_note, list_notes, validate_add_note
 from clients.models import Client, ClientNote
 from saloncore.models import Salon, Service, ServiceCategory
 from team.models import StaffMember
@@ -50,6 +50,14 @@ class AddNoteTests(NotesBase):
     def test_add_note_author_defaults_blank(self):
         note = add_note(self.appointment, "No author given")
         self.assertEqual(note.author_name, "")
+
+    def test_validate_add_note_writes_nothing(self):
+        # Regression (NEDB dry-run): validation must not create a row.
+        validate_add_note(self.appointment, "Valid but unsaved")
+        self.assertEqual(AppointmentNote.objects.count(), 0)
+        with self.assertRaises(ValidationError):
+            validate_add_note(self.appointment, "   ")
+        self.assertEqual(AppointmentNote.objects.count(), 0)
 
     def test_add_note_empty_text_rejected(self):
         for text in ("", "   "):

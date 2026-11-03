@@ -15,7 +15,8 @@ from django.core.exceptions import ValidationError
 from django.test import TestCase
 
 from bookings.models import Appointment
-from bookings.price_override import set_appointment_price
+from bookings.price_override import (
+    set_appointment_price, validate_set_appointment_price)
 from clients.models import Client
 from saloncore.models import Salon, Service, ServiceCategory
 from team.models import StaffMember
@@ -58,6 +59,20 @@ class SetAppointmentPriceServiceTests(TestCase):
         self.assertEqual(self._override(), Decimal("88.00"))
         set_appointment_price(self.appointment, 0)
         self.assertEqual(self._override(), Decimal("0.00"))
+
+    def test_validate_set_appointment_price_writes_nothing(self):
+        before = self.appointment.updated_at
+        self.assertEqual(
+            validate_set_appointment_price(self.appointment, "72.5"),
+            Decimal("72.50"))
+        self.assertIsNone(
+            validate_set_appointment_price(self.appointment, ""))
+        self.appointment.refresh_from_db()
+        self.assertIsNone(self.appointment.price_override)
+        self.assertEqual(self.appointment.updated_at, before)
+        with self.assertRaises(ValidationError):
+            validate_set_appointment_price(self.appointment, "-5")
+        self.assertIsNone(self._override())
 
     def test_price_kwarg_alias(self):
         set_appointment_price(self.appointment, price="65.25")

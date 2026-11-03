@@ -30,18 +30,21 @@ from bookings.availability import _tz
 from bookings.models import Break
 from team.models import StaffMember
 
-__all__ = ["BreakRecord", "add_break", "breaks", "list_breaks"]
+__all__ = ["BreakRecord", "add_break", "breaks", "list_breaks",
+           "validate_add_break"]
 
 
-def add_break(staff_member, start=None, end=None, paid=False, **kwargs):
-    """Create a ``Break`` for ``staff_member`` and return it.
+def validate_add_break(staff_member, start=None, end=None, paid=False,
+                       **kwargs):
+    """Validate an ``add_break`` call without writing anything.
 
-    ``start``/``end`` are timezone-aware datetimes (the
-    ``starts_at``/``ends_at`` keyword aliases are also accepted);
-    ``paid`` records whether the time is on the clock. Raises
-    ``ValidationError`` -- writing nothing -- for a missing or
-    unknown staff member, missing/naive start or end, or an
-    ``end`` that is not after ``start``.
+    Performs every check :func:`add_break` performs (including
+    the staff-member existence read) and returns the normalized
+    ``(start, end, paid)`` the writer would store. Raises the
+    same ``ValidationError`` the writer would raise. Writes
+    nothing, so it is safe for ``--dry-run`` previews on every
+    backend (including NEDB, where a rolled-back transaction
+    does not undo writes).
     """
     if "starts_at" in kwargs:
         if start is not None:
@@ -72,9 +75,24 @@ def add_break(staff_member, start=None, end=None, paid=False, **kwargs):
     if end <= start:
         raise ValidationError(
             {"end": "Break end must be after its start."})
+    return start, end, bool(paid)
+
+
+def add_break(staff_member, start=None, end=None, paid=False, **kwargs):
+    """Create a ``Break`` for ``staff_member`` and return it.
+
+    ``start``/``end`` are timezone-aware datetimes (the
+    ``starts_at``/``ends_at`` keyword aliases are also accepted);
+    ``paid`` records whether the time is on the clock. Raises
+    ``ValidationError`` -- writing nothing -- for a missing or
+    unknown staff member, missing/naive start or end, or an
+    ``end`` that is not after ``start``.
+    """
+    start, end, paid = validate_add_break(
+        staff_member, start=start, end=end, paid=paid, **kwargs)
     return Break.objects.create(
         staff_member=staff_member, start=start, end=end,
-        paid=bool(paid))
+        paid=paid)
 
 
 @dataclass(frozen=True)

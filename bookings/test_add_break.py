@@ -12,7 +12,7 @@ import datetime
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 
-from bookings.breaks import add_break
+from bookings.breaks import add_break, validate_add_break
 from bookings.models import Break
 from saloncore.models import Salon
 from team.models import StaffMember
@@ -40,6 +40,15 @@ class AddBreakServiceTests(TestCase):
         self.assertEqual(created.start, at(12))
         self.assertEqual(created.end, at(12, 30))
         self.assertTrue(created.paid)
+
+    def test_validate_add_break_writes_nothing(self):
+        result = validate_add_break(
+            self.staff, start=at(12), end=at(12, 30), paid=True)
+        self.assertEqual(result, (at(12), at(12, 30), True))
+        self.assertEqual(Break.objects.count(), 0)
+        with self.assertRaises(ValidationError):
+            validate_add_break(self.staff, start=at(12), end=at(12))
+        self.assertEqual(Break.objects.count(), 0)
 
     def test_creates_unpaid_break_by_default(self):
         created = add_break(self.staff, at(13), at(14))

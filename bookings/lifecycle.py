@@ -156,14 +156,25 @@ def create_appointment(*, client, staff_member, service, start, end=None,
     return appointment
 
 
-def transition_status(appointment, new_status):
-    """Move ``appointment`` to ``new_status`` if the flow allows it."""
+def validate_transition_status(appointment, new_status):
+    """Validate a status move without writing anything.
+
+    Raises the same ``ValidationError`` :func:`transition_status`
+    would raise. Writes nothing, so it is safe for ``--dry-run``
+    previews on every backend (including NEDB, where a
+    rolled-back transaction does not undo writes).
+    """
     allowed = ALLOWED_TRANSITIONS.get(appointment.status, frozenset())
     if new_status not in allowed:
         raise ValidationError(
             f"Cannot move an appointment from {appointment.status} "
             f"to {new_status}."
         )
+
+
+def transition_status(appointment, new_status):
+    """Move ``appointment`` to ``new_status`` if the flow allows it."""
+    validate_transition_status(appointment, new_status)
     appointment.status = new_status
     appointment.save(update_fields=["status", "updated_at"])
     return appointment
