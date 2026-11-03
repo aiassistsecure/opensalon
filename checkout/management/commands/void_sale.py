@@ -4,10 +4,12 @@ Usage:
     python manage.py void_sale --sale-id ID --reason TEXT
         [--dry-run]
 
-With ``--dry-run`` nothing is written: the command runs the
-service inside a transaction it rolls back, so the preview
-applies the service's own refusals and prints the void that
-WOULD be recorded (the sale, its reason, and its resulting
+With ``--dry-run`` nothing is written: the command calls the
+service's validate-only helper (no write happens at all, so
+the preview is safe on every backend -- NEDB does not roll
+back transaction writes), so the preview applies the
+service's own refusals and prints the void that WOULD be
+recorded (the sale, its reason, and its resulting
 status).
 
 Thin wrapper around :func:`checkout.void.void_sale`: the sale
@@ -19,10 +21,9 @@ provider-agnostic -- no payment-provider SDK, field, or name
 appears here.
 """
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
 
 from checkout.models import Sale
-from checkout.void import void_sale
+from checkout.void import validate_void_sale, void_sale
 
 
 class Command(BaseCommand):
@@ -51,13 +52,10 @@ class Command(BaseCommand):
                 f"No sale with id {options['sale_id']}.") from exc
         if options.get("dry_run"):
             try:
-                with transaction.atomic():
-                    voided = void_sale(sale, options["reason"])
-                    preview = (voided.status, voided.void_reason)
-                    transaction.set_rollback(True)
+                reason = validate_void_sale(sale, options["reason"])
+                status = Sale.Status.VOIDED
             except ValueError as exc:
                 raise CommandError(str(exc)) from exc
-            status, reason = preview
             self.stdout.write(
                 f"Dry run: would void sale #{sale.pk} (reason: "
                 f"{reason}): sale status would be {status}; "

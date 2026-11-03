@@ -4,7 +4,8 @@ from django.test import TestCase
 from django.utils import timezone
 
 from checkout.models import Payment, Refund, Sale, SaleItem
-from checkout.refunds import record_refund, refund_total, refunds_for_sale
+from checkout.refunds import (
+    record_refund, refund_total, refunds_for_sale, validate_record_refund)
 from saloncore.models import Salon
 
 
@@ -94,6 +95,23 @@ class RefundTests(TestCase):
         for bad in (Decimal("0.00"), Decimal("-5.00")):
             with self.assertRaises(ValueError):
                 record_refund(sale, bad, tender="cash")
+        self.assertEqual(Refund.objects.count(), 0)
+
+    def test_validate_record_refund_writes_nothing(self):
+        sale = self._completed_sale()
+        amount, tender = validate_record_refund(
+            sale, "20", tender="cash")
+        self.assertEqual((amount, tender), (Decimal("20.00"), "cash"))
+        # Tender resolves to the sale's sole payment tender.
+        self.assertEqual(
+            validate_record_refund(sale, Decimal("10.00")),
+            (Decimal("10.00"), "cash"))
+        self.assertEqual(Refund.objects.count(), 0)
+        self.assertEqual(refund_total(sale), Decimal("0.00"))
+        with self.assertRaises(ValueError):
+            validate_record_refund(sale, Decimal("85.01"), tender="cash")
+        with self.assertRaises(ValueError):
+            validate_record_refund(sale, Decimal("10.00"), tender="bogus")
         self.assertEqual(Refund.objects.count(), 0)
 
     def test_tender_must_match_original_payment(self):

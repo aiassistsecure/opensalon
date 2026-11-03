@@ -4,10 +4,12 @@ Usage:
     python manage.py record_refund --sale-id ID --amount AMOUNT
         [--reason TEXT] [--tender TENDER] [--dry-run]
 
-With ``--dry-run`` nothing is written: the command runs the
-service inside a transaction it rolls back, so the preview
-applies the service's own refusals and prints the refund that
-WOULD be recorded (amount, tender, resulting refund total).
+With ``--dry-run`` nothing is written: the command calls the
+service's validate-only helper (no write happens at all, so
+the preview is safe on every backend -- NEDB does not roll
+back transaction writes), so the preview applies the
+service's own refusals and prints the refund that WOULD be
+recorded (amount, tender, resulting refund total).
 
 Thin wrapper around :func:`checkout.refunds.record_refund`:
 the sale is resolved by id and all other arguments are passed
@@ -18,10 +20,10 @@ surface here as ``CommandError``. Core stays provider-agnostic
 -- no payment-provider SDK, field, or name appears here.
 """
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
 
 from checkout.models import Sale
-from checkout.refunds import record_refund, refund_total
+from checkout.refunds import (
+    record_refund, refund_total, validate_record_refund)
 
 
 class Command(BaseCommand):
@@ -60,18 +62,13 @@ class Command(BaseCommand):
                 f"No sale with id {options['sale_id']}.") from exc
         if options.get("dry_run"):
             try:
-                with transaction.atomic():
-                    refund = record_refund(
-                        sale, options["amount"],
-                        reason=options["reason"] or "",
-                        tender=options.get("tender"))
-                    preview = (
-                        refund.amount, refund.tender,
-                        refund_total(sale))
-                    transaction.set_rollback(True)
+                amount, tender = validate_record_refund(
+                    sale, options["amount"],
+                    reason=options["reason"] or "",
+                    tender=options.get("tender"))
+                resulting_total = refund_total(sale) + amount
             except ValueError as exc:
                 raise CommandError(str(exc)) from exc
-            amount, tender, resulting_total = preview
             self.stdout.write(
                 f"Dry run: would record refund of {amount} "
                 f"({tender}) against sale #{sale.pk}: refund "

@@ -9,6 +9,7 @@ tiny synthetic records -- unit logic only.
 """
 import io
 from decimal import Decimal
+from unittest import mock
 
 from django.core.management import CommandError, call_command
 from django.test import TestCase
@@ -62,6 +63,23 @@ class VoidSaleCommandTests(TestCase):
             reason="entered in error", stdout=io.StringIO())
         self.sale.refresh_from_db()
         self.assertEqual(self.sale.status, Sale.Status.VOIDED)
+
+    def test_dry_run_never_calls_writer(self):
+        # Regression (NEDB): dry-run must not call the writer at
+        # all -- a rolled-back write still persists on NEDB.
+        with mock.patch(
+                "checkout.management.commands.void_sale.void_sale",
+                side_effect=AssertionError("writer called")) as writer:
+            out = io.StringIO()
+            call_command(
+                "void_sale", sale_id=self.sale.pk,
+                reason="  entered in error  ", dry_run=True, stdout=out)
+        writer.assert_not_called()
+        self.sale.refresh_from_db()
+        self.assertEqual(self.sale.status, Sale.Status.COMPLETED)
+        self.assertIsNone(self.sale.voided_at)
+        self.assertIn("entered in error", out.getvalue())
+        self.assertNotIn("  entered", out.getvalue())
 
     def test_refusals_are_command_errors_and_change_nothing(self):
         open_sale = Sale.objects.create(
