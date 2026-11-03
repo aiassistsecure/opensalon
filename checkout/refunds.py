@@ -41,15 +41,16 @@ def refund_total(sale):
     return Decimal(total).quantize(Decimal("0.01")) if total is not None else Decimal("0.00")
 
 
-def record_refund(sale, amount, reason="", tender=None):
-    """Record a refund against a completed ``sale`` and return it.
+def validate_record_refund(sale, amount, reason="", tender=None):
+    """Validate a ``record_refund`` call without writing anything.
 
-    ``tender`` defaults to the sale's sole payment tender when it
-    has exactly one; otherwise pass it explicitly. Raises
-    ``ValueError`` if the sale is missing, voided, or not completed,
-    if ``amount`` is not positive, if cumulative refunds plus
-    ``amount`` would exceed the sale total, or if ``tender`` is not
-    a core tender matching an original payment tender.
+    Performs every check :func:`record_refund` performs and
+    returns the normalized ``(amount, tender)`` the writer would
+    store (amount cent-quantized, tender resolved to its default
+    when omitted). Raises the same ``ValueError`` the writer
+    would raise. Writes nothing, so it is safe for ``--dry-run``
+    previews on every backend (including NEDB, where a
+    rolled-back transaction does not undo writes).
     """
     if sale is None:
         raise ValueError("record_refund needs a sale")
@@ -81,6 +82,21 @@ def record_refund(sale, amount, reason="", tender=None):
     remaining = sale.total - refund_total(sale)
     if amount > remaining:
         raise ValueError("refund exceeds the sale total minus prior refunds")
+    return amount, tender
+
+
+def record_refund(sale, amount, reason="", tender=None):
+    """Record a refund against a completed ``sale`` and return it.
+
+    ``tender`` defaults to the sale's sole payment tender when it
+    has exactly one; otherwise pass it explicitly. Raises
+    ``ValueError`` if the sale is missing, voided, or not completed,
+    if ``amount`` is not positive, if cumulative refunds plus
+    ``amount`` would exceed the sale total, or if ``tender`` is not
+    a core tender matching an original payment tender.
+    """
+    amount, tender = validate_record_refund(
+        sale, amount, reason=reason, tender=tender)
     return Refund.objects.create(
         sale=sale,
         amount=amount,

@@ -31,6 +31,27 @@ from django.utils import timezone
 from .models import Sale
 
 
+def validate_void_sale(sale, reason):
+    """Validate a ``void_sale`` call without writing anything.
+
+    Performs every check :func:`void_sale` performs and returns
+    the stripped reason the writer would store. Raises the same
+    ``ValueError`` the writer would raise. Writes nothing, so
+    it is safe for ``--dry-run`` previews on every backend
+    (including NEDB, where a rolled-back transaction does not
+    undo writes).
+    """
+    if sale is None:
+        raise ValueError("void_sale needs a sale")
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError("void_sale needs a non-empty reason")
+    if sale.status == Sale.Status.VOIDED:
+        raise ValueError("sale is already voided")
+    if sale.status != Sale.Status.COMPLETED:
+        raise ValueError("only a completed sale can be voided")
+    return reason.strip()
+
+
 def void_sale(sale, reason):
     """Void the completed ``sale`` for ``reason`` and return it.
 
@@ -43,16 +64,9 @@ def void_sale(sale, reason):
     is empty or blank, if the sale is already voided, or if the
     sale is not completed.
     """
-    if sale is None:
-        raise ValueError("void_sale needs a sale")
-    if not isinstance(reason, str) or not reason.strip():
-        raise ValueError("void_sale needs a non-empty reason")
-    if sale.status == Sale.Status.VOIDED:
-        raise ValueError("sale is already voided")
-    if sale.status != Sale.Status.COMPLETED:
-        raise ValueError("only a completed sale can be voided")
+    reason = validate_void_sale(sale, reason)
     sale.status = Sale.Status.VOIDED
-    sale.void_reason = reason.strip()
+    sale.void_reason = reason
     sale.voided_at = timezone.now()
     sale.save(update_fields=["status", "void_reason", "voided_at"])
     return sale

@@ -9,6 +9,7 @@ Fixtures are tiny synthetic records -- unit logic only.
 """
 import io
 from decimal import Decimal
+from unittest import mock
 
 from django.core.management import CommandError, call_command
 from django.test import TestCase
@@ -61,6 +62,20 @@ class RecordRefundCommandTests(TestCase):
         self.assertIn("10.00", text)
         self.assertIn("cash", text)
         self.assertIn("refund total would be 40.00", text)
+
+    def test_dry_run_never_calls_writer(self):
+        # Regression (NEDB): dry-run must not call the writer at
+        # all -- a rolled-back write still persists on NEDB.
+        with mock.patch(
+                "checkout.management.commands.record_refund.record_refund",
+                side_effect=AssertionError("writer called")) as writer:
+            out = io.StringIO()
+            call_command(
+                "record_refund", sale_id=self.sale.pk, amount="10.00",
+                dry_run=True, stdout=out)
+        writer.assert_not_called()
+        self.assertEqual(Refund.objects.count(), 0)
+        self.assertIn("refund total would be 10.00", out.getvalue())
 
     def test_dry_run_refusal_on_open_sale_writes_nothing(self):
         open_sale = Sale.objects.create(

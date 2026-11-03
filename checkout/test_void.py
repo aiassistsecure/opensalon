@@ -7,7 +7,7 @@ from django.utils import timezone
 from checkout.models import Payment, Sale, SaleItem
 from checkout.summary import daily_sales_summary
 from checkout.tender_totals import tender_totals
-from checkout.void import void_sale
+from checkout.void import validate_void_sale, void_sale
 from saloncore.models import Salon
 
 
@@ -107,6 +107,20 @@ class VoidSaleTests(TestCase):
             sale.refresh_from_db()
             self.assertEqual(sale.status, Sale.Status.COMPLETED)
             self.assertIsNone(sale.voided_at)
+
+    def test_validate_void_sale_writes_nothing(self):
+        sale = self._completed_sale()
+        self.assertEqual(
+            validate_void_sale(sale, "  rung up twice  "),
+            "rung up twice")
+        sale.refresh_from_db()
+        self.assertEqual(sale.status, Sale.Status.COMPLETED)
+        self.assertEqual(sale.void_reason, "")
+        self.assertIsNone(sale.voided_at)
+        with self.assertRaises(ValueError):
+            validate_void_sale(sale, "   ")
+        sale.refresh_from_db()
+        self.assertEqual(sale.status, Sale.Status.COMPLETED)
 
     def test_void_requires_a_sale(self):
         with self.assertRaises(ValueError):
