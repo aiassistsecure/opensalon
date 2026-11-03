@@ -20,6 +20,13 @@ Public surface:
 * :func:`client_send_history` -- one client's sends, most
   recent first.
 
+Counts are all-salons by default. Passing ``salon=`` (a
+``saloncore.Salon`` instance or its id; ``salon_id=`` is an
+alias) scopes every count to that one salon, matched through
+the send's denormalised client (``client__salon``) -- no
+schema change, and omitting it keeps the all-salons behaviour
+exactly.
+
 "Local day" means the day of ``sent_at`` in the currently active
 timezone (``django.utils.timezone.localtime``), which is the
 deployment timezone unless a caller activates another. Grouping
@@ -132,16 +139,25 @@ def _window(first, last):
     return start_dt, end_dt
 
 
-def _sends_between(first, last):
+def _resolve_salon(salon, salon_id):
+    if salon is not None:
+        return salon
+    return salon_id
+
+
+def _sends_between(first, last, salon=None):
     start_dt, end_dt = _window(first, last)
-    return ReminderSend.objects.filter(
+    queryset = ReminderSend.objects.filter(
         sent_at__gte=start_dt, sent_at__lt=end_dt
     )
+    if salon is not None:
+        queryset = queryset.filter(client__salon=salon)
+    return queryset
 
 
 def reminder_history_summary(
     start=None, end=None, *, date_from=None, date_to=None,
-    start_date=None, end_date=None,
+    start_date=None, end_date=None, salon=None, salon_id=None,
 ):
     """Return a :class:`ReminderHistorySummary` for a date range.
 
@@ -150,10 +166,15 @@ def reminder_history_summary(
     accepted as aliases). The range is inclusive and covers whole
     local days. An empty range yields a zeroed summary -- total
     ``0``, every channel ``0``, every day ``0`` -- never ``None``.
+
+    ``salon=`` (instance or id; ``salon_id=`` alias) optionally
+    scopes the counts to one salon via ``client__salon``;
+    omitted, the summary covers all salons, as before.
     """
     first, last = _resolve_range(
         start, end, date_from, date_to, start_date, end_date
     )
+    salon = _resolve_salon(salon, salon_id)
     by_channel = {channel: 0 for channel in CHANNELS}
     by_day = {}
     by_day_by_channel = {}
@@ -164,7 +185,8 @@ def reminder_history_summary(
         day += timedelta(days=1)
 
     total = 0
-    rows = _sends_between(first, last).values_list("channel", "sent_at")
+    rows = _sends_between(
+        first, last, salon=salon).values_list("channel", "sent_at")
     for channel, sent_at in rows.iterator():
         local_day = timezone.localtime(sent_at).date()
         if local_day not in by_day:

@@ -21,7 +21,11 @@ count and every row comes exactly from the history service:
   ``by_day_by_channel`` (every day and every known channel
   present, zero-filled by the service, so an empty range
   reports explicit ``0`` rows). A reversed range raises
-  ``ValueError``, exactly as the service does.
+  ``ValueError``, exactly as the service does. An optional
+  ``salon=`` / ``salon_id=`` argument passes through to the
+  service and scopes the counts to one salon (via the send's
+  ``client__salon``); omitted, the export covers all salons,
+  exactly as before.
 * :func:`export_client_history` /
   :func:`export_client_history_csv` -- one row per send in
   :func:`messaging.history.client_send_history` for one
@@ -83,8 +87,9 @@ def export_history_summary(start=None, end=None, **kwargs):
 
     Rows are rendered verbatim from
     :func:`messaging.history.reminder_history_summary` with
-    the same range arguments (``date_from=`` / ``date_to=``
-    and the other aliases pass through): days in range order,
+    the same range arguments (``date_from=`` / ``date_to=``,
+    ``salon=`` / ``salon_id=``, and the other aliases pass
+    through): days in range order,
     channels in the service's order. A reversed range raises
     ``ValueError`` as the service does. Read-only.
     """

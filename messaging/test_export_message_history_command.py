@@ -75,6 +75,64 @@ class ExportMessageHistoryCommandTests(TestCase):
             written, export_history_summary_csv(DAY, NEXT))
         self.assertEqual(out.getvalue(), "")
 
+    def _add_other_salon_send(self):
+        other = Salon.objects.create(name="Other Salon")
+        staff = StaffMember.objects.create(
+            salon=other, display_name="Other Stylist")
+        category = ServiceCategory.objects.create(
+            salon=other, name="Other Haircuts")
+        service = Service.objects.create(
+            category=category, name="Other Haircut", service_minutes=45)
+        client = Client.objects.create(
+            salon=other, first_name="Other", last_name="Example",
+            email="other@example.com", phone="555-0200",
+            sms_opt_in=True, email_opt_in=True)
+        start = timezone.now() + timedelta(days=1)
+        appt = Appointment.objects.create(
+            client=client, staff_member=staff, service=service,
+            start=start, end=start + timedelta(minutes=45),
+            status=Appointment.Status.BOOKED)
+        ReminderSend.objects.create(
+            appointment=appt, client=client, channel="sms",
+            status=ReminderSend.Status.SENT,
+            sent_at=datetime.datetime.combine(
+                DAY, time(10), tzinfo=UTC))
+        return other
+
+    def test_salon_id_scopes_export_and_omitted_is_all_salons(self):
+        other = self._add_other_salon_send()
+        salon = Salon.objects.get(name="Example Salon")
+        out = io.StringIO()
+        call_command(
+            "export_message_history",
+            start_date=DAY, end_date=DAY, salon_id=salon.pk, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_history_summary_csv(DAY, DAY, salon=salon))
+        self.assertNotEqual(
+            out.getvalue(), export_history_summary_csv(DAY, DAY))
+        scoped_other = io.StringIO()
+        call_command(
+            "export_message_history",
+            "--start-date", DAY.isoformat(), "--end-date", DAY.isoformat(),
+            "--salon-id", str(other.pk), stdout=scoped_other)
+        self.assertEqual(
+            scoped_other.getvalue(),
+            export_history_summary_csv(DAY, DAY, salon=other))
+        unscoped = io.StringIO()
+        call_command(
+            "export_message_history",
+            start_date=DAY, end_date=DAY, stdout=unscoped)
+        self.assertEqual(
+            unscoped.getvalue(), export_history_summary_csv(DAY, DAY))
+
+    def test_unknown_salon_id_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_message_history",
+                start_date=DAY, end_date=DAY, salon_id=999999,
+                stdout=io.StringIO())
+
     def test_invalid_date_raises_command_error(self):
         with self.assertRaises(CommandError):
             call_command(
