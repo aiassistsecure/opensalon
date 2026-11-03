@@ -526,4 +526,118 @@ class DryRunImportAppointmentsTests(TestCase):
         self.assertTrue(
             Appointment.objects.filter(external_id="appt-dr-1").exists())
 
+    # Preview twin: the dry path previews the import itself, reads only.
+
+    def _counts_snapshot(self):
+        return {
+            "salons": Salon.objects.count(),
+            "clients": Client.objects.count(),
+            "staff": StaffMember.objects.count(),
+            "services": Service.objects.count(),
+            "appointments": Appointment.objects.count(),
+            "salon_timezone": Salon.objects.get(pk=self.salon.pk).timezone,
+        }
+
+    def test_dry_run_preview_counts_would_create_and_writes_nothing(self):
+        before = self._counts_snapshot()
+        report = self.run_dry_run([self._row("appt-pv-1"),
+                                   self._row("appt-pv-2")])
+        preview = report["preview"]
+        self.assertTrue(preview["salon_found"])
+        self.assertEqual(preview["salon"], "My Salon")
+        self.assertEqual(preview["would_create"], 2)
+        self.assertEqual(preview["would_update"], 0)
+        self.assertEqual(preview["would_unchanged"], 0)
+        self.assertEqual(preview["would_refuse"], 0)
+        self.assertEqual(preview["refusals"], [])
+        # Explicit no-writes assertion across every touched model.
+        self.assertEqual(self._counts_snapshot(), before)
+        self.assertEqual(Appointment.objects.count(), 0)
+
+    def test_dry_run_preview_would_update_and_unchanged_write_nothing(self):
+        payload = [self._row("appt-pv-1")]
+        out = io.StringIO()
+        call_command("import_appointments", _write(payload), stdout=out)
+        self.assertEqual(Appointment.objects.count(), 1)
+        before = self._counts_snapshot()
+        unchanged = self.run_dry_run(payload)["preview"]
+        self.assertEqual(unchanged["would_unchanged"], 1)
+        self.assertEqual(unchanged["would_create"], 0)
+        changed = self.run_dry_run(
+            [self._row("appt-pv-1", state="PAID")])["preview"]
+        self.assertEqual(changed["would_update"], 1)
+        self.assertEqual(changed["would_create"], 0)
+        self.assertEqual(self._counts_snapshot(), before)
+        self.assertEqual(
+            Appointment.objects.get(external_id="appt-pv-1").status,
+            Appointment.Status.BOOKED)
+
+    def test_dry_run_preview_refusals_named_by_row_with_reasons(self):
+        payload = [
+            self._row("appt-pv-ok"),
+            self._row("appt-pv-staff", staffId="stf-x"),
+            self._row("appt-pv-svc", serviceId="svc-x", serviceName=""),
+            self._row("appt-pv-cli", clientId="cli-x"),
+            self._row("appt-pv-state", state="SOMETHING_NEW"),
+            self._row("appt-pv-del", deleted=True),
+        ]
+        before = self._counts_snapshot()
+        preview = self.run_dry_run(payload)["preview"]
+        self.assertEqual(preview["would_create"], 1)
+        self.assertEqual(preview["would_refuse"], 5)
+        self.assertEqual(preview["unresolved_staff"],
+                         [{"row": 1, "staff_id": "stf-x"}])
+        self.assertEqual(preview["unresolved_client"],
+                         [{"row": 3, "client_id": "cli-x"}])
+        self.assertEqual(
+            preview["unresolved_service"],
+            [{"row": 2, "service_id": "svc-x",
+              "would_import_with_snapshot": False}])
+        reasons = {(entry["row"], entry["reason"])
+                   for entry in preview["refusals"]}
+        self.assertEqual(reasons, {
+            (1, "unresolved_staff"), (2, "unresolved_service"),
+            (3, "unresolved_client"), (4, "unknown_state"),
+            (5, "skipped")})
+        self.assertEqual(preview["refusals_by_reason"], {
+            "unresolved_staff": 1, "unresolved_service": 1,
+            "unresolved_client": 1, "unknown_state": 1, "skipped": 1})
+        self.assertEqual(self._counts_snapshot(), before)
+        self.assertEqual(Appointment.objects.count(), 0)
+
+    def test_dry_run_preview_unresolved_service_with_snapshot_imports(self):
+        payload = [self._row("appt-pv-snap", serviceId="svc-x",
+                             serviceName="Legacy Treatment")]
+        preview = self.run_dry_run(payload)["preview"]
+        self.assertEqual(preview["would_create"], 1)
+        self.assertEqual(preview["would_refuse"], 0)
+        self.assertEqual(preview["would_import_with_service_snapshot"], 1)
+        self.assertEqual(
+            preview["unresolved_service"],
+            [{"row": 0, "service_id": "svc-x",
+              "would_import_with_snapshot": True}])
+        self.assertEqual(Appointment.objects.count(), 0)
+
+    def test_dry_run_preview_duplicate_in_file_create_then_update(self):
+        payload = [self._row("appt-pv-dup"),
+                   self._row("appt-pv-dup", state="PAID")]
+        preview = self.run_dry_run(payload)["preview"]
+        self.assertEqual(preview["would_create"], 1)
+        self.assertEqual(preview["would_update"], 1)
+        self.assertEqual(Appointment.objects.count(), 0)
+
+    def test_dry_run_preview_missing_salon_resolves_nothing_no_write(self):
+        before = Salon.objects.count()
+        report = self.run_dry_run([self._row()], salon="No Such Salon")
+        preview = report["preview"]
+        self.assertFalse(preview["salon_found"])
+        self.assertIsNone(preview["salon"])
+        self.assertEqual(preview["would_create"], 0)
+        self.assertEqual(preview["would_refuse"], 1)
+        self.assertEqual(preview["refusals"][0]["reason"],
+                         "unresolved_client")
+        self.assertEqual(Salon.objects.count(), before)
+        self.assertFalse(Salon.objects.filter(name="No Such Salon").exists())
+        self.assertEqual(Appointment.objects.count(), 0)
+
 
