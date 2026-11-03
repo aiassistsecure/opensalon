@@ -311,6 +311,26 @@ class ExportAppointmentsFormatTests(TestCase):
             json.loads(parsed[0]["service_name"]),
             {"name": "Haircut", "tags": ["a", "b"]})
 
+    def test_csv_new_fields_round_trip(self):
+        Appointment.objects.filter(pk=self.booked.pk).update(
+            external_id="ext-csv-1", origin="online",
+            price_override=Decimal("70.50"),
+            payload={"price": "999", "tags": ["a"]})
+        out = io.StringIO()
+        call_command(
+            "export_appointments", salon_id=self.salon.pk,
+            date_from=DAY, date_to=DAY, format="csv", stdout=out)
+        parsed = {int(r["id"]): r
+                  for r in csv.DictReader(io.StringIO(out.getvalue()))}
+        row = parsed[self.booked.pk]
+        self.assertEqual(row["external_id"], "ext-csv-1")
+        self.assertEqual(row["origin"], "online")
+        self.assertEqual(row["price_override"], "70.50")
+        self.assertEqual(json.loads(row["payload"]),
+                         {"price": "999", "tags": ["a"]})
+        self.assertTrue(row["created_at"])
+        self.assertTrue(row["updated_at"])
+
     def test_invalid_format_raises_command_error(self):
         with self.assertRaises(CommandError):
             call_command(
