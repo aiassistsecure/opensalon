@@ -93,7 +93,7 @@ class ReminderDelegationTests(TestCase):
                 return_value=summary) as service:
             text = _run("send_email_reminders")
         service.assert_called_once_with(
-            within=timedelta(hours=24), dry_run=False)
+            now=None, within=timedelta(hours=24), dry_run=False)
         self.assertIn("2 sent", text)
         self.assertNotIn("Dry run", text)
 
@@ -105,7 +105,7 @@ class ReminderDelegationTests(TestCase):
             text = _run(
                 "send_email_reminders", "--hours", "48", "--dry-run")
         service.assert_called_once_with(
-            within=timedelta(hours=48), dry_run=True)
+            now=None, within=timedelta(hours=48), dry_run=True)
         self.assertIn("Dry run", text)
         self.assertIn("2 would send", text)
 
@@ -116,14 +116,14 @@ class ReminderDelegationTests(TestCase):
                 return_value=summary) as service:
             text = _run("send_sms_reminders")
         service.assert_called_once_with(
-            within=timedelta(hours=24), dry_run=False)
+            now=None, within=timedelta(hours=24), dry_run=False)
         self.assertIn("1 sent", text)
         with mock.patch(
                 f"{SMS_CMD}.send_due_sms_reminders",
                 return_value=summary) as service:
             text = _run("send_sms_reminders", "--dry-run")
         service.assert_called_once_with(
-            within=timedelta(hours=24), dry_run=True)
+            now=None, within=timedelta(hours=24), dry_run=True)
         self.assertIn("1 would send", text)
 
     def test_combined_command_delegates_dry_run_and_hours(self):
@@ -135,7 +135,7 @@ class ReminderDelegationTests(TestCase):
                 return_value=summary) as service:
             text = _run("send_due_reminders", "--hours", "6", "--dry-run")
         service.assert_called_once_with(
-            within=timedelta(hours=6), dry_run=True)
+            now=None, within=timedelta(hours=6), dry_run=True)
         self.assertIn("Dry run", text)
         self.assertIn("2 would send", text)
 
@@ -153,6 +153,8 @@ class ReminderDelegationTests(TestCase):
                 params = inspect.signature(service).parameters
                 self.assertEqual(options.hours, 24)
                 self.assertIs(options.dry_run, False)
+                self.assertIs(options.now, None)
+                self.assertIs(params["now"].default, None)
                 self.assertEqual(
                     params["within"].default, timedelta(hours=options.hours))
                 self.assertIs(params["dry_run"].default, False)
