@@ -19,7 +19,8 @@ from django.core.management import CommandError, call_command, get_commands
 from django.test import TestCase, override_settings
 
 from clients.models import Client
-from messaging.campaigns import audience_for, create_campaign
+from messaging.campaigns import (
+    audience_for, create_campaign, validate_create_campaign)
 from messaging.models import Campaign, CampaignSend
 from saloncore.models import Salon
 
@@ -115,6 +116,58 @@ class CreateCampaignCommandTests(TestCase):
         self.assertEqual(Campaign.objects.count(), 0)
         self.assertIn("Dry run", text)
         self.assertIn("audience 1", text)
+
+    def test_dry_run_leaves_existing_campaign_count_unchanged(self):
+        # NEDB regression: dry-run must write nothing at all, so a
+        # pre-existing campaign's count is unchanged (not just 0).
+        existing = create_campaign(
+            self.salon, "Existing", "sms", body="Already here")
+        self._client(sms_opt_in=True)
+        text = self._run(
+            salon_id=self.salon.pk, name="Preview", channel="sms",
+            body="Hello", dry_run=True)
+        self.assertIn("Dry run", text)
+        self.assertIn("audience 1", text)
+        self.assertEqual(Campaign.objects.count(), 1)
+        self.assertEqual(
+            list(Campaign.objects.values_list("pk", flat=True)),
+            [existing.pk])
+        self.assertEqual(CampaignSend.objects.count(), 0)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_dry_run_validation_matches_real_run_and_writes_nothing(self):
+        create_campaign(self.salon, "Existing", "sms", body="Here")
+        cases = [
+            dict(name="Bad", channel="pigeon", body="Hello"),
+            dict(name="Empty", channel="sms", body=""),
+            dict(name="Empty", channel="sms", body="   "),
+            dict(name="  ", channel="sms", body="Hello"),
+            dict(name="News", channel="email", body="Body"),
+            dict(name="x" * 201, channel="sms", body="Hello"),
+        ]
+        for kwargs in cases:
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises(CommandError):
+                    self._run(
+                        salon_id=self.salon.pk, dry_run=True, **kwargs)
+                self.assertEqual(Campaign.objects.count(), 1)
+        with self.assertRaises(CommandError):
+            self._run(
+                salon_id=999999, name="Ghost", channel="sms",
+                body="Hello", dry_run=True)
+        self.assertEqual(Campaign.objects.count(), 1)
+
+    def test_validate_helper_writes_nothing_and_returns_unsaved(self):
+        campaign = validate_create_campaign(
+            self.salon, "  Preview  ", "sms", body="Hello")
+        self.assertIsNone(campaign.pk)
+        self.assertEqual(campaign.name, "Preview")
+        self.assertEqual(campaign.status, Campaign.Status.DRAFT)
+        self.assertEqual(Campaign.objects.count(), 0)
+        with self.assertRaises(ValidationError):
+            validate_create_campaign(
+                self.salon, "Bad", "pigeon", body="Hello")
+        self.assertEqual(Campaign.objects.count(), 0)
 
     def test_invalid_channel_is_error_and_creates_nothing(self):
         for extra in ({}, {"dry_run": True}):
