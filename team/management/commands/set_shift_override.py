@@ -18,12 +18,13 @@ written is the row ``team.availability`` (override-first)
 reads. ``--clear`` is the undo: the override is deleted and
 the perpetual pattern rules the date again.
 
-With ``--dry-run`` nothing is written: the service runs
-inside a transaction that is rolled back (the established
-pattern from ``bookings.add_appointment_note``), so the
-preview applies the service's own validation and prints the
-override that WOULD apply (or, with ``--clear``, the override
-that would be removed).
+With ``--dry-run`` nothing is written: the command calls
+the service's validate-only helper (for the set path) or
+reads whether an override exists (for ``--clear``), prints
+the override that WOULD apply (or be removed), and returns
+before any writer runs -- no write happens at all, so the
+preview is safe on every backend (NEDB does not roll back
+transaction writes).
 
 Invalid input -- an unknown staff member, an unparseable
 date/time, a conflicting or incomplete shape, or a service
@@ -35,11 +36,11 @@ import datetime
 
 from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
 
-from team.models import StaffMember
+from team.models import ShiftOverride, StaffMember
 from team.shift_overrides import (
     clear_shift_override, set_shift_override,
+    validate_set_shift_override,
 )
 
 
@@ -117,9 +118,10 @@ class Command(BaseCommand):
                  "perpetual pattern rules it again.")
         parser.add_argument(
             "--dry-run", action="store_true",
-            help="Preview only: run the service inside a "
-                 "transaction that is rolled back, print the "
-                 "override that would apply, write nothing.")
+            help="Preview only: validate without writing, "
+                 "print the override that would apply (or, "
+                 "with --clear, that would be removed), and "
+                 "write nothing.")
 
     def handle(self, *args, **options):
         try:
@@ -146,9 +148,8 @@ class Command(BaseCommand):
         dry_run = bool(options.get("dry_run"))
         if clear:
             if dry_run:
-                with transaction.atomic():
-                    removed = clear_shift_override(member, day)
-                    transaction.set_rollback(True)
+                removed = ShiftOverride.objects.filter(
+                    staff_member=member, date=day).exists()
                 self.stdout.write(
                     f"Dry run: would clear ShiftOverride "
                     f"staff_member_id={member.pk} date={day} "
@@ -164,17 +165,14 @@ class Command(BaseCommand):
             return
         if dry_run:
             try:
-                with transaction.atomic():
-                    override = set_shift_override(
+                v_day, v_off, v_start, v_end = (
+                    validate_set_shift_override(
                         member, day, start_time=start,
-                        end_time=end, is_off=is_off)
-                    preview = _describe(
-                        member, override.date, override.is_off,
-                        override.start_time, override.end_time)
-                    transaction.set_rollback(True)
+                        end_time=end, is_off=is_off))
             except ValidationError as exc:
                 raise CommandError(
                     "; ".join(exc.messages)) from exc
+            preview = _describe(member, v_day, v_off, v_start, v_end)
             self.stdout.write(
                 f"Dry run: would set {preview} "
                 f"-- no override written.")

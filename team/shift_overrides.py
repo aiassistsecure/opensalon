@@ -28,6 +28,7 @@ __all__ = [
     "clear_shift_override",
     "set_shift_override",
     "undo_shift_override",
+    "validate_set_shift_override",
 ]
 
 
@@ -37,6 +38,37 @@ def _as_date(day):
     if isinstance(day, datetime.date):
         return day
     raise ValidationError({"date": "A date is required."})
+
+
+def validate_set_shift_override(staff_member, day, *,
+                                start_time=None, end_time=None,
+                                is_off=False):
+    """Validate a ``set_shift_override`` call, writing nothing.
+
+    Performs every check :func:`set_shift_override` performs
+    and returns the normalized ``(day, is_off, start_time,
+    end_time)`` the writer would store (times are ``None``
+    for a full day off). Raises the same ``ValidationError``
+    the writer would raise. Writes nothing, so it is safe
+    for ``--dry-run`` previews on every backend (including
+    NEDB, where a rolled-back transaction does not undo
+    writes).
+    """
+    day = _as_date(day)
+    if is_off:
+        if start_time is not None or end_time is not None:
+            raise ValidationError(
+                "A full day off takes no start/end times.")
+        return day, True, None, None
+    if start_time is None or end_time is None:
+        raise ValidationError(
+            "A placed shift requires both a start and an "
+            "end time (or is_off=True for a full day off).")
+    if end_time <= start_time:
+        raise ValidationError(
+            "A placed shift's end time must be after its "
+            "start time.")
+    return day, False, start_time, end_time
 
 
 def set_shift_override(staff_member, day, *, start_time=None,
@@ -52,24 +84,11 @@ def set_shift_override(staff_member, day, *, start_time=None,
     ``ValidationError`` -- writing nothing -- for a mixed,
     incomplete, or backwards shape.
     """
-    day = _as_date(day)
-    if is_off:
-        if start_time is not None or end_time is not None:
-            raise ValidationError(
-                "A full day off takes no start/end times.")
-        defaults = {"is_off": True, "start_time": None,
-                    "end_time": None}
-    else:
-        if start_time is None or end_time is None:
-            raise ValidationError(
-                "A placed shift requires both a start and an "
-                "end time (or is_off=True for a full day off).")
-        if end_time <= start_time:
-            raise ValidationError(
-                "A placed shift's end time must be after its "
-                "start time.")
-        defaults = {"is_off": False, "start_time": start_time,
-                    "end_time": end_time}
+    day, is_off, start_time, end_time = validate_set_shift_override(
+        staff_member, day, start_time=start_time,
+        end_time=end_time, is_off=is_off)
+    defaults = {"is_off": is_off, "start_time": start_time,
+                "end_time": end_time}
     override, _created = ShiftOverride.objects.update_or_create(
         staff_member=staff_member, date=day, defaults=defaults,
     )
