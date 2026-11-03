@@ -3,7 +3,7 @@
 Usage:
     python manage.py export_noshow --salon-id ID
         --date-from YYYY-MM-DD [--date-to YYYY-MM-DD]
-        [--output PATH]
+        [--now ISO-8601-DATETIME] [--output PATH]
 
 Thin wrapper around the existing
 :func:`bookings.noshow_export.export_noshow_csv` service: the
@@ -43,6 +43,36 @@ def _coerce_date(value, label):
         ) from exc
 
 
+def _datetime_from_string(value):
+    text = str(value).strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    return datetime.datetime.fromisoformat(text)
+
+
+def _parse_datetime(value):
+    try:
+        return _datetime_from_string(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"Invalid datetime {value!r}; expected ISO-8601."
+        ) from exc
+
+
+def _coerce_now(value):
+    if value is None or isinstance(value, datetime.datetime):
+        return value
+    if isinstance(value, datetime.date):
+        return datetime.datetime.combine(
+            value, datetime.time.min, tzinfo=datetime.timezone.utc)
+    try:
+        return _datetime_from_string(value)
+    except ValueError as exc:
+        raise CommandError(
+            f"Invalid now {value!r}; expected ISO-8601 datetime."
+        ) from exc
+
+
 class Command(BaseCommand):
     help = "Export one salon's no-show appointments as CSV."
 
@@ -63,6 +93,11 @@ class Command(BaseCommand):
                  "(default: the service's own default).",
         )
         parser.add_argument(
+            "--now", dest="now", type=_parse_datetime, default=None,
+            help="Reference instant for \"past\", ISO-8601 "
+                 "(default: the service's own default).",
+        )
+        parser.add_argument(
             "--output", default=None,
             help="Path to write the CSV to (default: stdout).",
         )
@@ -78,8 +113,9 @@ class Command(BaseCommand):
         date_to = _coerce_date(options.get("date_to"), "date_to")
         if date_from is None:
             raise CommandError("A --date-from is required.")
+        now = _coerce_now(options.get("now"))
         try:
-            text = export_noshow_csv(salon, date_from, date_to)
+            text = export_noshow_csv(salon, date_from, date_to, now=now)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options.get("output"):
