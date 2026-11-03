@@ -25,7 +25,9 @@ from types import SimpleNamespace
 import json
 from decimal import Decimal, InvalidOperation
 
+from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator
+from django.db import IntegrityError
 from django.db.models import Count, Max, Min, Q
 from django.http import JsonResponse
 from django.shortcuts import redirect, render
@@ -2559,6 +2561,66 @@ def team(request):
                 pk=request.POST.get("pattern"), staff_member__salon=salon
             ).delete()
             message = "Pattern removed."
+        elif action == "add_member":
+            name = (request.POST.get("display_name") or "").strip()
+            email = (request.POST.get("email") or "").strip()
+            pin = (request.POST.get("pin") or "").strip()
+            level = StaffLevel.objects.filter(
+                pk=request.POST.get("level"), salon=salon, active=True
+            ).first()
+            email_holder = (
+                StaffMember.objects.filter(email__iexact=email, active=True).first()
+                if email
+                else None
+            )
+            pin_holder = (
+                StaffMember.objects.filter(salon=salon, pin=pin).first()
+                if pin
+                else None
+            )
+            if not name:
+                message = "A new stylist needs a name."
+            elif email and (
+                "@" not in email or "." not in email.rsplit("@", 1)[-1]
+            ):
+                message = "That doesn't look like an email address."
+            elif email_holder is not None:
+                message = (
+                    f"That email is already {email_holder.display_name}'s — "
+                    "an email names one account."
+                )
+            elif pin and (not pin.isdigit() or not 4 <= len(pin) <= 8):
+                message = (
+                    "A PIN is 4 to 8 digits — birthdays work well (day and year)."
+                )
+            elif pin_holder is not None:
+                message = (
+                    f"That PIN is already {pin_holder.display_name}'s — every "
+                    "PIN has to be unique, or the clock can't tell you apart."
+                )
+            else:
+                try:
+                    member = StaffMember.objects.create(
+                        salon=salon,
+                        display_name=name,
+                        staff_level=level,
+                        email=email,
+                        pin=pin,
+                    )
+                except (IntegrityError, ValidationError):
+                    message = (
+                        "That couldn't be saved — check the name, email, "
+                        "and PIN, then try again."
+                    )
+                else:
+                    message = (
+                        f"{member.display_name} is on the team. "
+                        + (
+                            "They sign in with that email and PIN."
+                            if email and pin
+                            else "Add their email and PIN below and they can sign in."
+                        )
+                    )
         elif action == "set_pin":
             member = StaffMember.objects.filter(
                 pk=request.POST.get("member"), salon=salon, active=True
@@ -2702,7 +2764,9 @@ def team(request):
         )
     member_caps = []
     service_groups = []
+    levels = []
     if salon is not None:
+        levels = list(StaffLevel.objects.filter(salon=salon, active=True))
         from team.capabilities import performer_map
 
         cap_map = performer_map(salon)
@@ -2740,6 +2804,7 @@ def team(request):
             "members": members,
             "member_caps": member_caps,
             "service_groups": service_groups,
+            "levels": levels,
             "weekday_choices": RosterPattern.Weekday.choices,
             "week_label": week_label,
             "message": message,
