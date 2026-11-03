@@ -7,7 +7,9 @@ from django.test import TestCase
 from clients.models import Client
 from clients.optin_export import (
     OPTIN_FIELDNAMES,
+    OPTIN_SUMMARY_FIELDNAMES,
     export_optin_summary,
+    export_optin_summary_csv,
     export_optins,
     export_optins_csv,
     summarize_optins,
@@ -130,10 +132,37 @@ class OptInExportTests(TestCase):
         self.assertFalse(records[0]["active"])
         self.assertTrue(records[0]["email_opt_in"])
 
+    def test_summary_csv_fieldnames_and_header(self):
+        self.assertEqual(
+            OPTIN_SUMMARY_FIELDNAMES,
+            ["total", "sms_opt_in", "email_opt_in", "both_opt_in",
+             "sms_only", "email_only", "neither_opt_in"],
+        )
+        rows = list(csv.reader(
+            io.StringIO(export_optin_summary_csv(self.salon))))
+        self.assertEqual(rows[0], OPTIN_SUMMARY_FIELDNAMES)
+
+    def test_summary_csv_matches_summary_dict(self):
+        self.seed_book()
+        parsed = list(csv.DictReader(
+            io.StringIO(export_optin_summary_csv(self.salon))))
+        summary = export_optin_summary(self.salon)
+        self.assertEqual(len(parsed), 1)
+        for field in OPTIN_SUMMARY_FIELDNAMES:
+            self.assertEqual(int(parsed[0][field]), summary[field])
+
+    def test_summary_csv_empty_book_is_header_plus_zero_row(self):
+        self.assertEqual(
+            export_optin_summary_csv(self.salon),
+            ",".join(OPTIN_SUMMARY_FIELDNAMES) + "\n"
+            + ",".join("0" for _ in OPTIN_SUMMARY_FIELDNAMES) + "\n",
+        )
+
     def test_read_only(self):
         self.seed_book()
         before = Client.objects.count()
         export_optins(self.salon)
         export_optins_csv(self.salon)
         export_optin_summary(self.salon)
+        export_optin_summary_csv(self.salon)
         self.assertEqual(Client.objects.count(), before)

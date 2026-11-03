@@ -22,6 +22,8 @@ a rows list (the same dicts the CSV is built from), and
 :func:`export_optin_summary` applies it to
 :func:`export_optins`'s output, so the summary can never disagree
 with the exported rows -- it is never computed by separate queries.
+:func:`export_optin_summary_csv` renders that same summary dict
+as a CSV string (header plus one data row).
 
 Ordering is deterministic: ``last_name``, then ``first_name``,
 then ``id``, matching ``Client``'s model ordering (tightened with
@@ -29,17 +31,21 @@ the ``id`` tie-break used by ``clients.export_all``).
 """
 import csv
 import io
+import json
 
 from clients.models import Client
 
 __all__ = [
     "OPTIN_FIELDNAMES",
+    "OPTIN_SUMMARY_FIELDNAMES",
     "export_optins",
     "export_optins_csv",
     "summarize_optins",
     "export_optin_summary",
+    "export_optin_summary_csv",
     "optins_csv",
     "optin_summary",
+    "optin_summary_csv",
 ]
 
 #: Column / key order shared by the dict export and the CSV export.
@@ -132,6 +138,47 @@ def export_optin_summary(salon):
     return summarize_optins(export_optins(salon))
 
 
+#: Column / key order for the summary CSV export: exactly the
+#: :func:`export_optin_summary` dict key order.
+OPTIN_SUMMARY_FIELDNAMES = [
+    "total",
+    "sms_opt_in",
+    "email_opt_in",
+    "both_opt_in",
+    "sms_only",
+    "email_only",
+    "neither_opt_in",
+]
+
+
+def export_optin_summary_csv(salon):
+    """Return the opt-in counts summary for ``salon`` as a CSV string.
+
+    The header row is :data:`OPTIN_SUMMARY_FIELDNAMES` and the
+    single data row comes from :func:`export_optin_summary` with
+    the same argument, so the CSV and dict exports always agree
+    -- one source of truth. Nested values, if a future summary
+    field ever carries one, are JSON-encoded into their cell so
+    no field is dropped or reshaped. An empty client book exports
+    as the header row plus the zero-counts row the summary
+    returns. Lines end with ``"\\n"``.
+    """
+    summary = export_optin_summary(salon)
+    buffer = io.StringIO()
+    writer = csv.DictWriter(
+        buffer, fieldnames=OPTIN_SUMMARY_FIELDNAMES, lineterminator="\n"
+    )
+    writer.writeheader()
+    row = {}
+    for field in OPTIN_SUMMARY_FIELDNAMES:
+        value = summary.get(field)
+        if isinstance(value, (list, dict)):
+            value = json.dumps(value)
+        row[field] = value
+    writer.writerow(row)
+    return buffer.getvalue()
+
+
 def export_optins_csv(salon):
     """Return ``salon``'s clients' opt-in state as a CSV string.
 
@@ -153,3 +200,4 @@ def export_optins_csv(salon):
 #: Aliases, mirroring the naming convenience in sibling services.
 optins_csv = export_optins_csv
 optin_summary = export_optin_summary
+optin_summary_csv = export_optin_summary_csv
