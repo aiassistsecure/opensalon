@@ -64,6 +64,49 @@ class ExportRosterCommandTests(TestCase):
         self.assertIn("Other Stylist", other_out)
         self.assertNotIn("Stylist One", other_out)
 
+    def _inactive_pattern(self):
+        return RosterPattern.objects.create(
+            staff_member=self.staff, weekday=1,
+            start_time=datetime.time(10, 0),
+            end_time=datetime.time(18, 0), active=False)
+
+    def test_default_excludes_inactive_patterns(self):
+        self._inactive_pattern()
+        out = self.run_export(salon_id=self.salon.pk)
+        self.assertEqual(out, export_roster_patterns_csv(self.salon))
+        self.assertNotIn("False", out)
+
+    def test_include_inactive_kwarg_matches_service(self):
+        self._inactive_pattern()
+        out = self.run_export(
+            salon_id=self.salon.pk, include_inactive=True)
+        self.assertEqual(
+            out, export_roster_patterns_csv(
+                self.salon, include_inactive=True))
+        self.assertIn("False", out)
+
+    def test_include_inactive_flag_matches_service(self):
+        self._inactive_pattern()
+        out = io.StringIO()
+        call_command(
+            "export_roster", f"--salon-id={self.salon.pk}",
+            "--include-inactive", stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_roster_patterns_csv(
+                self.salon, include_inactive=True))
+
+    def test_include_inactive_output_file_matches_service(self):
+        self._inactive_pattern()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "roster.csv")
+            self.run_export(
+                salon_id=self.salon.pk, output=path,
+                include_inactive=True)
+            with open(path, encoding="utf-8", newline="") as fh:
+                self.assertEqual(
+                    fh.read(), export_roster_patterns_csv(
+                        self.salon, include_inactive=True))
+
     def test_unknown_salon_id_is_command_error(self):
         with self.assertRaises(CommandError):
             self.run_export(salon_id=self.other_salon.pk + 1000)
