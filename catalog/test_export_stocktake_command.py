@@ -17,7 +17,10 @@ from django.core.management.base import CommandError
 from django.test import TestCase
 
 from catalog.models import Product, StockMovement
-from catalog.stocktake_export import export_stocktake_counts
+from catalog.stocktake_export import (
+    export_stocktake_counts,
+    export_stocktake_counts_csv,
+)
 from saloncore.models import Salon
 
 
@@ -96,6 +99,61 @@ class ExportStocktakeCommandTests(TestCase):
     def test_unknown_salon_raises_command_error(self):
         with self.assertRaises(CommandError):
             call_command("export_stocktake", salon_id=999999,
+                         stdout=io.StringIO())
+
+    def test_default_format_remains_json(self):
+        out = io.StringIO()
+        call_command("export_stocktake", salon_id=self.salon.pk,
+                     counts=self.counts, stdout=out)
+        self.assertEqual(
+            out.getvalue(), self.expected_text(self.salon, self.counts))
+        self.assertEqual(
+            [r["product_name"] for r in json.loads(out.getvalue())],
+            ["Shampoo", "Serum"])
+
+    def test_explicit_json_format_matches_service(self):
+        out = io.StringIO()
+        call_command("export_stocktake", salon_id=self.salon.pk,
+                     counts=self.counts, format="json", stdout=out)
+        self.assertEqual(
+            out.getvalue(), self.expected_text(self.salon, self.counts))
+
+    def test_csv_format_matches_service(self):
+        out = io.StringIO()
+        call_command("export_stocktake", salon_id=self.salon.pk,
+                     counts=self.counts, format="csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_stocktake_counts_csv(self.salon, self.counts))
+
+    def test_csv_flag_matches_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_stocktake", "--salon-id", str(self.salon.pk),
+            "--count", f"{self.shampoo.pk}=6",
+            "--count", f"{self.serum.pk}=5",
+            "--format", "csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_stocktake_counts_csv(self.salon, self.counts))
+
+    def test_csv_output_file_matches_service(self):
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "stocktake.csv")
+            call_command("export_stocktake", salon_id=self.salon.pk,
+                         counts=self.counts, format="csv", output=path,
+                         stdout=out)
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+        self.assertEqual(
+            text, export_stocktake_counts_csv(self.salon, self.counts))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_invalid_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command("export_stocktake", salon_id=self.salon.pk,
+                         counts=self.counts, format="xml",
                          stdout=io.StringIO())
 
     def test_unwritable_output_raises_command_error(self):
