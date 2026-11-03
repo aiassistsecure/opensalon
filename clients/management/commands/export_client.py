@@ -1,15 +1,20 @@
-"""Export one client in full as JSON.
+"""Export one client in full as JSON or CSV.
 
 Usage:
     python manage.py export_client --salon-id ID --client-id ID
-        [--output PATH]
+        [--format json|csv] [--output PATH]
 
-Thin wrapper around ``clients.export.export_client`` -- that
-service is the one source of truth for the single-client export
-shape; this command only resolves the salon, resolves the client
-by id within that salon, delegates verbatim, serializes the dict
-the service returns as JSON, and routes it to the ``--output``
-file when given or to stdout otherwise. It never reimplements
+Thin wrapper around ``clients.export`` -- that service is the
+one source of truth for the single-client export shape; this
+command only resolves the salon, resolves the client by id
+within that salon, delegates verbatim, and routes the result to
+the ``--output`` file when given or to stdout otherwise. For
+``--format json`` (the default) it serializes
+:func:`~clients.export.export_client`'s dict as JSON, exactly as
+before; for ``--format csv`` it writes
+:func:`~clients.export.export_client_csv`'s CSV string as-is --
+that service builds its single row from the same dict, so the
+two formats can never disagree. It never reimplements
 serialization or querying.
 
 The name ``export_client`` is used because no other app defines
@@ -22,13 +27,15 @@ import json
 
 from django.core.management.base import BaseCommand, CommandError
 
-from clients.export import export_client
+from clients.export import export_client, export_client_csv
 from clients.models import Client
 from saloncore.models import Salon
 
+_FORMATS = ("json", "csv")
+
 
 class Command(BaseCommand):
-    help = "Export one client in full as JSON."
+    help = "Export one client in full as JSON or CSV."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -40,11 +47,19 @@ class Command(BaseCommand):
             help="ID of the client to export.",
         )
         parser.add_argument(
+            "--format", dest="format", default="json", choices=_FORMATS,
+            help="Export format: json (default) or csv.",
+        )
+        parser.add_argument(
             "--output", default=None,
-            help="Path of the JSON file to write (default: stdout).",
+            help="Path of the export file to write (default: stdout).",
         )
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "json"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist:
@@ -63,10 +78,13 @@ class Command(BaseCommand):
             ) from None
 
         try:
-            result = export_client(client)
+            if fmt == "csv":
+                text = export_client_csv(client)
+            else:
+                result = export_client(client)
+                text = json.dumps(result, indent=2) + "\n"
         except Exception as exc:
             raise CommandError(str(exc)) from exc
-        text = json.dumps(result, indent=2) + "\n"
 
         if options["output"]:
             try:

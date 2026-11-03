@@ -23,11 +23,46 @@ so the source record round-trips through ``import_clients``
 (which restores an export record's ``payload`` as-is). A client
 with no payload exports exactly as before -- no ``payload`` key.
 
+CSV: :func:`export_client_csv` renders the same record as a CSV
+string (header plus one data row) built from :func:`export_client`
+alone, so the two formats can never disagree -- one source of
+truth. Nested values (``notes``, and ``payload`` when present)
+are JSON-encoded into their cell so no field is dropped or
+reshaped; a client with no ``payload`` exports an empty
+``payload`` cell.
+
 Backend only: no views, templates, or UI.
 """
+import csv
+import io
+import json
+
 from clients.models import ClientNote
 
-__all__ = ["export_client"]
+__all__ = [
+    "CLIENT_FIELDNAMES",
+    "export_client",
+    "export_client_csv",
+]
+
+#: Column / key order shared by the dict export and the CSV export:
+#: exactly the ``export_client`` key order (with the optional
+#: ``payload`` in its export position, after ``notes``).
+CLIENT_FIELDNAMES = [
+    "id",
+    "salon_id",
+    "external_id",
+    "first_name",
+    "last_name",
+    "email",
+    "phone",
+    "sms_opt_in",
+    "email_opt_in",
+    "active",
+    "created_at",
+    "notes",
+    "payload",
+]
 
 
 def _dt(value):
@@ -75,3 +110,30 @@ def export_client(client):
     if payload:
         record["payload"] = payload
     return record
+
+
+def export_client_csv(client):
+    """Return ``client``'s full record as a CSV string.
+
+    The header row is :data:`CLIENT_FIELDNAMES` and the single
+    data row comes from :func:`export_client` with the same
+    argument, so the CSV and dict exports always agree -- one
+    source of truth. Nested values (``notes``, and ``payload``
+    when present) are JSON-encoded into their cell so no field
+    is dropped or reshaped; a client with no ``payload`` exports
+    an empty ``payload`` cell. Lines end with ``"\\n"``.
+    """
+    record = export_client(client)
+    buffer = io.StringIO()
+    writer = csv.DictWriter(
+        buffer, fieldnames=CLIENT_FIELDNAMES, lineterminator="\n"
+    )
+    writer.writeheader()
+    row = {}
+    for field in CLIENT_FIELDNAMES:
+        value = record.get(field)
+        if isinstance(value, (list, dict)):
+            value = json.dumps(value)
+        row[field] = value
+    writer.writerow(row)
+    return buffer.getvalue()
