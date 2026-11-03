@@ -3,6 +3,11 @@
 Usage:
     python manage.py reconcile_stocktake --salon-id ID
         --reference REFERENCE [--count PRODUCT_ID=COUNT ...]
+        [--dry-run]
+
+With ``--dry-run`` nothing is recorded: the printed JSON carries
+``"dry_run": true`` and each variance shows the movement delta
+that would be booked, with ``movement_id`` always null.
 
 Backend only — no views, templates, or UI. This command is a thin
 wrapper around :func:`catalog.stocktake.reconcile_stocktake`: it
@@ -70,10 +75,11 @@ def _coerce_counts(raw):
     return counts
 
 
-def _result_dict(result):
+def _result_dict(result, dry_run=False):
     """Render a ``StocktakeResult`` as a JSON-serializable dict."""
     return {
         "reference": result.reference,
+        "dry_run": dry_run,
         "already_applied": result.already_applied,
         "has_variance": result.has_variance,
         "variances": [
@@ -112,6 +118,11 @@ class Command(BaseCommand):
             help="Counted quantity for one product of this salon; "
                  "repeat for each counted product.",
         )
+        parser.add_argument(
+            "--dry-run", action="store_true",
+            help="Preview the variances that would be booked "
+                 "without recording anything.",
+        )
 
     def handle(self, *args, **options):
         try:
@@ -120,10 +131,13 @@ class Command(BaseCommand):
             raise CommandError(
                 f"No salon with id {options['salon_id']}.") from exc
         counts = _coerce_counts(options.get("counts"))
+        dry_run = options.get("dry_run", False)
         try:
             result = reconcile_stocktake(
-                salon, counts, options.get("reference"))
+                salon, counts, options.get("reference"),
+                dry_run=dry_run)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
-        text = json.dumps(_result_dict(result), indent=2) + "\n"
+        text = json.dumps(
+            _result_dict(result, dry_run=dry_run), indent=2) + "\n"
         self.stdout.write(text, ending="")

@@ -146,13 +146,16 @@ def compute_variances(salon, counts):
     ]
 
 
-def reconcile_stocktake(salon, counts, reference):
+def reconcile_stocktake(salon, counts, reference, dry_run=False):
     """Reconcile derived stock to ``counts`` under ``reference``.
 
     Records one STOCKTAKE movement per varying product (delta =
     counted - derived) and returns a ``StocktakeResult`` whose
     variances carry those movements. Idempotent per reference —
-    see the module docstring.
+    see the module docstring. With ``dry_run`` nothing is recorded:
+    the variances carry no movements and show the delta that would
+    be booked; an already-applied reference still reports
+    ``already_applied`` (with no movement attached).
     """
     ref = _clean_reference(reference)
     pairs = _resolve_counts(salon, counts)
@@ -178,10 +181,24 @@ def reconcile_stocktake(salon, counts, reference):
                         expected_stock=counted - movement.quantity_delta,
                         counted_stock=counted,
                         variance=movement.quantity_delta,
-                        movement=movement,
+                        movement=None if dry_run else movement,
                     )
                 )
         return StocktakeResult(reference=ref, variances=tuple(variances), already_applied=True)
+
+    if dry_run:
+        return StocktakeResult(
+            reference=ref,
+            variances=tuple(
+                Variance(
+                    product=product,
+                    expected_stock=product.current_stock,
+                    counted_stock=counted,
+                    variance=counted - product.current_stock,
+                )
+                for product, counted in pairs
+            ),
+        )
 
     variances = []
     with transaction.atomic():

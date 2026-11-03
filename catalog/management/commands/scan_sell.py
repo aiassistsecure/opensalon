@@ -2,7 +2,12 @@
 
 Usage:
     python manage.py scan_sell --salon-id ID --code CODE
-        [--quantity N]
+        [--quantity N] [--dry-run]
+
+With ``--dry-run`` nothing is recorded: the command prints a
+preview naming the resolved product, the movement that would be
+recorded (kind and signed quantity), and the stock that would
+result.
 
 Backend only — no views, templates, or UI. This command is a thin
 wrapper around :func:`catalog.scanning.scan_sell`: it resolves
@@ -41,6 +46,11 @@ class Command(BaseCommand):
             "--quantity", type=int, default=1,
             help="Units to sell (default: 1).",
         )
+        parser.add_argument(
+            "--dry-run", action="store_true",
+            help="Preview the movement that would be recorded "
+                 "without recording anything.",
+        )
 
     def handle(self, *args, **options):
         try:
@@ -50,13 +60,24 @@ class Command(BaseCommand):
                 f"No salon with id {options['salon_id']}.") from exc
         try:
             result = scan_sell(
-                salon, options["code"], quantity=options["quantity"])
+                salon, options["code"], quantity=options["quantity"],
+                dry_run=options.get("dry_run", False))
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if not result.found:
             raise CommandError(
                 f"No product in salon {salon.pk} matches code "
                 f"{options['code']!r}.")
+        if options.get("dry_run"):
+            line = (
+                f"Dry run: would record {result.movement.kind} "
+                f"movement {result.movement.quantity_delta:+d} x "
+                f"{result.product.name} (product {result.product.pk}): "
+                f"resulting stock {result.current_stock}.")
+            if result.below_zero:
+                line += " Stock would be below zero."
+            self.stdout.write(line)
+            return
         line = (
             f"Sold {result.movement.quantity_delta:+d} x "
             f"{result.product.name} (product {result.product.pk}): "

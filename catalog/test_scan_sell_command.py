@@ -63,3 +63,45 @@ class ScanSellCommandTests(TestCase):
                          code="012345678905", quantity=0,
                          stdout=io.StringIO())
         self.assertEqual(StockMovement.objects.count(), 1)
+
+    def test_dry_run_writes_nothing_and_previews_movement(self):
+        out = io.StringIO()
+        call_command("scan_sell", salon_id=self.salon.pk,
+                     code="012345678905", quantity=3, dry_run=True,
+                     stdout=out)
+        self.assertEqual(StockMovement.objects.count(), 1)
+        self.assertEqual(self.product.current_stock, 10)
+        text = out.getvalue()
+        self.assertIn("Dry run", text)
+        self.assertIn("sale", text)
+        self.assertIn("-3", text)
+        self.assertIn("Shampoo", text)
+        self.assertIn(f"product {self.product.pk}", text)
+        self.assertIn("resulting stock 7", text)
+
+    def test_dry_run_below_zero_previews_without_writing(self):
+        out = io.StringIO()
+        call_command("scan_sell", "--salon-id", str(self.salon.pk),
+                     "--code", "SH-001", "--quantity", "12",
+                     "--dry-run", stdout=out)
+        self.assertEqual(StockMovement.objects.count(), 1)
+        self.assertEqual(self.product.current_stock, 10)
+        self.assertIn("resulting stock -2", out.getvalue())
+        self.assertIn("would be below zero", out.getvalue())
+
+    def test_dry_run_unknown_code_raises_and_records_nothing(self):
+        with self.assertRaises(CommandError):
+            call_command("scan_sell", salon_id=self.salon.pk,
+                         code="999999999999", dry_run=True,
+                         stdout=io.StringIO())
+        self.assertEqual(StockMovement.objects.count(), 1)
+
+    def test_dry_run_does_not_block_real_sell(self):
+        call_command("scan_sell", salon_id=self.salon.pk,
+                     code="012345678905", quantity=3, dry_run=True,
+                     stdout=io.StringIO())
+        call_command("scan_sell", salon_id=self.salon.pk,
+                     code="012345678905", quantity=3,
+                     stdout=io.StringIO())
+        self.assertEqual(StockMovement.objects.count(), 2)
+        self.assertEqual(self.product.current_stock, 7)
