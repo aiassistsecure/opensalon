@@ -94,6 +94,63 @@ class ResendReceiptCommandTests(TestCase):
             stdout=io.StringIO())
         self.assertEqual(mail.outbox[0].to, ["original@example.com"])
 
+    def test_dry_run_by_sale_id_sends_nothing_and_changes_nothing(self):
+        out = io.StringIO()
+        call_command(
+            "resend_receipt", sale_id=self.sale.pk, dry_run=True,
+            stdout=out)
+        self.assertEqual(len(mail.outbox), 0)
+        text = out.getvalue()
+        self.assertIn("Dry run", text)
+        self.assertIn(f"#{self.receipt.pk}", text)
+        self.assertIn(f"#{self.sale.pk}", text)
+        self.assertIn("client@example.com", text)
+        self.receipt.refresh_from_db()
+        self.assertEqual(self.receipt.recipient_email, "")
+        self.assertIsNone(self.receipt.sent_at)
+
+    def test_dry_run_by_receipt_id_with_explicit_recipient(self):
+        out = io.StringIO()
+        call_command(
+            "resend_receipt", "--receipt-id", str(self.receipt.pk),
+            "--recipient", "other@example.com", "--dry-run", stdout=out)
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertIn("other@example.com", out.getvalue())
+        self.assertIn("explicit recipient", out.getvalue())
+        self.receipt.refresh_from_db()
+        self.assertEqual(self.receipt.recipient_email, "")
+        self.assertIsNone(self.receipt.sent_at)
+
+    def test_dry_run_resolves_stored_recipient_and_keeps_sent_at(self):
+        send_receipt(self.receipt, recipient="original@example.com")
+        sent_at = self.receipt.sent_at
+        mail.outbox.clear()
+        out = io.StringIO()
+        call_command(
+            "resend_receipt", receipt_id=self.receipt.pk, dry_run=True,
+            stdout=out)
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertIn("original@example.com", out.getvalue())
+        self.assertIn("stored recipient", out.getvalue())
+        self.receipt.refresh_from_db()
+        self.assertEqual(self.receipt.recipient_email, "original@example.com")
+        self.assertEqual(self.receipt.sent_at, sent_at)
+        # Real behaviour unchanged after a dry run.
+        call_command(
+            "resend_receipt", receipt_id=self.receipt.pk,
+            stdout=io.StringIO())
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_dry_run_voided_sale_raises_and_sends_nothing(self):
+        self.sale.status = Sale.Status.VOIDED
+        self.sale.voided_at = timezone.now()
+        self.sale.save(update_fields=["status", "voided_at"])
+        with self.assertRaises(CommandError):
+            call_command(
+                "resend_receipt", sale_id=self.sale.pk, dry_run=True,
+                stdout=io.StringIO())
+        self.assertEqual(len(mail.outbox), 0)
+
     def test_neither_identifier_raises_command_error(self):
         with self.assertRaises(CommandError):
             call_command("resend_receipt", stdout=io.StringIO())
