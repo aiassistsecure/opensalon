@@ -3,7 +3,9 @@
 Founding rule (Exit Principle): anything a salon can enter, it can
 fully export. This module exports ALL clients as a plain,
 JSON-serializable list -- the bulk counterpart of the single-client
-export in ``clients.export``.
+export in ``clients.export`` -- and as a CSV string
+(:func:`export_all_clients_csv`) built from that same list, so the
+two formats can never disagree.
 
 One source of truth: every record is serialized by
 ``clients.export.export_client`` and therefore carries exactly the
@@ -25,12 +27,45 @@ kinds never blur.
 
 Backend only: no views, templates, or UI.
 """
+import csv
+import io
+import json
+
 from django.db.models import Count
 
 from clients.export import export_client
 from clients.models import Client
 
-__all__ = ["export_all_clients", "export_all", "export_clients"]
+__all__ = [
+    "CLIENTS_FIELDNAMES",
+    "export_all_clients",
+    "export_all_clients_csv",
+    "export_all",
+    "export_clients",
+    "export_all_csv",
+    "export_clients_csv",
+]
+
+#: Column / key order shared by the dict export and the CSV export:
+#: exactly the ``export_client`` key order (with the optional
+#: ``payload`` in its export position), plus ``note_count`` last,
+#: as appended by :func:`export_all_clients`.
+CLIENTS_FIELDNAMES = [
+    "id",
+    "salon_id",
+    "external_id",
+    "first_name",
+    "last_name",
+    "email",
+    "phone",
+    "sms_opt_in",
+    "email_opt_in",
+    "active",
+    "created_at",
+    "notes",
+    "payload",
+    "note_count",
+]
 
 
 def export_all_clients(salon=None):
@@ -60,7 +95,37 @@ def export_all_clients(salon=None):
     return records
 
 
+def export_all_clients_csv(salon=None):
+    """Return every client record as a CSV string.
+
+    The header row is :data:`CLIENTS_FIELDNAMES` and every data
+    row comes from :func:`export_all_clients` with the same
+    argument, so the CSV and list exports always agree -- one
+    source of truth. Nested values (``notes``, and ``payload``
+    when present) are JSON-encoded into their cell so no field
+    is dropped or reshaped; a client with no ``payload`` exports
+    an empty ``payload`` cell. An empty client book exports as
+    the header row alone. Lines end with ``"\\n"``.
+    """
+    buffer = io.StringIO()
+    writer = csv.DictWriter(
+        buffer, fieldnames=CLIENTS_FIELDNAMES, lineterminator="\n"
+    )
+    writer.writeheader()
+    for record in export_all_clients(salon=salon):
+        row = {}
+        for field in CLIENTS_FIELDNAMES:
+            value = record.get(field)
+            if isinstance(value, (list, dict)):
+                value = json.dumps(value)
+            row[field] = value
+        writer.writerow(row)
+    return buffer.getvalue()
+
+
 # Aliases: the bulk counterpart is naturally reached for under any of
 # these names; all point at the one implementation above.
 export_all = export_all_clients
 export_clients = export_all_clients
+export_all_csv = export_all_clients_csv
+export_clients_csv = export_all_clients_csv
