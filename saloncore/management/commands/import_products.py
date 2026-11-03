@@ -207,6 +207,136 @@ def _mapped(record):
     }
 
 
+def _stored_fields(product):
+    """The mapped-field dict for a stored product, shaped like _mapped."""
+    return {
+        "name": product.name,
+        "sku": product.sku,
+        "barcode": product.barcode,
+        "price": product.price,
+        "active": product.active,
+        "brand_name": product.brand_name,
+        "category_name": product.category_name,
+        "product_type": product.product_type,
+        "cost_price": product.cost_price,
+        "payload": product.payload,
+    }
+
+
+def _preview_import(records, salon_name):
+    """Read-only preview twin of the import below (the
+    ``import_transactions_csv._count_transaction`` pattern).
+
+    Walks the records in file order applying the writer's exact
+    validation (``_checked_id_string`` / ``_mapped`` /
+    ``_stock_quantity``) and its exact identity rule — the salon's
+    product with the same ``external_id`` — against a SIMULATED
+    state seeded from the salon's stored products, so a repeated
+    ``productId`` later in the file is judged against what the
+    earlier rows would have landed, exactly as the writer sees it.
+    Counts would-create / would-update / would-unchanged /
+    would-skip (with the writer's own skip reasons, rows named by
+    their 0-based index), previews price validation as the
+    ``missing_price`` skips, and names barcode / SKU collisions —
+    a non-blank code claimed by a DIFFERENT product, either
+    earlier in the file or already stored in this salon — by row.
+    Reads only: no salon is created, the writer is never entered,
+    and nothing is written on any backend.
+    """
+    salon = Salon.objects.filter(name=salon_name).first()
+    preview = {
+        "salon": salon_name,
+        "salon_found": salon is not None,
+        "total": len(records),
+        "would_create": 0,
+        "would_update": 0,
+        "would_unchanged": 0,
+        "would_skip": 0,
+        "skipped_missing_price": 0,
+        "skipped_id_too_long": 0,
+        "would_open_stock_movements": 0,
+        "skipped_rows": [],
+        "barcode_collisions": [],
+        "sku_collisions": [],
+    }
+    state = {}       # external_id -> mapped fields (stored, then simulated)
+    stored_code = {"barcode": {}, "sku": {}}  # code -> external_id, stored
+    if salon is not None:
+        for product in Product.objects.filter(salon=salon):
+            state[product.external_id] = _stored_fields(product)
+            for field in ("barcode", "sku"):
+                code = getattr(product, field)
+                if code:
+                    stored_code[field].setdefault(code, product.external_id)
+    file_code = {"barcode": {}, "sku": {}}  # code -> (row, external_id)
+
+    def skip(row, reason):
+        preview["would_skip"] += 1
+        preview["skipped_rows"].append({"row": row, "reason": reason})
+
+    for row, record in enumerate(records):
+        if not isinstance(record, dict):
+            skip(row, "not_a_record")
+            continue
+        try:
+            external_id = _checked_id_string(
+                record.get("productId"), "external_id")
+        except _OverlongId:
+            preview["skipped_id_too_long"] += 1
+            skip(row, "id_too_long")
+            continue
+        except ValueError:
+            skip(row, "invalid_id")
+            continue
+        if not external_id or not record.get("name"):
+            skip(row, "missing_id_or_name")
+            continue
+        try:
+            fields = _mapped(record)
+            on_hand = _stock_quantity(record)
+        except _MissingPrice:
+            preview["skipped_missing_price"] += 1
+            skip(row, "missing_price")
+            continue
+        except _OverlongId:
+            preview["skipped_id_too_long"] += 1
+            skip(row, "id_too_long")
+            continue
+        except ValueError:
+            skip(row, "invalid_record")
+            continue
+        # Collision check on the codes this row would land, against
+        # different products only (its own product re-claiming its
+        # own code is an update, not a collision).
+        for field, out_key in (("barcode", "barcode_collisions"),
+                               ("sku", "sku_collisions")):
+            code = fields[field]
+            if not code:
+                continue
+            hit = {}
+            seen = file_code[field].get(code)
+            if seen is not None and seen[1] != external_id:
+                hit["in_file_row"] = seen[0]
+            owner = stored_code[field].get(code)
+            if owner is not None and owner != external_id:
+                hit["stored_external_id"] = owner
+            if hit:
+                preview[out_key].append({"row": row, "code": code, **hit})
+            if code not in file_code[field]:
+                file_code[field][code] = (row, external_id)
+        existing = state.get(external_id)
+        if existing is None:
+            preview["would_create"] += 1
+            if on_hand > 0:
+                preview["would_open_stock_movements"] += 1
+        elif all(existing[k] == v for k, v in fields.items()):
+            preview["would_unchanged"] += 1
+        else:
+            preview["would_update"] += 1
+        state[external_id] = fields
+    return preview
+
+
 class Command(BaseCommand):
     help = "Import a Phorest product catalog JSON export (verbatim)."
 
@@ -218,8 +348,11 @@ class Command(BaseCommand):
             "--dry-run", dest="dry_run", action="store_true",
             default=False,
             help="Report the source file's schema (field types, "
-                 "null/missing/empty counts, unmapped keys) as JSON "
-                 "and write nothing to the database.")
+                 "null/missing/empty counts, unmapped keys) as JSON, "
+                 "plus a read-only import preview (would-create / "
+                 "would-update / would-skip counts, skip reasons and "
+                 "barcode/SKU collisions named by row), and write "
+                 "nothing to the database.")
 
     def handle(self, *args, **options):
         try:
@@ -233,6 +366,8 @@ class Command(BaseCommand):
         if options.get("dry_run"):
             report = build_dry_run_report(
                 records, MAPPED_KEYS, source_name=options["path"])
+            report["import_preview"] = _preview_import(
+                records, options["salon"])
             self.stdout.write(json.dumps(report, indent=2, sort_keys=True))
             return
 
