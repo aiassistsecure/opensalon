@@ -2,7 +2,11 @@
 
 Usage:
     python manage.py import_roster_derived [--salon NAME]
-        [--weeks 16] [--min-days 4]
+        [--weeks 16] [--min-days 4] [--dry-run]
+
+With ``--dry-run`` the same derivation runs but no pattern is
+written: the patterns it WOULD write are counted by member
+and weekday and printed.
 
 Why this exists: some source systems (Phorest's third-party API
 among them) expose no roster or shift resource at all — the
@@ -61,14 +65,42 @@ class Command(BaseCommand):
         parser.add_argument("--salon", default=None)
         parser.add_argument("--weeks", type=int, default=16)
         parser.add_argument("--min-days", type=int, default=4)
+        parser.add_argument(
+            "--dry-run", action="store_true",
+            help="Preview RosterPattern rows the derivation would "
+                 "write, counted by member/weekday, writing none.")
 
     def handle(self, *args, **options):
         salons = Salon.objects.all()
         if options["salon"]:
             salons = salons.filter(name=options["salon"])
+        dry_run = bool(options.get("dry_run"))
         totals = Counter()
+        breakdown = Counter()
         for salon in salons:
-            totals.update(self._derive(salon, options["weeks"], options["min_days"]))
+            counts, by_key = self._derive(
+                salon, options["weeks"], options["min_days"],
+                dry_run=dry_run)
+            totals.update(counts)
+            breakdown.update(by_key)
+        if dry_run:
+            for member_id, weekday in sorted(
+                    {(mid, wd) for mid, wd, _k in breakdown}):
+                self.stdout.write(
+                    f"import_roster_derived dry-run: "
+                    f"staff_member_id={member_id} weekday={weekday} "
+                    f"would_create="
+                    f"{breakdown[(member_id, weekday, 'created')]} "
+                    f"existing="
+                    f"{breakdown[(member_id, weekday, 'existing')]}")
+            self.stdout.write(
+                "import_roster_derived dry-run: "
+                f"salons={totals['salons']} members={totals['members']} "
+                f"would_create={totals['created']} "
+                f"existing={totals['existing']} "
+                f"skipped_bands={totals['skipped']} "
+                f"-- no patterns written")
+            return
         self.stdout.write(
             "import_roster_derived: "
             f"salons={totals['salons']} members={totals['members']} "
@@ -76,14 +108,15 @@ class Command(BaseCommand):
             f"skipped_bands={totals['skipped']}"
         )
 
-    def _derive(self, salon, weeks, min_days):
+    def _derive(self, salon, weeks, min_days, dry_run=False):
         counts = Counter()
+        breakdown = Counter()
         counts["salons"] += 1
         tz = _tz(salon)
         members = list(StaffMember.objects.filter(salon=salon, active=True))
         counts["members"] += len(members)
         if not members:
-            return counts
+            return counts, breakdown
         latest = (
             Appointment.objects.filter(staff_member__salon=salon)
             .order_by("-start")
@@ -91,7 +124,7 @@ class Command(BaseCommand):
             .first()
         )
         if latest is None:
-            return counts
+            return counts, breakdown
         window_end = latest.astimezone(tz).date()
         window_start = window_end - datetime.timedelta(weeks=weeks)
         appts = (
@@ -130,11 +163,21 @@ class Command(BaseCommand):
             if end_mode <= start_mode:
                 counts["skipped"] += 1
                 continue
-            _pattern, created = RosterPattern.objects.get_or_create(
-                staff_member=by_id[member_id],
-                weekday=weekday,
-                start_time=start_mode,
-                end_time=end_mode,
-            )
-            counts["created" if created else "existing"] += 1
-        return counts
+            if dry_run:
+                created = not RosterPattern.objects.filter(
+                    staff_member=by_id[member_id],
+                    weekday=weekday,
+                    start_time=start_mode,
+                    end_time=end_mode,
+                ).exists()
+            else:
+                _pattern, created = RosterPattern.objects.get_or_create(
+                    staff_member=by_id[member_id],
+                    weekday=weekday,
+                    start_time=start_mode,
+                    end_time=end_mode,
+                )
+            kind = "created" if created else "existing"
+            counts[kind] += 1
+            breakdown[(member_id, weekday, kind)] += 1
+        return counts, breakdown
