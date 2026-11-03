@@ -370,15 +370,16 @@ exactly the keys TF-11 would list as dropped for that section,
 keeping null / missing / empty-string counts distinct) — and the
 command returns before phase 2 writes a single row.
 
-Dry-run preview (slices 1–2): the salon / price-book sections
-listed in ``PREVIEW_SECTIONS`` and the client / team sections in
-``SLICE2_PREVIEW_SECTIONS`` additionally carry an
+Dry-run preview (slices 1–3): the salon / price-book sections
+listed in ``PREVIEW_SECTIONS``, the client / team sections in
+``SLICE2_PREVIEW_SECTIONS`` and the bookings / catalog sections
+in ``SLICE3_PREVIEW_SECTIONS`` additionally carry an
 ``import_preview`` — read-only would-create / would-update /
 would-unchanged / would-skip counts from
-``_build_slice1_previews`` / ``_build_slice2_previews``,
-following the preview-twin pattern of ``import_clients`` /
-``import_products``. Every other section's report is
-shape-only, exactly as before.
+``_build_slice1_previews`` / ``_build_slice2_previews`` /
+``_build_slice3_previews``, following the preview-twin pattern
+of ``import_clients`` / ``import_products``. Every other
+section's report is shape-only, exactly as before.
 """
 
 import json
@@ -1496,6 +1497,11 @@ SLICE2_PREVIEW_SECTIONS = (
     "clients", "client_notes", "staff_members", "staff_services",
 )
 
+# Slice-3 preview sections: bookings and the catalog group.
+SLICE3_PREVIEW_SECTIONS = (
+    "appointments", "appointment_notes", "products",
+)
+
 
 def _preview_counter(total):
     return {"total": total, "would_create": 0, "would_update": 0,
@@ -1766,6 +1772,192 @@ def _build_slice2_previews(data):
     return previews
 
 
+def _build_slice3_previews(data):
+    """Read-only preview twin for SLICE3_PREVIEW_SECTIONS only.
+
+    Mirrors phase 2's identity rules and defaults for appointments,
+    appointment notes and products against planned state seeded
+    from the database and folded in file order (the writer's
+    order), so in-file repeats and parents created earlier in the
+    file are judged as the writer sees them. Identities are
+    comparable tuples, never DB objects. Reads only: the writer
+    is never entered.
+    """
+    salon_name = {str(r["id"]): r["name"] for r in data["salons"]}
+    cat_key = {str(r["id"]): (salon_name.get(str(r["salon_id"])),
+                              r["name"])
+               for r in data["service_categories"]}
+
+    def client_key(salon, ext, first, last, email, phone):
+        ext = _norm_id(ext) or ""
+        return ((salon, "ext", ext) if ext else
+                (salon, "name", first, last, email, phone))
+
+    def staff_key(salon, ext, display_name):
+        ext = _norm_id(ext) or ""
+        return ((salon, "ext", ext) if ext else
+                (salon, "name", display_name))
+
+    def service_key(row, cat):
+        ext = _norm_id(row.get("external_id")) or ""
+        return ("ext", ext) if ext else ("cat", cat, row["name"])
+
+    def product_key(salon, ext, name, sku, barcode):
+        ext = _norm_id(ext) or ""
+        return (("ext", ext) if ext else
+                (salon, "name", name, sku, barcode))
+
+    def db_client_key(c):
+        return client_key(c.salon.name, c.external_id, c.first_name,
+                          c.last_name, c.email, c.phone)
+
+    def db_staff_key(m):
+        return staff_key(m.salon.name, m.external_id, m.display_name)
+
+    def db_service_key(svc):
+        if svc is None:
+            return None
+        cat = (svc.category.salon.name, svc.category.name)
+        return service_key(
+            {"external_id": svc.external_id, "name": svc.name}, cat)
+
+    def db_product_key(p):
+        return product_key(p.salon.name, p.external_id, p.name,
+                           p.sku, p.barcode)
+
+    def appt_key(ext, client, staff, start, end):
+        ext = _norm_id(ext) or ""
+        return (("ext", ext) if ext else
+                ("appt", client, staff, start, end))
+
+    def db_appt_key(a):
+        return appt_key(a.external_id, db_client_key(a.client),
+                        db_staff_key(a.staff_member), a.start, a.end)
+
+    file_client = {str(r["id"]): client_key(
+        salon_name.get(str(r["salon_id"])), r.get("external_id"),
+        r["first_name"], r["last_name"], r.get("email", ""),
+        r.get("phone", "")) for r in data["clients"]}
+    file_staff = {str(r["id"]): staff_key(
+        salon_name.get(str(r["salon_id"])), r.get("external_id"),
+        r["display_name"]) for r in data["staff_members"]}
+    file_svc = {str(r["id"]): service_key(
+        r, cat_key.get(str(r["category_id"]))) for r in data["services"]}
+    client_by_ext = {_norm_id(r["external_id"]): file_client[str(r["id"])]
+                     for r in data["clients"] if r.get("external_id")}
+    staff_by_ext = {_norm_id(r["external_id"]): file_staff[str(r["id"])]
+                    for r in data["staff_members"]
+                    if r.get("external_id")}
+    svc_by_ext = {_norm_id(r["external_id"]): file_svc[str(r["id"])]
+                  for r in data["services"] if r.get("external_id")}
+
+    def resolve(by_id, by_ext, row, id_field, ext_field):
+        ext = _norm_id(row.get(ext_field))
+        if ext and ext in by_ext:
+            return by_ext[ext]
+        return by_id.get(str(row.get(id_field)))
+
+    def file_appt_parts(row):
+        client = resolve(file_client, client_by_ext, row,
+                         "client_id", "client_external_id")
+        staff = resolve(file_staff, staff_by_ext, row,
+                        "staff_member_id", "staff_member_external_id")
+        if (row.get("service_id") is None
+                and not row.get("service_external_id")):
+            service, service_ok = None, True
+        else:
+            service = resolve(file_svc, svc_by_ext, row,
+                              "service_id", "service_external_id")
+            service_ok = service is not None
+        start = _checked_datetime(row["start"], "appointments start")
+        end = _checked_datetime(row["end"], "appointments end")
+        return client, staff, service, service_ok, start, end
+
+    file_appt = {}
+    for r in data["appointments"]:
+        client, staff, _svc, _ok, start, end = file_appt_parts(r)
+        file_appt[str(r["id"])] = (
+            appt_key(r.get("external_id"), client, staff, start, end)
+            if client is not None and staff is not None else None)
+
+    previews = {s: _preview_counter(len(data[s]))
+                for s in SLICE3_PREVIEW_SECTIONS}
+
+    planned = {}
+    for a in Appointment.objects.select_related(
+            "client__salon", "staff_member__salon",
+            "service__category__salon"):
+        planned[db_appt_key(a)] = {
+            "client": db_client_key(a.client),
+            "staff_member": db_staff_key(a.staff_member),
+            "service": db_service_key(a.service),
+            "service_name": a.service_name, "start": a.start,
+            "end": a.end, "status": a.status, "origin": a.origin,
+            "price_override": a.price_override, "payload": a.payload}
+    for i, row in enumerate(data["appointments"]):
+        client, staff, service, service_ok, start, end = (
+            file_appt_parts(row))
+        defaults = {
+            "client": client, "staff_member": staff, "service": service,
+            "service_name": row.get("service_name", ""),
+            "start": start, "end": end,
+            "status": row.get("status", Appointment.Status.BOOKED),
+            "origin": row.get("origin", Appointment.Origin.UNKNOWN),
+            "price_override": (
+                Decimal(str(row["price_override"]))
+                if row.get("price_override") is not None else None)}
+        if "payload" in row:
+            defaults["payload"] = row["payload"]
+        key = file_appt.get(str(row["id"]))
+        if key is None or not service_ok:
+            key = None
+        _preview_tally(previews["appointments"], planned, key,
+                       defaults, i)
+
+    planned = {(db_appt_key(n.appointment), n.body, n.author_name): {}
+               for n in AppointmentNote.objects.select_related(
+                   "appointment__client__salon",
+                   "appointment__staff_member__salon",
+                   "appointment__service__category__salon")}
+    for i, row in enumerate(data["appointment_notes"]):
+        appt = file_appt.get(str(row["appointment_id"]))
+        key = ((appt, row["body"], row.get("author_name", ""))
+               if appt is not None else None)
+        _preview_tally(previews["appointment_notes"], planned, key,
+                       {}, i)
+
+    planned = {}
+    for p in Product.objects.select_related("salon"):
+        planned[db_product_key(p)] = {
+            "salon": p.salon.name, "name": p.name, "sku": p.sku,
+            "barcode": p.barcode, "price": p.price,
+            "cost_price": p.cost_price, "active": p.active,
+            "brand_name": p.brand_name,
+            "category_name": p.category_name,
+            "product_type": p.product_type, "payload": p.payload}
+    for i, row in enumerate(data["products"]):
+        salon = salon_name.get(str(row["salon_id"]))
+        defaults = {
+            "salon": salon, "name": row["name"],
+            "sku": row.get("sku", ""), "barcode": row.get("barcode", ""),
+            "price": Decimal(str(row["price"])),
+            "cost_price": (
+                Decimal(str(row["cost_price"]))
+                if row.get("cost_price") is not None else None),
+            "active": row["active"],
+            "brand_name": row.get("brand_name", ""),
+            "category_name": row.get("category_name", ""),
+            "product_type": row.get("product_type", "")}
+        if "payload" in row:
+            defaults["payload"] = row["payload"]
+        key = product_key(salon, row.get("external_id"), row["name"],
+                          defaults["sku"], defaults["barcode"])
+        if salon is None and not (_norm_id(row.get("external_id")) or ""):
+            key = None
+        _preview_tally(previews["products"], planned, key, defaults, i)
+    return previews
+
+
 class Command(BaseCommand):
     help = "Import salon core data from an export_salon_data JSON file."
 
@@ -1776,7 +1968,8 @@ class Command(BaseCommand):
             help="Print a per-section JSON dry-run report "
                  "(saloncore.dry_run) for the source file — with "
                  "read-only import_preview counts on the slice-1 "
-                 "salon/price-book and slice-2 client/team "
+                 "salon/price-book, slice-2 client/team and "
+                 "slice-3 bookings/catalog "
                  "sections — and write nothing.")
 
     @transaction.atomic
@@ -1794,10 +1987,11 @@ class Command(BaseCommand):
                 for section in SECTIONS if section in data
             }
             reports = build_dry_run_reports(record_sets)
-            # Slices 1–2 only: preview counts attach to those
+            # Slices 1–3 only: preview counts attach to those
             # sections' reports; all others stay shape-only.
             previews = _build_slice1_previews(data)
             previews.update(_build_slice2_previews(data))
+            previews.update(_build_slice3_previews(data))
             for section, preview in previews.items():
                 reports[section]["import_preview"] = preview
             self.stdout.write(json.dumps(reports, sort_keys=True))
