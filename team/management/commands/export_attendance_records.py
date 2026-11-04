@@ -2,7 +2,7 @@
 
 Usage:
     python manage.py export_attendance_records --salon-id ID
-        [--output PATH]
+        [--staff-member-id ID] [--output PATH]
 
 Thin wrapper around the existing
 :func:`team.attendance_record_export.export_attendance_records_csv`
@@ -12,6 +12,14 @@ when given and to stdout otherwise. This command adds no
 export logic of its own, so command and service output can
 never disagree -- one source of truth.
 
+With ``--staff-member-id`` the export is narrowed to that one
+staff member's attendance records: the staff member is resolved
+by id within the salon (a staff member from another salon, or
+an unknown id, is a ``CommandError``), and the resolved staff
+member is passed to the service as its optional
+``staff_member`` argument. Without ``--staff-member-id`` the
+command exports the whole salon, exactly as before.
+
 An unknown salon raises ``CommandError``. Backend only -- no
 views, templates, or UI. Read-only.
 """
@@ -19,6 +27,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 from saloncore.models import Salon
 from team.attendance_record_export import export_attendance_records_csv
+from team.models import StaffMember
 
 
 class Command(BaseCommand):
@@ -28,6 +37,11 @@ class Command(BaseCommand):
         parser.add_argument(
             "--salon-id", required=True, type=int,
             help="Id of the salon whose attendance records to export.")
+        parser.add_argument(
+            "--staff-member-id", type=int, default=None,
+            help="ID of the staff member (in the salon) whose "
+                 "attendance records to export "
+                 "(default: all staff members).")
         parser.add_argument(
             "--output", default=None,
             help="Path of the CSV file to write (default: stdout).")
@@ -39,7 +53,20 @@ class Command(BaseCommand):
             raise CommandError(
                 f"No salon with id {options['salon_id']}.") from None
 
-        text = export_attendance_records_csv(salon)
+        staff_member = None
+        if options.get("staff_member_id") is not None:
+            try:
+                staff_member = StaffMember.objects.get(
+                    pk=options["staff_member_id"], salon=salon
+                )
+            except StaffMember.DoesNotExist:
+                raise CommandError(
+                    f"No staff member with id "
+                    f"{options['staff_member_id']} "
+                    f"for salon {options['salon_id']}.") from None
+
+        text = export_attendance_records_csv(
+            salon, staff_member=staff_member)
 
         if options["output"]:
             try:
