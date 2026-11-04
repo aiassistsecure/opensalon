@@ -10,11 +10,13 @@ import csv
 import io
 import os
 import tempfile
+from datetime import date, datetime
 from decimal import Decimal
 
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase
+from django.utils import timezone
 
 from catalog.history_export import (
     HISTORY_FIELDNAMES,
@@ -124,3 +126,82 @@ class ExportStockHistoryCommandTests(TestCase):
                              salon_id=self.salon.pk,
                              product_id=self.shampoo.pk, output=path,
                              stdout=io.StringIO())
+
+
+class ExportStockHistoryWindowCommandTests(TestCase):
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon")
+        self.day1 = date(2026, 1, 5)
+        self.day2 = date(2026, 1, 6)
+        self.day3 = date(2026, 1, 7)
+        self.shampoo = Product.objects.create(
+            salon=self.salon, name="Shampoo", sku="SH-001",
+            barcode="012345678905", price=Decimal("10.00"))
+        self.move_on(self.shampoo, 10, self.day1)
+        self.move_on(self.shampoo, -3, self.day2,
+                     kind=StockMovement.Kind.SALE)
+        self.move_on(self.shampoo, -2, self.day3,
+                     kind=StockMovement.Kind.ADJUSTMENT)
+        self.serum = Product.objects.create(
+            salon=self.salon, name="Serum", sku="SE-002",
+            barcode="222333444555", price=Decimal("19.99"))
+        self.move_on(self.serum, 99, self.day2)
+
+    def move_on(self, product, delta, on, kind=StockMovement.Kind.RECEIVE):
+        movement = StockMovement.objects.create(
+            product=product, kind=kind, quantity_delta=delta)
+        moment = timezone.make_aware(
+            datetime(on.year, on.month, on.day, 12, 0))
+        StockMovement.objects.filter(pk=movement.pk).update(
+            created_at=moment)
+        return movement
+
+    def test_window_flags_match_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_stock_history", "--salon-id", str(self.salon.pk),
+            "--product-id", str(self.shampoo.pk),
+            "--start-date", self.day2.isoformat(),
+            "--end-date", self.day3.isoformat(), stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_stock_history_csv(
+                self.salon, self.shampoo.pk,
+                start=self.day2, end=self.day3))
+        rows = list(csv.DictReader(io.StringIO(out.getvalue())))
+        self.assertEqual([r["quantity_delta"] for r in rows], ["-3", "-2"])
+        self.assertEqual([r["running_balance"] for r in rows], ["7", "5"])
+
+    def test_window_kwargs_and_alias_flags_match_service(self):
+        out = io.StringIO()
+        call_command("export_stock_history", salon_id=self.salon.pk,
+                     product_id=self.shampoo.pk,
+                     start_date=self.day2, end_date=self.day2, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_stock_history_csv(
+                self.salon, self.shampoo.pk,
+                start=self.day2, end=self.day2))
+        out = io.StringIO()
+        call_command(
+            "export_stock_history", "--salon-id", str(self.salon.pk),
+            "--product-id", str(self.shampoo.pk),
+            "--start", self.day3.isoformat(),
+            "--end", self.day3.isoformat(), stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_stock_history_csv(
+                self.salon, self.shampoo.pk,
+                start=self.day3, end=self.day3))
+
+    def test_no_window_is_previous_output_and_invalid_date_fails(self):
+        out = io.StringIO()
+        call_command("export_stock_history", salon_id=self.salon.pk,
+                     product_id=self.shampoo.pk, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_stock_history_csv(self.salon, self.shampoo.pk))
+        with self.assertRaises(CommandError):
+            call_command("export_stock_history", salon_id=self.salon.pk,
+                         product_id=self.shampoo.pk,
+                         start_date="not-a-date", stdout=io.StringIO())
