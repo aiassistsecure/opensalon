@@ -109,6 +109,62 @@ class DedupeExportTests(TestCase):
         self.assertIn(
             self.other_amy.pk, [r["client_id"] for r in unscoped])
 
+    def test_key_type_email_only(self):
+        records = export_duplicate_candidates(
+            salon=self.salon, key_type="email")
+        self.assertEqual(records, [
+            {"key_type": "email", "key": "amy@example.com",
+             "client_id": self.amy2.pk, "first_name": "Amelia",
+             "last_name": "Smith"},
+            {"key_type": "email", "key": "amy@example.com",
+             "client_id": self.amy.pk, "first_name": "Amy",
+             "last_name": "Smith"},
+        ])
+        parsed = self._parsed(salon=self.salon, key_type="email")
+        self.assertEqual(parsed, [
+            {k: str(v) for k, v in r.items()} for r in records
+        ])
+
+    def test_key_type_phone_only(self):
+        records = export_duplicate_candidates(
+            salon=self.salon, key_type="phone")
+        self.assertEqual([r["key_type"] for r in records],
+                         ["phone", "phone"])
+        self.assertEqual(
+            [r["client_id"] for r in records],
+            [self.bob.pk, self.bob2.pk])
+
+    def test_key_type_default_is_unfiltered(self):
+        self.assertEqual(
+            export_duplicate_candidates(salon=self.salon),
+            export_duplicate_candidates(
+                salon=self.salon, key_type=None))
+        self.assertEqual(
+            export_duplicate_candidates_csv(salon=self.salon),
+            export_duplicate_candidates_csv(
+                salon=self.salon, key_type=None))
+
+    def test_key_type_unknown_matches_nothing(self):
+        self.assertEqual(
+            export_duplicate_candidates(
+                salon=self.salon, key_type="name"), [])
+        self.assertEqual(
+            export_duplicate_candidates_csv(
+                salon=self.salon, key_type="name"),
+            ",".join(DEDUPE_FIELDNAMES) + "\n")
+
+    def test_key_type_composes_with_salon_scope(self):
+        unscoped = export_duplicate_candidates(key_type="email")
+        self.assertIn(
+            self.other_amy.pk, [r["client_id"] for r in unscoped])
+        scoped = export_duplicate_candidates(
+            salon=self.salon, key_type="email")
+        self.assertNotIn(
+            self.other_amy.pk, [r["client_id"] for r in scoped])
+        self.assertEqual(
+            export_duplicate_candidates(
+                salon=self.other, key_type="phone"), [])
+
     def test_read_only_never_merges_or_deletes(self):
         before = Client.objects.count()
         export_duplicate_candidates(salon=self.salon)
