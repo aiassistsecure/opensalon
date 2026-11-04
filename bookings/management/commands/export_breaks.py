@@ -3,7 +3,8 @@
 Usage:
     python manage.py export_breaks --salon-id ID
         [--date-from YYYY-MM-DD] [--date-to YYYY-MM-DD]
-        [--staff-member ID] [--output PATH]
+        [--staff-member ID] [--paid-only | --unpaid-only]
+        [--output PATH]
 
 Thin wrapper around
 :func:`bookings.breaks_export.export_breaks_csv`: the salon is
@@ -90,11 +91,25 @@ class Command(BaseCommand):
             help="Alias for --staff-member (id of the staff member).",
         )
         parser.add_argument(
+            "--paid-only", action="store_true",
+            help="Only paid breaks.",
+        )
+        parser.add_argument(
+            "--unpaid-only", action="store_true",
+            help="Only unpaid breaks.",
+        )
+        parser.add_argument(
             "--output", default=None,
             help="Path to write the CSV to (default: stdout).",
         )
 
     def handle(self, *args, **options):
+        if options.get("paid_only") and options.get("unpaid_only"):
+            raise CommandError(
+                "--paid-only and --unpaid-only conflict.")
+        paid = (
+            True if options.get("paid_only")
+            else False if options.get("unpaid_only") else None)
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist as exc:
@@ -109,7 +124,8 @@ class Command(BaseCommand):
         staff_member = _coerce_staff(staff_raw)
         try:
             text = export_breaks_csv(
-                salon, date_from, date_to, staff_member=staff_member)
+                salon, date_from, date_to, staff_member=staff_member,
+                paid=paid)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options.get("output"):

@@ -115,6 +115,96 @@ class BreaksExportTests(TestCase):
         call_command("export_breaks", salon_id=self.salon.pk, stdout=out)
         self.assertEqual(out.getvalue(), export_breaks_csv(self.salon, None, None))
 
+    def test_paid_true_exact_match(self):
+        rows = export_breaks(self.salon, DAY, paid=True)
+        self.assertEqual([r["id"] for r in rows], [self.b1.pk])
+        self.assertTrue(all(r["paid"] for r in rows))
+
+    def test_paid_false_exact_match(self):
+        rows = export_breaks(self.salon, DAY, paid=False)
+        self.assertEqual([r["id"] for r in rows], [self.b2.pk])
+        self.assertFalse(rows[0]["paid"])
+
+    def test_paid_none_default_identical(self):
+        self.assertEqual(
+            export_breaks(self.salon, DAY, paid=None),
+            export_breaks(self.salon, DAY))
+        self.assertEqual(
+            export_breaks_csv(self.salon, DAY, paid=None),
+            export_breaks_csv(self.salon, DAY))
+
+    def test_paid_csv_exact_match(self):
+        text = export_breaks_csv(self.salon, DAY, paid=True)
+        lines = text.splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[1].endswith(",True"))
+        self.assertEqual(text, export_breaks_csv(self.salon, DAY, paid=True))
+
+    def test_paid_composes_with_staff_member(self):
+        staff2 = StaffMember.objects.create(
+            salon=self.salon, display_name="Stylist Two")
+        Break.objects.create(
+            staff_member=staff2, start=at(DAY, 12),
+            end=at(DAY, 12, 30), paid=True)
+        b4 = Break.objects.create(
+            staff_member=staff2, start=at(DAY, 13),
+            end=at(DAY, 14), paid=False)
+        self.assertEqual(
+            [r["id"] for r in export_breaks(
+                self.salon, DAY, staff_member=staff2, paid=False)],
+            [b4.pk])
+        self.assertEqual(
+            [r["id"] for r in export_breaks(
+                self.salon, DAY, staff_member=self.staff, paid=True)],
+            [self.b1.pk])
+        self.assertEqual(
+            export_breaks(self.salon, DAY, staff_member=staff2,
+                          paid=True)[0]["staff_name"], "Stylist Two")
+
+    def test_paid_composes_with_window(self):
+        b_next = Break.objects.create(
+            staff_member=self.staff, start=at(NEXT, 12),
+            end=at(NEXT, 12, 45), paid=True)
+        Break.objects.create(
+            staff_member=self.staff, start=at(NEXT, 13),
+            end=at(NEXT, 14), paid=False)
+        self.assertEqual(
+            [r["id"] for r in export_breaks(self.salon, NEXT, paid=True)],
+            [b_next.pk])
+        self.assertEqual(
+            [r["id"] for r in export_breaks(self.salon, DAY, NEXT, paid=True)],
+            [self.b1.pk, b_next.pk])
+        self.assertEqual(
+            export_breaks(self.salon, NEXT, paid=False)[0]["paid"], False)
+
+    def test_command_paid_only_flag(self):
+        out = io.StringIO()
+        call_command(
+            "export_breaks", "--salon-id", str(self.salon.pk),
+            "--date-from", DAY.isoformat(), "--paid-only", stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_breaks_csv(self.salon, DAY, paid=True))
+
+    def test_command_unpaid_only_kwargs(self):
+        out = io.StringIO()
+        call_command("export_breaks", salon_id=self.salon.pk,
+                     date_from=DAY, unpaid_only=True, stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_breaks_csv(self.salon, DAY, paid=False))
+
+    def test_command_paid_and_unpaid_conflict(self):
+        with self.assertRaises(CommandError):
+            call_command("export_breaks", salon_id=self.salon.pk,
+                         paid_only=True, unpaid_only=True,
+                         stdout=io.StringIO())
+
+    def test_command_no_paid_flag_is_unfiltered(self):
+        out = io.StringIO()
+        call_command("export_breaks", salon_id=self.salon.pk,
+                     date_from=DAY, stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_breaks_csv(self.salon, DAY, paid=None))
+
     def test_command_output_file_and_unknown_salon(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "breaks.csv")
