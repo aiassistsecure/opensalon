@@ -115,3 +115,101 @@ class ExportHistoryTests(TestCase):
         self.assertEqual([r["id"] for r in rows], [mine.pk, theirs.pk])
         export_history_csv(self.salon, now=NOW)
         self.assertEqual(Appointment.objects.count(), before)
+
+
+class ExportHistoryWindowTests(TestCase):
+    """The optional start_date/end_date window on booking start."""
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example", timezone="UTC")
+        self.staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Alice")
+        self.client = Client.objects.create(
+            salon=self.salon, first_name="Test", last_name="Example")
+        self.other = Client.objects.create(
+            salon=self.salon, first_name="Other", last_name="Person")
+        cat = ServiceCategory.objects.create(salon=self.salon, name="Hair")
+        self.service = Service.objects.create(
+            category=cat, name="Haircut", service_minutes=60)
+        self.old = self._appt(at(-10, 9))
+        self.recent = self._appt(at(-1, 9))
+        self.recent_late = self._appt(at(-1, 23))
+        self.other_appt = self._appt(at(-1, 10), client=self.other)
+
+    def _appt(self, start, client=None):
+        return Appointment.objects.create(
+            client=client or self.client, staff_member=self.staff,
+            service=self.service, start=start,
+            end=start + datetime.timedelta(hours=1),
+            status="booked", origin="online")
+
+    def _ids(self, **kw):
+        return [r["id"] for r in export_history(
+            self.salon, self.client, now=NOW, **kw)]
+
+    def test_no_window_is_previous_output(self):
+        self.assertEqual(
+            self._ids(), [self.recent_late.pk, self.recent.pk, self.old.pk])
+        self.assertEqual(
+            export_history_csv(self.salon, self.client, now=NOW),
+            export_history_csv(
+                self.salon, self.client, now=NOW,
+                start_date=None, end_date=None))
+
+    def test_both_bounds_inclusive_whole_days(self):
+        day = datetime.date(2026, 11, 1)
+        self.assertEqual(
+            self._ids(start_date=day, end_date=day),
+            [self.recent_late.pk, self.recent.pk])
+
+    def test_start_bound_only_is_open_ended(self):
+        self.assertEqual(
+            self._ids(start_date=datetime.date(2026, 11, 1)),
+            [self.recent_late.pk, self.recent.pk])
+
+    def test_end_bound_only_is_open_ended(self):
+        self.assertEqual(
+            self._ids(end_date=datetime.date(2026, 10, 23)),
+            [self.old.pk])
+
+    def test_window_composes_with_client_and_salon_wide(self):
+        day = datetime.date(2026, 11, 1)
+        rows = export_history(
+            self.salon, self.other, now=NOW, start_date=day, end_date=day)
+        self.assertEqual([r["id"] for r in rows], [self.other_appt.pk])
+        rows = export_history(
+            self.salon, now=NOW, start_date=day, end_date=day)
+        self.assertEqual(
+            [r["id"] for r in rows],
+            [self.recent_late.pk, self.other_appt.pk, self.recent.pk])
+
+    def test_window_applies_before_limit(self):
+        day = datetime.date(2026, 10, 23)
+        self.assertEqual(
+            self._ids(limit=1, start_date=day, end_date=day),
+            [self.old.pk])
+
+    def test_reversed_window_is_empty(self):
+        self.assertEqual(
+            self._ids(start_date=datetime.date(2026, 11, 5),
+                      end_date=datetime.date(2026, 11, 1)), [])
+        self.assertEqual(
+            export_history_csv(
+                self.salon, self.client, now=NOW,
+                start_date=datetime.date(2026, 11, 5),
+                end_date=datetime.date(2026, 11, 1)),
+            ",".join(EXPORT_FIELDNAMES) + "\n")
+
+    def test_datetime_bounds_reduce_to_local_date(self):
+        self.assertEqual(
+            self._ids(start_date=at(-1, 18), end_date=at(-1, 18)),
+            [self.recent_late.pk, self.recent.pk])
+
+    def test_csv_twin_matches_windowed_rows(self):
+        day = datetime.date(2026, 11, 1)
+        text = export_history_csv(
+            self.salon, self.client, now=NOW, start_date=day, end_date=day)
+        parsed = list(csv.DictReader(io.StringIO(text)))
+        self.assertEqual(
+            [int(r["id"]) for r in parsed],
+            [self.recent_late.pk, self.recent.pk])

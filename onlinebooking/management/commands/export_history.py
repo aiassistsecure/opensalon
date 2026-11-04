@@ -3,14 +3,21 @@
 Usage:
     python manage.py export_history --salon-id ID
         [--client-id ID] [--now ISO-DATETIME] [--limit N]
+        [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD]
         [--output PATH]
 
 Thin wrapper around the existing
 :func:`onlinebooking.export_history.export_history_csv`
 service: this command delegates verbatim to
-``export_history_csv(salon, client, now=now, limit=limit)``
+``export_history_csv(salon, client, now=now, limit=limit,
+start_date=start_date, end_date=end_date)``
 and adds no export logic of its own, so the command output and
 the service output can never disagree -- one source of truth.
+``--start-date`` / ``--end-date`` are the optional inclusive
+local-date window on booking ``start``, spelled as the other
+Family XI ledger commands spell them (``--date-from`` /
+``--date-to`` accepted as aliases); omitted, the export is
+the previous unbounded output verbatim.
 
 Note: the name ``export_upcoming`` was not used for the
 sibling upcoming export because a ``bookings`` management
@@ -30,6 +37,7 @@ unparseable ``--now`` -- raises ``CommandError``, as do
 service errors and unwritable output.
 Backend only -- no views, templates, or UI. Read-only.
 """
+import argparse
 import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -73,6 +81,28 @@ def _parse_now(value, salon):
     return parsed
 
 
+def _parse_date(value):
+    try:
+        return datetime.date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"Invalid date {value!r}; expected YYYY-MM-DD."
+        ) from exc
+
+
+def _coerce_date(value, label):
+    if value is None or isinstance(value, datetime.date):
+        # Dates pass verbatim; datetimes pass too -- the service
+        # reduces them to their salon-local date.
+        return value
+    try:
+        return datetime.date.fromisoformat(str(value))
+    except ValueError as exc:
+        raise CommandError(
+            f"Invalid {label} {value!r}; expected YYYY-MM-DD."
+        ) from exc
+
+
 class Command(BaseCommand):
     help = "Export one salon's online booking history as CSV."
 
@@ -93,6 +123,16 @@ class Command(BaseCommand):
             help="Maximum rows to export (default: full history, "
                  "as the service defines it).")
         parser.add_argument(
+            "--start-date", "--date-from", "--from-date",
+            dest="start_date", type=_parse_date, default=None,
+            help="Inclusive first day of the window on booking "
+                 "start, YYYY-MM-DD (default: unbounded).")
+        parser.add_argument(
+            "--end-date", "--date-to", "--to-date",
+            dest="end_date", type=_parse_date, default=None,
+            help="Inclusive last day of the window on booking "
+                 "start, YYYY-MM-DD (default: unbounded).")
+        parser.add_argument(
             "--output", default=None,
             help="Path of the CSV file to write (default: stdout).")
 
@@ -112,10 +152,13 @@ class Command(BaseCommand):
                     f"No client with id {options['client_id']}.") from None
 
         now = _parse_now(options.get("now"), salon)
+        start_date = _coerce_date(options.get("start_date"), "start-date")
+        end_date = _coerce_date(options.get("end_date"), "end-date")
 
         try:
             text = export_history_csv(
-                salon, client, now=now, limit=options.get("limit"))
+                salon, client, now=now, limit=options.get("limit"),
+                start_date=start_date, end_date=end_date)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
 
