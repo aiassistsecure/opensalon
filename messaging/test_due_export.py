@@ -155,6 +155,67 @@ class WindowAndScopeTests(DueExportBase):
                 None, self.window_start, self.window_end), header)
 
 
+class ChannelFilterTests(DueExportBase):
+    def test_channel_filter_dict_and_csv(self):
+        self._appointment()
+        for channel, expected in (("email", ["email"]), ("sms", ["sms"])):
+            rows = export_due_reminders(
+                self.salon, self.window_start, self.window_end,
+                channel=channel)
+            self.assertEqual([r["channel"] for r in rows], expected)
+            parsed = _rows(export_due_reminders_csv(
+                self.salon, self.window_start, self.window_end,
+                channel=channel))
+            self.assertEqual([r["channel"] for r in parsed], expected)
+
+    def test_channel_default_none_is_identical(self):
+        self._appointment()
+        self.assertEqual(
+            export_due_reminders(
+                self.salon, self.window_start, self.window_end,
+                channel=None),
+            export_due_reminders(
+                self.salon, self.window_start, self.window_end))
+        self.assertEqual(
+            export_due_reminders_csv(
+                self.salon, self.window_start, self.window_end,
+                channel=None),
+            export_due_reminders_csv(
+                self.salon, self.window_start, self.window_end))
+
+    def test_channel_filter_exact_no_case_folding(self):
+        self._appointment()
+        self.assertEqual(
+            export_due_reminders(
+                self.salon, self.window_start, self.window_end,
+                channel="EMAIL"), [])
+        self.assertEqual(
+            export_due_reminders(
+                self.salon, self.window_start, self.window_end,
+                channel="Sms"), [])
+
+    def test_channel_composes_with_salon_window_and_eligibility(self):
+        own = self._appointment(email_opt_in=True, sms_opt_in=False)
+        self._appointment(salon=self.other, staff=self.other_staff)
+        self._appointment(start=self.window_end + timedelta(hours=1))
+        rows = export_due_reminders(
+            self.salon, self.window_start, self.window_end,
+            channel="email")
+        self.assertEqual(
+            [(r["appointment_id"], r["channel"]) for r in rows],
+            [(own.pk, "email")])
+        self.assertEqual(
+            export_due_reminders(
+                self.salon, self.window_start, self.window_end,
+                channel="sms"), [])
+        other_rows = export_due_reminders(
+            self.other, self.window_start, self.window_end,
+            channel="sms")
+        self.assertEqual([r["channel"] for r in other_rows], ["sms"])
+        self.assertTrue(
+            all(r["salon_id"] == self.other.pk for r in other_rows))
+
+
 class ReadOnlyTests(DueExportBase):
     def test_export_sends_and_mutates_nothing(self):
         self._appointment()

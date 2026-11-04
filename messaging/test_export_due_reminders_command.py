@@ -95,6 +95,38 @@ class ExportDueRemindersCommandTests(TestCase):
             export_due_reminders_csv(self.salon, START, NEXT_END))
         self.assertEqual(out.getvalue(), "")
 
+    def test_channel_kwarg_matches_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_due_reminders", salon_id=self.salon.pk,
+            start_date=START, end_date=END, channel="sms", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_due_reminders_csv(
+                self.salon, START, END, channel="sms"))
+
+    def test_channel_flag_matches_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_due_reminders",
+            "--salon-id", str(self.salon.pk),
+            "--start-date", DAY.isoformat(),
+            "--end-date", DAY.isoformat(),
+            "--channel", "email", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_due_reminders_csv(
+                self.salon, START, END, channel="email"))
+
+    def test_no_channel_matches_unfiltered_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_due_reminders", salon_id=self.salon.pk,
+            start_date=START, end_date=END, channel=None, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_due_reminders_csv(self.salon, START, END))
+
     def test_unknown_salon_raises_command_error(self):
         with self.assertRaises(CommandError):
             call_command(
