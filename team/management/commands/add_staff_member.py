@@ -4,7 +4,7 @@ Usage:
     python manage.py add_staff_member --salon-id ID
         --display-name TEXT [--staff-level-id ID]
         [--online-bookable | --no-online-bookable]
-        [--email ADDRESS] [--pin DIGITS] [--dry-run]
+        [--email ADDRESS] [--pin DIGITS] [--inactive] [--dry-run]
 
 With ``--dry-run`` nothing is written: the command calls the
 service's read-only ``validate_add_staff_member`` helper and
@@ -32,12 +32,12 @@ from team.add_staff_member import (
 
 
 def _describe(salon, display_name, staff_level, online_bookable,
-              email, pin):
+              email, pin, active=True):
     level = staff_level.pk if staff_level is not None else None
     return (
         f"staff member {display_name!r} in salon {salon.pk}: "
         f"staff_level_id={level} online_bookable={online_bookable} "
-        f"email={email!r} pin_set={bool(pin)}")
+        f"email={email!r} pin_set={bool(pin)} active={active}")
 
 
 class Command(BaseCommand):
@@ -68,6 +68,10 @@ class Command(BaseCommand):
             help="Optional time-clock PIN (4 to 8 digits, "
                  "unique in the salon).")
         parser.add_argument(
+            "--inactive", action="store_true",
+            help="Create the staff member inactive "
+                 "(default: active).")
+        parser.add_argument(
             "--dry-run", action="store_true",
             help="Preview the member that would be created "
                  "without writing anything.")
@@ -87,12 +91,18 @@ class Command(BaseCommand):
                 raise CommandError(
                     f"No staff level with id {level_id}.") from exc
         online = options.get("online_bookable")
+        # call_command may pass active= directly; CLI uses --inactive.
+        if options.get("active") is not None:
+            active = bool(options["active"])
+        else:
+            active = not options.get("inactive", False)
         kwargs = dict(
             display_name=options["display_name"],
             staff_level=staff_level,
             online_bookable=True if online is None else bool(online),
             email=options.get("email") or "",
-            pin=options.get("pin") or "")
+            pin=options.get("pin") or "",
+            active=active)
         if options.get("dry_run"):
             try:
                 cleaned = validate_add_staff_member(salon, **kwargs)
@@ -103,7 +113,8 @@ class Command(BaseCommand):
                     cleaned["salon"], cleaned["display_name"],
                     cleaned["staff_level"],
                     cleaned["online_bookable"], cleaned["email"],
-                    cleaned["pin"]) + " -- no staff member written.")
+                    cleaned["pin"], cleaned["active"])
+                + " -- no staff member written.")
             return
         try:
             member = add_staff_member(salon, **kwargs)
@@ -112,5 +123,6 @@ class Command(BaseCommand):
         self.stdout.write(
             f"Created staff member {member.pk}: " + _describe(
                 salon, member.display_name, member.staff_level,
-                member.online_bookable, member.email, member.pin)
+                member.online_bookable, member.email, member.pin,
+                member.active)
             + ".")
