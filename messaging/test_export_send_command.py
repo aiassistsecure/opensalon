@@ -144,6 +144,61 @@ class ExportSendCommandTests(TestCase):
             out.getvalue(),
             export_sends_csv(self.salon, DAY3, DAY1))
 
+    def test_appointment_id_filters_to_one_appointment(self):
+        target = ReminderSend.objects.filter(
+            client__salon=self.salon).order_by("id").first()
+        out = io.StringIO()
+        call_command(
+            "export_send", salon_id=self.salon.pk,
+            date_from=DAY1, date_to=DAY3,
+            appointment_id=target.appointment_id, stdout=out)
+        appointment = Appointment.objects.get(pk=target.appointment_id)
+        self.assertEqual(
+            out.getvalue(),
+            export_sends_csv(
+                self.salon, DAY1, DAY3, appointment=appointment))
+        self.assertEqual(out.getvalue().count("\n"), 2)
+
+    def test_appointment_id_with_cli_args(self):
+        target = ReminderSend.objects.filter(
+            client__salon=self.salon).order_by("id").first()
+        out = io.StringIO()
+        call_command(
+            "export_send", "--salon-id", str(self.salon.pk),
+            "--date-from", DAY1.isoformat(),
+            "--date-to", DAY3.isoformat(),
+            "--appointment-id", str(target.appointment_id), stdout=out)
+        appointment = Appointment.objects.get(pk=target.appointment_id)
+        self.assertEqual(
+            out.getvalue(),
+            export_sends_csv(
+                self.salon, DAY1, DAY3, appointment=appointment))
+
+    def test_no_appointment_id_is_salon_wide_default(self):
+        out = io.StringIO()
+        call_command(
+            "export_send", salon_id=self.salon.pk,
+            date_from=DAY1, date_to=DAY3, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_sends_csv(self.salon, DAY1, DAY3, appointment=None))
+
+    def test_unknown_appointment_id_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_send", salon_id=self.salon.pk,
+                date_from=DAY1, appointment_id=999999,
+                stdout=io.StringIO())
+
+    def test_appointment_from_other_salon_raises_command_error(self):
+        foreign = Appointment.objects.filter(
+            client__salon=self.other).order_by("id").first()
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_send", salon_id=self.salon.pk,
+                date_from=DAY1, appointment_id=foreign.pk,
+                stdout=io.StringIO())
+
     def test_unknown_salon_raises_command_error(self):
         with self.assertRaises(CommandError):
             call_command(

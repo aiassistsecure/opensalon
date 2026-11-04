@@ -116,6 +116,11 @@ class TotalsExportTests(SendExportBase):
 
 
 class RecordExportTests(SendExportBase):
+    def _send_for(self, appointment, channel, when, detail=""):
+        return ReminderSend.objects.create(
+            appointment=appointment, client=appointment.client,
+            channel=channel, status="sent", sent_at=when, detail=detail)
+
     def test_record_rows_only_real_fields_oldest_first(self):
         later = self._own("sms", _at(DAY2, 9), detail="ref-2")
         earlier = self._own("email", _at(DAY1, 9))
@@ -137,6 +142,57 @@ class RecordExportTests(SendExportBase):
         self.assertEqual(export_sends(self.salon, DAY3, DAY1), [])
         self.assertEqual(export_sends_csv(self.salon, DAY3, DAY1),
                          ",".join(RECORD_FIELDNAMES) + "\n")
+
+    def test_appointment_filter_filters_to_one_appointment(self):
+        first = self._own("email", _at(DAY1, 9))
+        appointment = Appointment.objects.get(pk=first.appointment_id)
+        second = self._send_for(appointment, "sms", _at(DAY2, 9))
+        self._own("sms", _at(DAY1, 10))
+        rows = export_sends(
+            self.salon, DAY1, DAY3, appointment=appointment)
+        self.assertEqual([r["id"] for r in rows], [first.pk, second.pk])
+        parsed = _rows(export_sends_csv(
+            self.salon, DAY1, DAY3, appointment=appointment))
+        self.assertEqual([int(r["id"]) for r in parsed],
+                         [first.pk, second.pk])
+        self.assertTrue(
+            all(int(r["appointment_id"]) == appointment.pk
+                for r in parsed))
+
+    def test_appointment_filter_default_is_byte_identical(self):
+        self._own("email", _at(DAY1, 9))
+        self._own("sms", _at(DAY2, 9))
+        self.assertEqual(
+            export_sends(self.salon, DAY1, DAY3),
+            export_sends(self.salon, DAY1, DAY3, appointment=None))
+        self.assertEqual(
+            export_sends_csv(self.salon, DAY1, DAY3),
+            export_sends_csv(self.salon, DAY1, DAY3, appointment=None))
+
+    def test_appointment_filter_date_window_still_applies(self):
+        first = self._own("email", _at(DAY1, 9))
+        appointment = Appointment.objects.get(pk=first.appointment_id)
+        self._send_for(appointment, "sms", _at(DAY3, 9))
+        rows = export_sends(
+            self.salon, DAY1, DAY1, appointment=appointment)
+        self.assertEqual([r["id"] for r in rows], [first.pk])
+
+    def test_appointment_filter_foreign_appointment_is_empty(self):
+        self._own("email", _at(DAY1, 9))
+        foreign_send = self._send(
+            self.other, self.other_staff, "email", _at(DAY1, 9))
+        foreign = Appointment.objects.get(pk=foreign_send.appointment_id)
+        header = ",".join(RECORD_FIELDNAMES) + "\n"
+        self.assertEqual(export_sends(
+            self.salon, DAY1, DAY3, appointment=foreign), [])
+        self.assertEqual(export_sends_csv(
+            self.salon, DAY1, DAY3, appointment=foreign), header)
+
+    def test_appointment_filter_appointment_no_sends_in_range(self):
+        first = self._own("email", _at(DAY1, 9))
+        appointment = Appointment.objects.get(pk=first.appointment_id)
+        self.assertEqual(export_sends(
+            self.salon, DAY2, DAY3, appointment=appointment), [])
 
     def test_read_only_no_mutation(self):
         row = self._own("email", _at(DAY1, 9))
