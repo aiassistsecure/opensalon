@@ -30,6 +30,12 @@ timezone; ``date_to`` may be omitted for a single-day export.
 A reversed range, a missing salon, or a missing start date
 exports as ``[]`` / a header-only CSV. Ordering is oldest
 first (``sent_at``, then ``id``). Lines end ``"\\n"``.
+
+Per-campaign filter: both export functions accept an optional
+``campaign`` (default ``None``). With ``None`` the output is
+the salon-wide export, unchanged. With a campaign, only that
+campaign's sends are included; the salon filter still applies,
+so a campaign from another salon exports as empty.
 """
 import csv
 import datetime
@@ -97,13 +103,20 @@ def campaign_send_detail_row(send):
     }
 
 
-def export_campaign_send_detail(salon, date_from, date_to=None):
+def export_campaign_send_detail(salon, date_from, date_to=None,
+                                campaign=None):
     """Return ``salon``'s ``CampaignSend`` rows in a date range.
 
     One dict per send, scoped by ``campaign__salon``, ordered
     oldest first (``sent_at``, then ``id``). An empty or
     reversed range, a missing salon, or a missing start date
     exports as ``[]``. Read-only.
+
+    ``campaign`` is optional: the default ``None`` is the
+    salon-wide export, unchanged. When a campaign is given,
+    only that campaign's sends are included; a campaign
+    belonging to another salon exports as ``[]`` because the
+    salon filter still applies.
     """
     bounds = _range(salon, date_from, date_to)
     if bounds is None:
@@ -122,18 +135,28 @@ def export_campaign_send_detail(salon, date_from, date_to=None):
         .select_related("campaign")
         .order_by("sent_at", "id")
     )
+    if campaign is not None:
+        sends = sends.filter(campaign=campaign)
     return [campaign_send_detail_row(send) for send in sends]
 
 
-def export_campaign_send_detail_csv(salon, date_from, date_to=None):
-    """Return :func:`export_campaign_send_detail` as a CSV string."""
+def export_campaign_send_detail_csv(salon, date_from, date_to=None,
+                                    campaign=None):
+    """Return :func:`export_campaign_send_detail` as a CSV string.
+
+    ``campaign`` is optional and passed through to
+    :func:`export_campaign_send_detail`: the default ``None``
+    is the salon-wide export, unchanged; a given campaign
+    exports only that campaign's sends.
+    """
     buffer = io.StringIO()
     writer = csv.DictWriter(
         buffer, fieldnames=CAMPAIGN_SEND_DETAIL_FIELDNAMES,
         lineterminator="\n",
     )
     writer.writeheader()
-    for record in export_campaign_send_detail(salon, date_from, date_to):
+    for record in export_campaign_send_detail(
+            salon, date_from, date_to, campaign=campaign):
         writer.writerow(record)
     return buffer.getvalue()
 
