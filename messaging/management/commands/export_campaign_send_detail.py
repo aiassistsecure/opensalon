@@ -2,7 +2,7 @@
 
 Usage: python manage.py export_campaign_send_detail
     --salon-id ID --date-from YYYY-MM-DD [--date-to YYYY-MM-DD]
-    [--output PATH]
+    [--campaign-id ID] [--output PATH]
 
 Thin wrapper around
 :func:`messaging.campaign_send_detail.export_campaign_send_detail_csv`:
@@ -11,6 +11,14 @@ written unchanged to --output or stdout. Distinct from the
 aggregate commands ``export_campaign_send_totals`` and
 ``export_campaign_send_totals_detail``. Unknown salon / service
 error / unwritable output raise CommandError. Read-only.
+
+With ``--campaign-id`` the export is narrowed to that one
+campaign's sends: the campaign is resolved by id within the
+salon (a campaign from another salon, or an unknown id, is a
+``CommandError``), and the resolved campaign is passed to the
+service as its optional ``campaign`` argument. Without
+``--campaign-id`` the command exports the whole salon, exactly
+as before.
 """
 import argparse
 import datetime
@@ -20,6 +28,7 @@ from django.core.management.base import BaseCommand, CommandError
 from messaging.campaign_send_detail import (
     export_campaign_send_detail_csv,
 )
+from messaging.models import Campaign
 from saloncore.models import Salon
 
 
@@ -70,6 +79,9 @@ class Command(BaseCommand):
             default=None, help="Alias for --date-to.")
         parser.add_argument("--end-date", dest="end_date", type=_parse_date,
             default=None, help="Alias for --date-to.")
+        parser.add_argument("--campaign-id", type=int, default=None,
+            help="Id of the campaign (in the salon) whose sends "
+                 "to export (default: all campaigns).")
         parser.add_argument("--output", default=None,
             help="Path to write the CSV to (default: stdout).")
 
@@ -85,9 +97,19 @@ class Command(BaseCommand):
             "date_from")
         date_to = _coerce_date(
             _first(options, "date_to", "end", "end_date"), "date_to")
+        campaign = None
+        if options.get("campaign_id") is not None:
+            try:
+                campaign = Campaign.objects.get(
+                    pk=options["campaign_id"], salon=salon)
+            except Campaign.DoesNotExist as exc:
+                raise CommandError(
+                    f"No campaign with id {options['campaign_id']} "
+                    f"for salon {salon.pk}."
+                ) from exc
         try:
             text = export_campaign_send_detail_csv(
-                salon, date_from, date_to,
+                salon, date_from, date_to, campaign=campaign,
             )
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc

@@ -59,6 +59,16 @@ class CampaignSendDetailBase(TestCase):
     def _own(self, channel, when, **kw):
         return self._send(self.salon, channel, when, **kw)
 
+    def _send_for(self, campaign, when, status="sent", detail=""):
+        self._n += 1
+        client = Client.objects.create(
+            salon=campaign.salon, first_name=f"C{self._n}",
+            last_name="Example", email=f"c{self._n}@example.com",
+            phone="555-0100", sms_opt_in=True, email_opt_in=True)
+        return CampaignSend.objects.create(
+            campaign=campaign, client=client, channel=campaign.channel,
+            status=status, sent_at=when, detail=detail)
+
 
 class DetailServiceTests(CampaignSendDetailBase):
     def test_header_and_row_keys(self):
@@ -123,6 +133,57 @@ class DetailServiceTests(CampaignSendDetailBase):
         self.assertEqual(export_campaign_send_detail(self.salon, DAY1, DAY3),
                          [])
 
+    def test_campaign_filter_filters_to_one_campaign(self):
+        first = self._own("email", _at(DAY1, 9))
+        campaign = Campaign.objects.get(pk=first.campaign_id)
+        second = self._send_for(campaign, _at(DAY2, 9))
+        self._own("sms", _at(DAY1, 10))
+        rows = export_campaign_send_detail(
+            self.salon, DAY1, DAY3, campaign=campaign)
+        self.assertEqual([r["id"] for r in rows], [first.pk, second.pk])
+        parsed = _rows(export_campaign_send_detail_csv(
+            self.salon, DAY1, DAY3, campaign=campaign))
+        self.assertEqual([int(r["id"]) for r in parsed],
+                         [first.pk, second.pk])
+        self.assertTrue(
+            all(int(r["campaign_id"]) == campaign.pk for r in parsed))
+
+    def test_campaign_filter_default_is_byte_identical(self):
+        self._own("email", _at(DAY1, 9))
+        self._own("sms", _at(DAY2, 9))
+        self.assertEqual(
+            export_campaign_send_detail(self.salon, DAY1, DAY3),
+            export_campaign_send_detail(
+                self.salon, DAY1, DAY3, campaign=None))
+        self.assertEqual(
+            export_campaign_send_detail_csv(self.salon, DAY1, DAY3),
+            export_campaign_send_detail_csv(
+                self.salon, DAY1, DAY3, campaign=None))
+
+    def test_campaign_filter_date_window_still_applies(self):
+        first = self._own("email", _at(DAY1, 9))
+        campaign = Campaign.objects.get(pk=first.campaign_id)
+        self._send_for(campaign, _at(DAY3, 9))
+        rows = export_campaign_send_detail(
+            self.salon, DAY1, DAY1, campaign=campaign)
+        self.assertEqual([r["id"] for r in rows], [first.pk])
+
+    def test_campaign_filter_foreign_campaign_is_empty(self):
+        self._own("email", _at(DAY1, 9))
+        foreign_send = self._send(self.other, "email", _at(DAY1, 9))
+        foreign = Campaign.objects.get(pk=foreign_send.campaign_id)
+        header = ",".join(CAMPAIGN_SEND_DETAIL_FIELDNAMES) + "\n"
+        self.assertEqual(export_campaign_send_detail(
+            self.salon, DAY1, DAY3, campaign=foreign), [])
+        self.assertEqual(export_campaign_send_detail_csv(
+            self.salon, DAY1, DAY3, campaign=foreign), header)
+
+    def test_campaign_filter_campaign_with_no_sends_in_range(self):
+        first = self._own("email", _at(DAY1, 9))
+        campaign = Campaign.objects.get(pk=first.campaign_id)
+        self.assertEqual(export_campaign_send_detail(
+            self.salon, DAY2, DAY3, campaign=campaign), [])
+
     def test_other_salon_excluded_and_read_only(self):
         row = self._own("email", _at(DAY1, 9))
         self._send(self.other, "email", _at(DAY1, 9))
@@ -172,6 +233,54 @@ class DetailCommandTests(CampaignSendDetailBase):
         self.assertEqual(written,
                          export_campaign_send_detail_csv(self.salon, DAY1, DAY3))
         self.assertEqual(out.getvalue(), "")
+
+    def test_campaign_id_filters_to_one_campaign(self):
+        target = CampaignSend.objects.filter(
+            campaign__salon=self.salon).order_by("id").first()
+        out = io.StringIO()
+        call_command(_cmd(), salon_id=self.salon.pk,
+                     date_from=DAY1, date_to=DAY3,
+                     campaign_id=target.campaign_id, stdout=out)
+        campaign = Campaign.objects.get(pk=target.campaign_id)
+        self.assertEqual(out.getvalue(),
+                         export_campaign_send_detail_csv(
+                             self.salon, DAY1, DAY3, campaign=campaign))
+        parsed = _rows(out.getvalue())
+        self.assertEqual([int(r["id"]) for r in parsed], [target.pk])
+
+    def test_campaign_id_with_cli_args(self):
+        target = CampaignSend.objects.filter(
+            campaign__salon=self.salon).order_by("id").first()
+        out = io.StringIO()
+        call_command(_cmd(), "--salon-id", str(self.salon.pk),
+                     "--date-from", DAY1.isoformat(),
+                     "--date-to", DAY3.isoformat(),
+                     "--campaign-id", str(target.campaign_id), stdout=out)
+        campaign = Campaign.objects.get(pk=target.campaign_id)
+        self.assertEqual(out.getvalue(),
+                         export_campaign_send_detail_csv(
+                             self.salon, DAY1, DAY3, campaign=campaign))
+
+    def test_no_campaign_id_is_salon_wide_default(self):
+        out = io.StringIO()
+        call_command(_cmd(), salon_id=self.salon.pk,
+                     date_from=DAY1, date_to=DAY3, stdout=out)
+        self.assertEqual(out.getvalue(),
+                         export_campaign_send_detail_csv(
+                             self.salon, DAY1, DAY3, campaign=None))
+
+    def test_unknown_campaign_id_raises(self):
+        with self.assertRaises(CommandError):
+            call_command(_cmd(), salon_id=self.salon.pk,
+                         date_from=DAY1, campaign_id=999999,
+                         stdout=io.StringIO())
+
+    def test_campaign_from_other_salon_raises(self):
+        foreign = Campaign.objects.get(salon=self.other)
+        with self.assertRaises(CommandError):
+            call_command(_cmd(), salon_id=self.salon.pk,
+                         date_from=DAY1, campaign_id=foreign.pk,
+                         stdout=io.StringIO())
 
     def test_unknown_salon_and_unwritable_output(self):
         with self.assertRaises(CommandError):
