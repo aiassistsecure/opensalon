@@ -55,7 +55,7 @@ class ExportHistoryCommandTests(TestCase):
             staff_member=staff or self.staff,
             service=service or self.service,
             start=start, end=start + datetime.timedelta(hours=1),
-            status="booked", origin="online", **kw)
+            status=kw.pop("status", "booked"), origin="online", **kw)
 
     def exported_ids(self, text):
         return [int(r["id"]) for r in csv.DictReader(io.StringIO(text))]
@@ -180,6 +180,40 @@ class ExportHistoryCommandTests(TestCase):
             limit=1, start_date=datetime.date(2026, 10, 31),
             end_date=datetime.date(2026, 10, 31))
         self.assertEqual(self.exported_ids(out), [self.older.pk])
+
+    def test_status_string_arg_matches_service(self):
+        cancelled = self._appt(at(-1, 11), status="cancelled")
+        out = io.StringIO()
+        call_command(
+            "export_history", "--salon-id", str(self.salon.pk),
+            "--now", NOW.isoformat(), "--status", "cancelled", stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_history_csv(
+                self.salon, None, now=NOW, status="cancelled"))
+        self.assertEqual(self.exported_ids(out.getvalue()), [cancelled.pk])
+
+    def test_status_kwarg_matches_service(self):
+        cancelled = self._appt(
+            at(-1, 11), client=self.client, status="cancelled")
+        out = self.run_export(client_id=self.client.pk, status="cancelled")
+        self.assertEqual(
+            out, export_history_csv(
+                self.salon, self.client, now=NOW, status="cancelled"))
+        self.assertEqual(self.exported_ids(out), [cancelled.pk])
+
+    def test_status_composes_with_window_and_limit(self):
+        self._appt(at(-1, 11), status="cancelled")
+        completed = self._appt(at(-2, 11), status="completed")
+        out = self.run_export(
+            status="completed", limit=1,
+            start_date=datetime.date(2026, 10, 31),
+            end_date=datetime.date(2026, 10, 31))
+        self.assertEqual(self.exported_ids(out), [completed.pk])
+
+    def test_no_status_is_previous_output(self):
+        out = self.run_export()
+        self.assertEqual(
+            out, export_history_csv(self.salon, None, now=NOW, status=None))
 
     def test_bad_start_date_raises(self):
         with self.assertRaises((CommandError, SystemExit)):

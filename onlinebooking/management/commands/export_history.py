@@ -4,15 +4,17 @@ Usage:
     python manage.py export_history --salon-id ID
         [--client-id ID] [--now ISO-DATETIME] [--limit N]
         [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD]
-        [--output PATH]
+        [--status STATUS] [--output PATH]
 
 Thin wrapper around the existing
 :func:`onlinebooking.export_history.export_history_csv`
 service: this command delegates verbatim to
 ``export_history_csv(salon, client, now=now, limit=limit,
-start_date=start_date, end_date=end_date)``
+start_date=start_date, end_date=end_date, status=status)``
 and adds no export logic of its own, so the command output and
 the service output can never disagree -- one source of truth.
+``--status`` is the optional exact stored booking status to
+filter by; omitted, no status filter applies.
 ``--start-date`` / ``--end-date`` are the optional inclusive
 local-date window on booking ``start``, spelled as the other
 Family XI ledger commands spell them (``--date-from`` /
@@ -133,6 +135,10 @@ class Command(BaseCommand):
             help="Inclusive last day of the window on booking "
                  "start, YYYY-MM-DD (default: unbounded).")
         parser.add_argument(
+            "--status", dest="status", default=None,
+            help="Booking status value to filter by (default: "
+                 "no status filter, as the service defines it).")
+        parser.add_argument(
             "--output", default=None,
             help="Path of the CSV file to write (default: stdout).")
 
@@ -158,7 +164,8 @@ class Command(BaseCommand):
         try:
             text = export_history_csv(
                 salon, client, now=now, limit=options.get("limit"),
-                start_date=start_date, end_date=end_date)
+                start_date=start_date, end_date=end_date,
+                status=options.get("status"))
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
 
