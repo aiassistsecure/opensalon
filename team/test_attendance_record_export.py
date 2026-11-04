@@ -178,6 +178,82 @@ class AttendanceRecordExportTests(TestCase):
                 self.other_salon, staff_member=self.other_staff)),
             1)
 
+    def test_window_by_dates_includes_whole_end_day(self):
+        before = self._in(when=datetime.datetime(
+            2026, 10, 30, 9, 0, tzinfo=UTC), note="before")
+        first = self._in(note="first")
+        last = self._out(note="last")
+        after = self._in(when=datetime.datetime(
+            2026, 11, 1, 9, 0, tzinfo=UTC), note="after")
+        records = export_attendance_records(
+            self.salon, start=DAY, end=DAY)
+        self.assertEqual([r["id"] for r in records],
+                         [last.pk, first.pk])
+        parsed = list(csv.DictReader(io.StringIO(
+            export_attendance_records_csv(
+                self.salon, start=DAY, end=DAY))))
+        self.assertEqual([int(r["id"]) for r in parsed],
+                         [last.pk, first.pk])
+        self.assertNotIn(before.pk, [r["id"] for r in records])
+        self.assertNotIn(after.pk, [r["id"] for r in records])
+
+    def test_window_start_only_and_end_only(self):
+        early = self._in()
+        late = self._out()
+        self.assertEqual(
+            [r["id"] for r in export_attendance_records(
+                self.salon, start=at(12))],
+            [late.pk])
+        self.assertEqual(
+            [r["id"] for r in export_attendance_records(
+                self.salon, end=at(12))],
+            [early.pk])
+
+    def test_window_datetime_end_is_exclusive_as_given(self):
+        self._in()
+        self._out()
+        records = export_attendance_records(
+            self.salon, start=at(9), end=at(17))
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["event_type"], "check_in")
+
+    def test_window_aliases_start_date_end_date(self):
+        self._in()
+        self._out()
+        self.assertEqual(
+            export_attendance_records(
+                self.salon, start_date=DAY, end_date=DAY),
+            export_attendance_records(self.salon, start=DAY, end=DAY))
+        self.assertEqual(
+            export_attendance_records_csv(
+                self.salon, start_date=DAY, end_date=DAY),
+            export_attendance_records_csv(
+                self.salon, start=DAY, end=DAY))
+
+    def test_window_composes_with_staff_member(self):
+        eve = StaffMember.objects.create(
+            salon=self.salon, display_name="Eve")
+        self._in(note="dana early")
+        dana_late = self._in(when=datetime.datetime(
+            2026, 11, 5, 9, 0, tzinfo=UTC), note="dana late")
+        self._in(staff=eve, note="eve early")
+        records = export_attendance_records(
+            self.salon, staff_member=self.dana,
+            start=datetime.date(2026, 11, 1),
+            end=datetime.date(2026, 11, 30))
+        self.assertEqual([r["id"] for r in records], [dana_late.pk])
+
+    def test_window_with_no_records_is_empty(self):
+        self._in()
+        far = datetime.date(2027, 1, 1)
+        self.assertEqual(
+            export_attendance_records(self.salon, start=far, end=far),
+            [])
+        self.assertEqual(
+            export_attendance_records_csv(
+                self.salon, start=far, end=far),
+            ",".join(ATTENDANCE_RECORD_EXPORT_FIELDNAMES) + "\n")
+
     def test_read_only(self):
         self._in()
         self._out()
