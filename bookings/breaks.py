@@ -19,6 +19,13 @@ rows: it mirrors the model's fields exactly (``staff_member``,
 ``start``, ``end``, ``paid`` -- ``paid`` is payroll-relevant,
 whether the blocked time is on the clock) and refuses invalid
 shapes with ``ValidationError``, writing nothing.
+
+:func:`update_break` is the single post-creation writer for a
+``Break``: ``start``, ``end``, and ``paid`` are all optional
+(``None`` means unchanged), validation reuses
+:func:`validate_add_break`'s rules against the merged pair,
+and ``staff_member`` is never changeable -- a different member
+is a different break.
 """
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
@@ -31,7 +38,8 @@ from bookings.models import Break
 from team.models import StaffMember
 
 __all__ = ["BreakRecord", "add_break", "breaks", "list_breaks",
-           "validate_add_break"]
+           "update_break", "validate_add_break",
+           "validate_update_break"]
 
 
 def validate_add_break(staff_member, start=None, end=None, paid=False,
@@ -93,6 +101,83 @@ def add_break(staff_member, start=None, end=None, paid=False, **kwargs):
     return Break.objects.create(
         staff_member=staff_member, start=start, end=end,
         paid=paid)
+
+
+def validate_update_break(break_obj, start=None, end=None, paid=None,
+                          **kwargs):
+    """Validate an ``update_break`` call without writing anything.
+
+    Returns the merged ``(start, end, paid)`` the writer would
+    store: a field passed as ``None`` (the default) keeps the
+    stored value. Given datetimes must be timezone-aware, and
+    ``end`` must be after ``start`` for the MERGED pair -- so
+    moving only ``start`` past the stored ``end`` (or only
+    ``end`` to/before the stored ``start``) is refused even
+    though the given field alone looks fine. Raises the same
+    ``ValidationError`` the writer would raise. Writes nothing,
+    so it is safe for ``--dry-run`` previews on every backend
+    (including NEDB, where a rolled-back transaction does not
+    undo writes). ``staff_member`` is not an accepted argument.
+    """
+    if "starts_at" in kwargs:
+        if start is not None:
+            raise ValidationError(
+                {"start": "Pass either start or starts_at, not both."})
+        start = kwargs.pop("starts_at")
+    if "ends_at" in kwargs:
+        if end is not None:
+            raise ValidationError(
+                {"end": "Pass either end or ends_at, not both."})
+        end = kwargs.pop("ends_at")
+    if kwargs:
+        raise ValidationError(
+            {next(iter(kwargs)): "Unknown argument."})
+    if break_obj is None or not isinstance(break_obj, Break):
+        raise ValidationError({"break": "A break is required."})
+    if break_obj.pk is None or not Break.objects.filter(
+            pk=break_obj.pk).exists():
+        raise ValidationError({"break": "That break does not exist."})
+    if start is None and end is None and paid is None:
+        raise ValidationError(
+            {"break": "At least one field must be given to update."})
+    for field, value in (("start", start), ("end", end)):
+        if value is not None and (
+                not isinstance(value, datetime)
+                or timezone.is_naive(value)):
+            raise ValidationError(
+                {field: f"Break {field} must be a timezone-aware datetime."})
+    merged_start = break_obj.start if start is None else start
+    merged_end = break_obj.end if end is None else end
+    if merged_end <= merged_start:
+        raise ValidationError(
+            {"end": "Break end must be after its start."})
+    merged_paid = break_obj.paid if paid is None else bool(paid)
+    return merged_start, merged_end, merged_paid
+
+
+def update_break(break_obj, start=None, end=None, paid=None, **kwargs):
+    """Update ``start``/``end``/``paid`` of a ``Break``; return it.
+
+    Every field is optional: ``None`` (the default) leaves it
+    unchanged, and calling with no field at all is refused.
+    The ``starts_at``/``ends_at`` keyword aliases are also
+    accepted. ``staff_member`` can never be changed here.
+    Raises ``ValidationError`` -- writing nothing -- for a
+    missing or unknown break, a naive given datetime, or a
+    merged ``end`` that is not after the merged ``start``.
+    Only fields that actually differ are saved.
+    """
+    merged_start, merged_end, merged_paid = validate_update_break(
+        break_obj, start=start, end=end, paid=paid, **kwargs)
+    fields = []
+    for field, value in (("start", merged_start), ("end", merged_end),
+                         ("paid", merged_paid)):
+        if getattr(break_obj, field) != value:
+            setattr(break_obj, field, value)
+            fields.append(field)
+    if fields:
+        break_obj.save(update_fields=fields + ["updated_at"])
+    return break_obj
 
 
 @dataclass(frozen=True)
