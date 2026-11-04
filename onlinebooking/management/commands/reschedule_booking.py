@@ -3,7 +3,7 @@
 Usage:
     python manage.py reschedule_booking --appointment-id ID
         --new-start ISO-8601 [--new-end ISO-8601]
-        [--salon-id ID] [--dry-run]
+        [--new-staff-member-id ID] [--salon-id ID] [--dry-run]
 
 Thin wrapper around
 :func:`onlinebooking.services.reschedule_online_booking` (which
@@ -14,7 +14,13 @@ salon-scoping convention) and the new times are passed to the
 service verbatim -- its toggle, reschedulable-status, and
 rostered-availability refusals stay the single source of truth
 and surface here as ``CommandError``. ``--new-end`` omitted
-preserves the original duration, per the service.
+preserves the original duration, per the service. With
+``--new-staff-member-id`` the new member is resolved by id in
+the appointment's salon (an unknown or out-of-salon id is a
+``CommandError``) and passed to the service, which checks the
+NEW member's online-booking toggle and delegates the rest to
+the lifecycle's ``new_staff_member`` validation; both the
+real and dry-run outputs name the from -> to staff change.
 
 With ``--dry-run`` nothing is written: the preview runs the
 service layer's read-only ``validate_reschedule_online_booking``
@@ -38,6 +44,7 @@ from onlinebooking.services import (
     validate_reschedule_online_booking,
 )
 from saloncore.models import Salon
+from team.models import StaffMember
 
 
 def _parse_datetime(value, label):
@@ -73,6 +80,19 @@ def _resolve(appointment_id, salon_id):
             f"No appointment with id {appointment_id}{suffix}.") from None
 
 
+def _resolve_new_staff_member(appointment, staff_member_id):
+    if staff_member_id is None:
+        return None
+    salon = appointment.staff_member.salon
+    try:
+        return StaffMember.objects.filter(salon=salon).get(
+            pk=staff_member_id)
+    except StaffMember.DoesNotExist:
+        raise CommandError(
+            f"No staff member with id {staff_member_id} "
+            f"in salon {salon.pk}.") from None
+
+
 class Command(BaseCommand):
     help = "Reschedule one online-booked appointment."
 
@@ -86,12 +106,17 @@ class Command(BaseCommand):
                             help="New start, ISO-8601 datetime.")
         parser.add_argument("--new-end", "--end", dest="new_end", default=None,
                             help="New end, ISO-8601 (default: preserve duration).")
+        parser.add_argument("--new-staff-member-id", type=int, default=None,
+                            help="Optional id of the staff member to move "
+                                 "the appointment to.")
         parser.add_argument("--dry-run", action="store_true",
                             help="Preview only: validate, print the move, write nothing.")
 
     def handle(self, *args, **options):
         appointment = _resolve(options.get("appointment_id"),
                                options.get("salon_id"))
+        new_staff_member = _resolve_new_staff_member(
+            appointment, options.get("new_staff_member_id"))
         new_start = _parse_datetime(
             options.get("new_start") or options.get("start"), "new-start")
         if new_start is None:
@@ -99,23 +124,32 @@ class Command(BaseCommand):
         new_end = _parse_datetime(
             options.get("new_end") or options.get("end"), "new-end")
         old_start, old_end = appointment.start, appointment.end
+        staff_note = ""
+        if new_staff_member is not None:
+            staff_note = (
+                f", staff {appointment.staff_member.pk} -> "
+                f"{new_staff_member.pk}")
         if options.get("dry_run"):
             try:
                 preview_end = validate_reschedule_online_booking(
-                    appointment, new_start, new_end)
+                    appointment, new_start, new_end,
+                    new_staff_member=new_staff_member)
             except ValidationError as exc:
                 raise CommandError("; ".join(exc.messages)) from exc
             self.stdout.write(
                 f"Dry run: would reschedule appointment {appointment.pk}: "
                 f"{old_start.isoformat()} -> {new_start.isoformat()}, "
-                f"end {old_end.isoformat()} -> {preview_end.isoformat()} "
+                f"end {old_end.isoformat()} -> {preview_end.isoformat()}"
+                f"{staff_note} "
                 f"-- no appointment moved.")
             return
         try:
-            moved = reschedule_online_booking(appointment, new_start, new_end)
+            moved = reschedule_online_booking(
+                appointment, new_start, new_end,
+                new_staff_member=new_staff_member)
         except ValidationError as exc:
             raise CommandError("; ".join(exc.messages)) from exc
         self.stdout.write(
             f"Rescheduled appointment {moved.pk}: "
             f"{old_start.isoformat()} -> {moved.start.isoformat()}, "
-            f"end {moved.end.isoformat()}.")
+            f"end {moved.end.isoformat()}{staff_note}.")

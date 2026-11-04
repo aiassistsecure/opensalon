@@ -11,6 +11,7 @@ from onlinebooking.services import (
     cancel_online_booking,
     create_online_booking,
     reschedule_online_booking,
+    validate_reschedule_online_booking,
 )
 from saloncore.models import Salon, Service, ServiceCategory
 from team.models import RosterPattern, StaffMember
@@ -160,6 +161,85 @@ class RescheduleOnlineBookingTests(OnlineBookingBase):
         appt.refresh_from_db()
         self.assertEqual(appt.start, at(MONDAY, 10))
         self.assertEqual(appt.end, at(MONDAY, 10, 45))
+
+    def _rostered_online_staff(self, name="Second Stylist", **kw):
+        staff = StaffMember.objects.create(
+            salon=self.salon, display_name=name, online_bookable=True, **kw)
+        RosterPattern.objects.create(
+            staff_member=staff, weekday=0,
+            start_time=datetime.time(9, 0), end_time=datetime.time(17, 0))
+        return staff
+
+    def test_reschedule_to_new_toggle_on_staff_succeeds(self):
+        new_staff = self._rostered_online_staff()
+        appt = self._book(hour=10)
+        moved = reschedule_online_booking(
+            appt, at(MONDAY, 13), new_staff_member=new_staff)
+        self.assertEqual(moved.staff_member, new_staff)
+        self.assertEqual((moved.start, moved.end),
+                         (at(MONDAY, 13), at(MONDAY, 13, 45)))
+        appt.refresh_from_db()
+        self.assertEqual(appt.staff_member, new_staff)
+
+    def test_reschedule_to_toggle_off_new_staff_is_refused(self):
+        appt = self._book(hour=10)
+        # offline_staff is rostered but its toggle is OFF.
+        with self.assertRaises(ValidationError):
+            reschedule_online_booking(
+                appt, at(MONDAY, 13), new_staff_member=self.offline_staff)
+        appt.refresh_from_db()
+        self.assertEqual(appt.staff_member, self.online_staff)
+        self.assertEqual(appt.start, at(MONDAY, 10))
+
+    def test_reschedule_validate_twin_staff_change_writes_nothing(self):
+        new_staff = self._rostered_online_staff()
+        appt = self._book(hour=10)
+        resolved = validate_reschedule_online_booking(
+            appt, at(MONDAY, 13), new_staff_member=new_staff)
+        self.assertEqual(resolved, at(MONDAY, 13, 45))
+        appt.refresh_from_db()
+        self.assertEqual(appt.staff_member, self.online_staff)
+        self.assertEqual(appt.start, at(MONDAY, 10))
+
+    def test_reschedule_validate_twin_toggle_off_new_staff_refused(self):
+        appt = self._book(hour=10)
+        with self.assertRaises(ValidationError):
+            validate_reschedule_online_booking(
+                appt, at(MONDAY, 13), new_staff_member=self.offline_staff)
+
+    def test_reschedule_to_unrostered_new_staff_is_refused(self):
+        appt = self._book(hour=10)
+        # Toggle ON but no roster: lifecycle availability owns this.
+        with self.assertRaises(ValidationError):
+            reschedule_online_booking(
+                appt, at(MONDAY, 13),
+                new_staff_member=self.unrostered_staff)
+        appt.refresh_from_db()
+        self.assertEqual(appt.staff_member, self.online_staff)
+
+    def test_reschedule_away_from_toggle_off_current_to_new_succeeds(self):
+        new_staff = self._rostered_online_staff()
+        appt = self._book(hour=10)
+        self.online_staff.online_bookable = False
+        self.online_staff.save(update_fields=["online_bookable"])
+        moved = reschedule_online_booking(
+            appt, at(MONDAY, 13), new_staff_member=new_staff)
+        self.assertEqual(moved.staff_member, new_staff)
+
+    def test_reschedule_to_other_salon_or_inactive_staff_is_refused(self):
+        other_salon = Salon.objects.create(name="Other", timezone="UTC")
+        foreign = StaffMember.objects.create(
+            salon=other_salon, display_name="Foreign", online_bookable=True)
+        inactive = self._rostered_online_staff("Inactive", active=False)
+        appt = self._book(hour=10)
+        for target in (foreign, inactive):
+            with self.subTest(target=target.display_name):
+                with self.assertRaises(ValidationError):
+                    reschedule_online_booking(
+                        appt, at(MONDAY, 13), new_staff_member=target)
+        appt.refresh_from_db()
+        self.assertEqual(appt.staff_member, self.online_staff)
+        self.assertEqual(appt.start, at(MONDAY, 10))
 
 
 class CancelOnlineBookingTests(OnlineBookingBase):

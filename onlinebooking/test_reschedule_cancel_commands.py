@@ -130,6 +130,88 @@ class RescheduleBookingCommandTests(CommandBase):
                          new_start="not-a-time", stdout=io.StringIO())
 
 
+class RescheduleBookingNewStaffCommandTests(CommandBase):
+    def setUp(self):
+        super().setUp()
+        self.new_staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Second Stylist",
+            online_bookable=True)
+        self.offline_staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Offline Stylist",
+            online_bookable=False)
+        for staff in (self.new_staff, self.offline_staff):
+            RosterPattern.objects.create(
+                staff_member=staff, weekday=0,
+                start_time=datetime.time(9, 0),
+                end_time=datetime.time(17, 0))
+
+    def test_real_run_changes_staff_and_time(self):
+        out = io.StringIO()
+        call_command("reschedule_booking", appointment_id=self.appt.pk,
+                     new_start=at(MONDAY, 13),
+                     new_staff_member_id=self.new_staff.pk, stdout=out)
+        self.appt.refresh_from_db()
+        self.assertEqual(self.appt.staff_member, self.new_staff)
+        self.assertEqual((self.appt.start, self.appt.end),
+                         (at(MONDAY, 13), at(MONDAY, 13, 45)))
+        self.assertIn(
+            f"staff {self.staff.pk} -> {self.new_staff.pk}",
+            out.getvalue())
+
+    def test_real_run_string_args(self):
+        call_command("reschedule_booking", "--appointment-id",
+                     str(self.appt.pk), "--new-start",
+                     "2026-11-02T13:00:00+00:00",
+                     "--new-staff-member-id", str(self.new_staff.pk),
+                     stdout=io.StringIO())
+        self.appt.refresh_from_db()
+        self.assertEqual(self.appt.staff_member, self.new_staff)
+        self.assertEqual(self.appt.start, at(MONDAY, 13))
+
+    def test_dry_run_prints_staff_change_and_writes_nothing(self):
+        out = io.StringIO()
+        call_command("reschedule_booking", appointment_id=self.appt.pk,
+                     new_start=at(MONDAY, 13),
+                     new_staff_member_id=self.new_staff.pk,
+                     dry_run=True, stdout=out)
+        self.appt.refresh_from_db()
+        self.assertEqual(self.appt.staff_member, self.staff)
+        self.assertEqual((self.appt.start, self.appt.end),
+                         (at(MONDAY, 10), at(MONDAY, 10, 45)))
+        self.assertEqual(Appointment.objects.count(), 1)
+        text = out.getvalue()
+        self.assertIn("Dry run", text)
+        self.assertIn(
+            f"staff {self.staff.pk} -> {self.new_staff.pk}", text)
+
+    def test_toggle_off_new_staff_is_command_error_unchanged(self):
+        for kw in ({}, {"dry_run": True}):
+            with self.assertRaises(CommandError):
+                call_command("reschedule_booking",
+                             appointment_id=self.appt.pk,
+                             new_start=at(MONDAY, 13),
+                             new_staff_member_id=self.offline_staff.pk,
+                             stdout=io.StringIO(), **kw)
+        self.appt.refresh_from_db()
+        self.assertEqual(self.appt.staff_member, self.staff)
+        self.assertEqual(self.appt.start, at(MONDAY, 10))
+
+    def test_unknown_and_out_of_salon_new_staff_are_command_errors(self):
+        other = Salon.objects.create(name="Other Salon", timezone="UTC")
+        foreign = StaffMember.objects.create(
+            salon=other, display_name="Foreign", online_bookable=True)
+        for staff_id in (999999, foreign.pk):
+            with self.assertRaises(CommandError):
+                call_command("reschedule_booking",
+                             appointment_id=self.appt.pk,
+                             new_start=at(MONDAY, 13),
+                             new_staff_member_id=staff_id,
+                             stdout=io.StringIO())
+        self.appt.refresh_from_db()
+        self.assertEqual(self.appt.staff_member, self.staff)
+        self.assertEqual(self.appt.start, at(MONDAY, 10))
+
+
 class CancelBookingCommandTests(CommandBase):
     def test_real_run_cancels_and_keeps_row(self):
         out = io.StringIO()
