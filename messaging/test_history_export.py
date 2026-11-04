@@ -195,6 +195,78 @@ class ClientHistoryTests(HistoryExportBase):
         self.assertEqual(export_client_history_csv(None), header)
 
 
+class ClientHistoryWindowTests(HistoryExportBase):
+    def setUp(self):
+        super().setUp()
+        self.client = self._client()
+        self.oldest = self._send(self.client, "email", _at(DAY1, 9))
+        self.middle = self._send(self.client, "sms", _at(DAY2, 9))
+        self.newest = self._send(self.client, "email", _at(DAY3, 9))
+
+    def _ids(self, rows):
+        return [r["id"] for r in rows]
+
+    def test_default_window_is_unbounded_and_unchanged(self):
+        self.assertEqual(
+            export_client_history(self.client),
+            export_client_history(self.client, start=None, end=None))
+        self.assertEqual(
+            export_client_history_csv(self.client),
+            export_client_history_csv(self.client, start=None, end=None))
+
+    def test_window_filters_on_sent_at(self):
+        self.assertEqual(
+            self._ids(export_client_history(
+                self.client, start=DAY2, end=DAY3)),
+            [self.newest.id, self.middle.id])
+        self.assertEqual(
+            self._ids(export_client_history(self.client, start=DAY2)),
+            [self.newest.id, self.middle.id])
+        self.assertEqual(
+            self._ids(export_client_history(self.client, end=DAY2)),
+            [self.middle.id, self.oldest.id])
+
+    def test_date_end_includes_whole_end_day(self):
+        late = self._send(self.client, "sms", _at(DAY2, 23))
+        self.assertEqual(
+            self._ids(export_client_history(
+                self.client, start=DAY2, end=DAY2)),
+            [late.id, self.middle.id])
+
+    def test_datetime_bounds_are_used_as_given(self):
+        self.assertEqual(
+            self._ids(export_client_history(
+                self.client, start=_at(DAY2, 10), end=_at(DAY3, 10))),
+            [self.newest.id])
+
+    def test_window_applies_before_limit(self):
+        rows = export_client_history(
+            self.client, limit=1, start=DAY1, end=DAY2)
+        self.assertEqual(self._ids(rows), [self.middle.id])
+
+    def test_csv_agrees_with_list_for_window(self):
+        parsed = [
+            {**r, "id": int(r["id"]),
+             "appointment_id": int(r["appointment_id"]),
+             "client_id": int(r["client_id"])}
+            for r in _rows(export_client_history_csv(
+                self.client, start=DAY2, end=DAY3))]
+        self.assertEqual(
+            parsed,
+            export_client_history(self.client, start=DAY2, end=DAY3))
+
+    def test_empty_window_is_header_only(self):
+        header = ",".join(CLIENT_HISTORY_FIELDNAMES) + "\n"
+        self.assertEqual(
+            export_client_history(
+                self.client, start=date(2027, 1, 1), end=date(2027, 1, 2)),
+            [])
+        self.assertEqual(
+            export_client_history_csv(
+                self.client, start=date(2027, 1, 1), end=date(2027, 1, 2)),
+            header)
+
+
 class ReadOnlyTests(HistoryExportBase):
     def test_export_mutates_nothing(self):
         client = self._client()
