@@ -103,3 +103,56 @@ class ExportProductsCommandTests(TestCase):
         with self.assertRaises(CommandError):
             call_command("export_products", salon_id=999999,
                          stdout=io.StringIO())
+
+
+class ExportProductsProductTypeCommandTests(TestCase):
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon")
+        Product.objects.create(
+            salon=self.salon, name="Retail Shampoo",
+            price=Decimal("10.50"), product_type="retail")
+        Product.objects.create(
+            salon=self.salon, name="Backbar Shampoo",
+            price=Decimal("10.50"), product_type="backbar",
+            category_name="retail")
+        Product.objects.create(
+            salon=self.salon, name="Retired Retail", price=Decimal("6.00"),
+            active=False, product_type="retail")
+
+    def test_product_type_kwarg_matches_service(self):
+        out = io.StringIO()
+        call_command("export_products", salon_id=self.salon.pk,
+                     product_type="retail", stdout=out)
+        self.assertEqual(out.getvalue(), export_products_csv(
+            self.salon, product_type="retail"))
+        self.assertIn("Retail Shampoo", out.getvalue())
+        self.assertNotIn("Backbar Shampoo", out.getvalue())
+        self.assertNotIn("Retired Retail", out.getvalue())
+
+    def test_product_type_via_cli_flag(self):
+        out = io.StringIO()
+        call_command("export_products", "--salon-id", str(self.salon.pk),
+                     "--product-type", "retail", stdout=out)
+        self.assertEqual(out.getvalue(), export_products_csv(
+            self.salon, product_type="retail"))
+
+    def test_product_type_composes_with_include_inactive(self):
+        out = io.StringIO()
+        call_command("export_products", "--salon-id", str(self.salon.pk),
+                     "--product-type", "retail", "--include-inactive",
+                     stdout=out)
+        self.assertEqual(out.getvalue(), export_products_csv(
+            self.salon, include_inactive=True, product_type="retail"))
+        self.assertIn("Retired Retail", out.getvalue())
+        self.assertNotIn("Backbar Shampoo", out.getvalue())
+
+    def test_product_type_output_file_matches_service(self):
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "products.csv")
+            call_command("export_products", salon_id=self.salon.pk,
+                         product_type="retail", output=path, stdout=out)
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+        self.assertEqual(text, export_products_csv(
+            self.salon, product_type="retail"))

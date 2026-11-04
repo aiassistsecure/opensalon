@@ -38,6 +38,12 @@ matching ``stock_valuation`` and the stocktake sheet. Pass
 ``include_inactive=True`` for a complete exit export including
 inactive products (their ``active`` field reads ``False``).
 
+Product type: by default every product type is exported. Pass
+``product_type`` to keep only products whose stored
+``product_type`` field equals that value exactly (never the
+free-text ``category_name``). It composes with
+``include_inactive`` (both conditions must hold).
+
 Ordering is deterministic: by product name, then id.
 """
 import csv
@@ -103,13 +109,15 @@ def _record(product, on_hand):
     }
 
 
-def export_products(salon, include_inactive=False):
+def export_products(salon, include_inactive=False, product_type=None):
     """Return ``salon``'s products as a JSON-serializable list.
 
     Each entry is a dict with exactly :data:`EXPORT_FIELDNAMES`
     keys (see the module docstring). Only ``salon``'s products are
     included. Inactive products are excluded unless
-    ``include_inactive=True``. Ordered by name, then id.
+    ``include_inactive=True``. When ``product_type`` is given, only
+    products whose stored ``product_type`` equals it exactly are
+    included. Ordered by name, then id.
     An empty catalog exports as ``[]``.
     """
     records = [
@@ -129,10 +137,13 @@ def export_products(salon, include_inactive=False):
         # stock_valuation orders by value; the export contract is
         # name/id, so re-sort the (already fetched) records only.
         records.sort(key=lambda r: (r["name"], r["id"]))
+    if product_type is not None:
+        records = [r for r in records
+                   if r["product_type"] == product_type]
     return records
 
 
-def export_products_csv(salon, include_inactive=False):
+def export_products_csv(salon, include_inactive=False, product_type=None):
     """Return ``salon``'s products as a CSV string.
 
     The header row is :data:`EXPORT_FIELDNAMES` and every data row
@@ -145,7 +156,8 @@ def export_products_csv(salon, include_inactive=False):
         buffer, fieldnames=EXPORT_FIELDNAMES, lineterminator="\n"
     )
     writer.writeheader()
-    for record in export_products(salon, include_inactive=include_inactive):
+    for record in export_products(salon, include_inactive=include_inactive,
+                                  product_type=product_type):
         row = dict(record)
         if isinstance(row["payload"], (dict, list)):
             row["payload"] = json.dumps(row["payload"], sort_keys=True)
