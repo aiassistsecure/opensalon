@@ -25,9 +25,10 @@ class AddClientCommandTests(TestCase):
         (c,) = Client.objects.all()
         self.assertEqual(
             (c.first_name, c.last_name, c.email, c.phone,
-             c.sms_opt_in, c.email_opt_in),
+             c.sms_opt_in, c.email_opt_in, c.active),
             ("Ada", "Lovelace", "ada@example.com", "555-0100",
-             False, False))
+             False, False, True))
+        self.assertIn("active=True", text)
         self.assertIn(f"Created client {c.pk}", text)
         self.assertIn(f"salon {self.salon.pk}", text)
         # Command output carries ids only, no contact details.
@@ -43,6 +44,25 @@ class AddClientCommandTests(TestCase):
         (c,) = Client.objects.all()
         self.assertEqual((c.sms_opt_in, c.email_opt_in), (True, False))
         self.assertIn("sms_opt_in=True", out.getvalue())
+
+    def test_flag_form_with_inactive_opt_ins_unaffected(self):
+        out = io.StringIO()
+        call_command(
+            "add_client", "--salon-id", str(self.salon.pk),
+            "--first-name", "Ada", "--last-name", "Lovelace",
+            "--inactive", stdout=out)
+        (c,) = Client.objects.all()
+        self.assertEqual(
+            (c.active, c.sms_opt_in, c.email_opt_in),
+            (False, False, False))
+        self.assertIn("active=False", out.getvalue())
+
+    def test_call_command_inactive_kwarg(self):
+        self.run_cmd(
+            salon_id=self.salon.pk, first_name="Ada",
+            last_name="Lovelace", inactive=True)
+        (c,) = Client.objects.all()
+        self.assertFalse(c.active)
 
     def test_call_command_opt_in_kwargs(self):
         self.run_cmd(
@@ -60,6 +80,25 @@ class AddClientCommandTests(TestCase):
         self.assertIn("Dry run: would create client", text)
         self.assertIn("sms_opt_in=True", text)
         self.assertIn("no client written", text)
+
+    def test_dry_run_with_inactive_writes_nothing(self):
+        out = io.StringIO()
+        call_command(
+            "add_client", "--salon-id", str(self.salon.pk),
+            "--first-name", "Ada", "--last-name", "Lovelace",
+            "--inactive", "--dry-run", stdout=out)
+        text = out.getvalue()
+        self.assertEqual(Client.objects.count(), 0)
+        self.assertIn("Dry run: would create client", text)
+        self.assertIn("active=False", text)
+        self.assertIn("sms_opt_in=False", text)
+        self.assertIn("email_opt_in=False", text)
+        self.assertIn("no client written", text)
+        text = self.run_cmd(
+            salon_id=self.salon.pk, first_name="Ada",
+            last_name="Lovelace", inactive=True, dry_run=True)
+        self.assertEqual(Client.objects.count(), 0)
+        self.assertIn("active=False", text)
 
     def test_dry_run_invalid_writes_nothing(self):
         for kwargs in ({"first_name": " ", "last_name": "X"},

@@ -18,7 +18,9 @@ Validation mirrors the model/importer field shapes: first and
 last names are non-blank strings of at most 80 characters
 (never silently truncated), email is blank or a valid address
 of at most 254 characters, phone is a string of at most 32
-characters, and both opt-ins must be explicit booleans. No
+characters, and both opt-ins must be explicit booleans.
+``active`` mirrors ``add_service`` / ``add_product``: it
+defaults to True and must be an explicit boolean. No
 uniqueness rule is invented: the real client book contains
 duplicate emails and phones, and the model's only constraint
 is on non-blank ``external_id``, which this service never sets.
@@ -88,16 +90,17 @@ def _clean_flag(value, field):
 
 
 def validate_add_client(salon, first_name, last_name, email="",
-                        phone="", sms_opt_in=False, email_opt_in=False):
+                        phone="", sms_opt_in=False, email_opt_in=False,
+                        active=True):
     """Validate an ``add_client`` call, writing nothing.
 
     Performs every check :func:`add_client` performs and returns
     the cleaned fields the writer would store, as a dict with keys
     ``salon``, ``first_name``, ``last_name``, ``email``, ``phone``,
-    ``sms_opt_in``, ``email_opt_in``. Raises the same ``ValueError``
-    the writer would raise. Writes nothing, so it is safe for
-    ``--dry-run`` previews on every backend (including NEDB, where
-    a rolled-back transaction does not undo writes).
+    ``sms_opt_in``, ``email_opt_in``, ``active``. Raises the same
+    ``ValueError`` the writer would raise. Writes nothing, so it
+    is safe for ``--dry-run`` previews on every backend (including
+    NEDB, where a rolled-back transaction does not undo writes).
     """
     return dict(
         salon=_clean_salon(salon),
@@ -105,21 +108,25 @@ def validate_add_client(salon, first_name, last_name, email="",
         last_name=_clean_name(last_name, "last_name", _LAST_LIMIT),
         email=_clean_email(email), phone=_clean_phone(phone),
         sms_opt_in=_clean_flag(sms_opt_in, "sms_opt_in"),
-        email_opt_in=_clean_flag(email_opt_in, "email_opt_in"))
+        email_opt_in=_clean_flag(email_opt_in, "email_opt_in"),
+        active=_clean_flag(active, "active"))
 
 
 def add_client(salon, first_name, last_name, email="", phone="",
-               sms_opt_in=False, email_opt_in=False):
+               sms_opt_in=False, email_opt_in=False, active=True):
     """Create one client in ``salon`` and return it.
 
     Opt-ins default to False; pass ``sms_opt_in=True`` /
-    ``email_opt_in=True`` explicitly to set one. Raises
-    ``ValueError`` -- creating nothing -- for an unsaved salon,
-    a blank/over-long name, an invalid/over-long email, an
-    over-long phone, or a non-boolean opt-in.
+    ``email_opt_in=True`` explicitly to set one. ``active``
+    defaults to True; pass ``active=False`` to create the
+    client inactive. Raises ``ValueError`` -- creating
+    nothing -- for an unsaved salon, a blank/over-long name,
+    an invalid/over-long email, an over-long phone, or a
+    non-boolean opt-in or ``active``.
     """
     with transaction.atomic():
         cleaned = validate_add_client(
             salon, first_name, last_name, email=email, phone=phone,
-            sms_opt_in=sms_opt_in, email_opt_in=email_opt_in)
+            sms_opt_in=sms_opt_in, email_opt_in=email_opt_in,
+            active=active)
         return Client.objects.create(**cleaned)
