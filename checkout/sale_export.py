@@ -23,7 +23,9 @@ Scoping: ``salon`` directly (a sale carries its own salon), in
 ``id`` order. Optional ``date_from``/``date_to`` are inclusive
 whole local days in the salon's timezone, judged on the sale's
 own ``created_at``; ``date_to`` may be omitted for a single
-day. A reversed range or a missing salon exports as ``[]`` /
+day. Optional ``status`` filters by exact stored
+``Sale.Status`` value and composes (AND) with the date window.
+A reversed range or a missing salon exports as ``[]`` /
 the header row alone. Lines end ``"\n"``.
 """
 import csv
@@ -99,7 +101,7 @@ def sale_export_row(sale):
     }
 
 
-def export_sales(salon, date_from=None, date_to=None):
+def export_sales(salon, date_from=None, date_to=None, status=None):
     """Return ``salon``'s sales verbatim as dicts (see module)."""
     if salon is None:
         return []
@@ -107,6 +109,8 @@ def export_sales(salon, date_from=None, date_to=None):
     if salon_id is None:
         return []
     sales = Sale.objects.filter(salon_id=salon_id).order_by("id")
+    if status is not None:
+        sales = sales.filter(status=status)
     if date_from is not None:
         tz = _tz_for(salon)
         first = _as_local_date(date_from, tz)
@@ -127,7 +131,7 @@ def export_sales(salon, date_from=None, date_to=None):
     return [sale_export_row(sale) for sale in sales]
 
 
-def export_sales_csv(salon, date_from=None, date_to=None):
+def export_sales_csv(salon, date_from=None, date_to=None, status=None):
     """Return ``salon``'s sales as a CSV string.
 
     The header row is :data:`SALE_EXPORT_FIELDNAMES` and every
@@ -141,7 +145,7 @@ def export_sales_csv(salon, date_from=None, date_to=None):
         lineterminator="\n",
     )
     writer.writeheader()
-    for record in export_sales(salon, date_from, date_to):
+    for record in export_sales(salon, date_from, date_to, status=status):
         writer.writerow(record)
     return buffer.getvalue()
 

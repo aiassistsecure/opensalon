@@ -3,7 +3,7 @@
 Usage:
     python manage.py export_sales --salon-id ID
         [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD]
-        [--output PATH]
+        [--status STATUS] [--output PATH]
 
 Thin wrapper around
 :func:`checkout.sale_export.export_sales_csv` -- the salon is
@@ -59,6 +59,10 @@ class Command(BaseCommand):
                  "default: the start date, a single-day export).",
         )
         parser.add_argument(
+            "--status", dest="status", default=None,
+            help="Sale status value to filter by.",
+        )
+        parser.add_argument(
             "--output", default=None,
             help="Path to write the CSV to (default: stdout).",
         )
@@ -82,7 +86,8 @@ class Command(BaseCommand):
                 f"{start.isoformat()}."
             )
         try:
-            text = export_sales_csv(salon, start, end)
+            text = export_sales_csv(
+                salon, start, end, status=options.get("status"))
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options["output"]:
