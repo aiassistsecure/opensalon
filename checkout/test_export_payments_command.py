@@ -38,12 +38,13 @@ class ExportPaymentsCommandTests(TestCase):
         self._payment(self.salon)
         self._payment(self.other)
 
-    def _payment(self, salon, status=Payment.Status.COMPLETED):
+    def _payment(self, salon, status=Payment.Status.COMPLETED,
+                 method=Payment.Method.CASH):
         sale = Sale.objects.create(
             salon=salon, status=Sale.Status.COMPLETED,
             completed_at=_stamp(DAY))
         payment = Payment.objects.create(
-            sale=sale, method=Payment.Method.CASH,
+            sale=sale, method=method,
             amount=Decimal("85.00"), status=status)
         stamp = _stamp(DAY)
         Payment.objects.filter(pk=payment.pk).update(
@@ -197,6 +198,55 @@ class ExportPaymentsCommandTests(TestCase):
         self.assertEqual(
             out.getvalue(),
             export_payments_csv(self.salon, DAY, DAY, status=None))
+
+    def test_method_filters_to_matching_payments(self):
+        self._payment(self.salon, method=Payment.Method.EXTERNAL)
+        out = io.StringIO()
+        call_command(
+            "export_payments", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, method="cash",
+            stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_payments_csv(self.salon, DAY, DAY, method="cash"))
+        # Header + exactly the one cash payment from setUp.
+        self.assertEqual(len(out.getvalue().strip().splitlines()), 2)
+
+    def test_method_via_cli_flag(self):
+        self._payment(self.salon, method=Payment.Method.EXTERNAL)
+        out = io.StringIO()
+        call_command(
+            "export_payments", "--salon-id", str(self.salon.pk),
+            "--start-date", DAY.isoformat(), "--end-date", DAY.isoformat(),
+            "--method", "external", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_payments_csv(self.salon, DAY, DAY, method="external"))
+        self.assertEqual(len(out.getvalue().strip().splitlines()), 2)
+
+    def test_method_composes_with_sale_id_and_status(self):
+        external = self._payment(
+            self.salon, method=Payment.Method.EXTERNAL)
+        out = io.StringIO()
+        call_command(
+            "export_payments", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, sale_id=external.sale_id,
+            status="completed", method="cash", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_payments_csv(
+                self.salon, DAY, DAY, sale=external.sale,
+                status="completed", method="cash"))
+        self.assertEqual(len(out.getvalue().strip().splitlines()), 1)
+
+    def test_no_method_is_default(self):
+        out = io.StringIO()
+        call_command(
+            "export_payments", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_payments_csv(self.salon, DAY, DAY, method=None))
 
     def test_unknown_sale_id_raises_command_error(self):
         with self.assertRaises(CommandError):
