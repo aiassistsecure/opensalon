@@ -3,7 +3,7 @@
 Usage:
     python manage.py export_receipt --salon-id ID
         [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD]
-        [--format json|csv] [--output PATH]
+        [--sale-id ID] [--format json|csv] [--output PATH]
 
 Thin wrapper around the existing
 :func:`checkout.receipt_export.export_receipts` service:
@@ -23,6 +23,13 @@ command adds no export logic of its own -- no new service
 logic and no field changes -- so command and service output
 can never disagree -- one source of truth.
 
+With ``--sale-id`` the export is narrowed to that one sale's
+receipts: the sale is resolved by id within the salon, and
+an unknown id or a sale from another salon is a
+``CommandError``. The resolved sale is passed to the service
+as its optional ``sale`` argument. Without ``--sale-id`` the
+command exports the whole salon range, exactly as before.
+
 Invalid input -- an unparseable date, a reversed range, or
 an unknown format -- raises ``CommandError``, as do service
 errors. Dates mean whole local days in the salon's timezone,
@@ -37,6 +44,7 @@ import json
 
 from django.core.management.base import BaseCommand, CommandError
 
+from checkout.models import Sale
 from checkout.receipt_export import EXPORT_FIELDNAMES, export_receipts
 from saloncore.models import Salon
 
@@ -79,6 +87,11 @@ class Command(BaseCommand):
                  "default: unbounded).",
         )
         parser.add_argument(
+            "--sale-id", type=int, default=None,
+            help="Id of the sale (in the salon) whose receipts to "
+                 "export (default: all sales in the range).",
+        )
+        parser.add_argument(
             "--format", dest="format", default="json", choices=_FORMATS,
             help="Export format: json (default) or csv.",
         )
@@ -98,6 +111,17 @@ class Command(BaseCommand):
             raise CommandError(
                 f"No salon with id {options['salon_id']}."
             ) from exc
+        sale = None
+        if options.get("sale_id") is not None:
+            try:
+                sale = Sale.objects.get(
+                    pk=options["sale_id"], salon=salon
+                )
+            except Sale.DoesNotExist as exc:
+                raise CommandError(
+                    f"No sale with id {options['sale_id']} "
+                    f"for salon {options['salon_id']}."
+                ) from exc
         start = _parse_date(options["start_date"], "start date")
         end = _parse_date(options["end_date"], "end date")
         if start is not None and end is not None and end < start:
@@ -106,7 +130,7 @@ class Command(BaseCommand):
                 f"{start.isoformat()}."
             )
         try:
-            rows = export_receipts(start, end, salon=salon)
+            rows = export_receipts(start, end, salon=salon, sale=sale)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if fmt == "csv":
