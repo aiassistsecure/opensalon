@@ -186,6 +186,64 @@ class PaymentExportTests(TestCase):
                 self.salon, self.day, self.day, sale=own.sale)],
             [own.pk])
 
+    def test_status_filter_default_none_is_unchanged(self):
+        self._payment(status=Payment.Status.COMPLETED)
+        self._payment(status=Payment.Status.REFUNDED)
+        default = export_payments(self.salon, self.day, self.day)
+        self.assertEqual(len(default), 2)
+        self.assertEqual(
+            export_payments(self.salon, self.day, self.day, status=None),
+            default)
+        self.assertEqual(
+            export_payments_csv(self.salon, self.day, self.day, status=None),
+            export_payments_csv(self.salon, self.day, self.day))
+
+    def test_status_filter_only_matching_status(self):
+        done = self._payment(
+            status=Payment.Status.COMPLETED, provider_reference="ref-123")
+        self._payment(status=Payment.Status.PENDING)
+        self._payment(status=Payment.Status.FAILED)
+        rows = export_payments(
+            self.salon, self.day, self.day, status="completed")
+        self.assertEqual([r["id"] for r in rows], [done.pk])
+        self.assertEqual(rows[0]["status"], "completed")
+        # provider_reference is carried verbatim, never filtered on.
+        self.assertEqual(rows[0]["provider_reference"], "ref-123")
+        parsed = list(csv.DictReader(io.StringIO(export_payments_csv(
+            self.salon, self.day, self.day,
+            status=Payment.Status.REFUNDED))))
+        self.assertEqual(parsed, [])
+
+    def test_status_filter_composes_with_sale_and_window(self):
+        first = self._payment(status=Payment.Status.COMPLETED)
+        self._payment(status=Payment.Status.COMPLETED)
+        self._payment(status=Payment.Status.REFUNDED)
+        rows = export_payments(
+            self.salon, self.day, self.day, sale=first.sale,
+            status=Payment.Status.COMPLETED)
+        self.assertEqual([r["id"] for r in rows], [first.pk])
+        self.assertEqual(
+            export_payments(
+                self.salon, self.day, self.day, sale=first.sale,
+                status=Payment.Status.REFUNDED), [])
+        other_day = self.day + datetime.timedelta(days=5)
+        self.assertEqual(
+            export_payments(
+                self.salon, other_day, other_day,
+                status=Payment.Status.COMPLETED), [])
+
+    def test_status_filter_no_match_is_empty_and_header_only_csv(self):
+        self._payment(status=Payment.Status.COMPLETED)
+        self.assertEqual(
+            export_payments(
+                self.salon, self.day, self.day,
+                status=Payment.Status.FAILED), [])
+        self.assertEqual(
+            export_payments_csv(
+                self.salon, self.day, self.day,
+                status=Payment.Status.FAILED),
+            ",".join(EXPORT_FIELDNAMES) + "\n")
+
     def test_export_is_read_only(self):
         payment = self._payment(provider_reference="ref-9")
         export_payments(self.salon, self.day, self.day)
