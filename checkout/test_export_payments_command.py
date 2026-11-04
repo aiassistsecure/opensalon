@@ -38,13 +38,13 @@ class ExportPaymentsCommandTests(TestCase):
         self._payment(self.salon)
         self._payment(self.other)
 
-    def _payment(self, salon):
+    def _payment(self, salon, status=Payment.Status.COMPLETED):
         sale = Sale.objects.create(
             salon=salon, status=Sale.Status.COMPLETED,
             completed_at=_stamp(DAY))
         payment = Payment.objects.create(
             sale=sale, method=Payment.Method.CASH,
-            amount=Decimal("85.00"), status=Payment.Status.COMPLETED)
+            amount=Decimal("85.00"), status=status)
         stamp = _stamp(DAY)
         Payment.objects.filter(pk=payment.pk).update(
             created_at=stamp, updated_at=stamp)
@@ -148,6 +148,55 @@ class ExportPaymentsCommandTests(TestCase):
         self.assertEqual(
             out.getvalue(),
             export_payments_csv(self.salon, DAY, DAY, sale=None))
+
+    def test_status_filters_to_matching_payments(self):
+        self._payment(self.salon, status=Payment.Status.REFUNDED)
+        out = io.StringIO()
+        call_command(
+            "export_payments", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, status="completed",
+            stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_payments_csv(self.salon, DAY, DAY, status="completed"))
+        # Header + exactly the one completed payment from setUp.
+        self.assertEqual(len(out.getvalue().strip().splitlines()), 2)
+
+    def test_status_via_cli_flag(self):
+        self._payment(self.salon, status=Payment.Status.PENDING)
+        out = io.StringIO()
+        call_command(
+            "export_payments", "--salon-id", str(self.salon.pk),
+            "--start-date", DAY.isoformat(), "--end-date", DAY.isoformat(),
+            "--status", "pending", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_payments_csv(self.salon, DAY, DAY, status="pending"))
+        self.assertEqual(len(out.getvalue().strip().splitlines()), 2)
+
+    def test_status_composes_with_sale_id(self):
+        refunded = self._payment(
+            self.salon, status=Payment.Status.REFUNDED)
+        out = io.StringIO()
+        call_command(
+            "export_payments", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, sale_id=refunded.sale_id,
+            status="completed", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_payments_csv(
+                self.salon, DAY, DAY, sale=refunded.sale,
+                status="completed"))
+        self.assertEqual(len(out.getvalue().strip().splitlines()), 1)
+
+    def test_no_status_is_default(self):
+        out = io.StringIO()
+        call_command(
+            "export_payments", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_payments_csv(self.salon, DAY, DAY, status=None))
 
     def test_unknown_sale_id_raises_command_error(self):
         with self.assertRaises(CommandError):

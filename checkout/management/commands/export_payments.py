@@ -3,7 +3,7 @@
 Usage:
     python manage.py export_payments --salon-id ID
         --start-date YYYY-MM-DD [--end-date YYYY-MM-DD]
-        [--sale-id ID] [--output PATH]
+        [--sale-id ID] [--status STATUS] [--output PATH]
 
 Thin wrapper around the existing
 :func:`checkout.payment_export.export_payments_csv` service:
@@ -25,6 +25,13 @@ a sale from another salon is a ``CommandError``. The resolved
 sale is passed to the service as its optional ``sale``
 argument. Without ``--sale-id`` the command exports the whole
 salon range, exactly as before.
+
+With ``--status`` the export is narrowed to payments whose
+stored status exactly matches that core ``Payment.Status``
+slug: it is passed to the service as its optional ``status``
+argument and composes with the range and ``--sale-id``.
+Without ``--status`` the command exports every status,
+exactly as before.
 
 Invalid input -- an unparseable date or a reversed range --
 raises ``CommandError``. Dates mean whole local days in the
@@ -82,6 +89,10 @@ class Command(BaseCommand):
                  "export (default: all sales in the range).",
         )
         parser.add_argument(
+            "--status", dest="status", default=None,
+            help="Payment status value to filter by.",
+        )
+        parser.add_argument(
             "--output", default=None,
             help="Path to write the CSV to (default: stdout).",
         )
@@ -112,7 +123,9 @@ class Command(BaseCommand):
                 f"{start.isoformat()}."
             )
         try:
-            text = export_payments_csv(salon, start, end, sale=sale)
+            text = export_payments_csv(
+                salon, start, end, sale=sale,
+                status=options.get("status"))
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options["output"]:
