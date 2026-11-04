@@ -130,6 +130,86 @@ class ExportNotesCommandTests(TestCase):
                 client_id=theirs.id, stdout=io.StringIO(),
             )
 
+    def _dated_note(self, salon, first_name, last_name, body, when):
+        client = Client.objects.create(
+            salon=salon, first_name=first_name, last_name=last_name
+        )
+        note = ClientNote.objects.create(client=client, body=body)
+        ClientNote.objects.filter(pk=note.pk).update(created_at=when)
+        return client
+
+    def test_start_and_end_date_window(self):
+        import datetime
+        from django.utils import timezone
+        base = timezone.now() - datetime.timedelta(days=10)
+        self._dated_note(self.salon, "Amy", "Smith", "Early note", base)
+        self._dated_note(
+            self.salon, "Bob", "Adams", "Late note",
+            base + datetime.timedelta(days=5))
+        start = (base + datetime.timedelta(days=2)).date().isoformat()
+        end = (base + datetime.timedelta(days=6)).date().isoformat()
+        out = io.StringIO()
+        call_command(
+            "export_notes", salon_id=self.salon.id,
+            start_date=start, end_date=end, stdout=out,
+        )
+        self.assertEqual(
+            out.getvalue(),
+            export_notes_csv(
+                self.salon,
+                start=(base + datetime.timedelta(days=2)).date(),
+                end=(base + datetime.timedelta(days=6)).date()))
+        self.assertIn("Late note", out.getvalue())
+        self.assertNotIn("Early note", out.getvalue())
+
+    def test_start_date_only(self):
+        import datetime
+        from django.utils import timezone
+        base = timezone.now() - datetime.timedelta(days=10)
+        self._dated_note(self.salon, "Amy", "Smith", "Early note", base)
+        self._dated_note(
+            self.salon, "Bob", "Adams", "Late note",
+            base + datetime.timedelta(days=5))
+        out = io.StringIO()
+        call_command(
+            "export_notes", salon_id=self.salon.id,
+            start_date=(base + datetime.timedelta(days=2)).date(),
+            stdout=out,
+        )
+        self.assertIn("Late note", out.getvalue())
+        self.assertNotIn("Early note", out.getvalue())
+
+    def test_window_composes_with_client_id(self):
+        import datetime
+        from django.utils import timezone
+        base = timezone.now() - datetime.timedelta(days=10)
+        amy = self._dated_note(
+            self.salon, "Amy", "Smith", "Amy early", base)
+        ClientNote.objects.create(client=amy, body="Amy late placeholder")
+        late = ClientNote.objects.filter(
+            client=amy, body="Amy late placeholder").get()
+        ClientNote.objects.filter(pk=late.pk).update(
+            created_at=base + datetime.timedelta(days=5))
+        self._dated_note(
+            self.salon, "Bob", "Adams", "Bob late",
+            base + datetime.timedelta(days=5))
+        out = io.StringIO()
+        call_command(
+            "export_notes", salon_id=self.salon.id, client_id=amy.id,
+            start_date=(base + datetime.timedelta(days=2)).date().isoformat(),
+            stdout=out,
+        )
+        self.assertIn("Amy late placeholder", out.getvalue())
+        self.assertNotIn("Amy early", out.getvalue())
+        self.assertNotIn("Bob late", out.getvalue())
+
+    def test_invalid_start_date_raises(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_notes", salon_id=self.salon.id,
+                start_date="not-a-date", stdout=io.StringIO(),
+            )
+
     def test_unwritable_output_raises(self):
         self._client_with_note(self.salon, "Amy", "Smith", "Prefers quiet room")
         with self.assertRaises(CommandError):

@@ -226,6 +226,86 @@ class NoteExportTests(TestCase):
             export_notes_csv(self.salon, client=amy),
             ",".join(NOTE_FIELDNAMES) + "\n")
 
+    def test_window_start_only(self):
+        amy = self.make_client("Amy", "Smith")
+        base = timezone.now() - timedelta(days=10)
+        self.make_note(amy, "Early", when=base)
+        late = self.make_note(amy, "Late", when=base + timedelta(days=5))
+        records = export_notes(self.salon, start=base + timedelta(days=2))
+        self.assertEqual([r["note_id"] for r in records], [late.pk])
+
+    def test_window_end_only_datetime(self):
+        amy = self.make_client("Amy", "Smith")
+        base = timezone.now() - timedelta(days=10)
+        early = self.make_note(amy, "Early", when=base)
+        self.make_note(amy, "Late", when=base + timedelta(days=5))
+        records = export_notes(self.salon, end=base + timedelta(days=2))
+        self.assertEqual([r["note_id"] for r in records], [early.pk])
+
+    def test_window_date_bounds_include_whole_end_day(self):
+        amy = self.make_client("Amy", "Smith")
+        day = datetime.date(2026, 10, 20)
+        start_dt = datetime.datetime(2026, 10, 20, 9, 0, tzinfo=UTC)
+        end_dt = datetime.datetime(2026, 10, 22, 17, 30, tzinfo=UTC)
+        self.make_note(amy, "Before", when=start_dt - timedelta(days=1))
+        first = self.make_note(amy, "First day", when=start_dt)
+        last = self.make_note(amy, "Last day", when=end_dt)
+        self.make_note(amy, "After", when=end_dt + timedelta(days=1))
+        records = export_notes(
+            self.salon, start=day, end=day + timedelta(days=2))
+        self.assertEqual(
+            [r["note_id"] for r in records], [first.pk, last.pk])
+        parsed = list(csv.DictReader(io.StringIO(export_notes_csv(
+            self.salon, start=day, end=day + timedelta(days=2)))))
+        self.assertEqual(
+            [int(r["note_id"]) for r in parsed], [first.pk, last.pk])
+
+    def test_window_start_date_end_date_aliases(self):
+        amy = self.make_client("Amy", "Smith")
+        base = timezone.now() - timedelta(days=10)
+        self.make_note(amy, "Early", when=base)
+        late = self.make_note(amy, "Late", when=base + timedelta(days=5))
+        records = export_notes(
+            self.salon, start_date=base + timedelta(days=2))
+        self.assertEqual([r["note_id"] for r in records], [late.pk])
+        self.assertEqual(
+            export_notes_csv(
+                self.salon, start_date=base, end_date=base),
+            export_notes_csv(self.salon, start=base, end=base))
+
+    def test_window_composes_with_client(self):
+        amy = self.make_client("Amy", "Smith")
+        bob = self.make_client("Bob", "Adams")
+        base = timezone.now() - timedelta(days=10)
+        self.make_note(amy, "Amy early", when=base)
+        amy_late = self.make_note(
+            amy, "Amy late", when=base + timedelta(days=5))
+        self.make_note(bob, "Bob late", when=base + timedelta(days=5))
+        records = export_notes(
+            self.salon, client=amy, start=base + timedelta(days=2))
+        self.assertEqual([r["note_id"] for r in records], [amy_late.pk])
+
+    def test_window_no_matches(self):
+        amy = self.make_client("Amy", "Smith")
+        base = timezone.now() - timedelta(days=10)
+        self.make_note(amy, "Early", when=base)
+        self.assertEqual(
+            export_notes(self.salon, start=base + timedelta(days=30)), [])
+        self.assertEqual(
+            export_notes_csv(self.salon, start=base + timedelta(days=30)),
+            ",".join(NOTE_FIELDNAMES) + "\n")
+
+    def test_window_default_none_byte_identical(self):
+        amy = self.make_client("Amy", "Smith", external_id="ext-1")
+        base = timezone.now() - timedelta(days=3)
+        self.make_note(amy, "Amy note", when=base)
+        self.assertEqual(
+            export_notes(self.salon, start=None, end=None),
+            export_notes(self.salon))
+        self.assertEqual(
+            export_notes_csv(self.salon, start=None, end=None),
+            export_notes_csv(self.salon))
+
     def test_filtered_client_from_other_salon_is_empty(self):
         mine = self.make_client("Amy", "Smith")
         theirs = self.make_client("Bob", "Adams", salon=self.other)
