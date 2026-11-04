@@ -41,6 +41,13 @@ range); datetimes are reduced to their salon-local date. No
 range returns every appointment note for the salon; a reversed
 range exports as ``[]``.
 
+Appointment filter: optional ``appointment`` (default ``None``)
+restricts the export to that one appointment's notes. The date
+window still applies on top of it. ``None`` is exactly the
+previous salon-wide behaviour; an appointment from another
+salon exports as ``[]`` because the salon scoping above never
+matches its notes.
+
 Ordering is deterministic: by ``appointment_id``, then the
 note's ``created_at``, then the note's ``id``.
 """
@@ -98,15 +105,19 @@ def note_record(note):
 _record = note_record
 
 
-def export_appointment_notes(salon, date_from=None, date_to=None):
+def export_appointment_notes(salon, date_from=None, date_to=None,
+                             appointment=None):
     """Return ``salon``'s appointment-only notes verbatim as dicts.
 
     Each entry is a dict with exactly :data:`NOTE_FIELDNAMES`
     keys, ordered by (``appointment_id``, note ``created_at``,
     note ``id``). ``date_from`` / ``date_to`` are optional
     inclusive local dates on the note's ``created_at`` (see the
-    module docstring). A salon with no appointment notes in
-    range exports as ``[]``.
+    module docstring). ``appointment`` optionally restricts the
+    export to that one appointment's notes (default ``None`` =
+    every appointment in the salon, the previous behaviour);
+    the date window still applies when both are given. A salon
+    with no appointment notes in range exports as ``[]``.
     """
     if salon is None:
         return []
@@ -118,6 +129,8 @@ def export_appointment_notes(salon, date_from=None, date_to=None):
         .select_related("appointment")
         .order_by("appointment_id", "created_at", "id")
     )
+    if appointment is not None:
+        notes = notes.filter(appointment=appointment)
     if date_from is not None or date_to is not None:
         tz = _tz(salon)
         first = _as_local_date(
@@ -134,7 +147,8 @@ def export_appointment_notes(salon, date_from=None, date_to=None):
     return [_record(note) for note in notes]
 
 
-def export_appointment_notes_csv(salon, date_from=None, date_to=None):
+def export_appointment_notes_csv(salon, date_from=None, date_to=None,
+                                 appointment=None):
     """Return ``salon``'s appointment notes as a CSV string.
 
     The header row is :data:`NOTE_FIELDNAMES` and every data row
@@ -148,7 +162,8 @@ def export_appointment_notes_csv(salon, date_from=None, date_to=None):
         buffer, fieldnames=NOTE_FIELDNAMES, lineterminator="\n"
     )
     writer.writeheader()
-    for record in export_appointment_notes(salon, date_from, date_to):
+    for record in export_appointment_notes(
+            salon, date_from, date_to, appointment=appointment):
         writer.writerow(record)
     return buffer.getvalue()
 
