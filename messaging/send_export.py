@@ -39,6 +39,13 @@ Ordering is deterministic: totals by date then the totals
 service's channel order; records oldest first (``sent_at``,
 then ``id``). An empty range exports as ``[]`` / the header
 row alone, never ``None``.
+
+Per-appointment filter: the record export functions accept
+an optional ``appointment`` (default ``None``). With ``None``
+the output is the salon-wide export, unchanged. With an
+appointment, only that appointment's sends are included; the
+salon filter (``client__salon``) still applies, so an
+appointment from another salon exports as empty.
 """
 import csv
 import datetime
@@ -152,13 +159,19 @@ def send_export_row(send):
     }
 
 
-def export_sends(salon, date_from, date_to=None):
+def export_sends(salon, date_from, date_to=None, appointment=None):
     """Return ``salon``'s ``ReminderSend`` rows in a date range.
 
     Scoped by ``client__salon`` (the totals service's scoping),
     ordered oldest first (``sent_at``, then ``id``). An empty
     or reversed range, a missing salon, or a missing start
     date exports as ``[]``. Read-only.
+
+    ``appointment`` is optional: the default ``None`` is the
+    salon-wide export, unchanged. When an appointment is
+    given, only that appointment's sends are included; an
+    appointment belonging to another salon exports as ``[]``
+    because the salon filter still applies.
     """
     bounds = _range(salon, date_from, date_to)
     if bounds is None:
@@ -177,17 +190,26 @@ def export_sends(salon, date_from, date_to=None):
         .select_related("client")
         .order_by("sent_at", "id")
     )
+    if appointment is not None:
+        sends = sends.filter(appointment=appointment)
     return [send_export_row(send) for send in sends]
 
 
-def export_sends_csv(salon, date_from, date_to=None):
-    """Return :func:`export_sends` for the range as a CSV string."""
+def export_sends_csv(salon, date_from, date_to=None, appointment=None):
+    """Return :func:`export_sends` for the range as a CSV string.
+
+    ``appointment`` is optional and passed through to
+    :func:`export_sends`: the default ``None`` is the
+    salon-wide export, unchanged; a given appointment exports
+    only that appointment's sends.
+    """
     buffer = io.StringIO()
     writer = csv.DictWriter(
         buffer, fieldnames=RECORD_FIELDNAMES, lineterminator="\n"
     )
     writer.writeheader()
-    for record in export_sends(salon, date_from, date_to):
+    for record in export_sends(
+            salon, date_from, date_to, appointment=appointment):
         writer.writerow(record)
     return buffer.getvalue()
 

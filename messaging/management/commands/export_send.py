@@ -3,7 +3,7 @@
 Usage:
     python manage.py export_send --salon-id ID
         --date-from YYYY-MM-DD [--date-to YYYY-MM-DD]
-        [--output PATH]
+        [--appointment-id ID] [--output PATH]
 
 Thin wrapper around the existing
 :func:`messaging.send_export.export_sends_csv`
@@ -15,6 +15,15 @@ otherwise. This command adds no export logic of its own, so
 command and service output can never disagree -- one source
 of truth.
 
+With ``--appointment-id`` the export is narrowed to that one
+appointment's sends: the appointment is resolved by id within
+the salon (via its client, the ``client__salon`` scoping the
+send export service uses; an appointment from another salon,
+or an unknown id, is a ``CommandError``), and the resolved
+appointment is passed to the service as its optional
+``appointment`` argument. Without ``--appointment-id`` the
+command exports the whole salon, exactly as before.
+
 Invalid input -- an unknown salon or a service error -- raises
 ``CommandError``, as does an unwritable ``--output`` path.
 Read-only. Core stays provider-agnostic -- no provider SDK,
@@ -25,6 +34,7 @@ import datetime
 
 from django.core.management.base import BaseCommand, CommandError
 
+from bookings.models import Appointment
 from messaging.send_export import export_sends_csv
 from saloncore.models import Salon
 
@@ -93,6 +103,11 @@ class Command(BaseCommand):
             default=None, help="Alias for --date-to.",
         )
         parser.add_argument(
+            "--appointment-id", type=int, default=None,
+            help="Id of the appointment (in the salon) whose sends "
+                 "to export (default: all appointments).",
+        )
+        parser.add_argument(
             "--output", default=None,
             help="Path to write the CSV to (default: stdout).",
         )
@@ -109,9 +124,19 @@ class Command(BaseCommand):
             "date_from")
         date_to = _coerce_date(
             _first(options, "date_to", "end", "end_date"), "date_to")
+        appointment = None
+        if options.get("appointment_id") is not None:
+            try:
+                appointment = Appointment.objects.get(
+                    pk=options["appointment_id"], client__salon=salon)
+            except Appointment.DoesNotExist as exc:
+                raise CommandError(
+                    f"No appointment with id {options['appointment_id']} "
+                    f"for salon {salon.pk}."
+                ) from exc
         try:
             text = export_sends_csv(
-                salon, date_from, date_to,
+                salon, date_from, date_to, appointment=appointment,
             )
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
