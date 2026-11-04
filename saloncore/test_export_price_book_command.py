@@ -60,6 +60,50 @@ class ExportPriceBookCommandTests(TestCase):
         finally:
             os.unlink(path)
 
+    def test_service_id_filter_matches_service(self):
+        other_service = Service.objects.create(
+            category=self.category, name="Haircut",
+            service_minutes=30)
+        ServicePrice.objects.create(
+            service=other_service, staff_level=self.level,
+            amount=Decimal("50.00"))
+        out = io.StringIO()
+        call_command(
+            "export_price_book", "--salon-id", str(self.salon.pk),
+            "--service-id", str(self.service.pk), stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_price_book_csv(self.salon, service=self.service))
+        self.assertIn("Single Process Color", out.getvalue())
+        self.assertNotIn("Haircut", out.getvalue())
+
+    def test_service_id_kwarg_filter(self):
+        out = io.StringIO()
+        call_command(
+            "export_price_book", salon_id=self.salon.pk,
+            service_id=self.service.pk, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_price_book_csv(self.salon, service=self.service))
+
+    def test_unknown_service_errors_cleanly(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_price_book", salon_id=self.salon.pk,
+                service_id=999999, stdout=io.StringIO())
+
+    def test_other_salons_service_errors_cleanly(self):
+        other_salon = Salon.objects.create(name="Other Salon")
+        other_category = ServiceCategory.objects.create(
+            salon=other_salon, name="Color", sort_order=1)
+        other_service = Service.objects.create(
+            category=other_category, name="Haircut",
+            service_minutes=30)
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_price_book", salon_id=self.salon.pk,
+                service_id=other_service.pk, stdout=io.StringIO())
+
     def test_unknown_salon_errors_cleanly(self):
         with self.assertRaises(CommandError):
             call_command(

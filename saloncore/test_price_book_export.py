@@ -133,6 +133,54 @@ class PriceBookExportTests(TestCase):
         self.assertEqual(len(other_records), 1)
         self.assertEqual(other_records[0]["amount"], "40.00")
 
+    def test_service_filter(self):
+        other_service = Service.objects.create(
+            category=self.category, name="Haircut",
+            service_minutes=30)
+        ServicePrice.objects.create(
+            service=other_service, staff_level=self.junior,
+            amount=Decimal("50.00"))
+        records = export_price_book(self.salon, service=self.service)
+        self.assertEqual(len(records), 2)
+        self.assertEqual(
+            {r["service_id"] for r in records}, {self.service.pk})
+        csv_text = export_price_book_csv(
+            self.salon, service=self.service)
+        self.assertIn("Single Process Color", csv_text)
+        self.assertNotIn("Haircut", csv_text)
+        self.assertEqual(
+            price_book_csv(self.salon, service=self.service), csv_text)
+
+    def test_service_filter_includes_unpriced_row(self):
+        unpriced = Service.objects.create(
+            category=self.category, name="Consultation",
+            service_minutes=15)
+        records = export_price_book(self.salon, service=unpriced)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["service_id"], unpriced.pk)
+        self.assertIsNone(records[0]["staff_level_id"])
+        self.assertIsNone(records[0]["service_price_id"])
+        self.assertIsNone(records[0]["amount"])
+        csv_text = export_price_book_csv(self.salon, service=unpriced)
+        self.assertIn("Consultation", csv_text)
+        self.assertNotIn("Single Process Color", csv_text)
+
+    def test_service_filter_other_salon_service_is_empty(self):
+        other_service = self._other_book()
+        self.assertEqual(
+            export_price_book(self.salon, service=other_service), [])
+        self.assertEqual(
+            export_price_book_csv(self.salon, service=other_service),
+            ",".join(PRICE_BOOK_FIELDNAMES) + "\n")
+
+    def test_service_default_none_is_unchanged(self):
+        self.assertEqual(
+            export_price_book(self.salon),
+            export_price_book(self.salon, service=None))
+        self.assertEqual(
+            export_price_book_csv(self.salon),
+            export_price_book_csv(self.salon, service=None))
+
     def test_csv_matches_list_export_and_alias(self):
         parsed = list(csv.DictReader(io.StringIO(
             export_price_book_csv(self.salon))))
