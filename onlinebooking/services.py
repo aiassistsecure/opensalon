@@ -23,7 +23,13 @@ services; it duplicates no availability or lifecycle logic:
   appointment itself) at write time. The toggle is checked here
   first — lifecycle reschedule has no online flag — so a staff
   member whose toggle has been turned off since booking cannot
-  be moved through online booking.
+  be moved through online booking. When a staff change is
+  requested, the NEW member's toggle is the one checked (the
+  same rule :func:`create_online_booking` applies at creation);
+  the current member's toggle check stays for the no-change
+  path. Salon, active, capability, and availability validation
+  for the new member is owned by the lifecycle delegate, via
+  its existing ``new_staff_member`` parameter.
 * :func:`cancel_online_booking` delegates to
   ``bookings.lifecycle.cancel_appointment``, which enforces
   cancellable status (booked/confirmed only) via the lifecycle
@@ -111,19 +117,31 @@ def validate_create_online_booking(*, client, staff_member, service, start,
         start=start, end=end, online=True)
 
 
-def validate_reschedule_online_booking(appointment, new_start, new_end=None):
+def _check_reschedule_toggle(appointment, new_staff_member):
+    """Toggle gate for an online reschedule.
+
+    With a staff change, the NEW member must be online-bookable
+    (the creation rule); without one, the current member's
+    toggle check applies, unchanged.
+    """
+    target = new_staff_member or appointment.staff_member
+    if not target.online_bookable:
+        raise ValidationError(
+            "This staff member is not bookable online."
+        )
+
+
+def validate_reschedule_online_booking(appointment, new_start, new_end=None,
+                                       *, new_staff_member=None):
     """Validate a ``reschedule_online_booking`` call, writing nothing.
 
     Returns the resolved ``new_end``. Raises the same
     ``ValidationError`` the writer would raise. Safe for
     ``--dry-run`` previews on every backend (including NEDB).
     """
-    if not appointment.staff_member.online_bookable:
-        raise ValidationError(
-            "This staff member is not bookable online."
-        )
+    _check_reschedule_toggle(appointment, new_staff_member)
     resolved_end, _staff = validate_reschedule_appointment(
-        appointment, new_start, new_end)
+        appointment, new_start, new_end, new_staff_member=new_staff_member)
     return resolved_end
 
 
@@ -141,24 +159,27 @@ def validate_cancel_online_booking(appointment):
     return Appointment.Status.CANCELLED
 
 
-def reschedule_online_booking(appointment, new_start, new_end=None):
+def reschedule_online_booking(appointment, new_start, new_end=None,
+                              *, new_staff_member=None):
     """Move an existing online-booked appointment to a new start time.
 
     Rejects the move with ``ValidationError`` (leaving the
-    appointment unchanged) when the appointment's staff member's
-    online-booking toggle is OFF; otherwise delegates to
-    ``bookings.lifecycle.reschedule_appointment``, so
-    reschedulable-status and rostered-availability rules (the new
-    slot must fit rostered, unoccupied time, excluding this
-    appointment itself) are enforced by that one service.
+    appointment unchanged) when the relevant staff member's
+    online-booking toggle is OFF — the NEW member's when
+    ``new_staff_member`` is given, otherwise the appointment's
+    current member's; otherwise delegates to
+    ``bookings.lifecycle.reschedule_appointment`` (passing
+    ``new_staff_member`` through to its existing parameter, so
+    salon, active, capability, reschedulable-status, and
+    rostered-availability rules — the new slot must fit rostered,
+    unoccupied time for the target member, excluding this
+    appointment itself — are enforced by that one service).
     ``new_end`` defaults there to ``new_start`` plus the
     appointment's original duration.
     """
-    if not appointment.staff_member.online_bookable:
-        raise ValidationError(
-            "This staff member is not bookable online."
-        )
-    return reschedule_appointment(appointment, new_start, new_end)
+    _check_reschedule_toggle(appointment, new_staff_member)
+    return reschedule_appointment(
+        appointment, new_start, new_end, new_staff_member=new_staff_member)
 
 
 def cancel_online_booking(appointment):
