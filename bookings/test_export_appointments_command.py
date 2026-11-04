@@ -445,3 +445,107 @@ class ExportAppointmentsClientFilterCommandTests(TestCase):
                          date_from=DAY, date_to=DAY,
                          client_id=self.other_client.pk,
                          stdout=io.StringIO())
+
+
+class ExportAppointmentsServiceFilterCommandTests(TestCase):
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon", timezone="UTC")
+        self.other = Salon.objects.create(name="Other Salon", timezone="UTC")
+        self.staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Stylist One")
+        self.client = Client.objects.create(
+            salon=self.salon, first_name="Test", last_name="Example")
+        category = ServiceCategory.objects.create(salon=self.salon, name="Hair")
+        self.service = Service.objects.create(
+            category=category, name="Haircut", service_minutes=45)
+        self.service2 = Service.objects.create(
+            category=category, name="Colour Service", service_minutes=60)
+        other_category = ServiceCategory.objects.create(
+            salon=self.other, name="Other Hair")
+        self.other_service = Service.objects.create(
+            category=other_category, name="Other Cut", service_minutes=30)
+        self.one = self._appt(self.service, 9)
+        self.two = self._appt(self.service2, 11)
+        self.one_cancelled = self._appt(
+            self.service, 13, status=Appointment.Status.CANCELLED)
+
+    def _appt(self, service, hour, **kw):
+        return Appointment.objects.create(
+            client=self.client, staff_member=self.staff, service=service,
+            start=at(DAY, hour), end=at(DAY, hour + 1), **kw)
+
+    def _ids(self, rows):
+        return [row["id"] for row in rows]
+
+    def test_command_unfiltered_matches_service(self):
+        out = io.StringIO()
+        call_command("export_appointments", salon_id=self.salon.pk,
+                     date_from=DAY, date_to=DAY, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            json.dumps(export_appointments(self.salon, DAY, DAY), indent=2)
+            + "\n")
+
+    def test_command_filtered_cli_json_matches_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_appointments", "--salon-id", str(self.salon.pk),
+            "--date-from", DAY.isoformat(), "--date-to", DAY.isoformat(),
+            "--service-id", str(self.service.pk), stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_appointments(self.salon, DAY, DAY, service=self.service))
+
+    def test_command_filtered_kwargs_pk_matches_service(self):
+        out = io.StringIO()
+        call_command("export_appointments", salon_id=self.salon.pk,
+                     date_from=DAY, date_to=DAY,
+                     service_id=self.service2.pk, stdout=out)
+        self.assertEqual(self._ids(json.loads(out.getvalue())), [self.two.pk])
+
+    def test_command_filtered_kwargs_instance_matches_service(self):
+        out = io.StringIO()
+        call_command("export_appointments", salon_id=self.salon.pk,
+                     date_from=DAY, date_to=DAY,
+                     service_id=self.service, stdout=out)
+        self.assertEqual(
+            self._ids(json.loads(out.getvalue())),
+            [self.one.pk, self.one_cancelled.pk])
+
+    def test_command_filtered_csv_matches_csv_twin(self):
+        out = io.StringIO()
+        call_command("export_appointments", salon_id=self.salon.pk,
+                     date_from=DAY, date_to=DAY, format="csv",
+                     service_id=self.service.pk, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_appointments_csv(
+                self.salon, DAY, DAY, service=self.service))
+
+    def test_command_service_composes_with_staff_and_client(self):
+        out = io.StringIO()
+        call_command("export_appointments", salon_id=self.salon.pk,
+                     date_from=DAY, date_to=DAY,
+                     staff_member_id=self.staff.pk,
+                     client_id=self.client.pk,
+                     service_id=self.service2.pk, stdout=out)
+        self.assertEqual(self._ids(json.loads(out.getvalue())), [self.two.pk])
+
+    def test_command_unknown_service_id_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_appointments", "--salon-id", str(self.salon.pk),
+                "--date-from", DAY.isoformat(),
+                "--service-id", str(self.service.pk + 1000),
+                stdout=io.StringIO())
+        with self.assertRaises(CommandError):
+            call_command("export_appointments", salon_id=self.salon.pk,
+                         date_from=DAY, service_id=999999,
+                         stdout=io.StringIO())
+
+    def test_command_other_salon_service_id_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command("export_appointments", salon_id=self.salon.pk,
+                         date_from=DAY, date_to=DAY,
+                         service_id=self.other_service.pk,
+                         stdout=io.StringIO())

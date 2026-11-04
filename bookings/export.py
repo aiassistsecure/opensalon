@@ -88,6 +88,15 @@ from another salon exports as ``[]`` because the salon scoping
 above never matches their appointments. This filters a read
 only — it never changes any appointment's client.
 
+Service filter: optional ``service`` (default ``None``) restricts
+the export to appointments for that one price-book service,
+composing with the window, ``staff_member``, ``client``, and
+``include_cancelled`` filters. ``None`` is exactly the previous
+salon-wide behaviour; a service from another salon exports as
+``[]`` because no appointment in this salon's book carries it.
+This filters a read only — it never changes any appointment's
+service.
+
 Ordering is deterministic: by ``start``, then ``id``.
 """
 import csv
@@ -142,7 +151,7 @@ def _as_local_date(value, tz):
 
 def export_appointments(salon, date_from, date_to=None, *,
                         include_cancelled=True, staff_member=None,
-                        client=None):
+                        client=None, service=None):
     """Return ``salon``'s appointments in a date range as dict rows.
 
     Args:
@@ -163,6 +172,10 @@ def export_appointments(salon, date_from, date_to=None, *,
         client: optional ``clients.Client`` instance (or its pk)
             restricting the export to that one client's
             appointments. Default ``None`` exports the whole
+            salon, exactly as before.
+        service: optional ``saloncore.Service`` instance (or its
+            pk) restricting the export to appointments for that
+            one service. Default ``None`` exports the whole
             salon, exactly as before.
 
     Returns:
@@ -194,6 +207,8 @@ def export_appointments(salon, date_from, date_to=None, *,
         appointments = appointments.filter(staff_member=staff_member)
     if client is not None:
         appointments = appointments.filter(client=client)
+    if service is not None:
+        appointments = appointments.filter(service=service)
     appointments = list(appointments)
 
     # One price-book query for every (service, staff level) pair in
@@ -258,16 +273,17 @@ def _csv_cell(value):
 
 def export_appointments_csv(salon, date_from, date_to=None, *,
                             include_cancelled=True, staff_member=None,
-                            client=None):
+                            client=None, service=None):
     """Return ``salon``'s appointments in a date range as a CSV string.
 
     The CSV twin of :func:`export_appointments`: the header row is
     :data:`EXPORT_FIELDNAMES` and every data row comes from that
     service with the same arguments (including the optional
-    ``staff_member`` and ``client`` filters), so the two formats
-    can never disagree. A nested dict/list value is JSON-encoded
-    into its cell so nothing is dropped. An empty or reversed
-    range exports as the header row alone. Lines end ``"\\n"``.
+    ``staff_member``, ``client``, and ``service`` filters), so
+    the two formats can never disagree. A nested dict/list value
+    is JSON-encoded into its cell so nothing is dropped. An empty
+    or reversed range exports as the header row alone. Lines end
+    ``"\\n"``.
     """
     buffer = io.StringIO()
     writer = csv.DictWriter(
@@ -276,7 +292,7 @@ def export_appointments_csv(salon, date_from, date_to=None, *,
     for row in export_appointments(
             salon, date_from, date_to,
             include_cancelled=include_cancelled,
-            staff_member=staff_member, client=client):
+            staff_member=staff_member, client=client, service=service):
         writer.writerow({key: _csv_cell(row.get(key))
                          for key in EXPORT_FIELDNAMES})
     return buffer.getvalue()
