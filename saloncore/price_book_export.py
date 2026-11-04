@@ -66,6 +66,21 @@ salon-wide export, unchanged. With a service, only that
 service's rows are included; an unpriced service still appears
 once with empty staff-level and price columns. The salon filter
 still applies, so a service from another salon exports as empty.
+
+Category filter: both export functions also accept an optional
+``category`` (default ``None``; ``category_id`` is accepted as
+an alias spelling of the same filter). With ``None`` the output
+is the salon-wide export, unchanged. With a category, only rows
+whose service belongs to that category are included -- an exact
+match on the service's ``category_id``; the category may be
+given as a ``ServiceCategory`` instance or as a raw id. An
+unpriced service in the category still appears once with empty
+staff-level and price columns. The salon filter still applies,
+so a category from another salon exports as empty. The
+category filter composes with the per-service filter (AND):
+when both are given, only rows for that service in that
+category are included, so a service outside the category
+exports as empty.
 """
 import csv
 import io
@@ -157,7 +172,8 @@ def _record(salon_id, service, price):
     return record
 
 
-def export_price_book(salon, service=None):
+def export_price_book(salon, service=None, category=None,
+                      category_id=None):
     """Return ``salon``'s full price book as dicts.
 
     Each entry is a dict with exactly
@@ -174,6 +190,16 @@ def export_price_book(salon, service=None):
     row when it has no prices); a service belonging to another
     salon exports as ``[]`` because the salon filter still
     applies.
+
+    ``category`` is optional: the default ``None`` is the
+    salon-wide export, unchanged. When a category is given
+    (a ``ServiceCategory`` instance or a raw id), only rows
+    whose service belongs to that category are included -- an
+    exact match on ``category_id``; a category belonging to
+    another salon exports as ``[]`` because the salon filter
+    still applies. ``category_id`` is an alias for the same
+    filter; when both spellings are given, both apply (AND).
+    The category filter composes with ``service`` (AND).
     """
     if salon is None:
         return []
@@ -181,6 +207,12 @@ def export_price_book(salon, service=None):
     services = Service.objects.filter(category__salon_id=salon_id)
     if service is not None:
         services = services.filter(pk=getattr(service, "pk", service))
+    if category is not None:
+        services = services.filter(
+            category_id=getattr(category, "pk", category))
+    if category_id is not None:
+        services = services.filter(
+            category_id=getattr(category_id, "pk", category_id))
     services = (
         services
         .select_related("category")
@@ -203,7 +235,8 @@ def export_price_book(salon, service=None):
     return records
 
 
-def export_price_book_csv(salon, service=None):
+def export_price_book_csv(salon, service=None, category=None,
+                          category_id=None):
     """Return ``salon``'s full price book as CSV.
 
     The header row is :data:`PRICE_BOOK_FIELDNAMES` and every
@@ -221,8 +254,16 @@ def export_price_book_csv(salon, service=None):
     salon-wide export, unchanged; a given service exports only
     that service's rows (header alone when that service belongs
     to another salon).
+
+    ``category`` (alias ``category_id``) is optional and passed
+    through the same way: the default ``None`` is the salon-wide
+    export, unchanged; a given category exports only that
+    category's rows (header alone when that category belongs to
+    another salon). It composes with ``service`` (AND).
     """
-    records = export_price_book(salon, service=service)
+    records = export_price_book(
+        salon, service=service, category=category,
+        category_id=category_id)
     fieldnames = list(PRICE_BOOK_FIELDNAMES)
     if any("payload" in record for record in records):
         fieldnames.append("payload")

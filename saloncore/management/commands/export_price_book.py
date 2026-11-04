@@ -2,7 +2,7 @@
 
 Usage:
     python manage.py export_price_book --salon-id ID
-        [--service-id ID] [--output PATH]
+        [--service-id ID] [--category-id ID] [--output PATH]
 
 Thin wrapper around :func:`saloncore.price_book_export.export_price_book_csv`
 -- that service is the one source of truth for the price book
@@ -18,10 +18,20 @@ a ``CommandError``), and the resolved service is passed to the
 service as its optional ``service`` argument. Without
 ``--service-id`` the command exports the whole salon, exactly
 as before.
+
+With ``--category-id`` the export is narrowed to that one
+category's rows: the category is resolved by id within the
+salon (a category from another salon, or an unknown id, is a
+``CommandError``), and the resolved category is passed to the
+service as its optional ``category`` argument. Without
+``--category-id`` the command exports the whole salon, exactly
+as before. ``--category-id`` composes with ``--service-id``
+(AND): a service outside the category exports as the header
+row alone.
 """
 from django.core.management.base import BaseCommand, CommandError
 
-from saloncore.models import Salon, Service
+from saloncore.models import Salon, Service, ServiceCategory
 from saloncore.price_book_export import export_price_book_csv
 
 
@@ -37,6 +47,11 @@ class Command(BaseCommand):
             "--service-id", type=int, default=None,
             help="Id of the service (in the salon) whose price "
                  "book rows to export (default: all services).",
+        )
+        parser.add_argument(
+            "--category-id", type=int, default=None,
+            help="Id of the category (in the salon) whose price "
+                 "book rows to export (default: all categories).",
         )
         parser.add_argument(
             "--output", default=None,
@@ -60,7 +75,18 @@ class Command(BaseCommand):
                     f"No service with id {options['service_id']} "
                     f"for salon {options['salon_id']}."
                 ) from None
-        csv_text = export_price_book_csv(salon, service=service)
+        category = None
+        if options.get("category_id") is not None:
+            try:
+                category = ServiceCategory.objects.get(
+                    pk=options["category_id"], salon=salon)
+            except ServiceCategory.DoesNotExist:
+                raise CommandError(
+                    f"No category with id {options['category_id']} "
+                    f"for salon {options['salon_id']}."
+                ) from None
+        csv_text = export_price_book_csv(
+            salon, service=service, category=category)
         if options["output"]:
             try:
                 with open(options["output"], "w", encoding="utf-8", newline="") as fh:

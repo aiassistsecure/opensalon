@@ -104,6 +104,73 @@ class ExportPriceBookCommandTests(TestCase):
                 "export_price_book", salon_id=self.salon.pk,
                 service_id=other_service.pk, stdout=io.StringIO())
 
+    def test_category_id_filter_matches_service(self):
+        other_category = ServiceCategory.objects.create(
+            salon=self.salon, name="Haircuts", sort_order=2)
+        other_service = Service.objects.create(
+            category=other_category, name="Haircut",
+            service_minutes=30)
+        ServicePrice.objects.create(
+            service=other_service, staff_level=self.level,
+            amount=Decimal("50.00"))
+        out = io.StringIO()
+        call_command(
+            "export_price_book", "--salon-id", str(self.salon.pk),
+            "--category-id", str(self.category.pk), stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_price_book_csv(self.salon, category=self.category))
+        self.assertIn("Single Process Color", out.getvalue())
+        self.assertNotIn("Haircut", out.getvalue())
+
+    def test_category_id_kwarg_filter(self):
+        out = io.StringIO()
+        call_command(
+            "export_price_book", salon_id=self.salon.pk,
+            category_id=self.category.pk, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_price_book_csv(self.salon, category=self.category))
+
+    def test_category_and_service_id_compose(self):
+        out = io.StringIO()
+        call_command(
+            "export_price_book", salon_id=self.salon.pk,
+            service_id=self.service.pk,
+            category_id=self.category.pk, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_price_book_csv(
+                self.salon, service=self.service,
+                category=self.category))
+        other_category = ServiceCategory.objects.create(
+            salon=self.salon, name="Haircuts", sort_order=2)
+        out = io.StringIO()
+        call_command(
+            "export_price_book", salon_id=self.salon.pk,
+            service_id=self.service.pk,
+            category_id=other_category.pk, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_price_book_csv(
+                self.salon, service=self.service,
+                category=other_category))
+
+    def test_unknown_category_errors_cleanly(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_price_book", salon_id=self.salon.pk,
+                category_id=999999, stdout=io.StringIO())
+
+    def test_other_salons_category_errors_cleanly(self):
+        other_salon = Salon.objects.create(name="Other Salon")
+        other_category = ServiceCategory.objects.create(
+            salon=other_salon, name="Color", sort_order=1)
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_price_book", salon_id=self.salon.pk,
+                category_id=other_category.pk, stdout=io.StringIO())
+
     def test_unknown_salon_errors_cleanly(self):
         with self.assertRaises(CommandError):
             call_command(
