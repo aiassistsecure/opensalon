@@ -164,3 +164,90 @@ class ExportClientHistoryCommandTests(TestCase):
                     "export_client_history", salon_id=self.salon.pk,
                     client_id=self.client.pk, output=path,
                     stdout=io.StringIO())
+
+
+class ExportClientHistoryWindowCommandTests(TestCase):
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon", timezone="UTC")
+        self.level = StaffLevel.objects.create(salon=self.salon, name="Level 6")
+        self.staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Stylist One",
+            staff_level=self.level)
+        self.client = Client.objects.create(
+            salon=self.salon, first_name="Test", last_name="Example")
+        cat = ServiceCategory.objects.create(salon=self.salon, name="Hair")
+        self.service = Service.objects.create(
+            category=cat, name="Haircut", service_minutes=45)
+        self.past = Appointment.objects.create(
+            client=self.client, staff_member=self.staff,
+            service=self.service, start=at(-1, 9),
+            end=at(-1, 9) + datetime.timedelta(minutes=45),
+            status=Appointment.Status.COMPLETED)
+        self.future = Appointment.objects.create(
+            client=self.client, staff_member=self.staff,
+            service=self.service, start=at(3, 9),
+            end=at(3, 9) + datetime.timedelta(minutes=45))
+
+    def test_window_string_args_match_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_client_history", "--salon-id", str(self.salon.pk),
+            "--client-id", str(self.client.pk),
+            "--start-date", "2026-11-01", "--end-date", "2026-11-01",
+            stdout=out)
+        expected = export_client_history_csv(
+            self.salon, self.client,
+            start_date=datetime.date(2026, 11, 1),
+            end_date=datetime.date(2026, 11, 1))
+        self.assertEqual(out.getvalue(), expected)
+        self.assertIn(self.past.start.isoformat(), out.getvalue())
+        self.assertNotIn(self.future.start.isoformat(), out.getvalue())
+
+    def test_window_kwargs_match_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_client_history", salon_id=self.salon.pk,
+            client_id=self.client.pk,
+            start_date=datetime.date(2026, 11, 3), stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_client_history_csv(
+                self.salon, self.client,
+                start_date=datetime.date(2026, 11, 3)))
+
+    def test_window_alias_flags_match_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_client_history", "--salon-id", str(self.salon.pk),
+            "--client-id", str(self.client.pk),
+            "--date-from", "2026-11-05", "--date-to", "2026-11-05",
+            stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_client_history_csv(
+                self.salon, self.client,
+                start_date=datetime.date(2026, 11, 5),
+                end_date=datetime.date(2026, 11, 5)))
+        self.assertIn(self.future.start.isoformat(), out.getvalue())
+
+    def test_window_composes_with_upcoming_only(self):
+        out = io.StringIO()
+        call_command(
+            "export_client_history", salon_id=self.salon.pk,
+            client_id=self.client.pk, upcoming_only=True, now=NOW,
+            end_date=datetime.date(2026, 11, 4), stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            ",".join(CLIENT_HISTORY_EXPORT_FIELDNAMES) + "\n")
+
+    def test_bad_start_date_raises(self):
+        with self.assertRaises((CommandError, SystemExit)):
+            call_command(
+                "export_client_history", "--salon-id", str(self.salon.pk),
+                "--client-id", str(self.client.pk),
+                "--start-date", "not-a-date", stdout=io.StringIO())
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_client_history", salon_id=self.salon.pk,
+                client_id=self.client.pk, start_date="not-a-date",
+                stdout=io.StringIO())
