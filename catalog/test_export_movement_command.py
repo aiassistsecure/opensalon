@@ -226,3 +226,103 @@ class ExportMovementCommandTests(TestCase):
             with self.assertRaises(CommandError):
                 call_command("export_movement", salon_id=self.salon.pk,
                              output=path, stdout=io.StringIO())
+
+
+class ExportMovementKindCommandTests(TestCase):
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon")
+        self.day = date(2026, 10, 3)
+        self.shampoo = Product.objects.create(
+            salon=self.salon, name="Shampoo", sku="SH-001",
+            barcode="012345678905", price=Decimal("10.00"))
+        self.move(self.shampoo, 10, on=self.day)
+        self.move(self.shampoo, -3, kind=StockMovement.Kind.SALE,
+                  on=self.day)
+        self.move(self.shampoo, -2, kind=StockMovement.Kind.ADJUSTMENT,
+                  on=self.day)
+
+    def move(self, product, delta, kind=StockMovement.Kind.RECEIVE,
+             note="", on=None):
+        movement = StockMovement.objects.create(
+            product=product, kind=kind, quantity_delta=delta, note=note)
+        if on is not None:
+            moment = timezone.make_aware(
+                datetime(on.year, on.month, on.day, 12, 0))
+            StockMovement.objects.filter(pk=movement.pk).update(
+                created_at=moment)
+        return movement
+
+    def test_kind_flag_matches_service_json(self):
+        out = io.StringIO()
+        call_command(
+            "export_movement", "--salon-id", str(self.salon.pk),
+            "--kind", "sale", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            json.dumps(
+                export_movement_export(self.salon, kind="sale"),
+                indent=2) + "\n")
+        data = json.loads(out.getvalue())
+        self.assertEqual([m["kind"] for m in data["movements"]], ["sale"])
+        self.assertEqual([m["quantity_delta"] for m in data["movements"]],
+                         [-3])
+        self.assertEqual(data["totals"][0]["by_kind"], {"sale": -3})
+
+    def test_kind_kwarg_matches_service_csv(self):
+        out = io.StringIO()
+        call_command("export_movement", salon_id=self.salon.pk,
+                     kind="receive", format="csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_movements_csv(self.salon, kind="receive"))
+        rows = list(csv.DictReader(io.StringIO(out.getvalue())))
+        self.assertEqual([r["kind"] for r in rows], ["receive"])
+
+    def test_kind_filter_no_match_is_empty(self):
+        out = io.StringIO()
+        call_command("export_movement", salon_id=self.salon.pk,
+                     kind="SALE", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            json.dumps(
+                export_movement_export(self.salon, kind="SALE"),
+                indent=2) + "\n")
+        self.assertEqual(json.loads(out.getvalue()),
+                         {"movements": [], "totals": []})
+        out = io.StringIO()
+        call_command("export_movement", salon_id=self.salon.pk,
+                     kind="SALE", format="csv", stdout=out)
+        self.assertEqual(len(out.getvalue().strip().splitlines()), 1)
+
+    def test_no_kind_matches_unfiltered_service(self):
+        out = io.StringIO()
+        call_command("export_movement", salon_id=self.salon.pk, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            json.dumps(
+                export_movement_export(self.salon, kind=None),
+                indent=2) + "\n")
+
+    def test_kind_composes_with_product_and_window(self):
+        conditioner = Product.objects.create(
+            salon=self.salon, name="Conditioner", sku="CO-002",
+            barcode="222", price=Decimal("12.00"))
+        self.move(conditioner, -5, kind=StockMovement.Kind.SALE,
+                  on=self.day)
+        out = io.StringIO()
+        call_command(
+            "export_movement", "--salon-id", str(self.salon.pk),
+            "--product-id", str(self.shampoo.pk),
+            "--start-date", self.day.isoformat(),
+            "--end-date", self.day.isoformat(),
+            "--kind", "adjustment", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            json.dumps(
+                export_movement_export(
+                    self.salon, start=self.day, end=self.day,
+                    product=self.shampoo, kind="adjustment"),
+                indent=2) + "\n")
+        data = json.loads(out.getvalue())
+        self.assertEqual([m["quantity_delta"] for m in data["movements"]],
+                         [-2])

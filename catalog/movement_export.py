@@ -54,6 +54,17 @@ and the totals rollup covers that product alone, so the two
 halves of the combined export still reconcile. With ``None``
 (the default), the output is the previous salon-wide export,
 unchanged.
+
+Kind filter: every export here also takes one optional
+``kind`` (default ``None`` = no kind filter, output identical
+to the unfiltered export). With a kind, only movements whose
+stored ``kind`` exactly matches it are exported —
+``kind=str(kind)``, so a ``StockMovement.Kind`` member works,
+with no case folding — mirroring the sibling categorical
+filters. The kind filter composes (AND) with the product and
+the range, and because the rows and the totals rollup are
+built from the same filtered queryset, a kind-filtered rollup
+still reconciles with the kind-filtered rows.
 """
 import csv
 import io
@@ -118,7 +129,7 @@ def _bound(value, *, is_end):
     return bound
 
 
-def _movements_in_range(salon, start, end, product=None):
+def _movements_in_range(salon, start, end, product=None, kind=None):
     salon_id = getattr(salon, "pk", salon)
     queryset = (
         StockMovement.objects.filter(product__salon_id=salon_id)
@@ -127,6 +138,8 @@ def _movements_in_range(salon, start, end, product=None):
     )
     if product is not None:
         queryset = queryset.filter(product=_resolve_product(salon, product))
+    if kind is not None:
+        queryset = queryset.filter(kind=str(kind))
     start_bound = _bound(start, is_end=False)
     end_bound = _bound(end, is_end=True)
     if start_bound is not None:
@@ -151,7 +164,8 @@ def _record(movement):
     }
 
 
-def export_movements(salon, start=None, end=None, *, product=None):
+def export_movements(salon, start=None, end=None, *, product=None,
+                     kind=None):
     """Return ``salon``'s movements in the range as a list of dicts.
 
     Each entry is a dict with exactly :data:`MOVEMENT_FIELDNAMES`
@@ -163,22 +177,27 @@ def export_movements(salon, start=None, end=None, *, product=None):
     within ``salon``; see the module docstring) restricts the
     export to that one product's movements, still inside the
     range. Default ``None`` is the salon-wide export, unchanged.
-    Records nothing.
+    The optional ``kind`` filters by exact stored kind value
+    (AND with the product and the range); ``None`` (the default)
+    applies no kind filter. Records nothing.
     """
     return [
         _record(m)
-        for m in _movements_in_range(salon, start, end, product=product)
+        for m in _movements_in_range(
+            salon, start, end, product=product, kind=kind)
     ]
 
 
-def export_movements_csv(salon, start=None, end=None, *, product=None):
+def export_movements_csv(salon, start=None, end=None, *, product=None,
+                         kind=None):
     """Return ``salon``'s movements in the range as a CSV string.
 
     The header row is :data:`MOVEMENT_FIELDNAMES` and every data
     row comes from :func:`export_movements` with the same
-    arguments (including the optional ``product`` filter), so
-    the CSV and list exports always agree. A range with no
-    movements exports as the header row alone. Lines end
+    arguments (including the optional ``product`` filter and
+    the optional ``kind`` filter), so the CSV and list exports
+    always agree. A range with no movements (or none of the
+    kind) exports as the header row alone. Lines end
     with ``"\\n"``. Records nothing.
     """
     buffer = io.StringIO()
@@ -187,7 +206,7 @@ def export_movements_csv(salon, start=None, end=None, *, product=None):
     )
     writer.writeheader()
     for record in export_movements(
-            salon, start=start, end=end, product=product):
+            salon, start=start, end=end, product=product, kind=kind):
         writer.writerow(record)
     return buffer.getvalue()
 
@@ -196,7 +215,8 @@ def export_movements_csv(salon, start=None, end=None, *, product=None):
 movements_csv = export_movements_csv
 
 
-def movement_totals(salon, start=None, end=None, *, product=None):
+def movement_totals(salon, start=None, end=None, *, product=None,
+                    kind=None):
     """Return per-product totals for ``salon``'s movements in range.
 
     Each entry is a dict with exactly :data:`TOTAL_FIELDNAMES`
@@ -205,11 +225,13 @@ def movement_totals(salon, start=None, end=None, *, product=None):
     dict of per-kind delta sums. Only products with movements in
     the range appear. Ordered by product name, then id. A range
     with no movements returns ``[]``. The optional ``product``
-    filter is :func:`export_movements`' own, so a filtered rollup
-    still reconciles with the filtered rows. Records nothing.
+    and ``kind`` filters are :func:`export_movements`' own, so a
+    filtered rollup still reconciles with the filtered rows.
+    Records nothing.
     """
     totals = {}
-    for movement in _movements_in_range(salon, start, end, product=product):
+    for movement in _movements_in_range(
+            salon, start, end, product=product, kind=kind):
         product = movement.product
         row = totals.get(product.pk)
         if row is None:
@@ -232,18 +254,19 @@ def movement_totals(salon, start=None, end=None, *, product=None):
     )
 
 
-def export_movement_export(salon, start=None, end=None, *, product=None):
+def export_movement_export(salon, start=None, end=None, *, product=None,
+                           kind=None):
     """Return ``{"movements": [...], "totals": [...]}`` for the range.
 
     Both halves come from the same range arguments (and the same
-    optional ``product`` filter), so the totals always reconcile
-    with the exported rows.
+    optional ``product`` and ``kind`` filters), so the totals
+    always reconcile with the exported rows.
     """
     return {
         "movements": export_movements(
-            salon, start=start, end=end, product=product),
+            salon, start=start, end=end, product=product, kind=kind),
         "totals": movement_totals(
-            salon, start=start, end=end, product=product),
+            salon, start=start, end=end, product=product, kind=kind),
     }
 
 
