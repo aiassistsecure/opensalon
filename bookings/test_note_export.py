@@ -137,3 +137,60 @@ class AppointmentNoteExportTests(SearchAppointmentNotesTests):
         export_appointment_notes(self.salon)
         export_appointment_notes_csv(self.salon)
         self.assertEqual(AppointmentNote.objects.count(), before)
+
+    def test_appointment_filter_default_none_is_unchanged(self):
+        second = self._appt(self.salon, "Bob", "Adams", "Stylist Three")
+        self.make_note(self.appt, "first appt note")
+        self.make_note(second, "second appt note")
+        default = export_appointment_notes(self.salon)
+        self.assertEqual(
+            export_appointment_notes(self.salon, appointment=None),
+            default)
+        self.assertEqual(len(default), 2)
+        self.assertEqual(
+            export_appointment_notes_csv(self.salon, appointment=None),
+            export_appointment_notes_csv(self.salon))
+
+    def test_appointment_filter_only_that_appointment(self):
+        second = self._appt(self.salon, "Bob", "Adams", "Stylist Three")
+        mine = self.make_note(self.appt, "first appt note")
+        self.make_note(second, "second appt note")
+        records = export_appointment_notes(
+            self.salon, appointment=self.appt)
+        self.assertEqual([r["note_id"] for r in records], [mine.pk])
+        csv_text = export_appointment_notes_csv(
+            self.salon, appointment=self.appt)
+        self.assertIn("first appt note", csv_text)
+        self.assertNotIn("second appt note", csv_text)
+        other_records = export_appointment_notes(
+            self.salon, appointment=second)
+        self.assertEqual(
+            [r["body"] for r in other_records], ["second appt note"])
+
+    def test_appointment_filter_date_window_still_applies(self):
+        base = datetime.datetime(2026, 10, 20, 12, 0,
+                                 tzinfo=datetime.timezone.utc)
+        in_window = self.make_note(
+            self.appt, "in window", when=base + timedelta(days=1))
+        self.make_note(
+            self.appt, "out of window", when=base + timedelta(days=5))
+        second = self._appt(self.salon, "Bob", "Adams", "Stylist Three")
+        self.make_note(
+            second, "other appt in window",
+            when=base + timedelta(days=1))
+        records = export_appointment_notes(
+            self.salon, datetime.date(2026, 10, 21),
+            datetime.date(2026, 10, 21), appointment=self.appt)
+        self.assertEqual([r["note_id"] for r in records], [in_window.pk])
+
+    def test_appointment_filter_other_salon_appointment_is_empty(self):
+        self.make_note(self.appt, "Mine")
+        self.make_note(self.other_appt, "Theirs")
+        self.assertEqual(
+            export_appointment_notes(
+                self.salon, appointment=self.other_appt),
+            [])
+        self.assertEqual(
+            export_appointment_notes_csv(
+                self.salon, appointment=self.other_appt),
+            ",".join(NOTE_FIELDNAMES) + "\n")
