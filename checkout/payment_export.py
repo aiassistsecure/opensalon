@@ -71,6 +71,13 @@ apply and compose (filter AND filter).
 ``provider_reference`` is carried verbatim on every row and
 is never filtered on.
 
+Method filter: both export functions accept an optional
+``method`` (default ``None``). With ``None`` the output is
+unchanged. With a method, only payments whose stored
+``method`` exactly matches that core ``Payment.Method`` slug
+are included; the date window, the per-sale filter, and the
+status filter still apply and compose (filter AND filter).
+
 Core stays provider-agnostic: no payment-provider SDK, field,
 or name appears here; ``method`` / ``status`` values are
 exactly the core slugs the model stores.
@@ -146,7 +153,8 @@ def payment_export_row(payment):
     }
 
 
-def export_payments(salon, date_from, date_to=None, sale=None, status=None):
+def export_payments(salon, date_from, date_to=None, sale=None, status=None,
+                    method=None):
     """Return ``salon``'s payment rows in a date range, as dicts.
 
     ``date_from`` / ``date_to`` are inclusive whole local days
@@ -165,6 +173,10 @@ def export_payments(salon, date_from, date_to=None, sale=None, status=None):
     ``status`` is optional: the default ``None`` is unchanged.
     When a status is given, only payments whose stored
     ``status`` exactly matches it are included.
+
+    ``method`` is optional: the default ``None`` is unchanged.
+    When a method is given, only payments whose stored
+    ``method`` exactly matches it are included.
     """
     if salon is None or date_from is None:
         return []
@@ -192,10 +204,13 @@ def export_payments(salon, date_from, date_to=None, sale=None, status=None):
         payments = payments.filter(sale=sale)
     if status is not None:
         payments = payments.filter(status=status)
+    if method is not None:
+        payments = payments.filter(method=method)
     return [payment_export_row(payment) for payment in payments]
 
 
-def export_payments_csv(salon, date_from, date_to=None, sale=None, status=None):
+def export_payments_csv(salon, date_from, date_to=None, sale=None, status=None,
+                        method=None):
     """Return ``salon``'s payments in a date range as a CSV string.
 
     The header row is :data:`EXPORT_FIELDNAMES` and every data
@@ -212,6 +227,10 @@ def export_payments_csv(salon, date_from, date_to=None, sale=None, status=None):
     ``status`` is optional and passed through likewise: the
     default ``None`` is unchanged; a given status exports only
     payments with that stored status.
+
+    ``method`` is optional and passed through likewise: the
+    default ``None`` is unchanged; a given method exports only
+    payments with that stored method.
     """
     buffer = io.StringIO()
     writer = csv.DictWriter(
@@ -219,7 +238,8 @@ def export_payments_csv(salon, date_from, date_to=None, sale=None, status=None):
     )
     writer.writeheader()
     for record in export_payments(
-            salon, date_from, date_to, sale=sale, status=status):
+            salon, date_from, date_to, sale=sale, status=status,
+            method=method):
         writer.writerow(record)
     return buffer.getvalue()
 
