@@ -136,3 +136,55 @@ class ExportHistoryCommandTests(TestCase):
             path = os.path.join(tmp, "missing-dir", "history.csv")
             with self.assertRaises(CommandError):
                 self.run_export(output=path)
+
+    def test_window_string_args_match_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_history", "--salon-id", str(self.salon.pk),
+            "--client-id", str(self.client.pk), "--now", NOW.isoformat(),
+            "--start-date", "2026-11-01", "--end-date", "2026-11-01",
+            stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_history_csv(
+                self.salon, self.client, now=NOW,
+                start_date=datetime.date(2026, 11, 1),
+                end_date=datetime.date(2026, 11, 1)))
+        self.assertEqual(self.exported_ids(out.getvalue()), [self.newer.pk])
+
+    def test_window_kwargs_match_service(self):
+        out = self.run_export(
+            client_id=self.client.pk,
+            start_date=datetime.date(2026, 10, 31))
+        self.assertEqual(
+            out, export_history_csv(
+                self.salon, self.client, now=NOW,
+                start_date=datetime.date(2026, 10, 31)))
+        self.assertEqual(self.exported_ids(out), [self.newer.pk])
+
+    def test_window_alias_flags_match_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_history", "--salon-id", str(self.salon.pk),
+            "--now", NOW.isoformat(),
+            "--date-from", "2026-10-31", "--date-to", "2026-10-31",
+            stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_history_csv(
+                self.salon, None, now=NOW,
+                start_date=datetime.date(2026, 10, 31),
+                end_date=datetime.date(2026, 10, 31)))
+        self.assertEqual(self.exported_ids(out.getvalue()), [self.older.pk])
+
+    def test_window_composes_with_limit(self):
+        out = self.run_export(
+            limit=1, start_date=datetime.date(2026, 10, 31),
+            end_date=datetime.date(2026, 10, 31))
+        self.assertEqual(self.exported_ids(out), [self.older.pk])
+
+    def test_bad_start_date_raises(self):
+        with self.assertRaises((CommandError, SystemExit)):
+            call_command(
+                "export_history", "--salon-id", str(self.salon.pk),
+                "--start-date", "not-a-date", stdout=io.StringIO())
+        with self.assertRaises(CommandError):
+            self.run_export(start_date="not-a-date")
