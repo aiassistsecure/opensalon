@@ -141,3 +141,103 @@ class ClientHistoryExportTests(TestCase):
             self.assertNotIn("test@example.com", blob)
             self.assertNotIn("555-0100", blob)
         self.assertNotIn("note", CLIENT_HISTORY_EXPORT_FIELDNAMES)
+
+
+class ClientHistoryExportWindowTests(TestCase):
+    """The optional start_date/end_date window on appointment start."""
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon", timezone="UTC")
+        self.level = StaffLevel.objects.create(salon=self.salon, name="Level 6")
+        self.staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Stylist One",
+            staff_level=self.level)
+        self.client = Client.objects.create(
+            salon=self.salon, first_name="Test", last_name="Example")
+        self.other = Client.objects.create(
+            salon=self.salon, first_name="Other", last_name="Person")
+        cat = ServiceCategory.objects.create(salon=self.salon, name="Hair")
+        self.service = Service.objects.create(
+            category=cat, name="Haircut", service_minutes=45)
+        self.old = self._appt(at(-10, 9))
+        self.recent = self._appt(at(-1, 9))
+        self.recent_late = self._appt(at(-1, 23))
+        self.future = self._appt(at(3, 9))
+        self.other_appt = self._appt(at(-1, 10), client=self.other)
+
+    def _appt(self, start, client=None):
+        return Appointment.objects.create(
+            client=client or self.client, staff_member=self.staff,
+            service=self.service, start=start,
+            end=start + datetime.timedelta(minutes=45))
+
+    def _ids(self, **kw):
+        return [r["id"] for r in export_client_history(
+            self.salon, self.client, **kw)]
+
+    def test_no_window_is_previous_output(self):
+        self.assertEqual(
+            self._ids(), [self.future.pk, self.recent_late.pk,
+                          self.recent.pk, self.old.pk])
+        self.assertEqual(
+            export_client_history_csv(self.salon, self.client),
+            export_client_history_csv(
+                self.salon, self.client, start_date=None, end_date=None))
+
+    def test_both_bounds_inclusive_whole_days(self):
+        day = datetime.date(2026, 11, 1)
+        self.assertEqual(
+            self._ids(start_date=day, end_date=day),
+            [self.recent_late.pk, self.recent.pk])
+
+    def test_start_bound_only_is_open_ended(self):
+        self.assertEqual(
+            self._ids(start_date=datetime.date(2026, 11, 2)),
+            [self.future.pk])
+
+    def test_end_bound_only_is_open_ended(self):
+        self.assertEqual(
+            self._ids(end_date=datetime.date(2026, 11, 1)),
+            [self.recent_late.pk, self.recent.pk, self.old.pk])
+
+    def test_window_composes_with_client_filter(self):
+        day = datetime.date(2026, 11, 1)
+        rows = export_client_history(
+            self.salon, self.other, start_date=day, end_date=day)
+        self.assertEqual([r["id"] for r in rows], [self.other_appt.pk])
+
+    def test_window_composes_with_upcoming_only(self):
+        rows = export_client_history(
+            self.salon, self.client, upcoming_only=True, now=NOW,
+            start_date=datetime.date(2026, 11, 1),
+            end_date=datetime.date(2026, 11, 4))
+        self.assertEqual(rows, [])
+        rows = export_client_history(
+            self.salon, self.client, upcoming_only=True, now=NOW,
+            end_date=datetime.date(2026, 11, 30))
+        self.assertEqual([r["id"] for r in rows], [self.future.pk])
+
+    def test_reversed_window_is_empty(self):
+        self.assertEqual(
+            self._ids(start_date=datetime.date(2026, 11, 5),
+                      end_date=datetime.date(2026, 11, 1)), [])
+        self.assertEqual(
+            export_client_history_csv(
+                self.salon, self.client,
+                start_date=datetime.date(2026, 11, 5),
+                end_date=datetime.date(2026, 11, 1)),
+            ",".join(CLIENT_HISTORY_EXPORT_FIELDNAMES) + "\n")
+
+    def test_datetime_bounds_reduce_to_local_date(self):
+        self.assertEqual(
+            self._ids(start_date=at(-1, 18), end_date=at(-1, 18)),
+            [self.recent_late.pk, self.recent.pk])
+
+    def test_csv_twin_matches_windowed_rows(self):
+        day = datetime.date(2026, 11, 1)
+        text = export_client_history_csv(
+            self.salon, self.client, start_date=day, end_date=day)
+        csv_rows = list(csv.DictReader(io.StringIO(text)))
+        self.assertEqual(
+            [int(r["id"]) for r in csv_rows],
+            [self.recent_late.pk, self.recent.pk])

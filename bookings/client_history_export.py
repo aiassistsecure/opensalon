@@ -48,11 +48,27 @@ No notes are exported: appointment notes and persistent client
 record notes are two kinds that never blur, and neither kind
 belongs in an appointment-history export. No client contact
 details (email, phone, address) are included.
+
+Date window: ``start_date`` / ``end_date`` are optional
+inclusive local dates filtered on the appointment's ``start``
+in the salon's timezone (the :mod:`bookings.note_export` /
+:mod:`bookings.breaks` convention) -- the window is [start of
+``start_date``, start of the day after ``end_date``). Either
+bound may be given alone (an open-ended window); datetimes are
+reduced to their salon-local date. Both default ``None``, which
+is exactly the previous unbounded output, byte-identical. A
+reversed window exports as ``[]`` / a header-only CSV. The
+window composes with the ``client`` and ``upcoming_only``
+parameters: membership and ordering still come from
+:mod:`bookings.client_history` alone, and the window only drops
+rows whose ``start`` falls outside it.
 """
 import csv
+import datetime
 import io
 from decimal import Decimal
 
+from bookings.availability import _tz
 from bookings.client_history import client_appointments
 from saloncore.models import ServicePrice
 
@@ -102,7 +118,43 @@ def _resolve(salon, client):
     return salon, client
 
 
-def export_client_history(salon, client=None, upcoming_only=False, now=None):
+def _as_local_date(value, tz):
+    """Reduce a date / datetime / ISO string to a local date."""
+    if isinstance(value, datetime.datetime):
+        return value.astimezone(tz).date() if value.tzinfo else value.date()
+    if isinstance(value, datetime.date):
+        return value
+    text = str(value).strip()
+    try:
+        return datetime.date.fromisoformat(text)
+    except ValueError:
+        parsed = datetime.datetime.fromisoformat(
+            text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text)
+        return parsed.astimezone(tz).date() if parsed.tzinfo else parsed.date()
+
+
+def _in_window(start, salon, start_date, end_date):
+    """True when ``start`` is inside the optional date window."""
+    if start is None:
+        return start_date is None and end_date is None
+    tz = _tz(salon)
+    if start_date is not None:
+        first = _as_local_date(start_date, tz)
+        window_start = datetime.datetime.combine(
+            first, datetime.time.min, tzinfo=tz)
+        if start < window_start:
+            return False
+    if end_date is not None:
+        last = _as_local_date(end_date, tz)
+        window_end = datetime.datetime.combine(
+            last + datetime.timedelta(days=1), datetime.time.min, tzinfo=tz)
+        if start >= window_end:
+            return False
+    return True
+
+
+def export_client_history(salon, client=None, upcoming_only=False, now=None,
+                          start_date=None, end_date=None):
     """Return one client's appointment-history rows as dicts.
 
     Args:
@@ -113,6 +165,10 @@ def export_client_history(salon, client=None, upcoming_only=False, now=None):
             salon is the client's own salon.
         upcoming_only / now: passed through unchanged to
             :func:`bookings.client_history.client_appointments`.
+        start_date / end_date: optional inclusive local dates
+            bounding the appointment ``start`` (see the module
+            docstring); both default ``None`` = unbounded, the
+            previous output verbatim.
 
     Returns:
         A list of dicts with exactly
@@ -126,6 +182,11 @@ def export_client_history(salon, client=None, upcoming_only=False, now=None):
     appointments = list(
         client_appointments(client, upcoming_only=upcoming_only, now=now)
     )
+    if start_date is not None or end_date is not None:
+        appointments = [
+            appt for appt in appointments
+            if _in_window(appt.start, salon, start_date, end_date)
+        ]
     # One price-book query for every (service, staff level) pair,
     # as in bookings.export, rather than a lookup per appointment.
     prices = {}
@@ -168,7 +229,8 @@ def export_client_history(salon, client=None, upcoming_only=False, now=None):
     return rows
 
 
-def export_client_history_csv(salon, client=None, upcoming_only=False, now=None):
+def export_client_history_csv(salon, client=None, upcoming_only=False, now=None,
+                              start_date=None, end_date=None):
     """Return one client's appointment history as a CSV string.
 
     Arguments are the same as :func:`export_client_history`.
@@ -185,7 +247,8 @@ def export_client_history_csv(salon, client=None, upcoming_only=False, now=None)
     )
     writer.writeheader()
     for row in export_client_history(
-        salon, client, upcoming_only=upcoming_only, now=now
+        salon, client, upcoming_only=upcoming_only, now=now,
+        start_date=start_date, end_date=end_date,
     ):
         writer.writerow({
             name: ("" if row[name] is None else row[name])
