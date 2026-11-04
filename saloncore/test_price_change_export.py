@@ -104,6 +104,43 @@ class PriceChangeExportTests(TestCase):
             [r["note"] for r in export_price_changes(self.other)], ["Theirs"])
         self.assertNotIn("Theirs", export_price_changes_csv(self.salon))
 
+    def test_service_filter(self):
+        second = self._price(self.salon, "Haircut", "Level 5")
+        mine = self._change(note="Mine")
+        self._change(price=second, note="Other service")
+        records = export_price_changes(
+            self.salon, service=self.price.service)
+        self.assertEqual([r["id"] for r in records], [mine.pk])
+        self.assertEqual([r["note"] for r in records], ["Mine"])
+        csv_text = export_price_changes_csv(
+            self.salon, service=self.price.service)
+        self.assertIn("Mine", csv_text)
+        self.assertNotIn("Other service", csv_text)
+        # The alias forwards the filter too.
+        self.assertEqual(
+            price_changes_csv(self.salon, service=self.price.service),
+            csv_text)
+
+    def test_service_filter_other_salon_service_is_empty(self):
+        self._change(note="Mine")
+        self.assertEqual(
+            export_price_changes(
+                self.salon, service=self.other_price.service),
+            [])
+        self.assertEqual(
+            export_price_changes_csv(
+                self.salon, service=self.other_price.service),
+            ",".join(PRICE_CHANGE_FIELDNAMES) + "\n")
+
+    def test_service_default_none_is_unchanged(self):
+        self._change(note="Mine")
+        self.assertEqual(
+            export_price_changes(self.salon),
+            export_price_changes(self.salon, service=None))
+        self.assertEqual(
+            export_price_changes_csv(self.salon),
+            export_price_changes_csv(self.salon, service=None))
+
     def test_date_range_filter(self):
         change = self._change()
         change.refresh_from_db()

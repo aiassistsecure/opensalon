@@ -2,6 +2,7 @@
 
 Usage:
     python manage.py export_price_changes --salon-id ID
+        [--service-id ID]
         [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD]
         [--output PATH]
 
@@ -12,6 +13,15 @@ dates to ``datetime.date`` objects, delegates to the service
 verbatim, and writes the CSV it returns (to ``--output`` when
 given, otherwise to stdout). Date semantics are exactly the
 service's: start-inclusive, end covers the whole end day.
+
+With ``--service-id`` the export is narrowed to that one
+service's price changes: the service is resolved by id within
+the salon (via its category's salon, the app's service scoping
+convention; a service from another salon, or an unknown id, is
+a ``CommandError``), and the resolved service is passed to the
+service as its optional ``service`` argument. Without
+``--service-id`` the command exports the whole salon, exactly
+as before.
 Backend only; read-only.
 """
 import argparse
@@ -19,7 +29,7 @@ import datetime
 
 from django.core.management.base import BaseCommand, CommandError
 
-from saloncore.models import Salon
+from saloncore.models import Salon, Service
 from saloncore.price_change_export import export_price_changes_csv
 
 
@@ -39,6 +49,11 @@ class Command(BaseCommand):
         parser.add_argument(
             "--salon-id", type=int, required=True,
             help="Id of the salon whose price changes to export.",
+        )
+        parser.add_argument(
+            "--service-id", type=int, default=None,
+            help="Id of the service (in the salon) whose price "
+                 "changes to export (default: all services).",
         )
         parser.add_argument(
             "--start-date", dest="start_date", type=_parse_date,
@@ -64,8 +79,19 @@ class Command(BaseCommand):
             raise CommandError(
                 f"No salon with id {options['salon_id']}."
             ) from None
+        service = None
+        if options.get("service_id") is not None:
+            try:
+                service = Service.objects.get(
+                    pk=options["service_id"], category__salon=salon)
+            except Service.DoesNotExist:
+                raise CommandError(
+                    f"No service with id {options['service_id']} "
+                    f"for salon {options['salon_id']}."
+                ) from None
         csv_text = export_price_changes_csv(
-            salon, start=options["start_date"], end=options["end_date"])
+            salon, start=options["start_date"], end=options["end_date"],
+            service=service)
         if options["output"]:
             try:
                 with open(options["output"], "w", encoding="utf-8", newline="") as fh:
