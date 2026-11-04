@@ -35,6 +35,17 @@ two dates includes the whole end day. A ``datetime`` is used as
 given (naive datetimes are interpreted in the current time zone).
 Ordering is deterministic: by ``created_at``, then id (the model's
 own ordering).
+
+Every export here also takes one optional per-product filter,
+``product`` (default ``None``): a saved
+:class:`~catalog.models.Product` or its integer id, resolved
+within the salon exactly as
+:func:`catalog.history.stock_history` resolves it — an unknown
+id, an unsaved instance, or a product of another salon raises
+``ValueError`` rather than leaking. With a product, only that
+product's adjustments (still inside the date range) are exported.
+With ``None`` (the default), the output is the previous
+salon-wide export, unchanged.
 """
 import csv
 import io
@@ -42,6 +53,7 @@ from datetime import date, datetime, time, timedelta
 
 from django.utils import timezone
 
+from catalog.history import _resolve_product
 from catalog.models import StockMovement
 
 __all__ = [
@@ -89,7 +101,7 @@ def _bound(value, *, is_end):
     return bound
 
 
-def _adjustments_in_range(salon, start, end):
+def _adjustments_in_range(salon, start, end, product=None):
     salon_id = getattr(salon, "pk", salon)
     queryset = (
         StockMovement.objects.filter(
@@ -99,6 +111,8 @@ def _adjustments_in_range(salon, start, end):
         .select_related("product")
         .order_by("created_at", "id")
     )
+    if product is not None:
+        queryset = queryset.filter(product=_resolve_product(salon, product))
     start_bound = _bound(start, is_end=False)
     end_bound = _bound(end, is_end=True)
     if start_bound is not None:
@@ -122,25 +136,33 @@ def _record(movement):
     }
 
 
-def export_stock_adjustments(salon, start=None, end=None):
+def export_stock_adjustments(salon, start=None, end=None, *, product=None):
     """Return ``salon``'s stock adjustments in the range as dicts.
 
     Each entry is a dict with exactly :data:`ADJUST_FIELDNAMES`
     keys. Only ``salon``'s ``ADJUSTMENT`` movements are included,
     ordered by ``created_at``, then id. See the module docstring
-    for range semantics. A range with no adjustments exports as
-    ``[]``. Records nothing.
+    for range semantics. The optional ``product`` (a saved Product
+    or its id, resolved within ``salon``; see the module
+    docstring) restricts the export to that one product's
+    adjustments, still inside the range. Default ``None`` is the
+    salon-wide export, unchanged. A range with no adjustments
+    exports as ``[]``. Records nothing.
     """
-    return [_record(m) for m in _adjustments_in_range(salon, start, end)]
+    return [
+        _record(m)
+        for m in _adjustments_in_range(salon, start, end, product=product)
+    ]
 
 
-def export_stock_adjustments_csv(salon, start=None, end=None):
+def export_stock_adjustments_csv(salon, start=None, end=None, *, product=None):
     """Return ``salon``'s stock adjustments in the range as CSV.
 
     The header row is :data:`ADJUST_FIELDNAMES` and every data row
     comes from :func:`export_stock_adjustments` with the same
-    arguments, so the CSV and list exports always agree. A range
-    with no adjustments exports as the header row alone. Lines end
+    arguments (including the optional ``product`` filter), so
+    the CSV and list exports always agree. A range with no
+    adjustments exports as the header row alone. Lines end
     with ``"\\n"``. Records nothing.
     """
     buffer = io.StringIO()
@@ -148,7 +170,8 @@ def export_stock_adjustments_csv(salon, start=None, end=None):
         buffer, fieldnames=ADJUST_FIELDNAMES, lineterminator="\n"
     )
     writer.writeheader()
-    for record in export_stock_adjustments(salon, start=start, end=end):
+    for record in export_stock_adjustments(
+            salon, start=start, end=end, product=product):
         writer.writerow(record)
     return buffer.getvalue()
 

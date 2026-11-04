@@ -161,3 +161,109 @@ class StockAdjustmentExportTests(TestCase):
         export_stock_adjustments(self.salon)
         self.assertEqual(StockMovement.objects.count(), before)
         self.assertEqual(Product.objects.count(), 1)
+
+
+class StockAdjustmentExportProductFilterTests(TestCase):
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon")
+        self.other = Salon.objects.create(name="Other Salon")
+        self.day = date(2026, 10, 3)
+        self.alpha = Product.objects.create(
+            salon=self.salon, name="Alpha", sku="A-1",
+            price=Decimal("10.00"))
+        self.beta = Product.objects.create(
+            salon=self.salon, name="Beta", sku="B-1",
+            price=Decimal("10.00"))
+        self.foreign = Product.objects.create(
+            salon=self.other, name="Foreign", sku="F-1",
+            price=Decimal("10.00"))
+
+    def move(self, product, delta, kind=StockMovement.Kind.ADJUSTMENT,
+             note="", on=None):
+        movement = StockMovement.objects.create(
+            product=product, kind=kind, quantity_delta=delta, note=note)
+        if on is not None:
+            moment = timezone.make_aware(
+                datetime(on.year, on.month, on.day, 12, 0))
+            StockMovement.objects.filter(pk=movement.pk).update(
+                created_at=moment)
+            movement.created_at = moment
+        return movement
+
+    def seed(self):
+        self.move(self.alpha, 10, on=self.day)
+        self.move(self.alpha, -3, on=self.day)
+        self.move(self.alpha, 99, kind=StockMovement.Kind.RECEIVE,
+                  on=self.day)
+        self.move(self.beta, 4, on=self.day)
+        self.move(self.foreign, 9, on=self.day)
+
+    def test_filtered_contains_only_that_product(self):
+        self.seed()
+        for product in (self.alpha, self.alpha.pk):
+            rows = export_stock_adjustments(
+                self.salon, self.day, self.day, product=product)
+            self.assertEqual([r["product_id"] for r in rows],
+                             [self.alpha.pk, self.alpha.pk])
+            self.assertEqual([r["quantity_delta"] for r in rows], [10, -3])
+
+    def test_filtered_still_applies_date_window(self):
+        self.seed()
+        self.move(self.alpha, 100, on=self.day + timedelta(days=5))
+        rows = export_stock_adjustments(
+            self.salon, self.day, self.day, product=self.alpha)
+        self.assertEqual([r["quantity_delta"] for r in rows], [10, -3])
+        rows = export_stock_adjustments(self.salon, product=self.alpha)
+        self.assertEqual([r["quantity_delta"] for r in rows],
+                         [10, -3, 100])
+
+    def test_unfiltered_output_unchanged(self):
+        self.seed()
+        plain = export_stock_adjustments(self.salon, self.day, self.day)
+        self.assertEqual(
+            export_stock_adjustments(
+                self.salon, self.day, self.day, product=None),
+            plain)
+        self.assertEqual(
+            [r["product_id"] for r in plain],
+            [self.alpha.pk, self.alpha.pk, self.beta.pk])
+        self.assertEqual(
+            export_stock_adjustments_csv(
+                self.salon, self.day, self.day, product=None),
+            export_stock_adjustments_csv(self.salon, self.day, self.day))
+
+    def test_filtered_csv_matches_filtered_list(self):
+        self.seed()
+        text = export_stock_adjustments_csv(
+            self.salon, self.day, self.day, product=self.beta)
+        parsed = list(csv.DictReader(io.StringIO(text)))
+        records = export_stock_adjustments(
+            self.salon, self.day, self.day, product=self.beta)
+        self.assertEqual(
+            parsed,
+            [{k: str(v) for k, v in r.items()} for r in records])
+        self.assertEqual([r["product_id"] for r in parsed],
+                         [str(self.beta.pk)])
+
+    def test_product_with_no_adjustments_exports_empty(self):
+        self.seed()
+        empty = Product.objects.create(
+            salon=self.salon, name="Empty", price=Decimal("1.00"))
+        self.assertEqual(
+            export_stock_adjustments(self.salon, product=empty), [])
+        self.assertEqual(
+            export_stock_adjustments_csv(self.salon, product=empty),
+            ",".join(ADJUST_FIELDNAMES) + "\n")
+
+    def test_unknown_product_id_raises_value_error(self):
+        self.seed()
+        with self.assertRaises(ValueError):
+            export_stock_adjustments(self.salon, product=999999)
+        with self.assertRaises(ValueError):
+            export_stock_adjustments_csv(self.salon, product=999999)
+
+    def test_other_salon_product_raises_value_error(self):
+        self.seed()
+        for product in (self.foreign, self.foreign.pk):
+            with self.assertRaises(ValueError):
+                export_stock_adjustments(self.salon, product=product)
