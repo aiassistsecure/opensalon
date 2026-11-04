@@ -9,6 +9,8 @@ from clients.export_all import (
     CLIENTS_FIELDNAMES,
     export_all_clients,
     export_all_clients_csv,
+    export_clients,
+    export_clients_csv,
 )
 from clients.models import Client, ClientNote
 from saloncore.models import Salon
@@ -121,6 +123,57 @@ class ExportAllClientsTests(TestCase):
                     json.loads(row["payload"]), record["payload"])
             else:
                 self.assertEqual(row["payload"], "")
+
+    def test_active_filter_true_only(self):
+        self._client("Amy", "Smith")
+        self._client("Bob", "Adams", active=False)
+        data = export_all_clients(active=True)
+        self.assertEqual([c["first_name"] for c in data], ["Amy"])
+        self.assertTrue(all(c["active"] for c in data))
+
+    def test_active_filter_false_only(self):
+        self._client("Amy", "Smith")
+        self._client("Bob", "Adams", active=False)
+        data = export_all_clients(active=False)
+        self.assertEqual([c["first_name"] for c in data], ["Bob"])
+        self.assertFalse(data[0]["active"])
+
+    def test_active_default_none_is_unfiltered(self):
+        self._client("Amy", "Smith")
+        self._client("Bob", "Adams", active=False)
+        self.assertEqual(export_all_clients(active=None),
+                         export_all_clients())
+        self.assertEqual(len(export_all_clients()), 2)
+
+    def test_active_filter_composes_with_salon(self):
+        other_salon = Salon.objects.create(name="Other Salon")
+        self._client("Amy", "Smith", active=False)
+        self._client("Bob", "Adams")
+        Client.objects.create(
+            salon=other_salon, first_name="Cid", last_name="Jones",
+            active=False)
+        data = export_all_clients(salon=self.salon, active=False)
+        self.assertEqual([c["first_name"] for c in data], ["Amy"])
+
+    def test_active_filter_csv_matches_list(self):
+        self._client("Amy", "Smith")
+        self._client("Bob", "Adams", active=False)
+        for active in (True, False, None):
+            records = export_all_clients(active=active)
+            parsed = list(csv.DictReader(io.StringIO(
+                export_all_clients_csv(active=active))))
+            self.assertEqual(
+                [r["first_name"] for r in parsed],
+                [r["first_name"] for r in records])
+
+    def test_active_filter_aliases(self):
+        self._client("Amy", "Smith")
+        self._client("Bob", "Adams", active=False)
+        self.assertEqual(
+            export_clients(active=True), export_all_clients(active=True))
+        self.assertEqual(
+            export_clients_csv(active=False),
+            export_all_clients_csv(active=False))
 
     def test_optional_salon_filter(self):
         other_salon = Salon.objects.create(name="Other Salon")

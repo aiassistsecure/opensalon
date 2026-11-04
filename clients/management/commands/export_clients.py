@@ -2,7 +2,8 @@
 
 Usage:
     python manage.py export_clients --salon-id ID
-        [--format json|csv] [--output PATH]
+        [--format json|csv] [--active-only | --inactive-only]
+        [--output PATH]
 
 Thin wrapper around ``clients.export_all`` -- that service is the
 one source of truth for the bulk client export shape
@@ -42,11 +43,25 @@ class Command(BaseCommand):
             help="Export format: json (default) or csv.",
         )
         parser.add_argument(
+            "--active-only", action="store_true",
+            help="Only active clients.",
+        )
+        parser.add_argument(
+            "--inactive-only", action="store_true",
+            help="Only inactive clients.",
+        )
+        parser.add_argument(
             "--output", default=None,
             help="Path of the export file to write (default: stdout).",
         )
 
     def handle(self, *args, **options):
+        if options.get("active_only") and options.get("inactive_only"):
+            raise CommandError(
+                "--active-only and --inactive-only conflict.")
+        active = (
+            True if options.get("active_only")
+            else False if options.get("inactive_only") else None)
         fmt = options.get("format") or "json"
         if fmt not in _FORMATS:
             raise CommandError(
@@ -59,9 +74,9 @@ class Command(BaseCommand):
             ) from None
 
         if fmt == "csv":
-            text = export_all_clients_csv(salon=salon)
+            text = export_all_clients_csv(salon=salon, active=active)
         else:
-            records = export_all_clients(salon=salon)
+            records = export_all_clients(salon=salon, active=active)
             text = json.dumps(records, indent=2) + "\n"
 
         if options["output"]:

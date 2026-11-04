@@ -68,13 +68,17 @@ CLIENTS_FIELDNAMES = [
 ]
 
 
-def export_all_clients(salon=None):
+def export_all_clients(salon=None, active=None):
     """Return every client record as a list of JSON-serializable dicts.
 
     Args:
         salon: optional ``Salon`` instance; when given, only that
             salon's clients are exported. When omitted (default),
             ALL clients in the database are exported.
+        active: optional bool; when given, only clients whose
+            ``active`` flag matches are exported. When omitted
+            (default ``None``), no active filter is applied and
+            the output is exactly as before.
 
     Returns:
         A list, ordered by (``last_name``, ``first_name``, ``id``),
@@ -86,6 +90,8 @@ def export_all_clients(salon=None):
     )
     if salon is not None:
         clients = clients.filter(salon=salon)
+    if active is not None:
+        clients = clients.filter(active=active)
     clients = clients.order_by("last_name", "first_name", "id")
     records = []
     for client in clients:
@@ -95,12 +101,12 @@ def export_all_clients(salon=None):
     return records
 
 
-def export_all_clients_csv(salon=None):
+def export_all_clients_csv(salon=None, active=None):
     """Return every client record as a CSV string.
 
     The header row is :data:`CLIENTS_FIELDNAMES` and every data
     row comes from :func:`export_all_clients` with the same
-    argument, so the CSV and list exports always agree -- one
+    arguments, so the CSV and list exports always agree -- one
     source of truth. Nested values (``notes``, and ``payload``
     when present) are JSON-encoded into their cell so no field
     is dropped or reshaped; a client with no ``payload`` exports
@@ -112,7 +118,7 @@ def export_all_clients_csv(salon=None):
         buffer, fieldnames=CLIENTS_FIELDNAMES, lineterminator="\n"
     )
     writer.writeheader()
-    for record in export_all_clients(salon=salon):
+    for record in export_all_clients(salon=salon, active=active):
         row = {}
         for field in CLIENTS_FIELDNAMES:
             value = record.get(field)
