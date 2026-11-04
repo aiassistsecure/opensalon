@@ -267,3 +267,109 @@ class MovementExportProductFilterTests(TestCase):
         for product in (self.foreign, self.foreign.pk):
             with self.assertRaises(ValueError):
                 export_movements(self.salon, product=product)
+
+
+class MovementExportKindFilterTests(TestCase):
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon")
+        self.day = date(2026, 10, 3)
+        self.alpha = Product.objects.create(
+            salon=self.salon, name="Alpha", sku="A-1",
+            price=Decimal("10.00"))
+        self.beta = Product.objects.create(
+            salon=self.salon, name="Beta", sku="B-1",
+            price=Decimal("10.00"))
+
+    def move(self, product, delta, kind=StockMovement.Kind.RECEIVE,
+             note="", on=None):
+        movement = StockMovement.objects.create(
+            product=product, kind=kind, quantity_delta=delta, note=note)
+        if on is not None:
+            moment = timezone.make_aware(
+                datetime(on.year, on.month, on.day, 12, 0))
+            StockMovement.objects.filter(pk=movement.pk).update(
+                created_at=moment)
+            movement.created_at = moment
+        return movement
+
+    def seed(self):
+        self.move(self.alpha, 10, on=self.day)
+        self.move(self.alpha, -3, kind=StockMovement.Kind.SALE,
+                  on=self.day)
+        self.move(self.alpha, -2, kind=StockMovement.Kind.ADJUSTMENT,
+                  on=self.day)
+        self.move(self.beta, -4, kind=StockMovement.Kind.SALE,
+                  on=self.day)
+
+    def test_kind_filter_dict_and_csv(self):
+        self.seed()
+        records = export_movements(self.salon, kind="sale")
+        self.assertEqual(
+            [r["quantity_delta"] for r in records], [-3, -4])
+        self.assertEqual([r["kind"] for r in records], ["sale", "sale"])
+        parsed = list(csv.DictReader(io.StringIO(
+            export_movements_csv(self.salon, kind="sale"))))
+        self.assertEqual(
+            parsed,
+            [{k: str(v) for k, v in r.items()} for r in records])
+
+    def test_kind_filter_accepts_enum_and_defaults_identical(self):
+        self.seed()
+        self.assertEqual(
+            export_movements(
+                self.salon, kind=StockMovement.Kind.SALE),
+            export_movements(self.salon, kind="sale"))
+        self.assertEqual(
+            export_movements(self.salon),
+            export_movements(self.salon, kind=None))
+        self.assertEqual(
+            export_movements_csv(self.salon),
+            export_movements_csv(self.salon, kind=None))
+        self.assertEqual(
+            export_movement_export(self.salon),
+            export_movement_export(self.salon, kind=None))
+
+    def test_kind_filter_exact_no_case_folding_and_no_match(self):
+        self.seed()
+        self.assertEqual(export_movements(self.salon, kind="SALE"), [])
+        self.assertEqual(export_movements(self.salon, kind="Sale"), [])
+        self.assertEqual(
+            export_movements(self.salon, kind="stocktake"), [])
+        self.assertEqual(
+            export_movements_csv(self.salon, kind="SALE"),
+            ",".join(MOVEMENT_FIELDNAMES) + "\n")
+
+    def test_kind_filter_composes_with_window_and_product(self):
+        self.seed()
+        self.move(self.alpha, -9, kind=StockMovement.Kind.SALE,
+                  on=self.day + timedelta(days=5))
+        records = export_movements(
+            self.salon, self.day, self.day, product=self.alpha,
+            kind="sale")
+        self.assertEqual([r["quantity_delta"] for r in records], [-3])
+        self.assertEqual(
+            [r["quantity_delta"] for r in export_movements(
+                self.salon, product=self.beta, kind="sale")],
+            [-4])
+        self.assertEqual(
+            export_movements(
+                self.salon, self.day, self.day, kind="receive",
+                product=self.beta),
+            [])
+
+    def test_kind_filtered_totals_reconcile_with_rows(self):
+        self.seed()
+        combined = export_movement_export(self.salon, kind="sale")
+        self.assertEqual(
+            [t["product_id"] for t in combined["totals"]],
+            [self.alpha.pk, self.beta.pk])
+        alpha = combined["totals"][0]
+        self.assertEqual(alpha["movement_count"], 1)
+        self.assertEqual(alpha["net_delta"], -3)
+        self.assertEqual(alpha["by_kind"], {"sale": -3})
+        self.assertEqual(
+            sum(t["net_delta"] for t in combined["totals"]),
+            sum(r["quantity_delta"] for r in combined["movements"]))
+        self.assertEqual(
+            movement_totals(self.salon, kind="receive")[0]["by_kind"],
+            {"receive": 10})

@@ -3,7 +3,8 @@
 Usage:
     python manage.py export_movement --salon-id ID
         [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD]
-        [--product-id ID] [--format json|csv] [--output PATH]
+        [--product-id ID] [--kind KIND]
+        [--format json|csv] [--output PATH]
 
 Backend only — no views, templates, or UI. This command is a thin
 wrapper around :mod:`catalog.movement_export`: it resolves the
@@ -31,6 +32,11 @@ the salon and passed to the service as its ``product`` filter;
 an id that is unknown — or belongs to another salon — raises
 ``CommandError``. Omitted, the export is the previous salon-wide
 output verbatim.
+
+Kind semantics are the service's own: ``--kind`` narrows the
+export to movements whose stored kind exactly matches it and
+composes with the product and the range; without ``--kind``
+the command exports every kind, exactly as before.
 
 Founding rule (Exit Principle): anything a salon can enter, it can
 fully export.
@@ -106,6 +112,11 @@ class Command(BaseCommand):
                  "every product in the salon).",
         )
         parser.add_argument(
+            "--kind", dest="kind", default=None,
+            help="Movement kind value to filter by (default: "
+                 "all kinds).",
+        )
+        parser.add_argument(
             "--format", dest="format", default="json", choices=_FORMATS,
             help="Export format: json (default) or csv.",
         )
@@ -132,11 +143,13 @@ class Command(BaseCommand):
             if fmt == "csv":
                 text = export_movements_csv(
                     salon, start=options["start_date"],
-                    end=options["end_date"], product=product)
+                    end=options["end_date"], product=product,
+                    kind=options.get("kind"))
             else:
                 data = export_movement_export(
                     salon, start=options["start_date"],
-                    end=options["end_date"], product=product)
+                    end=options["end_date"], product=product,
+                    kind=options.get("kind"))
                 text = json.dumps(data, indent=2) + "\n"
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
