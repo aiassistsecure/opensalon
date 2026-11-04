@@ -102,6 +102,76 @@ class ExportAttendanceRecordsCommandTests(TestCase):
                          staff_member_id=theirs.id,
                          stdout=io.StringIO())
 
+    def test_date_window_matches_service(self):
+        AttendanceRecord.objects.create(
+            staff_member=self.staff, event_type="check_in",
+            recorded_at=datetime.datetime(
+                2026, 11, 5, 9, 0, tzinfo=UTC), note="later")
+        out = io.StringIO()
+        call_command("export_attendance_records",
+                     salon_id=self.salon.id,
+                     start_date="2026-10-31", end_date="2026-10-31",
+                     stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_attendance_records_csv(
+                self.salon, start=datetime.date(2026, 10, 31),
+                end=datetime.date(2026, 10, 31)))
+        self.assertIn("front desk", out.getvalue())
+        self.assertNotIn("later", out.getvalue())
+
+    def test_date_window_cli_spelling(self):
+        out = io.StringIO()
+        call_command("export_attendance_records",
+                     "--salon-id", str(self.salon.id),
+                     "--start-date", "2026-11-01",
+                     "--end-date", "2026-11-01", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_attendance_records_csv(
+                self.salon, start=datetime.date(2026, 11, 1),
+                end=datetime.date(2026, 11, 1)))
+        self.assertNotIn("front desk", out.getvalue())
+
+    def test_date_window_composes_with_staff_member_id(self):
+        eve = StaffMember.objects.create(
+            salon=self.salon, display_name="Eve")
+        AttendanceRecord.objects.create(
+            staff_member=eve, event_type="check_in",
+            recorded_at=datetime.datetime(
+                2026, 10, 31, 10, 0, tzinfo=UTC), note="eve note")
+        out = io.StringIO()
+        call_command("export_attendance_records",
+                     salon_id=self.salon.id,
+                     staff_member_id=self.staff.id,
+                     start_date=datetime.date(2026, 10, 31),
+                     end_date=datetime.date(2026, 10, 31), stdout=out)
+        self.assertIn("Dana", out.getvalue())
+        self.assertNotIn("Eve", out.getvalue())
+
+    def test_start_date_only_is_unbounded_end(self):
+        out = io.StringIO()
+        call_command("export_attendance_records",
+                     salon_id=self.salon.id,
+                     start_date=datetime.date(2026, 11, 1), stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_attendance_records_csv(
+                self.salon, start=datetime.date(2026, 11, 1)))
+        self.assertNotIn("front desk", out.getvalue())
+
+    def test_invalid_date_and_reversed_range_raise(self):
+        with self.assertRaises(CommandError):
+            call_command("export_attendance_records",
+                         salon_id=self.salon.id,
+                         start_date="not-a-date", stdout=io.StringIO())
+        with self.assertRaises(CommandError):
+            call_command("export_attendance_records",
+                         salon_id=self.salon.id,
+                         start_date=datetime.date(2026, 11, 2),
+                         end_date=datetime.date(2026, 11, 1),
+                         stdout=io.StringIO())
+
     def test_unknown_salon_required_id_and_unwritable(self):
         with self.assertRaises(CommandError):
             call_command("export_attendance_records",

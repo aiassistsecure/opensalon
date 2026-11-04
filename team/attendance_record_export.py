@@ -28,6 +28,19 @@ member, only that member's records are included; the salon
 filter still applies, so a staff member from another salon
 exports as empty.
 
+Date window: both export functions also accept an optional
+``start`` / ``end`` window pair (aliases ``start_date`` /
+``end_date``), filtering on ``recorded_at``. Each bound may
+be a ``date``, a ``datetime``, or ``None`` (the default,
+unbounded -- with both ``None`` the output is unchanged).
+The range is start-inclusive and end-exclusive after
+normalisation: a ``date`` start means the start of that
+day, and a ``date`` end means the start of the *following*
+day, so passing two dates includes the whole end day. A
+``datetime`` is used as given (naive datetimes are
+interpreted in the current time zone). The window composes
+with the staff-member filter (window AND record).
+
 Columns are only fields the row and its stored relation
 actually carry: ``id``, ``salon_id`` (the staff member's
 salon), ``staff_member_id`` / ``staff_name`` (the member's
@@ -42,6 +55,9 @@ alone. Lines end with ``"\\n"``.
 """
 import csv
 import io
+from datetime import date, datetime, time, timedelta
+
+from django.utils import timezone
 
 from team.models import AttendanceRecord
 
@@ -80,7 +96,49 @@ def _record(row):
     }
 
 
-def export_attendance_records(salon, staff_member=None):
+def _bound(value, *, is_end):
+    """Normalise a range bound to an aware datetime or ``None``."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        bound = value
+    elif isinstance(value, date):
+        bound = datetime.combine(value, time.min)
+        if is_end:
+            bound += timedelta(days=1)
+    else:
+        raise ValueError("range bounds must be a date, datetime, or None")
+    if timezone.is_naive(bound):
+        bound = timezone.make_aware(bound, timezone.get_current_timezone())
+    return bound
+
+
+def _resolve_window(start, end, kwargs):
+    """Fold the ``start_date`` / ``end_date`` aliases into start/end."""
+    if "start_date" in kwargs:
+        if start is not None:
+            raise TypeError("multiple values for start")
+        start = kwargs.pop("start_date")
+    if "end_date" in kwargs:
+        if end is not None:
+            raise TypeError("multiple values for end")
+        end = kwargs.pop("end_date")
+    if "date_from" in kwargs:
+        if start is not None:
+            raise TypeError("multiple values for start")
+        start = kwargs.pop("date_from")
+    if "date_to" in kwargs:
+        if end is not None:
+            raise TypeError("multiple values for end")
+        end = kwargs.pop("date_to")
+    if kwargs:
+        raise TypeError(
+            f"unexpected arguments: {', '.join(sorted(kwargs))}")
+    return start, end
+
+
+def export_attendance_records(salon, staff_member=None, start=None,
+                              end=None, **kwargs):
     """Return ``salon``'s attendance records as a list of dicts.
 
     Each entry is one stored :class:`team.models.AttendanceRecord`
@@ -93,17 +151,31 @@ def export_attendance_records(salon, staff_member=None):
     only that member's records are included; a staff member
     belonging to another salon exports as ``[]`` because the
     salon filter still applies.
+
+    ``start`` / ``end`` (aliases ``start_date`` / ``end_date``)
+    are an optional window on ``recorded_at``: the defaults
+    ``None`` are unbounded, so the default output is unchanged.
+    See the module docstring for the range semantics. The
+    window composes with ``staff_member`` (window AND record).
     """
+    start, end = _resolve_window(start, end, kwargs)
     rows = (
         AttendanceRecord.objects.filter(staff_member__salon=salon)
         .select_related("staff_member")
     )
     if staff_member is not None:
         rows = rows.filter(staff_member=staff_member)
+    start_bound = _bound(start, is_end=False)
+    end_bound = _bound(end, is_end=True)
+    if start_bound is not None:
+        rows = rows.filter(recorded_at__gte=start_bound)
+    if end_bound is not None:
+        rows = rows.filter(recorded_at__lt=end_bound)
     return [_record(row) for row in rows]
 
 
-def export_attendance_records_csv(salon, staff_member=None):
+def export_attendance_records_csv(salon, staff_member=None, start=None,
+                                  end=None, **kwargs):
     """Return ``salon``'s attendance records as a CSV string.
 
     The header row is :data:`ATTENDANCE_RECORD_EXPORT_FIELDNAMES`
@@ -117,6 +189,11 @@ def export_attendance_records_csv(salon, staff_member=None):
     the salon-wide export, unchanged; a given staff member
     exports only that member's records (header alone when that
     member has none, or belongs to another salon).
+
+    ``start`` / ``end`` (aliases ``start_date`` / ``end_date``)
+    are likewise passed through: the defaults ``None`` are
+    unbounded and unchanged; a given window exports only
+    records whose ``recorded_at`` falls inside it.
     """
     buffer = io.StringIO()
     writer = csv.DictWriter(
@@ -125,7 +202,8 @@ def export_attendance_records_csv(salon, staff_member=None):
     )
     writer.writeheader()
     for record in export_attendance_records(
-            salon, staff_member=staff_member):
+            salon, staff_member=staff_member, start=start, end=end,
+            **kwargs):
         writer.writerow(record)
     return buffer.getvalue()
 

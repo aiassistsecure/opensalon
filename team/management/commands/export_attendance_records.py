@@ -2,7 +2,9 @@
 
 Usage:
     python manage.py export_attendance_records --salon-id ID
-        [--staff-member-id ID] [--output PATH]
+        [--staff-member-id ID]
+        [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD]
+        [--output PATH]
 
 Thin wrapper around the existing
 :func:`team.attendance_record_export.export_attendance_records_csv`
@@ -20,14 +22,43 @@ member is passed to the service as its optional
 ``staff_member`` argument. Without ``--staff-member-id`` the
 command exports the whole salon, exactly as before.
 
-An unknown salon raises ``CommandError``. Backend only -- no
-views, templates, or UI. Read-only.
+With ``--start-date`` / ``--end-date`` (spelled exactly as
+``export_attendance`` spells them) the export is narrowed to
+records whose ``recorded_at`` falls in that window: the
+dates are parsed to ``datetime.date`` objects and passed to
+the service as its optional ``start`` / ``end`` arguments,
+so a date start means the start of that day and a date end
+includes the whole end day. Each bound is optional; without
+either, the command exports every record, exactly as
+before. The window composes with ``--staff-member-id``
+(window AND record).
+
+An unknown salon, an unparseable date, or a reversed range
+raises ``CommandError``. Backend only -- no views,
+templates, or UI. Read-only.
 """
+import datetime
+
 from django.core.management.base import BaseCommand, CommandError
 
 from saloncore.models import Salon
 from team.attendance_record_export import export_attendance_records_csv
 from team.models import StaffMember
+
+
+def _parse_date(value, label):
+    if value is None:
+        return None
+    if isinstance(value, datetime.datetime):
+        return value.date()
+    if isinstance(value, datetime.date):
+        return value
+    try:
+        return datetime.date.fromisoformat(str(value))
+    except ValueError as exc:
+        raise CommandError(
+            f"Invalid {label} {value!r}; expected YYYY-MM-DD."
+        ) from exc
 
 
 class Command(BaseCommand):
@@ -42,6 +73,14 @@ class Command(BaseCommand):
             help="ID of the staff member (in the salon) whose "
                  "attendance records to export "
                  "(default: all staff members).")
+        parser.add_argument(
+            "--start-date", dest="start_date", default=None,
+            help="First day of the range, YYYY-MM-DD (inclusive; "
+                 "default: unbounded).")
+        parser.add_argument(
+            "--end-date", dest="end_date", default=None,
+            help="Last day of the range, YYYY-MM-DD (inclusive; "
+                 "default: unbounded).")
         parser.add_argument(
             "--output", default=None,
             help="Path of the CSV file to write (default: stdout).")
@@ -65,8 +104,16 @@ class Command(BaseCommand):
                     f"{options['staff_member_id']} "
                     f"for salon {options['salon_id']}.") from None
 
-        text = export_attendance_records_csv(
-            salon, staff_member=staff_member)
+        start = _parse_date(options.get("start_date"), "start date")
+        end = _parse_date(options.get("end_date"), "end date")
+        if start is not None and end is not None and end < start:
+            raise CommandError(
+                "range end must not be before range start")
+        try:
+            text = export_attendance_records_csv(
+                salon, staff_member=staff_member, start=start, end=end)
+        except (TypeError, ValueError) as exc:
+            raise CommandError(str(exc)) from exc
 
         if options["output"]:
             try:
