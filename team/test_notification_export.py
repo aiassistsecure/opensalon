@@ -173,6 +173,58 @@ class StaffNotificationExportTests(TestCase):
                 self.salon, staff_member=self.other_staff),
             [])
 
+    def test_default_kind_none_is_unchanged(self):
+        self._note()
+        self._note(appt=self.appt2, kind="reminder", created=T2)
+        expected_records = export_staff_notifications(self.salon)
+        expected_csv = export_staff_notifications_csv(self.salon)
+        self.assertEqual(
+            export_staff_notifications(self.salon, kind=None),
+            expected_records)
+        self.assertEqual(
+            export_staff_notifications_csv(self.salon, kind=None),
+            expected_csv)
+
+    def test_filtered_by_kind_exact_match(self):
+        arrived = self._note(kind="arrived")
+        self._note(appt=self.appt2, kind="reminder", created=T2)
+        records = export_staff_notifications(
+            self.salon, kind="arrived")
+        self.assertEqual([r["id"] for r in records], [arrived.pk])
+        self.assertTrue(all(r["kind"] == "arrived" for r in records))
+        parsed = list(csv.DictReader(io.StringIO(
+            export_staff_notifications_csv(self.salon, kind="arrived"))))
+        self.assertEqual([int(r["id"]) for r in parsed], [arrived.pk])
+        # Exact stored-value matching: no substring or case folding.
+        self.assertEqual(
+            export_staff_notifications(self.salon, kind="arriv"), [])
+        self.assertEqual(
+            export_staff_notifications(self.salon, kind="Arrived"), [])
+        self.assertEqual(
+            export_staff_notifications(self.salon, kind="unknown"), [])
+        self.assertEqual(
+            export_staff_notifications_csv(self.salon, kind="unknown"),
+            ",".join(NOTIFICATION_EXPORT_FIELDNAMES) + "\n")
+
+    def test_kind_composes_with_staff_member(self):
+        eve = StaffMember.objects.create(
+            salon=self.salon, display_name="Eve")
+        mine = self._note(kind="arrived")
+        self._note(kind="reminder", created=T2)
+        self._note(staff=eve, appt=self.appt2, kind="arrived",
+                   created=T2)
+        records = export_staff_notifications(
+            self.salon, staff_member=self.staff, kind="arrived")
+        self.assertEqual([r["id"] for r in records], [mine.pk])
+        parsed = list(csv.DictReader(io.StringIO(
+            export_staff_notifications_csv(
+                self.salon, staff_member=self.staff, kind="arrived"))))
+        self.assertEqual([int(r["id"]) for r in parsed], [mine.pk])
+        self.assertEqual(
+            export_staff_notifications(
+                self.salon, staff_member=eve, kind="reminder"),
+            [])
+
     def test_read_only(self):
         self._note()
         before = StaffNotification.objects.count()

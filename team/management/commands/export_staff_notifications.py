@@ -2,7 +2,7 @@
 
 Usage:
     python manage.py export_staff_notifications --salon-id ID
-        [--staff-member-id ID] [--output PATH]
+        [--staff-member-id ID] [--kind KIND] [--output PATH]
 
 Thin wrapper around the existing
 :func:`team.notification_export.export_staff_notifications_csv`
@@ -19,6 +19,12 @@ an unknown id, is a ``CommandError``), and the resolved staff
 member is passed to the service as its optional
 ``staff_member`` argument. Without ``--staff-member-id`` the
 command exports the whole salon, exactly as before.
+
+With ``--kind`` the export is narrowed to notifications whose
+stored ``kind`` exactly equals it: the value is passed to the
+service as its optional ``kind`` argument. Without ``--kind``
+the command exports every kind, exactly as before. ``--kind``
+composes with ``--staff-member-id`` (both must match).
 
 An unknown salon raises ``CommandError``. Backend only -- no
 views, templates, or UI. Read-only.
@@ -43,6 +49,10 @@ class Command(BaseCommand):
                  "notifications to export "
                  "(default: all staff members).")
         parser.add_argument(
+            "--kind", default=None,
+            help="Notification kind to export "
+                 "(default: all kinds).")
+        parser.add_argument(
             "--output", default=None,
             help="Path of the CSV file to write (default: stdout).")
 
@@ -66,7 +76,8 @@ class Command(BaseCommand):
                     f"for salon {options['salon_id']}.") from None
 
         text = export_staff_notifications_csv(
-            salon, staff_member=staff_member)
+            salon, staff_member=staff_member,
+            kind=options.get("kind"))
 
         if options["output"]:
             try:
