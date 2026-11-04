@@ -208,6 +208,61 @@ class ExportClientsCommandTests(TestCase):
         self.assertEqual(
             out.getvalue(), ",".join(CLIENTS_FIELDNAMES) + "\n")
 
+    def test_active_only_flag(self):
+        self._client(self.salon, "Amy", "Smith")
+        self._client(self.salon, "Bob", "Adams", active=False)
+        out = io.StringIO()
+        call_command(
+            "export_clients", "--salon-id", str(self.salon.id),
+            "--active-only", stdout=out,
+        )
+        data = json.loads(out.getvalue())
+        self.assertEqual([c["first_name"] for c in data], ["Amy"])
+        self.assertEqual(
+            data, export_all_clients(salon=self.salon, active=True))
+
+    def test_inactive_only_flag(self):
+        self._client(self.salon, "Amy", "Smith")
+        self._client(self.salon, "Bob", "Adams", active=False)
+        out = io.StringIO()
+        call_command(
+            "export_clients", salon_id=self.salon.id,
+            inactive_only=True, stdout=out,
+        )
+        data = json.loads(out.getvalue())
+        self.assertEqual([c["first_name"] for c in data], ["Bob"])
+        self.assertEqual(
+            data, export_all_clients(salon=self.salon, active=False))
+
+    def test_active_and_inactive_only_conflict(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_clients", salon_id=self.salon.id,
+                active_only=True, inactive_only=True,
+                stdout=io.StringIO(),
+            )
+
+    def test_active_only_csv_matches_service(self):
+        self._client(self.salon, "Amy", "Smith")
+        self._client(self.salon, "Bob", "Adams", active=False)
+        out = io.StringIO()
+        call_command(
+            "export_clients", "--salon-id", str(self.salon.id),
+            "--format", "csv", "--active-only", stdout=out,
+        )
+        self.assertEqual(
+            out.getvalue(),
+            export_all_clients_csv(salon=self.salon, active=True))
+
+    def test_no_active_flag_is_unfiltered(self):
+        self._client(self.salon, "Amy", "Smith")
+        self._client(self.salon, "Bob", "Adams", active=False)
+        out = io.StringIO()
+        call_command(
+            "export_clients", salon_id=self.salon.id, stdout=out
+        )
+        self.assertEqual(len(json.loads(out.getvalue())), 2)
+
     def test_invalid_format_raises_command_error(self):
         with self.assertRaises(CommandError):
             call_command(
