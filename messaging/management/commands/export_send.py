@@ -3,7 +3,7 @@
 Usage:
     python manage.py export_send --salon-id ID
         --date-from YYYY-MM-DD [--date-to YYYY-MM-DD]
-        [--appointment-id ID] [--output PATH]
+        [--appointment-id ID] [--channel CHANNEL] [--output PATH]
 
 Thin wrapper around the existing
 :func:`messaging.send_export.export_sends_csv`
@@ -23,6 +23,15 @@ or an unknown id, is a ``CommandError``), and the resolved
 appointment is passed to the service as its optional
 ``appointment`` argument. Without ``--appointment-id`` the
 command exports the whole salon, exactly as before.
+
+With ``--channel`` the export is narrowed to sends on that
+one channel: the value is passed to the service as its
+optional ``channel`` argument (the spelling the
+``export_campaigns`` and ``export_due_reminders`` commands
+use), composing with the date window and ``--appointment-id``.
+Without ``--channel`` the command exports every channel,
+exactly as before. Read-only: it filters the ledger, it
+sends nothing.
 
 Invalid input -- an unknown salon or a service error -- raises
 ``CommandError``, as does an unwritable ``--output`` path.
@@ -108,6 +117,11 @@ class Command(BaseCommand):
                  "to export (default: all appointments).",
         )
         parser.add_argument(
+            "--channel", dest="channel", default=None,
+            help="Reminder send channel value to filter by "
+                 "(default: all channels).",
+        )
+        parser.add_argument(
             "--output", default=None,
             help="Path to write the CSV to (default: stdout).",
         )
@@ -137,6 +151,7 @@ class Command(BaseCommand):
         try:
             text = export_sends_csv(
                 salon, date_from, date_to, appointment=appointment,
+                channel=options.get("channel"),
             )
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc

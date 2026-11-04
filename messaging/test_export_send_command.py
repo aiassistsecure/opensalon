@@ -199,6 +199,56 @@ class ExportSendCommandTests(TestCase):
                 date_from=DAY1, appointment_id=foreign.pk,
                 stdout=io.StringIO())
 
+    def test_channel_filters_to_one_channel(self):
+        out = io.StringIO()
+        call_command(
+            "export_send", salon_id=self.salon.pk,
+            date_from=DAY1, date_to=DAY3, channel="sms", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_sends_csv(self.salon, DAY1, DAY3, channel="sms"))
+        # Own salon has 1 sms send in range (header + 1 row).
+        self.assertEqual(out.getvalue().count("\n"), 2)
+
+    def test_channel_with_cli_args(self):
+        out = io.StringIO()
+        call_command(
+            "export_send", "--salon-id", str(self.salon.pk),
+            "--date-from", DAY1.isoformat(),
+            "--date-to", DAY3.isoformat(),
+            "--channel", "email", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_sends_csv(self.salon, DAY1, DAY3, channel="email"))
+
+    def test_no_channel_is_all_channels_default(self):
+        out = io.StringIO()
+        call_command(
+            "export_send", salon_id=self.salon.pk,
+            date_from=DAY1, date_to=DAY3, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_sends_csv(self.salon, DAY1, DAY3, channel=None))
+
+    def test_channel_composes_with_appointment_id(self):
+        target = ReminderSend.objects.filter(
+            client__salon=self.salon, channel="email").order_by(
+                "id").first()
+        out = io.StringIO()
+        call_command(
+            "export_send", salon_id=self.salon.pk,
+            date_from=DAY1, date_to=DAY3,
+            appointment_id=target.appointment_id, channel="sms",
+            stdout=out)
+        appointment = Appointment.objects.get(pk=target.appointment_id)
+        self.assertEqual(
+            out.getvalue(),
+            export_sends_csv(
+                self.salon, DAY1, DAY3, appointment=appointment,
+                channel="sms"))
+        # That appointment's only send is on email: header only.
+        self.assertEqual(out.getvalue().count("\n"), 1)
+
     def test_unknown_salon_raises_command_error(self):
         with self.assertRaises(CommandError):
             call_command(
