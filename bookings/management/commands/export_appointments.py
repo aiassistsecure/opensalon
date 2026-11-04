@@ -4,6 +4,7 @@ Usage:
     python manage.py export_appointments --salon-id ID
         --date-from YYYY-MM-DD [--date-to YYYY-MM-DD]
         [--no-include-cancelled] [--staff-member-id ID]
+        [--client-id ID]
         [--format json|csv] [--output PATH]
 
 Thin wrapper around the existing
@@ -20,7 +21,10 @@ its cell so nothing is dropped). The optional
 the salon and passed to the service as its ``staff_member``
 filter; an id that is unknown — or belongs to another salon —
 raises ``CommandError``. Omitted, the export is the previous
-salon-wide output verbatim. Output goes to ``--output``
+salon-wide output verbatim. The optional ``--client-id`` is
+resolved to its ``Client`` in the salon and passed to the
+service as its ``client`` filter, with the same error and
+omission behaviour. Output goes to ``--output``
 when given and to stdout otherwise. This command adds no
 export logic of its own -- no new querying, filtering, or
 field changes -- so command and service output can never
@@ -35,6 +39,7 @@ import json
 from django.core.management.base import BaseCommand, CommandError
 
 from bookings.export import EXPORT_FIELDNAMES, export_appointments
+from clients.models import Client
 from saloncore.models import Salon
 from team.models import StaffMember
 
@@ -77,6 +82,25 @@ def _resolve_staff_member(value, salon):
     except (StaffMember.DoesNotExist, TypeError, ValueError) as exc:
         raise CommandError(
             f"No staff member with id {pk}."
+        ) from exc
+
+
+def _resolve_client(value, salon):
+    if value is None:
+        return None
+    # A Client instance (via call_command kwargs) resolves by pk.
+    pk = getattr(value, "pk", value)
+    try:
+        pk = int(pk)
+    except (TypeError, ValueError) as exc:
+        raise CommandError(
+            f"Invalid client {value!r}; expected an id."
+        ) from exc
+    try:
+        return Client.objects.get(pk=pk, salon=salon)
+    except (Client.DoesNotExist, TypeError, ValueError) as exc:
+        raise CommandError(
+            f"No client with id {pk}."
         ) from exc
 
 
@@ -141,6 +165,12 @@ class Command(BaseCommand):
                  "every staff member in the salon).",
         )
         parser.add_argument(
+            "--client-id", dest="client_id",
+            type=int, default=None,
+            help="Id of the client to scope to (default: "
+                 "every client in the salon).",
+        )
+        parser.add_argument(
             "--format", dest="format", default="json", choices=_FORMATS,
             help="Export format: json (default) or csv.",
         )
@@ -170,11 +200,16 @@ class Command(BaseCommand):
         if staff_raw is None:
             staff_raw = options.get("staff_member")
         staff_member = _resolve_staff_member(staff_raw, salon)
+        client_raw = options.get("client_id")
+        if client_raw is None:
+            client_raw = options.get("client")
+        client = _resolve_client(client_raw, salon)
         try:
             rows = export_appointments(
                 salon, date_from, date_to,
                 include_cancelled=include_cancelled,
                 staff_member=staff_member,
+                client=client,
             )
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
