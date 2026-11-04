@@ -3,7 +3,7 @@
 Usage:
     python manage.py export_sale_items --salon-id ID
         [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD]
-        [--output PATH]
+        [--sale-id ID] [--output PATH]
 
 Thin wrapper around
 :func:`checkout.sale_item_export.export_sale_items_csv` -- the
@@ -14,11 +14,21 @@ sale item of the salon is exported. An unparseable date, a
 reversed range, or an end date without a start raises
 ``CommandError``. Read-only; provider-agnostic -- no provider
 reference is exported.
+
+With ``--sale-id`` the export is narrowed to that one sale's
+items: the sale is resolved by id within the salon (the
+service scopes items through ``sale__salon``; here the sale
+itself is resolved with ``salon=salon``), and an unknown id or
+a sale from another salon is a ``CommandError``. The resolved
+sale is passed to the service as its optional ``sale``
+argument. Without ``--sale-id`` the command exports the whole
+salon, exactly as before.
 """
 import datetime
 
 from django.core.management.base import BaseCommand, CommandError
 
+from checkout.models import Sale
 from checkout.sale_item_export import export_sale_items_csv
 from saloncore.models import Salon
 
@@ -59,6 +69,11 @@ class Command(BaseCommand):
                  "default: the start date, a single-day export).",
         )
         parser.add_argument(
+            "--sale-id", type=int, default=None,
+            help="Id of the sale (in the salon) whose sale items "
+                 "to export (default: all sales).",
+        )
+        parser.add_argument(
             "--output", default=None,
             help="Path to write the CSV to (default: stdout).",
         )
@@ -70,6 +85,17 @@ class Command(BaseCommand):
             raise CommandError(
                 f"No salon with id {options['salon_id']}."
             ) from exc
+        sale = None
+        if options.get("sale_id") is not None:
+            try:
+                sale = Sale.objects.get(
+                    pk=options["sale_id"], salon=salon
+                )
+            except Sale.DoesNotExist as exc:
+                raise CommandError(
+                    f"No sale with id {options['sale_id']} "
+                    f"for salon {options['salon_id']}."
+                ) from exc
         start = _parse_date(options["start_date"], "start date")
         end = _parse_date(options["end_date"], "end date")
         if start is None and end is not None:
@@ -82,7 +108,7 @@ class Command(BaseCommand):
                 f"{start.isoformat()}."
             )
         try:
-            text = export_sale_items_csv(salon, start, end)
+            text = export_sale_items_csv(salon, start, end, sale=sale)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options["output"]:

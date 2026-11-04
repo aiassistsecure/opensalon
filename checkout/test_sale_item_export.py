@@ -142,6 +142,62 @@ class SaleItemExportTests(TestCase):
             [r["id"] for r in export_sale_items(self.salon, self.day)],
             [item.pk for item in in_range])
 
+    def test_sale_filter_default_none_is_unchanged(self):
+        self._items()
+        self._items()
+        default = export_sale_items(self.salon)
+        self.assertEqual(len(default), 6)
+        self.assertEqual(
+            export_sale_items(self.salon, sale=None), default)
+        self.assertEqual(
+            export_sale_items_csv(self.salon, sale=None),
+            export_sale_items_csv(self.salon))
+
+    def test_sale_filter_only_that_sale(self):
+        first = self._items()
+        second = self._items()
+        rows = export_sale_items(self.salon, sale=first[0].sale)
+        self.assertEqual([r["id"] for r in rows],
+                         [item.pk for item in first])
+        self.assertTrue(all(r["sale_id"] == first[0].sale_id
+                            for r in rows))
+        parsed = list(csv.DictReader(io.StringIO(
+            export_sale_items_csv(self.salon, sale=second[0].sale))))
+        self.assertEqual([int(r["id"]) for r in parsed],
+                         [item.pk for item in second])
+
+    def test_sale_filter_date_window_still_applies(self):
+        items = self._items(sale=self._sale(day=self.day))
+        other_day = self.day + datetime.timedelta(days=5)
+        self.assertEqual(
+            export_sale_items(self.salon, other_day, other_day,
+                              sale=items[0].sale), [])
+        self.assertEqual(
+            export_sale_items_csv(self.salon, other_day, other_day,
+                                  sale=items[0].sale),
+            ",".join(SALE_ITEM_EXPORT_FIELDNAMES) + "\n")
+        self.assertEqual(
+            [r["id"] for r in export_sale_items(
+                self.salon, self.day, self.day, sale=items[0].sale)],
+            [item.pk for item in items])
+
+    def test_sale_filter_other_salon_sale_is_empty(self):
+        own = self._items()
+        theirs = self._items(sale=self._sale(salon=self.other))
+        self.assertEqual(
+            export_sale_items(self.salon, sale=theirs[0].sale), [])
+        self.assertEqual(
+            export_sale_items_csv(self.salon, sale=theirs[0].sale),
+            ",".join(SALE_ITEM_EXPORT_FIELDNAMES) + "\n")
+        self.assertEqual(
+            [r["id"] for r in export_sale_items(
+                self.other, sale=theirs[0].sale)],
+            [item.pk for item in theirs])
+        self.assertEqual(
+            [r["id"] for r in export_sale_items(
+                self.salon, sale=own[0].sale)],
+            [item.pk for item in own])
+
     def test_reversed_range_and_read_only(self):
         items = self._items(sale=self._sale(day=self.day))
         later = self.day + datetime.timedelta(days=1)

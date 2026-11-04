@@ -24,6 +24,13 @@ the salon's timezone, judged on the parent sale's
 may be omitted for a single day. A reversed range or a missing
 salon exports as ``[]`` / the header row alone. Lines end
 ``"\n"``.
+
+Per-sale filter: both export functions accept an optional
+``sale`` (default ``None``). With ``None`` the output is the
+salon-wide export, unchanged. With a sale, only that sale's
+items are included; the date window still applies, and the
+salon filter (``sale__salon``) still applies, so a sale from
+another salon exports as empty.
 """
 import csv
 import datetime
@@ -94,14 +101,23 @@ def sale_item_export_row(item):
     }
 
 
-def export_sale_items(salon, date_from=None, date_to=None):
-    """Return ``salon``'s sale items verbatim as dicts (see module)."""
+def export_sale_items(salon, date_from=None, date_to=None, sale=None):
+    """Return ``salon``'s sale items verbatim as dicts (see module).
+
+    ``sale`` is optional: the default ``None`` is the salon-wide
+    export, unchanged. When a sale is given, only that sale's
+    items are included; a sale belonging to another salon
+    exports as ``[]`` because the ``sale__salon`` filter still
+    applies.
+    """
     if salon is None:
         return []
     salon_id = getattr(salon, "pk", salon)
     if salon_id is None:
         return []
     items = SaleItem.objects.filter(sale__salon_id=salon_id)
+    if sale is not None:
+        items = items.filter(sale=sale)
     if date_from is not None:
         tz = _tz_for(salon)
         first = _as_local_date(date_from, tz)
@@ -122,13 +138,18 @@ def export_sale_items(salon, date_from=None, date_to=None):
     return [sale_item_export_row(item) for item in items]
 
 
-def export_sale_items_csv(salon, date_from=None, date_to=None):
+def export_sale_items_csv(salon, date_from=None, date_to=None, sale=None):
     """Return ``salon``'s sale items as a CSV string.
 
     The header row is :data:`SALE_ITEM_EXPORT_FIELDNAMES` and
     every data row is rendered from :func:`export_sale_items`
     with the same arguments, so the CSV and the dict export can
     never disagree. Lines end with ``"\\n"``. Read-only.
+
+    ``sale`` is optional and passed through to
+    :func:`export_sale_items`: the default ``None`` is the
+    salon-wide export, unchanged; a given sale exports only
+    that sale's items.
     """
     buffer = io.StringIO()
     writer = csv.DictWriter(
@@ -136,7 +157,7 @@ def export_sale_items_csv(salon, date_from=None, date_to=None):
         lineterminator="\n",
     )
     writer.writeheader()
-    for record in export_sale_items(salon, date_from, date_to):
+    for record in export_sale_items(salon, date_from, date_to, sale=sale):
         writer.writerow(record)
     return buffer.getvalue()
 
