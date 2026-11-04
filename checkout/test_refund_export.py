@@ -175,6 +175,74 @@ class RefundExportTests(TestCase):
                 self.salon, self.day, self.day, sale=own.sale)],
             [own.pk])
 
+    def test_tender_filter_default_none_is_unchanged(self):
+        self._refund(tender=Payment.Method.CASH)
+        self._refund(tender=Payment.Method.EXTERNAL)
+        default = export_refunds(self.salon, self.day, self.day)
+        self.assertEqual(len(default), 2)
+        self.assertEqual(
+            export_refunds(self.salon, self.day, self.day, tender=None),
+            default)
+        self.assertEqual(
+            export_refunds_csv(self.salon, self.day, self.day, tender=None),
+            export_refunds_csv(self.salon, self.day, self.day))
+
+    def test_tender_filter_only_matching_tender(self):
+        cash = self._refund(tender=Payment.Method.CASH)
+        self._refund(tender=Payment.Method.EXTERNAL)
+        rows = export_refunds(
+            self.salon, self.day, self.day, tender="cash")
+        self.assertEqual([r["id"] for r in rows], [cash.pk])
+        self.assertEqual(rows[0]["tender"], "cash")
+        parsed = list(csv.DictReader(io.StringIO(export_refunds_csv(
+            self.salon, self.day, self.day,
+            tender=Payment.Method.EXTERNAL))))
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0]["tender"], "external")
+
+    def test_tender_filter_composes_with_sale_and_window(self):
+        first = self._refund(tender=Payment.Method.CASH)
+        self._refund(tender=Payment.Method.CASH)
+        self._refund(tender=Payment.Method.EXTERNAL)
+        rows = export_refunds(
+            self.salon, self.day, self.day, sale=first.sale,
+            tender=Payment.Method.CASH)
+        self.assertEqual([r["id"] for r in rows], [first.pk])
+        self.assertEqual(
+            export_refunds(
+                self.salon, self.day, self.day, sale=first.sale,
+                tender=Payment.Method.EXTERNAL), [])
+        other_day = self.day + datetime.timedelta(days=5)
+        self.assertEqual(
+            export_refunds(
+                self.salon, other_day, other_day,
+                tender=Payment.Method.CASH), [])
+
+    def test_tender_filter_no_match_is_empty_and_header_only_csv(self):
+        self._refund(tender=Payment.Method.CASH)
+        self.assertEqual(
+            export_refunds(
+                self.salon, self.day, self.day,
+                tender=Payment.Method.EXTERNAL), [])
+        self.assertEqual(
+            export_refunds_csv(
+                self.salon, self.day, self.day,
+                tender=Payment.Method.EXTERNAL),
+            ",".join(EXPORT_FIELDNAMES) + "\n")
+
+    def test_tender_filter_unknown_tender_is_empty(self):
+        # Same behaviour as the sibling categorical filters
+        # (payments --method, sale-items --kind): an unknown
+        # value matches nothing, it does not error.
+        self._refund(tender=Payment.Method.CASH)
+        self.assertEqual(
+            export_refunds(self.salon, self.day, self.day, tender="bogus"),
+            [])
+        self.assertEqual(
+            export_refunds_csv(
+                self.salon, self.day, self.day, tender="bogus"),
+            ",".join(EXPORT_FIELDNAMES) + "\n")
+
     def test_export_is_read_only(self):
         refund = self._refund()
         export_refunds(self.salon, self.day, self.day)
