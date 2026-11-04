@@ -169,3 +169,36 @@ class PriorNoShowTests(TestCase):
         with mock.patch("bookings.management.commands.export_prior_noshow.open", m):
             call_command("export_prior_noshow", salon_id=self.salon.pk, start_date="2026-11-02", end_date="2026-11-02", output="out.csv")
         m().write.assert_called_once_with(export_prior_noshow_csv(self.salon, DAY, DAY))
+
+    def test_command_with_now_matches_service(self):
+        self._book()
+        out = io.StringIO()
+        call_command("export_prior_noshow", salon_id=self.salon.pk, start_date=DAY, end_date=DAY, now=NOW, stdout=out)
+        self.assertEqual(out.getvalue(), export_prior_noshow_csv(self.salon, DAY, DAY, now=NOW))
+
+    def test_command_with_now_string_arg_matches_service(self):
+        self._book()
+        out = io.StringIO()
+        call_command("export_prior_noshow", "--salon-id", str(self.salon.pk),
+                     "--start-date", DAY.isoformat(), "--end-date", DAY.isoformat(),
+                     "--now", NOW.isoformat(), stdout=out)
+        self.assertEqual(out.getvalue(), export_prior_noshow_csv(self.salon, DAY, DAY, now=NOW))
+
+    def test_command_now_applies_to_both_windows(self):
+        self._book()
+        early = datetime.datetime(2026, 11, 2, 10, 0, tzinfo=UTC)
+        out = io.StringIO()
+        call_command("export_prior_noshow", salon_id=self.salon.pk, start_date=DAY, end_date=DAY, now=early, stdout=out)
+        self.assertEqual(out.getvalue(), export_prior_noshow_csv(self.salon, DAY, DAY, now=early))
+        self.assertNotEqual(out.getvalue(), export_prior_noshow_csv(self.salon, DAY, DAY, now=NOW))
+
+    def test_command_without_now_matches_service_default(self):
+        self._book()
+        out = io.StringIO()
+        call_command("export_prior_noshow", salon_id=self.salon.pk, start_date=DAY, end_date=DAY, stdout=out)
+        self.assertEqual(out.getvalue(), export_prior_noshow_csv(self.salon, DAY, DAY))
+
+    def test_command_bad_now_raises_command_error(self):
+        self._book()
+        with self.assertRaises(CommandError):
+            call_command("export_prior_noshow", salon_id=self.salon.pk, start_date=DAY, end_date=DAY, now="not-a-datetime", stdout=io.StringIO())

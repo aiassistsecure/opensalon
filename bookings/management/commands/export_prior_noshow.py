@@ -1,10 +1,12 @@
 """Export one salon's prior-period no-show report comparison as CSV.
 
 Usage: python manage.py export_prior_noshow --salon-id ID
-    --start-date YYYY-MM-DD --end-date YYYY-MM-DD [--output PATH]
+    --start-date YYYY-MM-DD --end-date YYYY-MM-DD
+    [--now ISO-8601-DATETIME] [--output PATH]
 Thin wrapper around :mod:`bookings.prior_noshow_export`;
 unknown salon, bad/missing date, or service error -> CommandError.
 """
+import argparse
 import datetime
 
 from django.core.management.base import BaseCommand, CommandError
@@ -24,6 +26,31 @@ def _parse_date(value, label):
     except ValueError as exc:
         raise CommandError(f"Invalid {label} {value!r}; expected YYYY-MM-DD.") from exc
 
+def _datetime_from_string(value):
+    text = str(value).strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    return datetime.datetime.fromisoformat(text)
+
+def _parse_datetime(value):
+    try:
+        return _datetime_from_string(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"Invalid datetime {value!r}; expected ISO-8601.") from exc
+
+def _coerce_now(value):
+    if value is None or isinstance(value, datetime.datetime):
+        return value
+    if isinstance(value, datetime.date):
+        return datetime.datetime.combine(
+            value, datetime.time.min, tzinfo=datetime.timezone.utc)
+    try:
+        return _datetime_from_string(value)
+    except ValueError as exc:
+        raise CommandError(
+            f"Invalid now {value!r}; expected ISO-8601 datetime.") from exc
+
 class Command(BaseCommand):
     help = "Export one salon's prior-period no-show report comparison as CSV."
 
@@ -31,6 +58,7 @@ class Command(BaseCommand):
         parser.add_argument("--salon-id", type=int, required=True, help="Id of the salon to export.")
         parser.add_argument("--start-date", "--date-from", "--from-date", "--start", dest="start_date", default=None, help="Inclusive first day of the current window, YYYY-MM-DD.")
         parser.add_argument("--end-date", "--date-to", "--to-date", "--end", dest="end_date", default=None, help="Inclusive last day of the current window, YYYY-MM-DD.")
+        parser.add_argument("--now", dest="now", type=_parse_datetime, default=None, help="Reference instant for \"past\", ISO-8601 (default: the service's own default).")
         parser.add_argument("--output", default=None, help="Path to write the CSV to (default: stdout).")
 
     def handle(self, *args, **options):
@@ -44,8 +72,9 @@ class Command(BaseCommand):
         end_date = _parse_date(end_raw, "end date")
         if start_date is None or end_date is None:
             raise CommandError("Both --start-date and --end-date are required.")
+        now = _coerce_now(options.get("now"))
         try:
-            text = export_prior_noshow_csv(salon, start_date, end_date)
+            text = export_prior_noshow_csv(salon, start_date, end_date, now=now)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options.get("output"):
