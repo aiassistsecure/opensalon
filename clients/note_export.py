@@ -42,9 +42,27 @@ Per-client filter: both export functions accept an optional
 salon-wide export, unchanged. With a client, only that client's
 record notes are included; the salon filter still applies, so a
 client from another salon exports as empty.
+
+Date window: both export functions also accept an optional
+``start`` / ``end`` window pair (each default ``None`` =
+unbounded) filtering on the note's ``created_at``. With both
+``None`` the output is the salon-wide export, unchanged and
+byte-identical. The window composes with the per-client filter
+(window AND record). Range semantics mirror
+:mod:`saloncore.price_change_export`: a bound may be a
+``date``, a ``datetime``, or ``None``; the range is
+start-inclusive and end-exclusive after normalisation -- a
+``date`` start means the start of that day, and a ``date`` end
+means the start of the *following* day, so passing two dates
+includes the whole end day. A ``datetime`` is used as given
+(naive datetimes are interpreted in the current time zone).
+``start_date`` / ``end_date`` are accepted as keyword aliases.
 """
 import csv
 import io
+from datetime import date, datetime, time, timedelta
+
+from django.utils import timezone
 
 from clients.models import ClientNote
 
@@ -89,7 +107,35 @@ def note_record(note):
 _record = note_record
 
 
-def export_notes(salon, client=None):
+def _bound(value, *, is_end):
+    """Normalise a window bound to an aware datetime or ``None``."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        bound = value
+    elif isinstance(value, date):
+        bound = datetime.combine(value, time.min)
+        if is_end:
+            bound += timedelta(days=1)
+    else:
+        raise ValueError("window bounds must be a date, datetime, or None")
+    if timezone.is_naive(bound):
+        bound = timezone.make_aware(bound, timezone.get_current_timezone())
+    return bound
+
+
+def _resolve_window(start, end, kwargs):
+    if start is None:
+        start = kwargs.pop("start_date", None)
+    if end is None:
+        end = kwargs.pop("end_date", None)
+    if kwargs:
+        raise TypeError(
+            f"Unexpected arguments: {', '.join(sorted(kwargs))}")
+    return start, end
+
+
+def export_notes(salon, client=None, start=None, end=None, **kwargs):
     """Return ``salon``'s persistent client record notes as dicts.
 
     Each entry is a dict with exactly :data:`NOTE_FIELDNAMES`
@@ -102,7 +148,14 @@ def export_notes(salon, client=None):
     export, unchanged. When a client is given, only that client's
     notes are included; a client belonging to another salon
     exports as ``[]`` because the salon filter still applies.
+
+    ``start`` / ``end`` are optional window bounds on the note's
+    ``created_at`` (see the module docstring for semantics): the
+    defaults ``None`` are unbounded, so the default output is
+    unchanged. The window composes with ``client`` (window AND
+    record).
     """
+    start, end = _resolve_window(start, end, kwargs)
     notes = (
         ClientNote.objects.filter(client__salon=salon)
         .select_related("client")
@@ -116,10 +169,16 @@ def export_notes(salon, client=None):
     )
     if client is not None:
         notes = notes.filter(client=client)
+    start_bound = _bound(start, is_end=False)
+    end_bound = _bound(end, is_end=True)
+    if start_bound is not None:
+        notes = notes.filter(created_at__gte=start_bound)
+    if end_bound is not None:
+        notes = notes.filter(created_at__lt=end_bound)
     return [_record(note) for note in notes]
 
 
-def export_notes_csv(salon, client=None):
+def export_notes_csv(salon, client=None, start=None, end=None, **kwargs):
     """Return ``salon``'s record notes as a CSV string.
 
     The header row is :data:`NOTE_FIELDNAMES` and every data row
@@ -132,13 +191,19 @@ def export_notes_csv(salon, client=None):
     export, unchanged; a given client exports only that client's
     notes (header alone when that client has none, or belongs to
     another salon).
+
+    ``start`` / ``end`` are optional window bounds on the note's
+    ``created_at``, passed through to :func:`export_notes` with
+    the same semantics; the defaults ``None`` are unbounded, so
+    the default CSV is byte-identical to before.
     """
     buffer = io.StringIO()
     writer = csv.DictWriter(
         buffer, fieldnames=NOTE_FIELDNAMES, lineterminator="\n"
     )
     writer.writeheader()
-    for record in export_notes(salon, client=client):
+    for record in export_notes(
+            salon, client=client, start=start, end=end, **kwargs):
         writer.writerow(record)
     return buffer.getvalue()
 
