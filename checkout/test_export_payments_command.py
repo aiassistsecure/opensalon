@@ -112,6 +112,58 @@ class ExportPaymentsCommandTests(TestCase):
             written, export_payments_csv(self.salon, DAY, NEXT))
         self.assertEqual(out.getvalue(), "")
 
+    def test_sale_id_filters_to_one_sale(self):
+        first = self._payment(self.salon)
+        self._payment(self.salon)
+        out = io.StringIO()
+        call_command(
+            "export_payments", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, sale_id=first.sale_id,
+            stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_payments_csv(self.salon, DAY, DAY, sale=first.sale))
+        # Header + exactly that sale's one payment row.
+        self.assertEqual(len(out.getvalue().strip().splitlines()), 2)
+        self.assertIn(f",{first.sale_id},", out.getvalue())
+
+    def test_sale_id_via_cli_flag(self):
+        first = self._payment(self.salon)
+        out = io.StringIO()
+        call_command(
+            "export_payments", "--salon-id", str(self.salon.pk),
+            "--start-date", DAY.isoformat(), "--end-date", DAY.isoformat(),
+            "--sale-id", str(first.sale_id), stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_payments_csv(self.salon, DAY, DAY, sale=first.sale))
+
+    def test_no_sale_id_is_salon_wide_default(self):
+        out = io.StringIO()
+        call_command(
+            "export_payments", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_payments_csv(self.salon, DAY, DAY))
+        self.assertEqual(
+            out.getvalue(),
+            export_payments_csv(self.salon, DAY, DAY, sale=None))
+
+    def test_unknown_sale_id_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_payments", salon_id=self.salon.pk,
+                start_date=DAY, end_date=DAY, sale_id=999999,
+                stdout=io.StringIO())
+
+    def test_sale_from_other_salon_raises_command_error(self):
+        theirs = self._payment(self.other)
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_payments", salon_id=self.salon.pk,
+                start_date=DAY, end_date=DAY, sale_id=theirs.sale_id,
+                stdout=io.StringIO())
+
     def test_unknown_salon_raises_command_error(self):
         with self.assertRaises(CommandError):
             call_command(

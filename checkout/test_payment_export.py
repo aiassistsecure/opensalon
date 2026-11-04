@@ -133,6 +133,59 @@ class PaymentExportTests(TestCase):
         self.assertEqual([r["status"] for r in rows], ["refunded", "pending"])
         self.assertEqual([r["method"] for r in rows], ["cash", "cash"])
 
+    def test_sale_filter_default_none_is_unchanged(self):
+        self._payment()
+        self._payment()
+        default = export_payments(self.salon, self.day, self.day)
+        self.assertEqual(len(default), 2)
+        self.assertEqual(
+            export_payments(self.salon, self.day, self.day, sale=None),
+            default)
+        self.assertEqual(
+            export_payments_csv(self.salon, self.day, self.day, sale=None),
+            export_payments_csv(self.salon, self.day, self.day))
+
+    def test_sale_filter_only_that_sale(self):
+        first = self._payment(amount="10.00")
+        second = self._payment(amount="20.00")
+        rows = export_payments(
+            self.salon, self.day, self.day, sale=first.sale)
+        self.assertEqual([r["id"] for r in rows], [first.pk])
+        self.assertEqual(rows[0]["sale_id"], first.sale_id)
+        parsed = list(csv.DictReader(io.StringIO(export_payments_csv(
+            self.salon, self.day, self.day, sale=second.sale))))
+        self.assertEqual([int(r["id"]) for r in parsed], [second.pk])
+
+    def test_sale_filter_date_window_still_applies(self):
+        payment = self._payment()
+        other_day = self.day + datetime.timedelta(days=5)
+        self.assertEqual(
+            export_payments(self.salon, other_day, other_day,
+                            sale=payment.sale), [])
+        self.assertEqual(
+            export_payments_csv(self.salon, other_day, other_day,
+                                sale=payment.sale),
+            ",".join(EXPORT_FIELDNAMES) + "\n")
+
+    def test_sale_filter_other_salon_sale_is_empty(self):
+        own = self._payment()
+        theirs = self._payment(salon=self.other)
+        self.assertEqual(
+            export_payments(self.salon, self.day, self.day,
+                            sale=theirs.sale), [])
+        self.assertEqual(
+            export_payments_csv(self.salon, self.day, self.day,
+                                sale=theirs.sale),
+            ",".join(EXPORT_FIELDNAMES) + "\n")
+        self.assertEqual(
+            [r["id"] for r in export_payments(
+                self.other, self.day, self.day, sale=theirs.sale)],
+            [theirs.pk])
+        self.assertEqual(
+            [r["id"] for r in export_payments(
+                self.salon, self.day, self.day, sale=own.sale)],
+            [own.pk])
+
     def test_export_is_read_only(self):
         payment = self._payment(provider_reference="ref-9")
         export_payments(self.salon, self.day, self.day)
