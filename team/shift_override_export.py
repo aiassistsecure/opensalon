@@ -21,6 +21,13 @@ Scoping: a salon's overrides are the rows whose staff member
 belongs to that salon (``staff_member__salon``), in the
 model's own ordering (date).
 
+Per-staff-member filter: both export functions accept an
+optional ``staff_member`` (default ``None``). With ``None``
+the output is the salon-wide export, unchanged. With a staff
+member, only that member's overrides are included; the salon
+filter still applies, so a staff member from another salon
+exports as empty.
+
 Columns are only fields the row and its stored relation
 actually carry: ``id``, ``salon_id`` (the staff member's
 salon), ``staff_member_id`` / ``staff_name`` (the member's
@@ -77,29 +84,43 @@ def _record(row):
     }
 
 
-def export_shift_overrides(salon):
+def export_shift_overrides(salon, staff_member=None):
     """Return ``salon``'s shift overrides as a list of dicts.
 
     Each entry is one stored :class:`team.models.ShiftOverride`
     row of the salon, as a dict with exactly
     :data:`SHIFT_OVERRIDE_EXPORT_FIELDNAMES` keys, in the
     model's ordering (date). Read-only.
+
+    ``staff_member`` is optional: the default ``None`` is the
+    salon-wide export, unchanged. When a staff member is given,
+    only that member's overrides are included; a staff member
+    belonging to another salon exports as ``[]`` because the
+    salon filter still applies.
     """
     rows = (
         ShiftOverride.objects.filter(staff_member__salon=salon)
         .select_related("staff_member")
     )
+    if staff_member is not None:
+        rows = rows.filter(staff_member=staff_member)
     return [_record(row) for row in rows]
 
 
-def export_shift_overrides_csv(salon):
+def export_shift_overrides_csv(salon, staff_member=None):
     """Return ``salon``'s shift overrides as a CSV string.
 
     The header row is :data:`SHIFT_OVERRIDE_EXPORT_FIELDNAMES`
     and every data row is rendered from
-    :func:`export_shift_overrides` with the same argument, so
+    :func:`export_shift_overrides` with the same arguments, so
     the CSV and the dict export can never disagree. Lines end
     with ``"\\n"``. Read-only.
+
+    ``staff_member`` is optional and passed through to
+    :func:`export_shift_overrides`: the default ``None`` is
+    the salon-wide export, unchanged; a given staff member
+    exports only that member's overrides (header alone when that
+    member has none, or belongs to another salon).
     """
     buffer = io.StringIO()
     writer = csv.DictWriter(
@@ -107,7 +128,8 @@ def export_shift_overrides_csv(salon):
         lineterminator="\n",
     )
     writer.writeheader()
-    for record in export_shift_overrides(salon):
+    for record in export_shift_overrides(
+            salon, staff_member=staff_member):
         writer.writerow(record)
     return buffer.getvalue()
 

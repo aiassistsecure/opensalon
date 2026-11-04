@@ -106,6 +106,65 @@ class ShiftOverrideExportTests(TestCase):
         self.assertNotIn("1234", text)
         self.assertNotIn("dana@example.com", text)
 
+    def test_default_none_is_salon_wide_unchanged(self):
+        self._placed()
+        self._off()
+        expected_records = export_shift_overrides(self.salon)
+        expected_csv = export_shift_overrides_csv(self.salon)
+        self.assertEqual(
+            export_shift_overrides(self.salon, staff_member=None),
+            expected_records)
+        self.assertEqual(
+            export_shift_overrides_csv(
+                self.salon, staff_member=None),
+            expected_csv)
+
+    def test_filtered_by_staff_member(self):
+        eve = StaffMember.objects.create(
+            salon=self.salon, display_name="Eve")
+        placed = self._placed()
+        self._placed(staff=eve, day=datetime.date(2026, 11, 1))
+        off = self._off()
+        records = export_shift_overrides(
+            self.salon, staff_member=self.dana)
+        self.assertEqual([r["id"] for r in records],
+                         [placed.pk, off.pk])
+        self.assertTrue(
+            all(r["staff_name"] == "Dana" for r in records))
+        parsed = list(csv.DictReader(io.StringIO(
+            export_shift_overrides_csv(
+                self.salon, staff_member=self.dana))))
+        self.assertEqual([int(r["id"]) for r in parsed],
+                         [placed.pk, off.pk])
+
+    def test_filtered_staff_member_with_no_overrides(self):
+        eve = StaffMember.objects.create(
+            salon=self.salon, display_name="Eve")
+        self._placed()
+        self.assertEqual(
+            export_shift_overrides(self.salon, staff_member=eve),
+            [])
+        self.assertEqual(
+            export_shift_overrides_csv(
+                self.salon, staff_member=eve),
+            ",".join(SHIFT_OVERRIDE_EXPORT_FIELDNAMES) + "\n")
+
+    def test_filtered_staff_member_from_other_salon_is_empty(self):
+        self._placed()
+        self._placed(staff=self.other_staff)
+        self.assertEqual(
+            export_shift_overrides(
+                self.salon, staff_member=self.other_staff),
+            [])
+        self.assertEqual(
+            export_shift_overrides_csv(
+                self.salon, staff_member=self.other_staff),
+            ",".join(SHIFT_OVERRIDE_EXPORT_FIELDNAMES) + "\n")
+        self.assertEqual(
+            len(export_shift_overrides(
+                self.other_salon, staff_member=self.other_staff)),
+            1)
+
     def test_read_only(self):
         self._placed()
         self._off()
