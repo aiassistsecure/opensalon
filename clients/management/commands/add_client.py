@@ -3,7 +3,7 @@
 Usage:
     python manage.py add_client --salon-id ID --first-name TEXT
         --last-name TEXT [--email ADDRESS] [--phone NUMBER]
-        [--sms-opt-in] [--email-opt-in] [--dry-run]
+        [--sms-opt-in] [--email-opt-in] [--inactive] [--dry-run]
 
 Opt-ins default to False and are set only by the explicit
 ``--sms-opt-in`` / ``--email-opt-in`` flags -- the command
@@ -60,6 +60,9 @@ class Command(BaseCommand):
             "--email-opt-in", action="store_true",
             help="Explicitly set the email opt-in (default: off).")
         parser.add_argument(
+            "--inactive", action="store_true",
+            help="Create the client inactive (default: active).")
+        parser.add_argument(
             "--dry-run", action="store_true",
             help="Preview the client that would be created "
                  "without writing anything.")
@@ -70,13 +73,19 @@ class Command(BaseCommand):
         except Salon.DoesNotExist as exc:
             raise CommandError(
                 f"No salon with id {options['salon_id']}.") from exc
+        # call_command may pass active= directly; CLI uses --inactive.
+        if options.get("active") is not None:
+            active = bool(options["active"])
+        else:
+            active = not options.get("inactive", False)
         kwargs = dict(
             first_name=options["first_name"],
             last_name=options["last_name"],
             email=options.get("email") or "",
             phone=options.get("phone") or "",
             sms_opt_in=bool(options.get("sms_opt_in", False)),
-            email_opt_in=bool(options.get("email_opt_in", False)))
+            email_opt_in=bool(options.get("email_opt_in", False)),
+            active=active)
         if options.get("dry_run"):
             try:
                 cleaned = validate_add_client(salon, **kwargs)
@@ -86,6 +95,7 @@ class Command(BaseCommand):
                 f"Dry run: would create client in salon {salon.pk}: "
                 f"sms_opt_in={cleaned['sms_opt_in']} "
                 f"email_opt_in={cleaned['email_opt_in']} "
+                f"active={cleaned['active']} "
                 f"-- no client written.")
             return
         try:
@@ -95,4 +105,5 @@ class Command(BaseCommand):
         self.stdout.write(
             f"Created client {client.pk} in salon {salon.pk}: "
             f"sms_opt_in={client.sms_opt_in} "
-            f"email_opt_in={client.email_opt_in}.")
+            f"email_opt_in={client.email_opt_in} "
+            f"active={client.active}.")

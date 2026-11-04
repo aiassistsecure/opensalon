@@ -25,8 +25,28 @@ class AddClientTests(TestCase):
     def test_defaults_blank_contact_and_opt_ins_false(self):
         c = add_client(self.salon, "Ada", "Lovelace")
         self.assertEqual(
-            (c.email, c.phone, c.sms_opt_in, c.email_opt_in),
-            ("", "", False, False))
+            (c.email, c.phone, c.sms_opt_in, c.email_opt_in, c.active),
+            ("", "", False, False, True))
+
+    def test_inactive_client_opt_ins_unaffected(self):
+        c = add_client(self.salon, "Ada", "Lovelace", active=False)
+        self.assertEqual(
+            (c.active, c.sms_opt_in, c.email_opt_in),
+            (False, False, False))
+        flagged = add_client(
+            self.salon, "B", "Two", active=False, sms_opt_in=True)
+        self.assertEqual(
+            (flagged.active, flagged.sms_opt_in, flagged.email_opt_in),
+            (False, True, False))
+
+    def test_non_bool_active_refused(self):
+        for kwargs in ({"active": "yes"}, {"active": 1},
+                       {"active": None}):
+            with self.assertRaises(ValueError):
+                add_client(self.salon, "A", "One", **kwargs)
+            with self.assertRaises(ValueError):
+                validate_add_client(self.salon, "A", "One", **kwargs)
+        self.assertEqual(Client.objects.count(), 0)
 
     def test_opt_ins_set_independently_only_when_explicit(self):
         sms_only = add_client(self.salon, "A", "One", sms_opt_in=True)
@@ -93,9 +113,14 @@ class AddClientTests(TestCase):
         self.assertEqual(
             (cleaned["first_name"], cleaned["last_name"],
              cleaned["email"], cleaned["phone"],
-             cleaned["sms_opt_in"], cleaned["email_opt_in"]),
+             cleaned["sms_opt_in"], cleaned["email_opt_in"],
+             cleaned["active"]),
             ("Ada", "Lovelace", "ada@example.com", "555-0100",
-             False, True))
+             False, True, True))
+        inactive = validate_add_client(
+            self.salon, "Ada", "Lovelace", active=False)
+        self.assertFalse(inactive["active"])
+        self.assertEqual(Client.objects.count(), 0)
 
     def test_validate_add_client_same_errors_writes_nothing(self):
         for kwargs in ({"first_name": " ", "last_name": "X"},
