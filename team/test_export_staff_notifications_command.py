@@ -252,6 +252,111 @@ class ExportStaffNotificationsCommandTests(TestCase):
                      unseen_only=True, stdout=out)
         self.assertEqual(len(out.getvalue().splitlines()), 1)
 
+    def test_date_window_matches_service(self):
+        out = io.StringIO()
+        call_command("export_staff_notifications",
+                     salon_id=self.salon.id,
+                     start_date="2026-01-01", end_date="2026-01-01",
+                     stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_staff_notifications_csv(
+                self.salon, start=datetime.date(2026, 1, 1),
+                end=datetime.date(2026, 1, 1)))
+        self.assertIn("Dana", out.getvalue())
+        out = io.StringIO()
+        call_command("export_staff_notifications",
+                     salon_id=self.salon.id,
+                     start_date="2026-01-02", end_date="2026-01-02",
+                     stdout=out)
+        self.assertEqual(len(out.getvalue().splitlines()), 1)
+
+    def test_date_window_cli_spelling(self):
+        out = io.StringIO()
+        call_command("export_staff_notifications",
+                     "--salon-id", str(self.salon.id),
+                     "--start-date", "2026-01-01",
+                     "--end-date", "2026-01-01", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_staff_notifications_csv(
+                self.salon, start=datetime.date(2026, 1, 1),
+                end=datetime.date(2026, 1, 1)))
+        self.assertIn("Dana", out.getvalue())
+
+    def test_date_window_alias_flags(self):
+        out = io.StringIO()
+        call_command("export_staff_notifications",
+                     "--salon-id", str(self.salon.id),
+                     "--date-from", "2026-01-01",
+                     "--date-to", "2026-01-01", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_staff_notifications_csv(
+                self.salon, start=datetime.date(2026, 1, 1),
+                end=datetime.date(2026, 1, 1)))
+        self.assertIn("Dana", out.getvalue())
+
+    def test_start_date_only_is_unbounded_end(self):
+        out = io.StringIO()
+        call_command("export_staff_notifications",
+                     salon_id=self.salon.id,
+                     start_date=datetime.date(2026, 1, 1), stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_staff_notifications_csv(
+                self.salon, start=datetime.date(2026, 1, 1)))
+        self.assertIn("Dana", out.getvalue())
+        out = io.StringIO()
+        call_command("export_staff_notifications",
+                     salon_id=self.salon.id,
+                     start_date=datetime.date(2026, 1, 2), stdout=out)
+        self.assertEqual(len(out.getvalue().splitlines()), 1)
+
+    def test_no_date_window_is_default(self):
+        out = io.StringIO()
+        call_command("export_staff_notifications",
+                     salon_id=self.salon.id, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_staff_notifications_csv(
+                self.salon, start=None, end=None))
+
+    def test_date_window_composes_with_staff_kind_and_seen(self):
+        self._mark_existing_seen()
+        out = io.StringIO()
+        call_command("export_staff_notifications",
+                     salon_id=self.salon.id,
+                     staff_member_id=self.staff.id, kind="arrived",
+                     seen_only=True,
+                     start_date=datetime.date(2026, 1, 1),
+                     end_date=datetime.date(2026, 1, 1), stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_staff_notifications_csv(
+                self.salon, staff_member=self.staff, kind="arrived",
+                seen=True, start=datetime.date(2026, 1, 1),
+                end=datetime.date(2026, 1, 1)))
+        self.assertIn("Dana", out.getvalue())
+        out = io.StringIO()
+        call_command("export_staff_notifications",
+                     salon_id=self.salon.id,
+                     start_date=datetime.date(2026, 1, 2),
+                     end_date=datetime.date(2026, 1, 2), stdout=out)
+        self.assertEqual(len(out.getvalue().splitlines()), 1)
+
+    def test_invalid_date_and_reversed_range_raise(self):
+        with self.assertRaises(CommandError):
+            call_command("export_staff_notifications",
+                         salon_id=self.salon.id,
+                         start_date="not-a-date", stdout=io.StringIO())
+        with self.assertRaises(CommandError):
+            call_command("export_staff_notifications",
+                         salon_id=self.salon.id,
+                         start_date=datetime.date(2026, 1, 2),
+                         end_date=datetime.date(2026, 1, 1),
+                         stdout=io.StringIO())
+
     def test_unknown_staff_member_id_raises(self):
         with self.assertRaises(CommandError):
             call_command("export_staff_notifications",

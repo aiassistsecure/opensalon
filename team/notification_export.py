@@ -33,6 +33,22 @@ unchanged. With ``True``, only notifications whose
 those whose ``seen_at`` is null. The seen filter composes
 with ``staff_member`` and ``kind`` (all must match).
 
+Date window: both export functions also accept an optional
+``start`` / ``end`` window pair (aliases ``start_date`` /
+``end_date`` and ``date_from`` / ``date_to``), filtering on
+``created_at`` -- the shape the XI attendance-records window
+uses in this app. Each bound may be a ``date``, a
+``datetime``, an ISO string, or ``None`` (the default,
+unbounded -- with both ``None`` the output is unchanged).
+The range is start-inclusive and end-exclusive after
+normalisation: a ``date`` start means the start of that
+day, and a ``date`` end means the start of the *following*
+day, so passing two dates includes the whole end day. A
+``datetime`` is used as given (naive datetimes are
+interpreted in the current time zone). A reversed window
+exports as empty. The window composes with ``staff_member``,
+``kind``, and ``seen`` (all must match).
+
 ``created_at`` / ``seen_at`` are rendered
 ISO-8601 exactly as stored (``seen_at`` empty when the row is
 unseen); ``kind`` is the stored string.
@@ -51,6 +67,9 @@ header row alone. Lines end with ``"\\n"``.
 """
 import csv
 import io
+from datetime import date, datetime, time, timedelta
+
+from django.utils import timezone
 
 from team.notifications import staff_notifications
 
@@ -91,8 +110,62 @@ def _record(note):
     }
 
 
+def _bound(value, *, is_end):
+    """Normalise a range bound to an aware datetime or ``None``."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        try:
+            value = date.fromisoformat(text)
+        except ValueError:
+            try:
+                value = datetime.fromisoformat(
+                    text[:-1] + "+00:00"
+                    if text.endswith(("Z", "z")) else text)
+            except ValueError as exc:
+                raise ValueError(
+                    "range bounds must be a date, datetime, or None"
+                ) from exc
+    if isinstance(value, datetime):
+        bound = value
+    elif isinstance(value, date):
+        bound = datetime.combine(value, time.min)
+        if is_end:
+            bound += timedelta(days=1)
+    else:
+        raise ValueError("range bounds must be a date, datetime, or None")
+    if timezone.is_naive(bound):
+        bound = timezone.make_aware(bound, timezone.get_current_timezone())
+    return bound
+
+
+def _resolve_window(start, end, kwargs):
+    """Fold the ``start_date`` / ``end_date`` aliases into start/end."""
+    if "start_date" in kwargs:
+        if start is not None:
+            raise TypeError("multiple values for start")
+        start = kwargs.pop("start_date")
+    if "end_date" in kwargs:
+        if end is not None:
+            raise TypeError("multiple values for end")
+        end = kwargs.pop("end_date")
+    if "date_from" in kwargs:
+        if start is not None:
+            raise TypeError("multiple values for start")
+        start = kwargs.pop("date_from")
+    if "date_to" in kwargs:
+        if end is not None:
+            raise TypeError("multiple values for end")
+        end = kwargs.pop("date_to")
+    if kwargs:
+        raise TypeError(
+            f"unexpected arguments: {', '.join(sorted(kwargs))}")
+    return start, end
+
+
 def export_staff_notifications(salon, staff_member=None, kind=None,
-                               seen=None):
+                               seen=None, start=None, end=None, **kwargs):
     """Return ``salon``'s staff notifications as a list of dicts.
 
     The ``salon`` argument is exactly that of
@@ -116,18 +189,35 @@ def export_staff_notifications(salon, staff_member=None, kind=None,
     ``True`` includes only notifications whose ``seen_at`` is
     not null; ``False`` only those whose ``seen_at`` is null.
     It composes with ``staff_member`` and ``kind``.
+
+    ``start`` / ``end`` (aliases ``start_date`` / ``end_date``)
+    are an optional window on ``created_at``: the defaults
+    ``None`` are unbounded, so the default output is unchanged.
+    See the module docstring for the range semantics. The
+    window composes with ``staff_member``, ``kind``, and
+    ``seen`` (all must match).
     """
+    start, end = _resolve_window(start, end, kwargs)
+    start_bound = _bound(start, is_end=False)
+    end_bound = _bound(end, is_end=True)
     return [
         _record(note) for note in staff_notifications(salon)
         if (staff_member is None
             or note.staff_member_id == staff_member.pk)
         and (kind is None or note.kind == kind)
         and (seen is None or (note.seen_at is not None) == seen)
+        and (start_bound is None
+             or (note.created_at is not None
+                 and note.created_at >= start_bound))
+        and (end_bound is None
+             or (note.created_at is not None
+                 and note.created_at < end_bound))
     ]
 
 
 def export_staff_notifications_csv(salon, staff_member=None, kind=None,
-                                   seen=None):
+                                   seen=None, start=None, end=None,
+                                   **kwargs):
     """Return ``salon``'s staff notifications as a CSV string.
 
     The header row is :data:`NOTIFICATION_EXPORT_FIELDNAMES`
@@ -151,6 +241,11 @@ def export_staff_notifications_csv(salon, staff_member=None, kind=None,
     default ``None`` is unchanged; ``True`` exports only seen
     notifications, ``False`` only unseen (header alone when
     none match).
+
+    ``start`` / ``end`` (aliases ``start_date`` / ``end_date``)
+    are likewise passed through: the defaults ``None`` are
+    unbounded and unchanged; a given window exports only
+    notifications whose ``created_at`` falls inside it.
     """
     buffer = io.StringIO()
     writer = csv.DictWriter(
@@ -159,7 +254,8 @@ def export_staff_notifications_csv(salon, staff_member=None, kind=None,
     )
     writer.writeheader()
     for record in export_staff_notifications(
-            salon, staff_member=staff_member, kind=kind, seen=seen):
+            salon, staff_member=staff_member, kind=kind, seen=seen,
+            start=start, end=end, **kwargs):
         writer.writerow(record)
     return buffer.getvalue()
 

@@ -284,6 +284,124 @@ class StaffNotificationExportTests(TestCase):
                 seen=False)],
             [unseen_mine.pk])
 
+    def test_default_window_none_is_unchanged(self):
+        self._note()
+        self._note(appt=self.appt2, created=T2)
+        expected_records = export_staff_notifications(self.salon)
+        expected_csv = export_staff_notifications_csv(self.salon)
+        self.assertEqual(
+            export_staff_notifications(self.salon, start=None, end=None),
+            expected_records)
+        self.assertEqual(
+            export_staff_notifications_csv(
+                self.salon, start=None, end=None),
+            expected_csv)
+        self.assertEqual(
+            export_staff_notifications(
+                self.salon, start_date=None, end_date=None),
+            expected_records)
+
+    def test_window_by_dates_includes_whole_end_day(self):
+        before = self._note(created=datetime.datetime(
+            2025, 12, 31, 15, 0, tzinfo=UTC))
+        first = self._note(appt=self.appt2, created=T1)
+        late = self._note(created=datetime.datetime(
+            2026, 1, 1, 23, 59, tzinfo=UTC))
+        after = self._note(appt=self.appt2, created=T2)
+        day = datetime.date(2026, 1, 1)
+        records = export_staff_notifications(
+            self.salon, start=day, end=day)
+        self.assertEqual([r["id"] for r in records],
+                         [late.pk, first.pk])
+        self.assertNotIn(before.pk, [r["id"] for r in records])
+        self.assertNotIn(after.pk, [r["id"] for r in records])
+        parsed = list(csv.DictReader(io.StringIO(
+            export_staff_notifications_csv(
+                self.salon, start=day, end=day))))
+        self.assertEqual([int(r["id"]) for r in parsed],
+                         [late.pk, first.pk])
+
+    def test_window_start_only_and_end_only(self):
+        early = self._note()
+        late = self._note(appt=self.appt2, created=T2)
+        self.assertEqual(
+            [r["id"] for r in export_staff_notifications(
+                self.salon, start=T2)],
+            [late.pk])
+        self.assertEqual(
+            [r["id"] for r in export_staff_notifications(
+                self.salon, end=datetime.datetime(
+                    2026, 1, 1, 16, 0, tzinfo=UTC))],
+            [early.pk])
+
+    def test_window_datetime_end_is_exclusive_as_given(self):
+        early = self._note()
+        self._note(appt=self.appt2, created=T2)
+        records = export_staff_notifications(
+            self.salon, start=T1, end=T2)
+        self.assertEqual([r["id"] for r in records], [early.pk])
+
+    def test_window_aliases_start_date_end_date(self):
+        self._note()
+        self._note(appt=self.appt2, created=T2)
+        day = datetime.date(2026, 1, 1)
+        self.assertEqual(
+            export_staff_notifications(
+                self.salon, start_date=day, end_date=day),
+            export_staff_notifications(self.salon, start=day, end=day))
+        self.assertEqual(
+            export_staff_notifications_csv(
+                self.salon, start_date=day, end_date=day),
+            export_staff_notifications_csv(
+                self.salon, start=day, end=day))
+        self.assertEqual(
+            export_staff_notifications(
+                self.salon, date_from=day, date_to=day),
+            export_staff_notifications(self.salon, start=day, end=day))
+
+    def test_window_composes_with_staff_member_kind_and_seen(self):
+        eve = StaffMember.objects.create(
+            salon=self.salon, display_name="Eve")
+        mine = self._note(kind="arrived", seen=T1_SEEN)
+        self._note(kind="reminder", created=T2, seen=T1_SEEN)
+        self._note(kind="arrived", created=T2)
+        self._note(staff=eve, appt=self.appt2, kind="arrived",
+                   created=T1, seen=T1_SEEN)
+        day = datetime.date(2026, 1, 1)
+        records = export_staff_notifications(
+            self.salon, staff_member=self.staff, kind="arrived",
+            seen=True, start=day, end=day)
+        self.assertEqual([r["id"] for r in records], [mine.pk])
+        parsed = list(csv.DictReader(io.StringIO(
+            export_staff_notifications_csv(
+                self.salon, staff_member=self.staff, kind="arrived",
+                seen=True, start=day, end=day))))
+        self.assertEqual([int(r["id"]) for r in parsed], [mine.pk])
+
+    def test_window_with_no_records_is_empty(self):
+        self._note()
+        far = datetime.date(2027, 1, 1)
+        self.assertEqual(
+            export_staff_notifications(self.salon, start=far, end=far),
+            [])
+        self.assertEqual(
+            export_staff_notifications_csv(
+                self.salon, start=far, end=far),
+            ",".join(NOTIFICATION_EXPORT_FIELDNAMES) + "\n")
+        # A reversed window exports as empty at the service level.
+        self.assertEqual(
+            export_staff_notifications(
+                self.salon, start=datetime.date(2026, 1, 2),
+                end=datetime.date(2026, 1, 1)),
+            [])
+
+    def test_window_invalid_bound_raises_value_error(self):
+        self._note()
+        with self.assertRaises(ValueError):
+            export_staff_notifications(self.salon, start=123)
+        with self.assertRaises(ValueError):
+            export_staff_notifications(self.salon, end="not-a-date")
+
     def test_read_only(self):
         self._note()
         before = StaffNotification.objects.count()
