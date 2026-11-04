@@ -202,6 +202,74 @@ class StockHistoryExportTests(TestCase):
         with self.assertRaises(ValueError):
             export_stock_history(self.salon, product, start="2026-03-15")
 
+    def test_kind_filter_dict_and_csv(self):
+        product = self.make_product("Shampoo")
+        self.move(product, 10, note="delivery")
+        self.move(product, -3, kind=StockMovement.Kind.SALE)
+        self.move(product, -2, kind=StockMovement.Kind.ADJUSTMENT,
+                  note="damaged")
+        records = export_stock_history(self.salon, product, kind="sale")
+        self.assertEqual([r["quantity_delta"] for r in records], [-3])
+        self.assertEqual(records[0]["kind"], "sale")
+        # running_balance is the full-ledger balance, not recomputed
+        # over the kind filter.
+        self.assertEqual([r["running_balance"] for r in records], [7])
+        parsed = list(csv.DictReader(io.StringIO(
+            export_stock_history_csv(self.salon, product, kind="sale"))))
+        self.assertEqual(
+            [(r["kind"], r["quantity_delta"]) for r in parsed],
+            [(r["kind"], str(r["quantity_delta"])) for r in records])
+
+    def test_kind_filter_accepts_enum_and_defaults_identical(self):
+        product = self.make_product("Shampoo")
+        self.move(product, 10)
+        self.move(product, -3, kind=StockMovement.Kind.SALE)
+        self.assertEqual(
+            export_stock_history(
+                self.salon, product, kind=StockMovement.Kind.SALE),
+            export_stock_history(self.salon, product, kind="sale"))
+        self.assertEqual(
+            export_stock_history(self.salon, product),
+            export_stock_history(self.salon, product, kind=None))
+        self.assertEqual(
+            export_stock_history_csv(self.salon, product),
+            export_stock_history_csv(self.salon, product, kind=None))
+
+    def test_kind_filter_exact_no_case_folding_and_no_match(self):
+        product = self.make_product("Shampoo")
+        self.move(product, -3, kind=StockMovement.Kind.SALE)
+        self.assertEqual(
+            export_stock_history(self.salon, product, kind="SALE"), [])
+        self.assertEqual(
+            export_stock_history(self.salon, product, kind="Sale"), [])
+        self.assertEqual(
+            export_stock_history(self.salon, product, kind="stocktake"),
+            [])
+        self.assertEqual(
+            export_stock_history_csv(self.salon, product, kind="SALE"),
+            ",".join(HISTORY_FIELDNAMES) + "\n")
+
+    def test_kind_filter_composes_with_window_and_product(self):
+        product = self.make_product("Shampoo")
+        other = self.make_product("Other")
+        day1, day2 = date(2026, 1, 5), date(2026, 1, 6)
+        self.move_on(product, 10, day1)
+        self.move_on(product, -3, day2, kind=StockMovement.Kind.SALE)
+        self.move_on(product, -2, day2,
+                     kind=StockMovement.Kind.ADJUSTMENT)
+        self.move_on(other, -9, day2, kind=StockMovement.Kind.SALE)
+        records = export_stock_history(
+            self.salon, product, start=day2, end=day2, kind="sale")
+        self.assertEqual([r["quantity_delta"] for r in records], [-3])
+        self.assertEqual(
+            export_stock_history(
+                self.salon, product, start=day1, end=day1, kind="sale"),
+            [])
+        self.assertEqual(
+            [r["quantity_delta"] for r in export_stock_history(
+                self.salon, other, kind="sale")],
+            [-9])
+
     def test_single_product_argument_and_aliases_read_only(self):
         product = self.make_product("Solo")
         self.move(product, 7)

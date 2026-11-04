@@ -128,6 +128,65 @@ class ExportStockHistoryCommandTests(TestCase):
                              stdout=io.StringIO())
 
 
+class ExportStockHistoryKindCommandTests(TestCase):
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon")
+        self.shampoo = Product.objects.create(
+            salon=self.salon, name="Shampoo", sku="SH-001",
+            barcode="012345678905", price=Decimal("10.00"))
+        self.move(self.shampoo, 10)
+        self.move(self.shampoo, -3, kind=StockMovement.Kind.SALE)
+        self.move(self.shampoo, -2, kind=StockMovement.Kind.ADJUSTMENT)
+
+    def move(self, product, delta, kind=StockMovement.Kind.RECEIVE):
+        return StockMovement.objects.create(
+            product=product, kind=kind, quantity_delta=delta)
+
+    def test_kind_flag_matches_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_stock_history", "--salon-id", str(self.salon.pk),
+            "--product-id", str(self.shampoo.pk),
+            "--kind", "sale", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_stock_history_csv(self.salon, self.shampoo.pk,
+                                     kind="sale"))
+        rows = list(csv.DictReader(io.StringIO(out.getvalue())))
+        self.assertEqual([r["kind"] for r in rows], ["sale"])
+        self.assertEqual([r["quantity_delta"] for r in rows], ["-3"])
+
+    def test_kind_kwarg_matches_service(self):
+        out = io.StringIO()
+        call_command("export_stock_history", salon_id=self.salon.pk,
+                     product_id=self.shampoo.pk, kind="receive",
+                     stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_stock_history_csv(self.salon, self.shampoo.pk,
+                                     kind="receive"))
+
+    def test_kind_filter_no_match_is_header_only(self):
+        out = io.StringIO()
+        call_command("export_stock_history", salon_id=self.salon.pk,
+                     product_id=self.shampoo.pk, kind="SALE",
+                     stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_stock_history_csv(self.salon, self.shampoo.pk,
+                                     kind="SALE"))
+        self.assertEqual(len(out.getvalue().strip().splitlines()), 1)
+
+    def test_no_kind_matches_unfiltered_service(self):
+        out = io.StringIO()
+        call_command("export_stock_history", salon_id=self.salon.pk,
+                     product_id=self.shampoo.pk, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_stock_history_csv(self.salon, self.shampoo.pk,
+                                     kind=None))
+
+
 class ExportStockHistoryWindowCommandTests(TestCase):
     def setUp(self):
         self.salon = Salon.objects.create(name="Example Salon")
@@ -193,6 +252,22 @@ class ExportStockHistoryWindowCommandTests(TestCase):
             export_stock_history_csv(
                 self.salon, self.shampoo.pk,
                 start=self.day3, end=self.day3))
+
+    def test_kind_composes_with_window_flags(self):
+        out = io.StringIO()
+        call_command(
+            "export_stock_history", "--salon-id", str(self.salon.pk),
+            "--product-id", str(self.shampoo.pk),
+            "--start-date", self.day2.isoformat(),
+            "--end-date", self.day3.isoformat(),
+            "--kind", "adjustment", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_stock_history_csv(
+                self.salon, self.shampoo.pk,
+                start=self.day2, end=self.day3, kind="adjustment"))
+        rows = list(csv.DictReader(io.StringIO(out.getvalue())))
+        self.assertEqual([r["quantity_delta"] for r in rows], ["-2"])
 
     def test_no_window_is_previous_output_and_invalid_date_fails(self):
         out = io.StringIO()
