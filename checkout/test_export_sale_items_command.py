@@ -77,6 +77,51 @@ class ExportSaleItemsCommandTests(TestCase):
         self.assertEqual(written, export_sale_items_csv(self.salon))
         self.assertEqual(out.getvalue(), "")
 
+    def test_sale_id_filters_to_one_sale(self):
+        first = self._item()
+        self._item()
+        out = io.StringIO()
+        call_command(
+            "export_sale_items", salon_id=self.salon.pk,
+            sale_id=first.sale_id, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_sale_items_csv(self.salon, sale=first.sale))
+        self.assertEqual(len(out.getvalue().strip().splitlines()), 2)
+
+    def test_sale_id_via_cli_flag(self):
+        first = self._item()
+        out = io.StringIO()
+        call_command(
+            "export_sale_items", "--salon-id", str(self.salon.pk),
+            "--sale-id", str(first.sale_id), stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_sale_items_csv(self.salon, sale=first.sale))
+
+    def test_no_sale_id_is_salon_wide_default(self):
+        self._item()
+        out = io.StringIO()
+        call_command(
+            "export_sale_items", salon_id=self.salon.pk, stdout=out)
+        self.assertEqual(out.getvalue(), export_sale_items_csv(self.salon))
+        self.assertEqual(
+            out.getvalue(),
+            export_sale_items_csv(self.salon, sale=None))
+
+    def test_unknown_sale_id_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_sale_items", salon_id=self.salon.pk,
+                sale_id=999999, stdout=io.StringIO())
+
+    def test_sale_from_other_salon_raises_command_error(self):
+        theirs = self._item(salon=self.other)
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_sale_items", salon_id=self.salon.pk,
+                sale_id=theirs.sale_id, stdout=io.StringIO())
+
     def test_unknown_salon_raises_command_error(self):
         with self.assertRaises(CommandError):
             call_command(
