@@ -6,7 +6,9 @@ Backend only -- no views, templates, or UI. Today
 re-implements level/PIN/email handling in the view. This is
 the validated single-record write path: one member in one
 salon from a display name, an optional staff level, the
-per-staff online-booking toggle, and optional email / PIN.
+per-staff online-booking toggle, optional email / PIN, and
+an ``active`` flag (default active, mirroring
+``saloncore.add_service`` / ``catalog.add_product``).
 
 Rules (this service is the single source of truth): the
 name is non-blank, at most the field length, stored stripped
@@ -103,16 +105,23 @@ def _clean_pin(salon, pin):
     return text
 
 
+def _clean_active(active):
+    if not isinstance(active, bool):
+        raise ValueError("active must be a boolean")
+    return active
+
+
 def validate_add_staff_member(salon, display_name, staff_level=None,
-                              online_bookable=True, email="", pin=""):
+                              online_bookable=True, email="", pin="",
+                              active=True):
     """Validate an ``add_staff_member`` call, writing nothing.
 
     Returns the cleaned fields the writer would store (keys
     ``salon``, ``display_name``, ``staff_level``,
-    ``online_bookable``, ``email``, ``pin``) and raises the
-    same ``ValueError`` the writer would. Safe for ``--dry-run``
-    on every backend (including NEDB, where a rolled-back
-    transaction does not undo writes).
+    ``online_bookable``, ``email``, ``pin``, ``active``) and
+    raises the same ``ValueError`` the writer would. Safe for
+    ``--dry-run`` on every backend (including NEDB, where a
+    rolled-back transaction does not undo writes).
     """
     salon = _clean_salon(salon)
     if not isinstance(online_bookable, bool):
@@ -121,16 +130,19 @@ def validate_add_staff_member(salon, display_name, staff_level=None,
         salon=salon, display_name=_clean_display_name(display_name),
         staff_level=_clean_staff_level(salon, staff_level),
         online_bookable=online_bookable,
-        email=_clean_email(salon, email), pin=_clean_pin(salon, pin))
+        email=_clean_email(salon, email), pin=_clean_pin(salon, pin),
+        active=_clean_active(active))
 
 
 def add_staff_member(salon, display_name, staff_level=None,
-                     online_bookable=True, email="", pin=""):
+                     online_bookable=True, email="", pin="",
+                     active=True):
     """Create one staff member in ``salon`` and return it.
     Raises ``ValueError`` -- creating nothing -- on any rule
     in the module docstring."""
     with transaction.atomic():
         cleaned = validate_add_staff_member(
             salon, display_name, staff_level=staff_level,
-            online_bookable=online_bookable, email=email, pin=pin)
+            online_bookable=online_bookable, email=email, pin=pin,
+            active=active)
         return StaffMember.objects.create(**cleaned)

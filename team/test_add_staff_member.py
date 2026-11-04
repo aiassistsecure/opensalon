@@ -31,8 +31,23 @@ class AddStaffMemberTests(TestCase):
     def test_defaults_no_level_bookable_blank_email_pin(self):
         m = add_staff_member(self.salon, "Dana")
         self.assertEqual(
-            (m.staff_level, m.online_bookable, m.email, m.pin),
-            (None, True, "", ""))
+            (m.staff_level, m.online_bookable, m.email, m.pin,
+             m.active),
+            (None, True, "", "", True))
+
+    def test_inactive_creation(self):
+        m = add_staff_member(self.salon, "Dana", active=False)
+        self.assertFalse(m.active)
+        self.assertEqual(StaffMember.objects.count(), 1)
+
+    def test_non_bool_active_refused(self):
+        for bad in ("yes", 1, None):
+            with self.assertRaises(ValueError):
+                add_staff_member(self.salon, "Dana", active=bad)
+            with self.assertRaises(ValueError):
+                validate_add_staff_member(
+                    self.salon, "Dana", active=bad)
+        self.assertEqual(StaffMember.objects.count(), 0)
 
     def test_blank_or_overlong_name_refused(self):
         for bad in ("", "   ", None, 123, "x" * 121):
@@ -108,8 +123,15 @@ class AddStaffMemberTests(TestCase):
         self.assertEqual(
             (cleaned["display_name"], cleaned["staff_level"],
              cleaned["online_bookable"], cleaned["email"],
-             cleaned["pin"]),
-            ("Dana", self.level, False, "dana@example.com", "1234"))
+             cleaned["pin"], cleaned["active"]),
+            ("Dana", self.level, False, "dana@example.com", "1234",
+             True))
+
+    def test_validate_inactive_returns_cleaned_active_false(self):
+        cleaned = validate_add_staff_member(
+            self.salon, "Dana", active=False)
+        self.assertFalse(cleaned["active"])
+        self.assertEqual(StaffMember.objects.count(), 0)
 
     def test_validate_same_errors_writes_nothing(self):
         add_staff_member(self.salon, "Existing",

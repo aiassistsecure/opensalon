@@ -56,6 +56,36 @@ class AddStaffMemberCommandTests(TestCase):
             (m.online_bookable, m.staff_level, m.email, m.pin),
             (True, None, "", ""))
 
+    def test_default_active_and_inactive_flag(self):
+        text = self.run_cmd(
+            salon_id=self.salon.pk, display_name="Dana")
+        (m,) = StaffMember.objects.all()
+        self.assertTrue(m.active)
+        self.assertIn("active=True", text)
+        out = io.StringIO()
+        call_command(
+            "add_staff_member", "--salon-id", str(self.salon.pk),
+            "--display-name", "Ina", "--inactive", stdout=out)
+        m2 = StaffMember.objects.get(display_name="Ina")
+        self.assertFalse(m2.active)
+        self.assertIn("active=False", out.getvalue())
+
+    def test_dry_run_with_inactive_writes_nothing(self):
+        text = self.run_cmd(
+            salon_id=self.salon.pk, display_name="Dana",
+            inactive=True, dry_run=True)
+        self.assertEqual(StaffMember.objects.count(), 0)
+        self.assertIn("Dry run: would create staff member", text)
+        self.assertIn("active=False", text)
+        self.assertIn("no staff member written", text)
+        out = io.StringIO()
+        call_command(
+            "add_staff_member", "--salon-id", str(self.salon.pk),
+            "--display-name", "Dana", "--inactive", "--dry-run",
+            stdout=out)
+        self.assertEqual(StaffMember.objects.count(), 0)
+        self.assertIn("active=False", out.getvalue())
+
     def test_dry_run_writes_nothing_and_previews(self):
         text = self.run_cmd(
             salon_id=self.salon.pk, display_name="Dana",
