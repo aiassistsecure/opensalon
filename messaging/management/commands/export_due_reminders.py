@@ -3,7 +3,7 @@
 Usage:
     python manage.py export_due_reminders --salon-id ID
         --start-date YYYY-MM-DD --end-date YYYY-MM-DD
-        [--output PATH]
+        [--channel CHANNEL] [--output PATH]
 
 Thin wrapper around the existing
 :func:`messaging.due_export.export_due_reminders_csv` service:
@@ -88,6 +88,10 @@ class Command(BaseCommand):
             help="Last day of the range, YYYY-MM-DD (inclusive).",
         )
         parser.add_argument(
+            "--channel", dest="channel", default=None,
+            help="Reminder channel value to filter by.",
+        )
+        parser.add_argument(
             "--output", default=None,
             help="Path to write the CSV to (default: stdout).",
         )
@@ -109,7 +113,8 @@ class Command(BaseCommand):
                 f"date {options['start_date']!r}."
             )
         try:
-            text = export_due_reminders_csv(salon, start, end)
+            text = export_due_reminders_csv(
+                salon, start, end, channel=options.get("channel"))
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options["output"]:

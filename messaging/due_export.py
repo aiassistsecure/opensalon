@@ -28,12 +28,19 @@ re-checks opt-ins, contact details, or statuses itself:
   yet due, or past it) produces no rows -- the listing's
   window filter decides, not this module.
 
-Salon scoping -- the one filter this export adds on top: only
+Salon scoping -- one filter this export adds on top: only
 appointments whose client belongs to ``salon`` export
 (``appointment.client.salon``, the scoping the send services
 use via ``client__salon``). A missing salon exports as ``[]``
 / a header-only CSV. A reversed window raises ``ValueError``,
 exactly as the listing does.
+
+Channel filter: ``channel`` (optional, default ``None`` = no
+filter, output identical to the unfiltered export) is an
+exact match on each row's eligible channel (``email`` /
+``sms``, no case folding) and composes (AND) with the window
+and the salon scoping. Read-only -- it filters the listing,
+it sends nothing.
 
 Columns -- exactly the listing's actual fields, no invented
 fields:
@@ -75,32 +82,39 @@ def _salon_id(salon):
     return salon.pk if hasattr(salon, "pk") else salon
 
 
-def export_due_reminders(salon, start, end, appointments=None):
+def export_due_reminders(salon, start, end, appointments=None,
+                         channel=None):
     """Return due reminders for ``salon`` as dict rows.
 
     Rows are rendered verbatim from
     :func:`messaging.due.due_reminders` over ``[start, end]``:
     one dict per appointment per eligible channel, listing
     order then channel order, scoped to ``salon`` via the
-    appointment's client. A missing salon returns ``[]``; a
-    reversed window raises ``ValueError`` as the listing
-    does. Read-only.
+    appointment's client. ``channel`` optionally filters by
+    exact eligible-channel value (AND with the window and
+    salon scope); ``None`` (the default) applies no filter.
+    A missing salon returns ``[]``; a reversed window raises
+    ``ValueError`` as the listing does. Read-only.
     """
     salon_id = _salon_id(salon)
     if salon_id is None:
         return []
+    if channel is not None:
+        channel = str(channel)
     rows = []
     for entry in due_reminders(start, end, appointments=appointments):
         appointment = entry.appointment
         if appointment.client.salon_id != salon_id:
             continue
-        for channel in entry.eligible_channels:
+        for row_channel in entry.eligible_channels:
+            if channel is not None and row_channel != channel:
+                continue
             rows.append({
                 "salon_id": salon_id,
                 "appointment_id": appointment.pk,
                 "client_id": appointment.client_id,
                 "client_name": str(appointment.client),
-                "channel": channel,
+                "channel": row_channel,
                 "due_at": (
                     appointment.start.isoformat()
                     if appointment.start else ""
@@ -109,7 +123,8 @@ def export_due_reminders(salon, start, end, appointments=None):
     return rows
 
 
-def export_due_reminders_csv(salon, start, end, appointments=None):
+def export_due_reminders_csv(salon, start, end, appointments=None,
+                              channel=None):
     """Return :func:`export_due_reminders` as CSV text.
 
     The header row is :data:`DUE_EXPORT_FIELDNAMES` and every
@@ -123,7 +138,8 @@ def export_due_reminders_csv(salon, start, end, appointments=None):
     )
     writer.writeheader()
     for record in export_due_reminders(
-            salon, start, end, appointments=appointments):
+            salon, start, end, appointments=appointments,
+            channel=channel):
         writer.writerow(record)
     return buffer.getvalue()
 
