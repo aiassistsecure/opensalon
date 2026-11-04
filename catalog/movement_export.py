@@ -41,6 +41,19 @@ that same :func:`export_movements` list, so the two formats can
 never disagree — one source of truth. It renders the movement
 rows only (the totals rollup stays in the JSON-shaped combined
 export); it adds no fields, filtering, or computation of its own.
+
+Every export here also takes one optional per-product filter,
+``product`` (default ``None``): a saved
+:class:`~catalog.models.Product` or its integer id, resolved
+within the salon exactly as
+:func:`catalog.history.stock_history` resolves it — an unknown
+id, an unsaved instance, or a product of another salon raises
+``ValueError`` rather than leaking. With a product, only that
+product's movements (still inside the date range) are exported,
+and the totals rollup covers that product alone, so the two
+halves of the combined export still reconcile. With ``None``
+(the default), the output is the previous salon-wide export,
+unchanged.
 """
 import csv
 import io
@@ -48,6 +61,7 @@ from datetime import date, datetime, time, timedelta
 
 from django.utils import timezone
 
+from catalog.history import _resolve_product
 from catalog.models import StockMovement
 
 __all__ = [
@@ -104,13 +118,15 @@ def _bound(value, *, is_end):
     return bound
 
 
-def _movements_in_range(salon, start, end):
+def _movements_in_range(salon, start, end, product=None):
     salon_id = getattr(salon, "pk", salon)
     queryset = (
         StockMovement.objects.filter(product__salon_id=salon_id)
         .select_related("product")
         .order_by("created_at", "id")
     )
+    if product is not None:
+        queryset = queryset.filter(product=_resolve_product(salon, product))
     start_bound = _bound(start, is_end=False)
     end_bound = _bound(end, is_end=True)
     if start_bound is not None:
@@ -135,25 +151,34 @@ def _record(movement):
     }
 
 
-def export_movements(salon, start=None, end=None):
+def export_movements(salon, start=None, end=None, *, product=None):
     """Return ``salon``'s movements in the range as a list of dicts.
 
     Each entry is a dict with exactly :data:`MOVEMENT_FIELDNAMES`
     keys (see the module docstring for range semantics). Only
     ``salon``'s movements are included. Ordered by ``created_at``,
     then id. A range with no movements exports as ``[]``.
+
+    The optional ``product`` (a saved Product or its id, resolved
+    within ``salon``; see the module docstring) restricts the
+    export to that one product's movements, still inside the
+    range. Default ``None`` is the salon-wide export, unchanged.
     Records nothing.
     """
-    return [_record(m) for m in _movements_in_range(salon, start, end)]
+    return [
+        _record(m)
+        for m in _movements_in_range(salon, start, end, product=product)
+    ]
 
 
-def export_movements_csv(salon, start=None, end=None):
+def export_movements_csv(salon, start=None, end=None, *, product=None):
     """Return ``salon``'s movements in the range as a CSV string.
 
     The header row is :data:`MOVEMENT_FIELDNAMES` and every data
     row comes from :func:`export_movements` with the same
-    arguments, so the CSV and list exports always agree. A range
-    with no movements exports as the header row alone. Lines end
+    arguments (including the optional ``product`` filter), so
+    the CSV and list exports always agree. A range with no
+    movements exports as the header row alone. Lines end
     with ``"\\n"``. Records nothing.
     """
     buffer = io.StringIO()
@@ -161,7 +186,8 @@ def export_movements_csv(salon, start=None, end=None):
         buffer, fieldnames=MOVEMENT_FIELDNAMES, lineterminator="\n"
     )
     writer.writeheader()
-    for record in export_movements(salon, start=start, end=end):
+    for record in export_movements(
+            salon, start=start, end=end, product=product):
         writer.writerow(record)
     return buffer.getvalue()
 
@@ -170,7 +196,7 @@ def export_movements_csv(salon, start=None, end=None):
 movements_csv = export_movements_csv
 
 
-def movement_totals(salon, start=None, end=None):
+def movement_totals(salon, start=None, end=None, *, product=None):
     """Return per-product totals for ``salon``'s movements in range.
 
     Each entry is a dict with exactly :data:`TOTAL_FIELDNAMES`
@@ -178,10 +204,12 @@ def movement_totals(salon, start=None, end=None):
     in the range, the net ``quantity_delta`` sum, and a ``by_kind``
     dict of per-kind delta sums. Only products with movements in
     the range appear. Ordered by product name, then id. A range
-    with no movements returns ``[]``. Records nothing.
+    with no movements returns ``[]``. The optional ``product``
+    filter is :func:`export_movements`' own, so a filtered rollup
+    still reconciles with the filtered rows. Records nothing.
     """
     totals = {}
-    for movement in _movements_in_range(salon, start, end):
+    for movement in _movements_in_range(salon, start, end, product=product):
         product = movement.product
         row = totals.get(product.pk)
         if row is None:
@@ -204,15 +232,18 @@ def movement_totals(salon, start=None, end=None):
     )
 
 
-def export_movement_export(salon, start=None, end=None):
+def export_movement_export(salon, start=None, end=None, *, product=None):
     """Return ``{"movements": [...], "totals": [...]}`` for the range.
 
-    Both halves come from the same range arguments, so the totals
-    always reconcile with the exported rows.
+    Both halves come from the same range arguments (and the same
+    optional ``product`` filter), so the totals always reconcile
+    with the exported rows.
     """
     return {
-        "movements": export_movements(salon, start=start, end=end),
-        "totals": movement_totals(salon, start=start, end=end),
+        "movements": export_movements(
+            salon, start=start, end=end, product=product),
+        "totals": movement_totals(
+            salon, start=start, end=end, product=product),
     }
 
 

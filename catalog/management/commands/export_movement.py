@@ -3,7 +3,7 @@
 Usage:
     python manage.py export_movement --salon-id ID
         [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD]
-        [--format json|csv] [--output PATH]
+        [--product-id ID] [--format json|csv] [--output PATH]
 
 Backend only — no views, templates, or UI. This command is a thin
 wrapper around :mod:`catalog.movement_export`: it resolves the
@@ -26,6 +26,12 @@ Range semantics are the service's own: start-inclusive,
 end-exclusive after normalisation, so a date end covers the whole
 end day; either bound may be omitted (unbounded).
 
+The optional ``--product-id`` is resolved to its ``Product`` in
+the salon and passed to the service as its ``product`` filter;
+an id that is unknown — or belongs to another salon — raises
+``CommandError``. Omitted, the export is the previous salon-wide
+output verbatim.
+
 Founding rule (Exit Principle): anything a salon can enter, it can
 fully export.
 """
@@ -35,6 +41,7 @@ import json
 
 from django.core.management.base import BaseCommand, CommandError
 
+from catalog.models import Product
 from catalog.movement_export import (
     export_movement_export,
     export_movements_csv,
@@ -50,6 +57,25 @@ def _parse_date(value):
     except ValueError as exc:
         raise argparse.ArgumentTypeError(
             f"Invalid date {value!r}; expected YYYY-MM-DD."
+        ) from exc
+
+
+def _resolve_product(value, salon):
+    if value is None:
+        return None
+    # A Product instance (via call_command kwargs) resolves by pk.
+    pk = getattr(value, "pk", value)
+    try:
+        pk = int(pk)
+    except (TypeError, ValueError) as exc:
+        raise CommandError(
+            f"Invalid product {value!r}; expected an id."
+        ) from exc
+    try:
+        return Product.objects.get(pk=pk, salon=salon)
+    except (Product.DoesNotExist, TypeError, ValueError) as exc:
+        raise CommandError(
+            f"No product with id {pk}."
         ) from exc
 
 
@@ -74,6 +100,12 @@ class Command(BaseCommand):
                  "is included; default: unbounded).",
         )
         parser.add_argument(
+            "--product-id", dest="product_id",
+            type=int, default=None,
+            help="Id of the product to scope to (default: "
+                 "every product in the salon).",
+        )
+        parser.add_argument(
             "--format", dest="format", default="json", choices=_FORMATS,
             help="Export format: json (default) or csv.",
         )
@@ -92,15 +124,19 @@ class Command(BaseCommand):
         except Salon.DoesNotExist as exc:
             raise CommandError(
                 f"No salon with id {options['salon_id']}.") from exc
+        product_raw = options.get("product_id")
+        if product_raw is None:
+            product_raw = options.get("product")
+        product = _resolve_product(product_raw, salon)
         try:
             if fmt == "csv":
                 text = export_movements_csv(
                     salon, start=options["start_date"],
-                    end=options["end_date"])
+                    end=options["end_date"], product=product)
             else:
                 data = export_movement_export(
                     salon, start=options["start_date"],
-                    end=options["end_date"])
+                    end=options["end_date"], product=product)
                 text = json.dumps(data, indent=2) + "\n"
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
