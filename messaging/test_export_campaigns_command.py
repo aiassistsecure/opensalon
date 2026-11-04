@@ -81,6 +81,47 @@ class ExportCampaignsCommandTests(TestCase):
         self.assertEqual(out.getvalue(),
                          export_campaigns_csv(self.salon, status=None))
 
+    def test_channel_filter_matches_service(self):
+        out = io.StringIO()
+        call_command("export_campaigns", salon_id=self.salon.pk,
+                     channel="email", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_campaigns_csv(self.salon, channel="email"))
+        self.assertIn("Spring Email", out.getvalue())
+        self.assertNotIn("Spring Offer", out.getvalue())
+
+    def test_channel_filter_composes_with_status(self):
+        Campaign.objects.create(
+            salon=self.salon, name="Sent Email", channel="email",
+            body="Sent email body", status=Campaign.Status.SENT,
+            sent_at=datetime(2026, 10, 3, 9, 0, tzinfo=timezone.utc))
+        out = io.StringIO()
+        call_command("export_campaigns", salon_id=self.salon.pk,
+                     channel="email", status="sent", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_campaigns_csv(self.salon, channel="email",
+                                  status="sent"))
+        self.assertIn("Sent Email", out.getvalue())
+        self.assertNotIn("Spring Email", out.getvalue())
+
+    def test_channel_filter_no_match_is_header_only(self):
+        out = io.StringIO()
+        call_command("export_campaigns", salon_id=self.salon.pk,
+                     channel="EMAIL", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_campaigns_csv(self.salon, channel="EMAIL"))
+        self.assertEqual(len(out.getvalue().strip().splitlines()), 1)
+
+    def test_no_channel_matches_unfiltered_service(self):
+        out = io.StringIO()
+        call_command("export_campaigns", salon_id=self.salon.pk,
+                     stdout=out)
+        self.assertEqual(out.getvalue(),
+                         export_campaigns_csv(self.salon, channel=None))
+
     def test_unknown_salon_raises(self):
         with self.assertRaises(CommandError):
             call_command("export_campaigns",

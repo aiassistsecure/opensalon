@@ -159,6 +159,63 @@ class CampaignExportTests(TestCase):
                          ["Elsewhere Draft"])
         self.assertEqual(export_campaigns(None, status="draft"), [])
 
+    def test_channel_filter_dict_and_csv(self):
+        records = export_campaigns(self.salon, channel="email")
+        self.assertEqual([r["name"] for r in records],
+                         ["November News"])
+        self.assertEqual(records[0]["channel"], "email")
+        records = export_campaigns(self.salon, channel="sms")
+        self.assertEqual([r["name"] for r in records],
+                         ["November Offer"])
+        parsed = list(csv.DictReader(io.StringIO(
+            export_campaigns_csv(self.salon, channel="sms"))))
+        self.assertEqual([r["name"] for r in parsed],
+                         ["November Offer"])
+        # CSV twin agrees with the dict export, same args.
+        parsed = list(csv.DictReader(io.StringIO(
+            export_campaigns_csv(self.salon, channel="email"))))
+        self.assertEqual(
+            [(r["name"], r["channel"]) for r in parsed],
+            [(r["name"], r["channel"]) for r in
+             export_campaigns(self.salon, channel="email")])
+
+    def test_channel_filter_accepts_enum_and_defaults_identical(self):
+        self.assertEqual(
+            export_campaigns(self.salon,
+                             channel=Campaign.Channel.EMAIL),
+            export_campaigns(self.salon, channel="email"))
+        self.assertEqual(export_campaigns(self.salon, channel=None),
+                         export_campaigns(self.salon))
+        self.assertEqual(export_campaigns_csv(self.salon, channel=None),
+                         export_campaigns_csv(self.salon))
+
+    def test_channel_filter_exact_no_case_folding(self):
+        self.assertEqual(export_campaigns(self.salon, channel="EMAIL"),
+                         [])
+        self.assertEqual(export_campaigns(self.salon, channel="Sms"),
+                         [])
+        self.assertEqual(
+            export_campaigns_csv(self.salon, channel="EMAIL"),
+            ",".join(CAMPAIGN_EXPORT_FIELDNAMES) + "\n")
+
+    def test_channel_filter_composes_with_status_and_salon(self):
+        # sms+sent matches only the sms row; sms+draft matches none.
+        records = export_campaigns(
+            self.salon, status="sent", channel="sms")
+        self.assertEqual([r["name"] for r in records],
+                         ["November Offer"])
+        self.assertEqual(export_campaigns(
+            self.salon, status="draft", channel="sms"), [])
+        self.assertEqual(export_campaigns(
+            self.salon, status="sent", channel="email"), [])
+        Campaign.objects.create(
+            salon=self.other, name="Elsewhere SMS",
+            channel="sms", subject="Hi", body="Body")
+        records = export_campaigns(self.other, channel="sms")
+        self.assertEqual([r["name"] for r in records],
+                         ["Elsewhere SMS"])
+        self.assertEqual(export_campaigns(None, channel="sms"), [])
+
     def test_no_send_count_or_aggregates(self):
         for record in export_campaigns(self.salon):
             self.assertNotIn("send_count", record)
