@@ -190,3 +190,73 @@ class ProductExportTests(TestCase):
         self.assertNotIn("Inactive", default)
         full = export_products_csv(self.salon, include_inactive=True)
         self.assertIn("Inactive", full)
+
+
+class ProductExportProductTypeTests(TestCase):
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon")
+
+    def make_product(self, name, salon=None, active=True, **extra):
+        return Product.objects.create(
+            salon=salon or self.salon, name=name,
+            price=Decimal("10.00"), active=active, **extra)
+
+    def test_default_none_is_unfiltered(self):
+        self.make_product("A", product_type="retail")
+        self.make_product("B", product_type="backbar")
+        self.make_product("C")
+        self.assertEqual(export_products(self.salon),
+                         export_products(self.salon, product_type=None))
+        self.assertEqual(export_products_csv(self.salon),
+                         export_products_csv(self.salon, product_type=None))
+        self.assertEqual([r["name"] for r in export_products(self.salon)],
+                         ["A", "B", "C"])
+
+    def test_exact_stored_product_type_only(self):
+        self.make_product("Retail", product_type="retail")
+        self.make_product("Capital", product_type="Retail")
+        self.make_product("Longer", product_type="retail-pro")
+        self.make_product("CategoryTrap", product_type="backbar",
+                          category_name="retail")
+        self.assertEqual(
+            [r["name"] for r in export_products(
+                self.salon, product_type="retail")], ["Retail"])
+
+    def test_empty_string_matches_only_blank_type(self):
+        self.make_product("Blank")
+        self.make_product("Typed", product_type="retail")
+        self.assertEqual(
+            [r["name"] for r in export_products(
+                self.salon, product_type="")], ["Blank"])
+
+    def test_no_match_exports_empty(self):
+        self.make_product("A", product_type="retail")
+        self.assertEqual(export_products(self.salon, product_type="nope"), [])
+        self.assertEqual(
+            export_products_csv(self.salon, product_type="nope"),
+            ",".join(EXPORT_FIELDNAMES) + "\n")
+
+    def test_composes_with_include_inactive(self):
+        self.make_product("ActiveRetail", product_type="retail")
+        self.make_product("ActiveBackbar", product_type="backbar")
+        self.make_product("InactiveRetail", active=False,
+                          product_type="retail")
+        self.make_product("InactiveBackbar", active=False,
+                          product_type="backbar")
+        self.assertEqual(
+            [r["name"] for r in export_products(
+                self.salon, product_type="retail")], ["ActiveRetail"])
+        self.assertEqual(
+            [r["name"] for r in export_products(
+                self.salon, include_inactive=True, product_type="retail")],
+            ["ActiveRetail", "InactiveRetail"])
+
+    def test_csv_respects_product_type_and_agrees(self):
+        self.make_product("Retail", product_type="retail")
+        self.make_product("Backbar", product_type="backbar")
+        text = export_products_csv(self.salon, product_type="retail")
+        rows = list(csv.DictReader(io.StringIO(text)))
+        self.assertEqual([r["name"] for r in rows], ["Retail"])
+        listed = export_products(self.salon, product_type="retail")
+        self.assertEqual([r["name"] for r in rows],
+                         [r["name"] for r in listed])

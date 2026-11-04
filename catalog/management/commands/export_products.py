@@ -2,12 +2,12 @@
 
 Usage:
     python manage.py export_products --salon-id ID
-        [--include-inactive] [--output PATH]
+        [--include-inactive] [--product-type TYPE] [--output PATH]
 
 Backend only — no views, templates, or UI. This command is a thin
 wrapper around :func:`catalog.export.export_products_csv`: it
 resolves the salon by id, delegates to that service verbatim
-(with the same ``include_inactive``), and
+(with the same ``include_inactive`` and ``product_type``), and
 writes the returned CSV to ``--output`` when given, otherwise to
 stdout. It adds no fields, filtering, or formatting of its own, so
 the command output and the service output can never disagree — one
@@ -35,6 +35,11 @@ class Command(BaseCommand):
             help="Include inactive products (default: excluded).",
         )
         parser.add_argument(
+            "--product-type", default=None,
+            help="Only export products whose stored product_type "
+                 "equals this value exactly (default: all types).",
+        )
+        parser.add_argument(
             "--output", default=None,
             help="Path of the CSV file to write (default: stdout).",
         )
@@ -46,7 +51,8 @@ class Command(BaseCommand):
             raise CommandError(
                 f"No salon with id {options['salon_id']}.") from exc
         text = export_products_csv(
-            salon, include_inactive=options["include_inactive"])
+            salon, include_inactive=options["include_inactive"],
+            product_type=options["product_type"])
         if options["output"]:
             try:
                 with open(options["output"], "w", encoding="utf-8",
