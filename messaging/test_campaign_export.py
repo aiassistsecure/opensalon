@@ -106,6 +106,59 @@ class CampaignExportTests(TestCase):
             export_campaigns_csv(None),
             ",".join(CAMPAIGN_EXPORT_FIELDNAMES) + "\n")
 
+    def test_status_filter_dict_and_csv(self):
+        records = export_campaigns(self.salon, status="draft")
+        self.assertEqual([r["name"] for r in records],
+                         ["November News"])
+        self.assertEqual(records[0]["status"], "draft")
+        records = export_campaigns(self.salon, status="sent")
+        self.assertEqual([r["name"] for r in records],
+                         ["November Offer"])
+        parsed = list(csv.DictReader(io.StringIO(
+            export_campaigns_csv(self.salon, status="sent"))))
+        self.assertEqual([r["name"] for r in parsed],
+                         ["November Offer"])
+        # CSV twin agrees with the dict export, same args.
+        parsed = list(csv.DictReader(io.StringIO(
+            export_campaigns_csv(self.salon, status="draft"))))
+        self.assertEqual(
+            [(r["name"], r["status"]) for r in parsed],
+            [(r["name"], r["status"]) for r in
+             export_campaigns(self.salon, status="draft")])
+
+    def test_status_filter_accepts_enum_and_defaults_identical(self):
+        self.assertEqual(
+            export_campaigns(self.salon,
+                             status=Campaign.Status.DRAFT),
+            export_campaigns(self.salon, status="draft"))
+        self.assertEqual(export_campaigns(self.salon, status=None),
+                         export_campaigns(self.salon))
+        self.assertEqual(export_campaigns_csv(self.salon, status=None),
+                         export_campaigns_csv(self.salon))
+
+    def test_status_filter_exact_no_case_folding(self):
+        self.assertEqual(export_campaigns(self.salon, status="DRAFT"),
+                         [])
+        self.assertEqual(export_campaigns(self.salon, status="Sent"),
+                         [])
+        self.assertEqual(
+            export_campaigns_csv(self.salon, status="DRAFT"),
+            ",".join(CAMPAIGN_EXPORT_FIELDNAMES) + "\n")
+
+    def test_status_filter_composes_with_salon_scope(self):
+        Campaign.objects.create(
+            salon=self.other, name="Elsewhere Draft",
+            channel="email", subject="Hi", body="Body",
+            status=Campaign.Status.DRAFT)
+        Campaign.objects.create(
+            salon=self.other, name="Elsewhere Sent",
+            channel="email", subject="Hi", body="Body",
+            status=Campaign.Status.SENT, sent_at=SENT_AT)
+        records = export_campaigns(self.other, status="draft")
+        self.assertEqual([r["name"] for r in records],
+                         ["Elsewhere Draft"])
+        self.assertEqual(export_campaigns(None, status="draft"), [])
+
     def test_no_send_count_or_aggregates(self):
         for record in export_campaigns(self.salon):
             self.assertNotIn("send_count", record)

@@ -21,6 +21,12 @@ is that salon, in the model's own ordering (newest first:
 ``-created_at``, then ``-id``). A missing salon exports as
 ``[]`` / the header row alone.
 
+Filter: ``status`` (optional, default ``None`` = no status
+filter, output identical to the unfiltered export) is an
+exact stored-value match, mirroring
+:mod:`messaging.campaign_search` -- ``status=str(status)``,
+no case folding -- and composes (AND) with the salon scope.
+
 Columns are exactly the fields the stored row carries, in
 the salon_data bundle's order: ``id``, ``salon_id``,
 ``name``, ``channel``, ``subject``, ``body``, ``status``,
@@ -80,14 +86,16 @@ def campaign_export_row(campaign):
     }
 
 
-def export_campaigns(salon):
+def export_campaigns(salon, *, status=None):
     """Return ``salon``'s campaigns as a list of dicts.
 
     Each entry is one stored :class:`messaging.models.Campaign`
     row of the salon, as a dict with exactly
     :data:`CAMPAIGN_EXPORT_FIELDNAMES` keys, in the model's
     ordering (newest first). ``salon=None`` yields ``[]``.
-    Read-only.
+    ``status`` optionally filters by exact stored status
+    value (AND with the salon scope); ``None`` (the default)
+    applies no status filter. Read-only.
     """
     if salon is None:
         return []
@@ -95,15 +103,17 @@ def export_campaigns(salon):
     if salon_id is None:
         return []
     rows = Campaign.objects.filter(salon_id=salon_id)
+    if status is not None:
+        rows = rows.filter(status=str(status))
     return [campaign_export_row(row) for row in rows]
 
 
-def export_campaigns_csv(salon):
+def export_campaigns_csv(salon, *, status=None):
     """Return ``salon``'s campaigns as a CSV string.
 
     The header row is :data:`CAMPAIGN_EXPORT_FIELDNAMES` and
     every data row is rendered from :func:`export_campaigns`
-    with the same argument, so the CSV and the dict export can
+    with the same arguments, so the CSV and the dict export can
     never disagree. Lines end with ``"\\n"``. Read-only.
     """
     buffer = io.StringIO()
@@ -112,7 +122,7 @@ def export_campaigns_csv(salon):
         lineterminator="\n",
     )
     writer.writeheader()
-    for record in export_campaigns(salon):
+    for record in export_campaigns(salon, status=status):
         writer.writerow(record)
     return buffer.getvalue()
 

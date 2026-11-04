@@ -2,7 +2,7 @@
 
 Usage:
     python manage.py export_campaigns --salon-id ID
-        [--output PATH]
+        [--status STATUS] [--output PATH]
 
 Thin wrapper around
 :func:`messaging.campaign_export.export_campaigns_csv`:
@@ -34,6 +34,9 @@ class Command(BaseCommand):
             "--salon-id", required=True, type=int,
             help="Id of the salon whose campaigns to export.")
         parser.add_argument(
+            "--status", dest="status", default=None,
+            help="Campaign status value to filter by.")
+        parser.add_argument(
             "--output", default=None,
             help="Path of the CSV file to write (default: stdout).")
 
@@ -44,7 +47,8 @@ class Command(BaseCommand):
             raise CommandError(
                 f"No salon with id {options['salon_id']}.") from None
 
-        text = export_campaigns_csv(salon)
+        text = export_campaigns_csv(
+            salon, status=options.get("status"))
 
         if options["output"]:
             try:
