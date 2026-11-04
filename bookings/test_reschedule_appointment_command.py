@@ -152,3 +152,106 @@ class RescheduleAppointmentCommandTests(TestCase):
                 self._move(new_start=value)
         self.appt.refresh_from_db()
         self.assertEqual(self.appt.start, at(MONDAY, 10))
+
+
+class RescheduleAppointmentNewStaffCommandTests(TestCase):
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon", timezone="UTC")
+        self.staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Stylist One", online_bookable=True)
+        self.new_staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Stylist Two", online_bookable=True)
+        self.offline_staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Offline Stylist",
+            online_bookable=False)
+        self.inactive_staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Inactive Stylist", active=False)
+        self.unrostered_staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Unrostered Stylist")
+        self.client = Client.objects.create(
+            salon=self.salon, first_name="Test", last_name="Example")
+        category = ServiceCategory.objects.create(salon=self.salon, name="Hair")
+        self.service = Service.objects.create(
+            category=category, name="Haircut", service_minutes=45)
+        for staff in (self.staff, self.new_staff, self.offline_staff,
+                      self.inactive_staff):
+            RosterPattern.objects.create(
+                staff_member=staff, weekday=0,
+                start_time=datetime.time(9, 0), end_time=datetime.time(17, 0))
+        self.appt = create_appointment(
+            client=self.client, staff_member=self.staff,
+            service=self.service, start=at(MONDAY, 10))
+
+    def _move(self, out=None, **kw):
+        kw.setdefault("appointment_id", self.appt.pk)
+        kw.setdefault("new_start", at(MONDAY, 13))
+        return call_command("reschedule_appointment",
+                            stdout=out or io.StringIO(), **kw)
+
+    def test_real_run_changes_staff_and_time(self):
+        out = io.StringIO()
+        self._move(out=out, new_staff_member_id=self.new_staff.pk)
+        self.appt.refresh_from_db()
+        self.assertEqual(self.appt.staff_member, self.new_staff)
+        self.assertEqual((self.appt.start, self.appt.end),
+                         (at(MONDAY, 13), at(MONDAY, 13, 45)))
+        self.assertIn(
+            f"staff {self.staff.pk} -> {self.new_staff.pk}", out.getvalue())
+
+    def test_real_run_string_args(self):
+        call_command("reschedule_appointment", "--appointment-id",
+                     str(self.appt.pk), "--new-start",
+                     "2026-11-02T13:00:00+00:00",
+                     "--new-staff-member-id", str(self.new_staff.pk),
+                     stdout=io.StringIO())
+        self.appt.refresh_from_db()
+        self.assertEqual(self.appt.staff_member, self.new_staff)
+        self.assertEqual(self.appt.start, at(MONDAY, 13))
+
+    def test_dry_run_prints_staff_change_and_writes_nothing(self):
+        out = io.StringIO()
+        self._move(out=out, dry_run=True,
+                   new_staff_member_id=self.new_staff.pk)
+        self.appt.refresh_from_db()
+        self.assertEqual(self.appt.staff_member, self.staff)
+        self.assertEqual((self.appt.start, self.appt.end),
+                         (at(MONDAY, 10), at(MONDAY, 10, 45)))
+        self.assertEqual(Appointment.objects.count(), 1)
+        text = out.getvalue()
+        self.assertIn("Dry run", text)
+        self.assertIn(
+            f"staff {self.staff.pk} -> {self.new_staff.pk}", text)
+
+    def test_toggle_off_new_staff_still_applies(self):
+        # Phone/walk-in path: the new member's online toggle is NOT enforced.
+        self._move(new_staff_member_id=self.offline_staff.pk)
+        self.appt.refresh_from_db()
+        self.assertEqual(self.appt.staff_member, self.offline_staff)
+        self.assertEqual(self.appt.start, at(MONDAY, 13))
+
+    def test_inactive_new_staff_is_command_error_unchanged(self):
+        for kw in ({}, {"dry_run": True}):
+            with self.assertRaises(CommandError):
+                self._move(new_staff_member_id=self.inactive_staff.pk, **kw)
+        self.appt.refresh_from_db()
+        self.assertEqual(self.appt.staff_member, self.staff)
+        self.assertEqual(self.appt.start, at(MONDAY, 10))
+
+    def test_unrostered_new_staff_slot_is_command_error_unchanged(self):
+        for kw in ({}, {"dry_run": True}):
+            with self.assertRaises(CommandError):
+                self._move(new_staff_member_id=self.unrostered_staff.pk, **kw)
+        self.appt.refresh_from_db()
+        self.assertEqual(self.appt.staff_member, self.staff)
+        self.assertEqual(self.appt.start, at(MONDAY, 10))
+
+    def test_unknown_and_out_of_salon_new_staff_are_command_errors(self):
+        other = Salon.objects.create(name="Other Salon", timezone="UTC")
+        foreign = StaffMember.objects.create(
+            salon=other, display_name="Foreign", online_bookable=True)
+        for staff_id in (999999, foreign.pk):
+            with self.assertRaises(CommandError):
+                self._move(new_staff_member_id=staff_id)
+        self.appt.refresh_from_db()
+        self.assertEqual(self.appt.staff_member, self.staff)
+        self.assertEqual(self.appt.start, at(MONDAY, 10))
