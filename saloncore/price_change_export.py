@@ -43,6 +43,14 @@ day, and a ``date`` end means the start of the *following*
 day, so passing two dates includes the whole end day. A
 ``datetime`` is used as given (naive datetimes are interpreted
 in the current time zone).
+
+Per-service filter: both export functions accept an optional
+``service`` (default ``None``). With ``None`` the output is the
+salon-wide export, unchanged. With a service, only changes
+whose price is for that service are included (filtered via
+``service_price__service``, the path the rows already
+traverse); the salon filter still applies, so a service from
+another salon exports as empty.
 """
 import csv
 import io
@@ -99,7 +107,7 @@ def _bound(value, *, is_end):
     return bound
 
 
-def _changes_in_range(salon, start, end):
+def _changes_in_range(salon, start, end, service=None):
     queryset = (
         PriceChange.objects.filter(
             service_price__service__category__salon=salon,
@@ -112,6 +120,8 @@ def _changes_in_range(salon, start, end):
         )
         .order_by("changed_at", "id")
     )
+    if service is not None:
+        queryset = queryset.filter(service_price__service=service)
     start_bound = _bound(start, is_end=False)
     end_bound = _bound(end, is_end=True)
     if start_bound is not None:
@@ -140,7 +150,7 @@ def _record(change):
     }
 
 
-def export_price_changes(salon, start=None, end=None):
+def export_price_changes(salon, start=None, end=None, service=None):
     """Return ``salon``'s price changes in the range as dicts.
 
     Each entry is a dict with exactly
@@ -149,11 +159,20 @@ def export_price_changes(salon, start=None, end=None):
     (``changed_at``, ``id``). See the module docstring for
     range semantics. A salon / range with no changes exports
     as ``[]``. Read-only.
+
+    ``service`` is optional: the default ``None`` is the
+    salon-wide export, unchanged. When a service is given, only
+    that service's changes are included; a service belonging to
+    another salon exports as ``[]`` because the salon filter
+    still applies.
     """
-    return [_record(c) for c in _changes_in_range(salon, start, end)]
+    return [
+        _record(c)
+        for c in _changes_in_range(salon, start, end, service=service)
+    ]
 
 
-def export_price_changes_csv(salon, start=None, end=None):
+def export_price_changes_csv(salon, start=None, end=None, service=None):
     """Return ``salon``'s price changes in the range as CSV.
 
     The header row is :data:`PRICE_CHANGE_FIELDNAMES` and every
@@ -161,13 +180,20 @@ def export_price_changes_csv(salon, start=None, end=None):
     same arguments, so the CSV and list exports always agree.
     A salon / range with no changes exports as the header row
     alone. Lines end ``"\\n"``.
+
+    ``service`` is optional and passed through to
+    :func:`export_price_changes`: the default ``None`` is the
+    salon-wide export, unchanged; a given service exports only
+    that service's changes (header alone when that service has
+    none, or belongs to another salon).
     """
     buffer = io.StringIO()
     writer = csv.DictWriter(
         buffer, fieldnames=PRICE_CHANGE_FIELDNAMES, lineterminator="\n"
     )
     writer.writeheader()
-    for record in export_price_changes(salon, start=start, end=end):
+    for record in export_price_changes(
+            salon, start=start, end=end, service=service):
         writer.writerow(record)
     return buffer.getvalue()
 
