@@ -38,9 +38,31 @@ Columns are only fields the history actually carries:
 
 Quantities are integers, which are JSON-safe as-is, so no
 string conversion is needed; no fields are invented.
+
+Window: both exports also take one optional date window,
+``start`` / ``end``, filtering on each entry's ``created_at``.
+Each bound may be a ``date``, a ``datetime``, or ``None``
+(unbounded, the default). The window is start-inclusive and
+end-exclusive after normalisation: a ``date`` start means the
+start of that day, and a ``date`` end means the start of the
+*following* day, so passing two dates includes the whole end
+day. A ``datetime`` is used as given (naive datetimes are
+interpreted in the current time zone). With both bounds
+``None`` the output is the previous unwindowed output,
+byte-identical. The window only selects which entries are
+exported: ``running_balance`` stays the history service's
+full-ledger balance after each movement (it is NOT recomputed
+over the window), and the existing ``product`` filter still
+applies and composes with the window (window AND product).
+The wrapped :func:`catalog.history.stock_history` service
+takes no window arguments, so the window is applied here to
+its entries; that service is called unchanged.
 """
 import csv
 import io
+from datetime import date, datetime, time, timedelta
+
+from django.utils import timezone
 
 from catalog.history import stock_history
 
@@ -90,7 +112,24 @@ def _record(history, entry):
     }
 
 
-def export_stock_history(salon, product=None):
+def _bound(value, *, is_end):
+    """Normalise a window bound to an aware datetime or ``None``."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        bound = value
+    elif isinstance(value, date):
+        bound = datetime.combine(value, time.min)
+        if is_end:
+            bound += timedelta(days=1)
+    else:
+        raise ValueError("range bounds must be a date, datetime, or None")
+    if timezone.is_naive(bound):
+        bound = timezone.make_aware(bound, timezone.get_current_timezone())
+    return bound
+
+
+def export_stock_history(salon, product=None, start=None, end=None):
     """Return one product's stock history as a list of dicts.
 
     Each entry is a dict with exactly :data:`HISTORY_FIELDNAMES`
@@ -99,27 +138,39 @@ def export_stock_history(salon, product=None):
     arguments, in that service's chronological order. Salon
     scoping and validation are the service's (see the module
     docstring). A product with no movements exports as ``[]``.
-    Records nothing.
+
+    The optional ``start`` / ``end`` window filters on each
+    entry's ``created_at`` (see the module docstring for the
+    semantics); the default ``None`` bounds export the full
+    history, unchanged. Records nothing.
     """
+    start_bound = _bound(start, is_end=False)
+    end_bound = _bound(end, is_end=True)
     history = stock_history(salon, product)
-    return [_record(history, entry) for entry in history.entries]
+    return [
+        _record(history, entry)
+        for entry in history.entries
+        if (start_bound is None or entry.created_at >= start_bound)
+        and (end_bound is None or entry.created_at < end_bound)
+    ]
 
 
-def export_stock_history_csv(salon, product=None):
+def export_stock_history_csv(salon, product=None, start=None, end=None):
     """Return one product's stock history as a CSV string.
 
     The header row is :data:`HISTORY_FIELDNAMES` and every data
     row comes from :func:`export_stock_history` with the same
-    arguments, so the CSV and list exports always agree. A
-    product with no movements exports as the header row alone.
-    Lines end with ``"\\n"``. Records nothing.
+    arguments (including the optional ``start`` / ``end``
+    window), so the CSV and list exports always agree. A
+    product with no movements in the window exports as the
+    header row alone. Lines end with ``"\\n"``. Records nothing.
     """
     buffer = io.StringIO()
     writer = csv.DictWriter(
         buffer, fieldnames=HISTORY_FIELDNAMES, lineterminator="\n"
     )
     writer.writeheader()
-    for record in export_stock_history(salon, product):
+    for record in export_stock_history(salon, product, start=start, end=end):
         writer.writerow(record)
     return buffer.getvalue()
 

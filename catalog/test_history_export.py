@@ -1,9 +1,11 @@
 import csv
 import io
 import json
+from datetime import date, datetime
 from decimal import Decimal
 
 from django.test import TestCase
+from django.utils import timezone
 
 from catalog.history import stock_history
 from catalog.history_export import (
@@ -120,6 +122,85 @@ class StockHistoryExportTests(TestCase):
             export_stock_history_csv(self.salon, product),
             ",".join(HISTORY_FIELDNAMES) + "\n",
         )
+
+    def move_on(self, product, delta, on, kind=StockMovement.Kind.RECEIVE,
+                note=""):
+        movement = self.move(product, delta, kind=kind, note=note)
+        moment = timezone.make_aware(
+            datetime(on.year, on.month, on.day, 12, 0))
+        StockMovement.objects.filter(pk=movement.pk).update(
+            created_at=moment)
+        movement.created_at = moment
+        return movement
+
+    def test_window_filters_on_created_at_whole_days(self):
+        product = self.make_product("Shampoo")
+        day1, day2, day3 = date(2026, 1, 5), date(2026, 1, 6), date(2026, 1, 7)
+        self.move_on(product, 10, day1)
+        self.move_on(product, -3, day2, kind=StockMovement.Kind.SALE)
+        self.move_on(product, -2, day3, kind=StockMovement.Kind.ADJUSTMENT)
+
+        records = export_stock_history(
+            self.salon, product, start=day2, end=day3)
+        self.assertEqual([r["quantity_delta"] for r in records], [-3, -2])
+        # running_balance is the full-ledger balance, not recomputed
+        # over the window.
+        self.assertEqual([r["running_balance"] for r in records], [7, 5])
+        # Start-only and end-only bounds.
+        self.assertEqual(
+            [r["quantity_delta"] for r in export_stock_history(
+                self.salon, product, start=day2)],
+            [-3, -2])
+        self.assertEqual(
+            [r["quantity_delta"] for r in export_stock_history(
+                self.salon, product, end=day1)],
+            [10])
+        # A window covering nothing exports empty / header only.
+        self.assertEqual(
+            export_stock_history(self.salon, product, start=date(2027, 1, 1)),
+            [])
+        self.assertEqual(
+            export_stock_history_csv(
+                self.salon, product, start=date(2027, 1, 1)),
+            ",".join(HISTORY_FIELDNAMES) + "\n")
+        # CSV twin agrees with the list export under the same window.
+        parsed = list(csv.DictReader(io.StringIO(export_stock_history_csv(
+            self.salon, product, start=day2, end=day3))))
+        self.assertEqual(
+            [int(r["id"]) for r in parsed], [r["id"] for r in records])
+
+    def test_window_default_is_byte_identical_and_composes_with_product(self):
+        product = self.make_product("Shampoo")
+        other = self.make_product("Other")
+        day = date(2026, 2, 10)
+        self.move_on(product, 4, day)
+        self.move_on(other, 99, day)
+        self.assertEqual(
+            export_stock_history(self.salon, product),
+            export_stock_history(self.salon, product, start=None, end=None))
+        self.assertEqual(
+            export_stock_history_csv(self.salon, product),
+            export_stock_history_csv(
+                self.salon, product, start=None, end=None))
+        # Product (by id) AND window both apply.
+        records = export_stock_history(
+            self.salon, product.pk, start=day, end=day)
+        self.assertEqual([r["quantity_delta"] for r in records], [4])
+        self.assertEqual(
+            export_stock_history(self.salon, product.pk, start=date(2026, 3, 1)),
+            [])
+
+    def test_window_datetime_bounds_and_invalid_bound(self):
+        product = self.make_product("Shampoo")
+        day = date(2026, 3, 15)
+        self.move_on(product, 6, day)
+        noon = timezone.make_aware(datetime(2026, 3, 15, 12, 0))
+        self.assertEqual(
+            len(export_stock_history(self.salon, product, start=noon)), 1)
+        self.assertEqual(
+            export_stock_history(self.salon, product, end=noon), [])
+        with self.assertRaises(ValueError):
+            export_stock_history(self.salon, product, start="2026-03-15")
 
     def test_single_product_argument_and_aliases_read_only(self):
         product = self.make_product("Solo")
