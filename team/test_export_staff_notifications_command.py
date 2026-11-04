@@ -22,6 +22,7 @@ class ExportStaffNotificationsCommandTests(TestCase):
         category = ServiceCategory.objects.create(salon=self.salon, name="Hair")
         service = Service.objects.create(
             category=category, name="Cut", service_minutes=60)
+        self.service = service
         self.staff = StaffMember.objects.create(
             salon=self.salon, display_name="Dana")
         client = Client.objects.create(
@@ -65,6 +66,59 @@ class ExportStaffNotificationsCommandTests(TestCase):
                      salon_id=empty.id, stdout=out)
         self.assertEqual(out.getvalue(),
                          export_staff_notifications_csv(empty))
+
+    def test_staff_member_id_filters_to_one_member(self):
+        eve = StaffMember.objects.create(
+            salon=self.salon, display_name="Eve")
+        start = timezone.now().replace(hour=10, minute=0, second=0,
+                                       microsecond=0)
+        appt2 = Appointment.objects.create(
+            client=Client.objects.create(
+                salon=self.salon, first_name="Pat", last_name="Guest"),
+            staff_member=eve, service=self.service,
+            service_name="Cut",
+            start=start + datetime.timedelta(days=1),
+            end=start + datetime.timedelta(days=1, hours=1))
+        StaffNotification.objects.create(
+            staff_member=eve, appointment=appt2, kind="arrived")
+        out = io.StringIO()
+        call_command("export_staff_notifications",
+                     salon_id=self.salon.id,
+                     staff_member_id=self.staff.id, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_staff_notifications_csv(
+                self.salon, staff_member=self.staff))
+        self.assertIn("Dana", out.getvalue())
+        self.assertNotIn("Eve", out.getvalue())
+
+    def test_no_staff_member_id_is_salon_wide_default(self):
+        out = io.StringIO()
+        call_command("export_staff_notifications",
+                     salon_id=self.salon.id, stdout=out)
+        self.assertEqual(out.getvalue(),
+                         export_staff_notifications_csv(self.salon))
+        self.assertEqual(
+            out.getvalue(),
+            export_staff_notifications_csv(
+                self.salon, staff_member=None))
+
+    def test_unknown_staff_member_id_raises(self):
+        with self.assertRaises(CommandError):
+            call_command("export_staff_notifications",
+                         salon_id=self.salon.id,
+                         staff_member_id=999999,
+                         stdout=io.StringIO())
+
+    def test_staff_member_from_other_salon_raises(self):
+        other_salon = Salon.objects.create(name="Other", timezone="UTC")
+        theirs = StaffMember.objects.create(
+            salon=other_salon, display_name="Other Dana")
+        with self.assertRaises(CommandError):
+            call_command("export_staff_notifications",
+                         salon_id=self.salon.id,
+                         staff_member_id=theirs.id,
+                         stdout=io.StringIO())
 
     def test_unknown_salon_required_id_and_unwritable(self):
         with self.assertRaises(CommandError):

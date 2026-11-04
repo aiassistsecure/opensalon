@@ -11,7 +11,16 @@ One source of truth: every row comes verbatim from
 :func:`team.notifications.staff_notifications`, called with
 exactly the argument given here -- this module does not
 re-query notifications, re-implement the salon scoping, or
-recompute anything. ``created_at`` / ``seen_at`` are rendered
+recompute anything.
+
+Per-staff-member filter: both export functions accept an
+optional ``staff_member`` (default ``None``). With ``None``
+the output is the salon-wide export, unchanged. With a staff
+member, only that member's notifications are included; the
+salon scoping still applies, so a staff member from another
+salon exports as empty.
+
+``created_at`` / ``seen_at`` are rendered
 ISO-8601 exactly as stored (``seen_at`` empty when the row is
 unseen); ``kind`` is the stored string.
 
@@ -69,26 +78,42 @@ def _record(note):
     }
 
 
-def export_staff_notifications(salon):
+def export_staff_notifications(salon, staff_member=None):
     """Return ``salon``'s staff notifications as a list of dicts.
 
-    The argument is exactly that of
+    The ``salon`` argument is exactly that of
     :func:`team.notifications.staff_notifications` and is passed
     through unchanged. Each entry is a dict with exactly
     :data:`NOTIFICATION_EXPORT_FIELDNAMES` keys, in the
     service's order (newest first). Read-only.
+
+    ``staff_member`` is optional: the default ``None`` is the
+    salon-wide export, unchanged. When a staff member is given,
+    only that member's notifications are included; a staff
+    member belonging to another salon exports as ``[]`` because
+    the salon scoping still applies.
     """
-    return [_record(note) for note in staff_notifications(salon)]
+    return [
+        _record(note) for note in staff_notifications(salon)
+        if staff_member is None
+        or note.staff_member_id == staff_member.pk
+    ]
 
 
-def export_staff_notifications_csv(salon):
+def export_staff_notifications_csv(salon, staff_member=None):
     """Return ``salon``'s staff notifications as a CSV string.
 
     The header row is :data:`NOTIFICATION_EXPORT_FIELDNAMES`
     and every data row is rendered from
-    :func:`export_staff_notifications` with the same argument,
+    :func:`export_staff_notifications` with the same arguments,
     so the CSV and the dict export can never disagree. Lines
     end with ``"\\n"``. Read-only.
+
+    ``staff_member`` is optional and passed through to
+    :func:`export_staff_notifications`: the default ``None`` is
+    the salon-wide export, unchanged; a given staff member
+    exports only that member's notifications (header alone when
+    that member has none, or belongs to another salon).
     """
     buffer = io.StringIO()
     writer = csv.DictWriter(
@@ -96,7 +121,8 @@ def export_staff_notifications_csv(salon):
         lineterminator="\n",
     )
     writer.writeheader()
-    for record in export_staff_notifications(salon):
+    for record in export_staff_notifications(
+            salon, staff_member=staff_member):
         writer.writerow(record)
     return buffer.getvalue()
 
