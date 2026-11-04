@@ -3,7 +3,7 @@
 Usage:
     python manage.py export_refunds --salon-id ID
         --start-date YYYY-MM-DD [--end-date YYYY-MM-DD]
-        [--sale-id ID] [--output PATH]
+        [--sale-id ID] [--tender TENDER] [--output PATH]
 
 Thin wrapper around the existing
 :func:`checkout.refund_export.export_refunds_csv` service:
@@ -25,6 +25,15 @@ a sale from another salon is a ``CommandError``. The resolved
 sale is passed to the service as its optional ``sale``
 argument. Without ``--sale-id`` the command exports the whole
 salon range, exactly as before.
+
+With ``--tender`` the export is narrowed to refunds whose
+stored tender exactly matches that core ``Payment.Method``
+slug (``cash`` / ``external`` only): it is passed to the
+service as its optional ``tender`` argument and composes
+with the range and ``--sale-id``. Without ``--tender`` the
+command exports every tender, exactly as before. An unknown
+tender matches nothing (a header-only CSV), exactly as the
+sibling categorical filters behave.
 
 Invalid input -- an unparseable date or a reversed range --
 raises ``CommandError``, as do service errors. Dates mean
@@ -82,6 +91,11 @@ class Command(BaseCommand):
                  "export (default: all sales in the range).",
         )
         parser.add_argument(
+            "--tender", dest="tender", default=None,
+            help="Refund tender value to filter by (default: "
+                 "all tenders).",
+        )
+        parser.add_argument(
             "--output", default=None,
             help="Path to write the CSV to (default: stdout).",
         )
@@ -112,7 +126,9 @@ class Command(BaseCommand):
                 f"{start.isoformat()}."
             )
         try:
-            text = export_refunds_csv(salon, start, end, sale=sale)
+            text = export_refunds_csv(
+                salon, start, end, sale=sale,
+                tender=options.get("tender"))
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options["output"]:

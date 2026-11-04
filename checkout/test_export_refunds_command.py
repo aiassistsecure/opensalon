@@ -37,14 +37,14 @@ class ExportRefundsCommandTests(TestCase):
         self.salon = Salon.objects.create(name="Example Salon", timezone="UTC")
         self.other = Salon.objects.create(name="Other Salon", timezone="UTC")
 
-    def _refund(self, salon=None, day=DAY):
+    def _refund(self, salon=None, day=DAY, tender=Payment.Method.CASH):
         salon = salon or self.salon
         sale = Sale.objects.create(
             salon=salon, status=Sale.Status.COMPLETED,
             completed_at=_stamp(day))
         refund = Refund.objects.create(
             sale=sale, amount=Decimal("20.00"), reason="Changed mind",
-            tender=Payment.Method.CASH)
+            tender=tender)
         stamp = _stamp(day)
         Refund.objects.filter(pk=refund.pk).update(created_at=stamp)
         refund.refresh_from_db()
@@ -140,6 +140,68 @@ class ExportRefundsCommandTests(TestCase):
         self.assertEqual(
             out.getvalue(),
             export_refunds_csv(self.salon, DAY, DAY, sale=None))
+
+    def test_tender_filters_to_matching_refunds(self):
+        self._refund(tender=Payment.Method.CASH)
+        self._refund(tender=Payment.Method.EXTERNAL)
+        out = io.StringIO()
+        call_command(
+            "export_refunds", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, tender="cash", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_refunds_csv(self.salon, DAY, DAY, tender="cash"))
+        self.assertEqual(len(out.getvalue().strip().splitlines()), 2)
+
+    def test_tender_via_cli_flag(self):
+        self._refund(tender=Payment.Method.EXTERNAL)
+        out = io.StringIO()
+        call_command(
+            "export_refunds", "--salon-id", str(self.salon.pk),
+            "--start-date", DAY.isoformat(), "--end-date", DAY.isoformat(),
+            "--tender", "external", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_refunds_csv(self.salon, DAY, DAY, tender="external"))
+
+    def test_tender_composes_with_sale_id(self):
+        first = self._refund(tender=Payment.Method.CASH)
+        self._refund(tender=Payment.Method.CASH)
+        out = io.StringIO()
+        call_command(
+            "export_refunds", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, sale_id=first.sale_id,
+            tender="external", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_refunds_csv(
+                self.salon, DAY, DAY, sale=first.sale, tender="external"))
+        self.assertEqual(len(out.getvalue().strip().splitlines()), 1)
+
+    def test_no_tender_is_all_tenders_default(self):
+        self._refund(tender=Payment.Method.CASH)
+        self._refund(tender=Payment.Method.EXTERNAL)
+        out = io.StringIO()
+        call_command(
+            "export_refunds", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_refunds_csv(self.salon, DAY, DAY, tender=None))
+        self.assertEqual(len(out.getvalue().strip().splitlines()), 3)
+
+    def test_unknown_tender_is_header_only(self):
+        # Same behaviour as sibling categorical filters: an
+        # unknown value matches nothing, it does not error.
+        self._refund(tender=Payment.Method.CASH)
+        out = io.StringIO()
+        call_command(
+            "export_refunds", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, tender="bogus", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_refunds_csv(self.salon, DAY, DAY, tender="bogus"))
+        self.assertEqual(len(out.getvalue().strip().splitlines()), 1)
 
     def test_unknown_sale_id_raises_command_error(self):
         with self.assertRaises(CommandError):

@@ -54,6 +54,16 @@ salon-wide export, unchanged. With a sale, only that sale's
 refunds are included; the date window still applies, and the
 salon filter (``sale__salon``) still applies, so a sale from
 another salon exports as empty.
+
+Tender filter: both export functions accept an optional
+``tender`` (default ``None``). With ``None`` the output is
+unchanged. With a tender, only refunds whose stored
+``tender`` exactly matches that core ``Payment.Method`` slug
+(``"cash"`` / ``"external"`` only) are included; the date
+window and the per-sale filter still apply and compose
+(filter AND filter). An unknown tender matches nothing --
+``[]`` / a header-only CSV -- exactly as the sibling
+categorical filters behave. No provider concept enters here.
 """
 import csv
 import datetime
@@ -120,7 +130,7 @@ def refund_export_row(refund):
     }
 
 
-def export_refunds(salon, date_from, date_to=None, sale=None):
+def export_refunds(salon, date_from, date_to=None, sale=None, tender=None):
     """Return ``salon``'s refund rows in a date range, as dicts.
 
     ``date_from`` / ``date_to`` are inclusive whole local days
@@ -135,6 +145,10 @@ def export_refunds(salon, date_from, date_to=None, sale=None):
     refunds are included; a sale belonging to another salon
     exports as ``[]`` because the ``sale__salon`` filter still
     applies.
+
+    ``tender`` is optional: the default ``None`` is unchanged.
+    When a tender is given, only refunds whose stored
+    ``tender`` exactly matches it are included.
     """
     if salon is None or date_from is None:
         return []
@@ -160,10 +174,13 @@ def export_refunds(salon, date_from, date_to=None, sale=None):
     )
     if sale is not None:
         refunds = refunds.filter(sale=sale)
+    if tender is not None:
+        refunds = refunds.filter(tender=tender)
     return [refund_export_row(refund) for refund in refunds]
 
 
-def export_refunds_csv(salon, date_from, date_to=None, sale=None):
+def export_refunds_csv(salon, date_from, date_to=None, sale=None,
+                       tender=None):
     """Return ``salon``'s refunds in a date range as a CSV string.
 
     The header row is :data:`EXPORT_FIELDNAMES` and every data
@@ -176,13 +193,18 @@ def export_refunds_csv(salon, date_from, date_to=None, sale=None):
     :func:`export_refunds`: the default ``None`` is the
     salon-wide export, unchanged; a given sale exports only
     that sale's refunds.
+
+    ``tender`` is optional and passed through likewise: the
+    default ``None`` is unchanged; a given tender exports only
+    refunds with that stored tender.
     """
     buffer = io.StringIO()
     writer = csv.DictWriter(
         buffer, fieldnames=EXPORT_FIELDNAMES, lineterminator="\n"
     )
     writer.writeheader()
-    for record in export_refunds(salon, date_from, date_to, sale=sale):
+    for record in export_refunds(
+            salon, date_from, date_to, sale=sale, tender=tender):
         writer.writerow(record)
     return buffer.getvalue()
 
