@@ -181,6 +181,117 @@ class PriceBookExportTests(TestCase):
             export_price_book_csv(self.salon),
             export_price_book_csv(self.salon, service=None))
 
+    def _second_category_book(self):
+        category = ServiceCategory.objects.create(
+            salon=self.salon, name="Haircuts", sort_order=2)
+        service = Service.objects.create(
+            category=category, name="Haircut", service_minutes=30)
+        ServicePrice.objects.create(
+            service=service, staff_level=self.junior,
+            amount=Decimal("50.00"))
+        return category, service
+
+    def test_category_filter(self):
+        self._second_category_book()
+        records = export_price_book(self.salon, category=self.category)
+        self.assertEqual(len(records), 2)
+        self.assertEqual(
+            {r["category_id"] for r in records}, {self.category.pk})
+        self.assertEqual(
+            {r["service_name"] for r in records},
+            {"Single Process Color"})
+        csv_text = export_price_book_csv(
+            self.salon, category=self.category)
+        self.assertIn("Single Process Color", csv_text)
+        self.assertNotIn("Haircut", csv_text)
+        self.assertEqual(
+            price_book_csv(self.salon, category=self.category), csv_text)
+
+    def test_category_filter_by_id_and_category_id_kwarg(self):
+        self._second_category_book()
+        by_instance = export_price_book(
+            self.salon, category=self.category)
+        self.assertEqual(
+            export_price_book(self.salon, category=self.category.pk),
+            by_instance)
+        self.assertEqual(
+            export_price_book(
+                self.salon, category_id=self.category.pk),
+            by_instance)
+        self.assertEqual(
+            export_price_book(
+                self.salon, category_id=self.category),
+            by_instance)
+        self.assertEqual(
+            export_price_book_csv(
+                self.salon, category_id=self.category.pk),
+            export_price_book_csv(self.salon, category=self.category))
+
+    def test_category_filter_includes_unpriced_row(self):
+        category, _service = self._second_category_book()
+        unpriced = Service.objects.create(
+            category=category, name="Consultation",
+            service_minutes=15)
+        records = export_price_book(self.salon, category=category)
+        names = {r["service_name"] for r in records}
+        self.assertEqual(names, {"Haircut", "Consultation"})
+        row = [r for r in records
+               if r["service_id"] == unpriced.pk][0]
+        self.assertIsNone(row["staff_level_id"])
+        self.assertIsNone(row["amount"])
+        csv_text = export_price_book_csv(self.salon, category=category)
+        self.assertIn("Consultation", csv_text)
+        self.assertNotIn("Single Process Color", csv_text)
+
+    def test_category_filter_other_salon_category_is_empty(self):
+        other_service = self._other_book()
+        other_category = other_service.category
+        self.assertEqual(
+            export_price_book(self.salon, category=other_category), [])
+        self.assertEqual(
+            export_price_book(
+                self.salon, category_id=other_category.pk), [])
+        self.assertEqual(
+            export_price_book_csv(self.salon, category=other_category),
+            ",".join(PRICE_BOOK_FIELDNAMES) + "\n")
+
+    def test_category_default_none_is_unchanged(self):
+        self.assertEqual(
+            export_price_book(self.salon),
+            export_price_book(self.salon, category=None))
+        self.assertEqual(
+            export_price_book(self.salon),
+            export_price_book(self.salon, category_id=None))
+        self.assertEqual(
+            export_price_book_csv(self.salon),
+            export_price_book_csv(self.salon, category=None))
+        self.assertEqual(
+            export_price_book_csv(self.salon),
+            export_price_book_csv(self.salon, category_id=None))
+
+    def test_category_and_service_filters_compose(self):
+        other_category, other_service = self._second_category_book()
+        records = export_price_book(
+            self.salon, service=self.service, category=self.category)
+        self.assertEqual(len(records), 2)
+        self.assertEqual(
+            {r["service_id"] for r in records}, {self.service.pk})
+        self.assertEqual(
+            export_price_book(
+                self.salon, service=self.service,
+                category=other_category),
+            [])
+        self.assertEqual(
+            export_price_book(
+                self.salon, service=other_service,
+                category=self.category),
+            [])
+        self.assertEqual(
+            export_price_book_csv(
+                self.salon, service=other_service,
+                category_id=self.category.pk),
+            ",".join(PRICE_BOOK_FIELDNAMES) + "\n")
+
     def test_csv_matches_list_export_and_alias(self):
         parsed = list(csv.DictReader(io.StringIO(
             export_price_book_csv(self.salon))))
