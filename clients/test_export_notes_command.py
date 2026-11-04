@@ -85,6 +85,51 @@ class ExportNotesCommandTests(TestCase):
         with self.assertRaises(CommandError):
             call_command("export_notes", stdout=io.StringIO())
 
+    def test_client_id_filters_to_one_client(self):
+        amy = self._client_with_note(
+            self.salon, "Amy", "Smith", "Prefers quiet room")
+        self._client_with_note(self.salon, "Bob", "Adams", "Allergic")
+        ClientNote.objects.create(client=amy, body="Second Amy note")
+        out = io.StringIO()
+        call_command(
+            "export_notes", salon_id=self.salon.id,
+            client_id=amy.id, stdout=out,
+        )
+        self.assertEqual(
+            out.getvalue(), export_notes_csv(self.salon, client=amy))
+        self.assertIn("Prefers quiet room", out.getvalue())
+        self.assertIn("Second Amy note", out.getvalue())
+        self.assertNotIn("Bob", out.getvalue())
+        self.assertNotIn("Allergic", out.getvalue())
+
+    def test_no_client_id_is_salon_wide_default(self):
+        self._client_with_note(self.salon, "Amy", "Smith", "Amy note")
+        self._client_with_note(self.salon, "Bob", "Adams", "Bob note")
+        out = io.StringIO()
+        call_command(
+            "export_notes", salon_id=self.salon.id, stdout=out
+        )
+        self.assertEqual(out.getvalue(), export_notes_csv(self.salon))
+        self.assertEqual(
+            out.getvalue(),
+            export_notes_csv(self.salon, client=None))
+
+    def test_unknown_client_id_raises(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_notes", salon_id=self.salon.id,
+                client_id=999999, stdout=io.StringIO(),
+            )
+
+    def test_client_from_other_salon_raises(self):
+        theirs = self._client_with_note(
+            self.other_salon, "Bob", "Adams", "Allergic to latex")
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_notes", salon_id=self.salon.id,
+                client_id=theirs.id, stdout=io.StringIO(),
+            )
+
     def test_unwritable_output_raises(self):
         self._client_with_note(self.salon, "Amy", "Smith", "Prefers quiet room")
         with self.assertRaises(CommandError):

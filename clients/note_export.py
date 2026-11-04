@@ -36,6 +36,12 @@ ordering tightened with the ``id`` tie-break), then the note's
 
 Salon isolation: only notes whose client belongs to the given
 salon (``client__salon``) are included.
+
+Per-client filter: both export functions accept an optional
+``client`` (default ``None``). With ``None`` the output is the
+salon-wide export, unchanged. With a client, only that client's
+record notes are included; the salon filter still applies, so a
+client from another salon exports as empty.
 """
 import csv
 import io
@@ -83,7 +89,7 @@ def note_record(note):
 _record = note_record
 
 
-def export_notes(salon):
+def export_notes(salon, client=None):
     """Return ``salon``'s persistent client record notes as dicts.
 
     Each entry is a dict with exactly :data:`NOTE_FIELDNAMES`
@@ -91,6 +97,11 @@ def export_notes(salon):
     by (client ``last_name``, client ``first_name``, client
     ``id``, note ``created_at``, note ``id``). A salon with no
     record notes exports as ``[]``.
+
+    ``client`` is optional: the default ``None`` is the salon-wide
+    export, unchanged. When a client is given, only that client's
+    notes are included; a client belonging to another salon
+    exports as ``[]`` because the salon filter still applies.
     """
     notes = (
         ClientNote.objects.filter(client__salon=salon)
@@ -103,23 +114,31 @@ def export_notes(salon):
             "id",
         )
     )
+    if client is not None:
+        notes = notes.filter(client=client)
     return [_record(note) for note in notes]
 
 
-def export_notes_csv(salon):
+def export_notes_csv(salon, client=None):
     """Return ``salon``'s record notes as a CSV string.
 
     The header row is :data:`NOTE_FIELDNAMES` and every data row
-    comes from :func:`export_notes` with the same argument, so
+    comes from :func:`export_notes` with the same arguments, so
     the CSV and list exports always agree. A salon with no record
     notes exports as the header row alone. Lines end ``"\\n"``.
+
+    ``client`` is optional and passed through to
+    :func:`export_notes`: the default ``None`` is the salon-wide
+    export, unchanged; a given client exports only that client's
+    notes (header alone when that client has none, or belongs to
+    another salon).
     """
     buffer = io.StringIO()
     writer = csv.DictWriter(
         buffer, fieldnames=NOTE_FIELDNAMES, lineterminator="\n"
     )
     writer.writeheader()
-    for record in export_notes(salon):
+    for record in export_notes(salon, client=client):
         writer.writerow(record)
     return buffer.getvalue()
 
