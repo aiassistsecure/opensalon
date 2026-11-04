@@ -3,7 +3,8 @@
 Usage:
     python manage.py export_appointments --salon-id ID
         --date-from YYYY-MM-DD [--date-to YYYY-MM-DD]
-        [--no-include-cancelled] [--format json|csv] [--output PATH]
+        [--no-include-cancelled] [--staff-member-id ID]
+        [--format json|csv] [--output PATH]
 
 Thin wrapper around the existing
 :func:`bookings.export.export_appointments` service: the salon
@@ -14,7 +15,12 @@ rendered as JSON for ``--format json`` (the default, exactly as
 before), or as CSV for ``--format csv`` (the same rows written
 with :data:`bookings.export.EXPORT_FIELDNAMES` as the header,
 in that order; a nested dict/list value is JSON-encoded into
-its cell so nothing is dropped). Output goes to ``--output``
+its cell so nothing is dropped). The optional
+``--staff-member-id`` is resolved to its ``StaffMember`` in
+the salon and passed to the service as its ``staff_member``
+filter; an id that is unknown — or belongs to another salon —
+raises ``CommandError``. Omitted, the export is the previous
+salon-wide output verbatim. Output goes to ``--output``
 when given and to stdout otherwise. This command adds no
 export logic of its own -- no new querying, filtering, or
 field changes -- so command and service output can never
@@ -30,6 +36,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 from bookings.export import EXPORT_FIELDNAMES, export_appointments
 from saloncore.models import Salon
+from team.models import StaffMember
 
 _FORMATS = ("json", "csv")
 
@@ -51,6 +58,25 @@ def _coerce_date(value, label):
     except ValueError as exc:
         raise CommandError(
             f"Invalid {label} {value!r}; expected YYYY-MM-DD."
+        ) from exc
+
+
+def _resolve_staff_member(value, salon):
+    if value is None:
+        return None
+    # A StaffMember instance (via call_command kwargs) resolves by pk.
+    pk = getattr(value, "pk", value)
+    try:
+        pk = int(pk)
+    except (TypeError, ValueError) as exc:
+        raise CommandError(
+            f"Invalid staff member {value!r}; expected an id."
+        ) from exc
+    try:
+        return StaffMember.objects.get(pk=pk, salon=salon)
+    except (StaffMember.DoesNotExist, TypeError, ValueError) as exc:
+        raise CommandError(
+            f"No staff member with id {pk}."
         ) from exc
 
 
@@ -109,6 +135,12 @@ class Command(BaseCommand):
                  "use --no-include-cancelled to exclude them).",
         )
         parser.add_argument(
+            "--staff-member-id", dest="staff_member_id",
+            type=int, default=None,
+            help="Id of the staff member to scope to (default: "
+                 "every staff member in the salon).",
+        )
+        parser.add_argument(
             "--format", dest="format", default="json", choices=_FORMATS,
             help="Export format: json (default) or csv.",
         )
@@ -134,10 +166,15 @@ class Command(BaseCommand):
         date_to = _coerce_date(options.get("date_to"), "date-to")
         include_cancelled = _coerce_include_cancelled(
             options.get("include_cancelled", True))
+        staff_raw = options.get("staff_member_id")
+        if staff_raw is None:
+            staff_raw = options.get("staff_member")
+        staff_member = _resolve_staff_member(staff_raw, salon)
         try:
             rows = export_appointments(
                 salon, date_from, date_to,
                 include_cancelled=include_cancelled,
+                staff_member=staff_member,
             )
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc

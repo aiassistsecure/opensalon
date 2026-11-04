@@ -71,8 +71,20 @@ callers can filter. Pass ``include_cancelled=False`` for the
 day-book rule (cancelled appointments do not occupy the book).
 Every other status is always included.
 
+Staff filter: optional ``staff_member`` (default ``None``) restricts
+the export to that one staff member's appointments, mirroring
+:func:`bookings.breaks_export.export_breaks`. ``None`` is exactly
+the previous salon-wide behaviour; a staff member from another
+salon exports as ``[]`` because the salon scoping above never
+matches their appointments. This filters a read only — it never
+changes any appointment. :func:`export_appointments_csv` is the
+CSV twin, built from the same rows so the two can never disagree.
+
 Ordering is deterministic: by ``start``, then ``id``.
 """
+import csv
+import io
+import json
 from datetime import datetime, time, timedelta
 from decimal import Decimal
 
@@ -80,7 +92,12 @@ from bookings.availability import _tz
 from bookings.models import Appointment
 from saloncore.models import ServicePrice
 
-__all__ = ["EXPORT_FIELDNAMES", "export_appointments"]
+__all__ = [
+    "EXPORT_FIELDNAMES",
+    "appointments_csv",
+    "export_appointments",
+    "export_appointments_csv",
+]
 
 #: Key order of every exported row.
 EXPORT_FIELDNAMES = [
@@ -115,7 +132,8 @@ def _as_local_date(value, tz):
     return value
 
 
-def export_appointments(salon, date_from, date_to=None, *, include_cancelled=True):
+def export_appointments(salon, date_from, date_to=None, *,
+                        include_cancelled=True, staff_member=None):
     """Return ``salon``'s appointments in a date range as dict rows.
 
     Args:
@@ -129,6 +147,10 @@ def export_appointments(salon, date_from, date_to=None, *, include_cancelled=Tru
         include_cancelled: when True (default), cancelled
             appointments are included; when False they are excluded.
             See the module docstring for the rationale.
+        staff_member: optional ``team.StaffMember`` instance (or
+            its pk) restricting the export to that one staff
+            member's appointments. Default ``None`` exports the
+            whole salon, exactly as before.
 
     Returns:
         A list of dicts with exactly :data:`EXPORT_FIELDNAMES`
@@ -155,6 +177,8 @@ def export_appointments(salon, date_from, date_to=None, *, include_cancelled=Tru
     )
     if not include_cancelled:
         appointments = appointments.exclude(status=Appointment.Status.CANCELLED)
+    if staff_member is not None:
+        appointments = appointments.filter(staff_member=staff_member)
     appointments = list(appointments)
 
     # One price-book query for every (service, staff level) pair in
@@ -209,3 +233,38 @@ def export_appointments(salon, date_from, date_to=None, *, include_cancelled=Tru
             ),
         })
     return rows
+
+
+def _csv_cell(value):
+    if isinstance(value, (dict, list, tuple, set)):
+        return json.dumps(value, sort_keys=isinstance(value, dict))
+    return value
+
+
+def export_appointments_csv(salon, date_from, date_to=None, *,
+                            include_cancelled=True, staff_member=None):
+    """Return ``salon``'s appointments in a date range as a CSV string.
+
+    The CSV twin of :func:`export_appointments`: the header row is
+    :data:`EXPORT_FIELDNAMES` and every data row comes from that
+    service with the same arguments (including the optional
+    ``staff_member`` filter), so the two formats can never
+    disagree. A nested dict/list value is JSON-encoded into its
+    cell so nothing is dropped. An empty or reversed range exports
+    as the header row alone. Lines end ``"\\n"``.
+    """
+    buffer = io.StringIO()
+    writer = csv.DictWriter(
+        buffer, fieldnames=EXPORT_FIELDNAMES, lineterminator="\n")
+    writer.writeheader()
+    for row in export_appointments(
+            salon, date_from, date_to,
+            include_cancelled=include_cancelled,
+            staff_member=staff_member):
+        writer.writerow({key: _csv_cell(row.get(key))
+                         for key in EXPORT_FIELDNAMES})
+    return buffer.getvalue()
+
+
+#: Alias, mirroring the naming convenience in sibling services.
+appointments_csv = export_appointments_csv
