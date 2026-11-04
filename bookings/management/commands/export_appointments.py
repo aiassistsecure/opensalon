@@ -4,7 +4,7 @@ Usage:
     python manage.py export_appointments --salon-id ID
         --date-from YYYY-MM-DD [--date-to YYYY-MM-DD]
         [--no-include-cancelled] [--staff-member-id ID]
-        [--client-id ID]
+        [--client-id ID] [--service-id ID]
         [--format json|csv] [--output PATH]
 
 Thin wrapper around the existing
@@ -24,7 +24,11 @@ raises ``CommandError``. Omitted, the export is the previous
 salon-wide output verbatim. The optional ``--client-id`` is
 resolved to its ``Client`` in the salon and passed to the
 service as its ``client`` filter, with the same error and
-omission behaviour. Output goes to ``--output``
+omission behaviour. The optional ``--service-id`` is
+resolved to its ``Service`` in the salon (via its category's
+salon, the app's service scoping convention) and passed to
+the service as its ``service`` filter, with the same error
+and omission behaviour. Output goes to ``--output``
 when given and to stdout otherwise. This command adds no
 export logic of its own -- no new querying, filtering, or
 field changes -- so command and service output can never
@@ -40,7 +44,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 from bookings.export import EXPORT_FIELDNAMES, export_appointments
 from clients.models import Client
-from saloncore.models import Salon
+from saloncore.models import Salon, Service
 from team.models import StaffMember
 
 _FORMATS = ("json", "csv")
@@ -82,6 +86,25 @@ def _resolve_staff_member(value, salon):
     except (StaffMember.DoesNotExist, TypeError, ValueError) as exc:
         raise CommandError(
             f"No staff member with id {pk}."
+        ) from exc
+
+
+def _resolve_service(value, salon):
+    if value is None:
+        return None
+    # A Service instance (via call_command kwargs) resolves by pk.
+    pk = getattr(value, "pk", value)
+    try:
+        pk = int(pk)
+    except (TypeError, ValueError) as exc:
+        raise CommandError(
+            f"Invalid service {value!r}; expected an id."
+        ) from exc
+    try:
+        return Service.objects.get(pk=pk, category__salon=salon)
+    except (Service.DoesNotExist, TypeError, ValueError) as exc:
+        raise CommandError(
+            f"No service with id {pk}."
         ) from exc
 
 
@@ -171,6 +194,12 @@ class Command(BaseCommand):
                  "every client in the salon).",
         )
         parser.add_argument(
+            "--service-id", dest="service_id",
+            type=int, default=None,
+            help="Id of the service to scope to (default: "
+                 "every service in the salon).",
+        )
+        parser.add_argument(
             "--format", dest="format", default="json", choices=_FORMATS,
             help="Export format: json (default) or csv.",
         )
@@ -204,12 +233,17 @@ class Command(BaseCommand):
         if client_raw is None:
             client_raw = options.get("client")
         client = _resolve_client(client_raw, salon)
+        service_raw = options.get("service_id")
+        if service_raw is None:
+            service_raw = options.get("service")
+        service = _resolve_service(service_raw, salon)
         try:
             rows = export_appointments(
                 salon, date_from, date_to,
                 include_cancelled=include_cancelled,
                 staff_member=staff_member,
                 client=client,
+                service=service,
             )
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc

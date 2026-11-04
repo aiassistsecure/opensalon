@@ -242,6 +242,106 @@ class ClientFilterTests(ExportTestCase):
             self._ids(export_appointments(self.salon, DAY, DAY)))
 
 
+class ServiceFilterTests(ExportTestCase):
+    def setUp(self):
+        super().setUp()
+        category = ServiceCategory.objects.create(
+            salon=self.salon, name="Colour")
+        self.service2 = Service.objects.create(
+            category=category, name="Colour Service", service_minutes=60
+        )
+        self.client2 = Client.objects.create(
+            salon=self.salon, first_name="Second", last_name="Client"
+        )
+        self.staff2 = StaffMember.objects.create(
+            salon=self.salon, display_name="Stylist Two", staff_level=self.level
+        )
+        self.one = self._appt(start_h=9, end_h=10)
+        self.two = self._appt(start_h=11, end_h=12, service=self.service2)
+        self.one_cancelled = self._appt(
+            start_h=13, end_h=14, status=Appointment.Status.CANCELLED
+        )
+        self.two_other = self._appt(
+            start_h=15, end_h=16, service=self.service2,
+            client=self.client2, staff_member=self.staff2,
+        )
+        self.no_service = Appointment.objects.create(
+            client=self.client, staff_member=self.staff, service=None,
+            service_name="Legacy Treatment",
+            start=at(DAY, 17), end=at(DAY, 18),
+        )
+
+    def _ids(self, rows):
+        return [row["id"] for row in rows]
+
+    def test_default_is_salon_wide_and_unchanged(self):
+        rows = export_appointments(self.salon, DAY, DAY)
+        self.assertEqual(
+            self._ids(rows),
+            [self.one.pk, self.two.pk, self.one_cancelled.pk,
+             self.two_other.pk, self.no_service.pk],
+        )
+        self.assertEqual(
+            rows, export_appointments(self.salon, DAY, DAY, service=None))
+        for row in rows:
+            self.assertEqual(list(row.keys()), EXPORT_FIELDNAMES)
+
+    def test_filter_by_instance(self):
+        rows = export_appointments(self.salon, DAY, DAY, service=self.service)
+        self.assertEqual(
+            self._ids(rows), [self.one.pk, self.one_cancelled.pk])
+
+    def test_filter_by_pk(self):
+        rows = export_appointments(
+            self.salon, DAY, DAY, service=self.service2.pk)
+        self.assertEqual(
+            self._ids(rows), [self.two.pk, self.two_other.pk])
+
+    def test_filter_other_salon_service_exports_empty(self):
+        other = Salon.objects.create(name="Other Salon", timezone="UTC")
+        other_category = ServiceCategory.objects.create(
+            salon=other, name="Other Hair")
+        outsider = Service.objects.create(
+            category=other_category, name="Other Cut", service_minutes=30)
+        self.assertEqual(
+            export_appointments(self.salon, DAY, DAY, service=outsider), [])
+
+    def test_filter_composes_with_staff_client_and_cancelled(self):
+        rows = export_appointments(
+            self.salon, DAY, DAY, include_cancelled=False,
+            staff_member=self.staff2, client=self.client2,
+            service=self.service2)
+        self.assertEqual(self._ids(rows), [self.two_other.pk])
+        rows = export_appointments(
+            self.salon, DAY, DAY, staff_member=self.staff,
+            client=self.client, service=self.service)
+        self.assertEqual(
+            self._ids(rows), [self.one.pk, self.one_cancelled.pk])
+        rows = export_appointments(
+            self.salon, DAY, DAY, include_cancelled=False,
+            service=self.service)
+        self.assertEqual(self._ids(rows), [self.one.pk])
+
+    def test_csv_filtered_by_service(self):
+        text = export_appointments_csv(
+            self.salon, DAY, DAY, service=self.service2)
+        parsed = list(csv.DictReader(io.StringIO(text)))
+        self.assertEqual(
+            [int(row["id"]) for row in parsed],
+            [self.two.pk, self.two_other.pk])
+        self.assertEqual(
+            [row["service_id"] for row in parsed],
+            [str(self.service2.pk), str(self.service2.pk)])
+        self.assertEqual(text.splitlines()[0], ",".join(EXPORT_FIELDNAMES))
+
+    def test_csv_default_matches_service_rows(self):
+        text = export_appointments_csv(self.salon, DAY, DAY)
+        parsed = list(csv.DictReader(io.StringIO(text)))
+        self.assertEqual(
+            [int(row["id"]) for row in parsed],
+            self._ids(export_appointments(self.salon, DAY, DAY)))
+
+
 class SnapshotAndStatusTests(ExportTestCase):
     def test_snapshot_name_when_service_fk_is_null(self):
         appt = Appointment.objects.create(
