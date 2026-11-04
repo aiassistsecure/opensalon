@@ -28,6 +28,20 @@ member, only that member's overrides are included; the salon
 filter still applies, so a staff member from another salon
 exports as empty.
 
+Date window: both export functions also accept an optional
+``start_date`` / ``end_date`` window pair, filtering on the
+override's own ``date`` as inclusive salon-local dates (each
+row carries one date -- the window is a date-range selector).
+Each bound may be a ``date``, a ``datetime``, an ISO string,
+or ``None`` (the default, unbounded -- with both ``None``
+the output is unchanged, byte-identical). A ``datetime`` is
+reduced to its salon-local date. Either bound may be given
+alone (an open-ended window); a reversed window exports as
+empty. The window composes with the staff-member filter
+(window AND member). The ``start`` / ``end`` and
+``date_from`` / ``date_to`` spellings are accepted as keyword
+aliases, mirroring the sibling Family XI window exports.
+
 Columns are only fields the row and its stored relation
 actually carry: ``id``, ``salon_id`` (the staff member's
 salon), ``staff_member_id`` / ``staff_name`` (the member's
@@ -41,7 +55,9 @@ team exports. No rows exports as ``[]`` / the header row
 alone. Lines end with ``"\\n"``.
 """
 import csv
+import datetime
 import io
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from team.models import ShiftOverride
 
@@ -84,7 +100,58 @@ def _record(row):
     }
 
 
-def export_shift_overrides(salon, staff_member=None):
+def _tz(salon):
+    try:
+        return ZoneInfo(salon.timezone or "UTC")
+    except (ZoneInfoNotFoundError, ValueError):
+        return ZoneInfo("UTC")
+
+
+def _as_local_date(value, salon):
+    """Reduce a date / datetime / ISO string to a local date."""
+    if isinstance(value, datetime.datetime):
+        if value.tzinfo:
+            return value.astimezone(_tz(salon)).date()
+        return value.date()
+    if isinstance(value, datetime.date):
+        return value
+    text = str(value).strip()
+    try:
+        return datetime.date.fromisoformat(text)
+    except ValueError:
+        parsed = datetime.datetime.fromisoformat(
+            text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text)
+        if parsed.tzinfo:
+            return parsed.astimezone(_tz(salon)).date()
+        return parsed.date()
+
+
+def _resolve_window(start_date, end_date, kwargs):
+    """Fold the alias spellings into the start_date/end_date pair."""
+    if "start" in kwargs:
+        if start_date is not None:
+            raise TypeError("multiple values for start_date")
+        start_date = kwargs.pop("start")
+    if "end" in kwargs:
+        if end_date is not None:
+            raise TypeError("multiple values for end_date")
+        end_date = kwargs.pop("end")
+    if "date_from" in kwargs:
+        if start_date is not None:
+            raise TypeError("multiple values for start_date")
+        start_date = kwargs.pop("date_from")
+    if "date_to" in kwargs:
+        if end_date is not None:
+            raise TypeError("multiple values for end_date")
+        end_date = kwargs.pop("date_to")
+    if kwargs:
+        raise TypeError(
+            f"unexpected arguments: {', '.join(sorted(kwargs))}")
+    return start_date, end_date
+
+
+def export_shift_overrides(salon, staff_member=None, start_date=None,
+                           end_date=None, **kwargs):
     """Return ``salon``'s shift overrides as a list of dicts.
 
     Each entry is one stored :class:`team.models.ShiftOverride`
@@ -97,17 +164,29 @@ def export_shift_overrides(salon, staff_member=None):
     only that member's overrides are included; a staff member
     belonging to another salon exports as ``[]`` because the
     salon filter still applies.
+
+    ``start_date`` / ``end_date`` are an optional inclusive
+    window on the override's own ``date``: the defaults
+    ``None`` are unbounded, so the default output is unchanged.
+    See the module docstring for the window semantics. The
+    window composes with ``staff_member`` (window AND member).
     """
+    start_date, end_date = _resolve_window(start_date, end_date, kwargs)
     rows = (
         ShiftOverride.objects.filter(staff_member__salon=salon)
         .select_related("staff_member")
     )
     if staff_member is not None:
         rows = rows.filter(staff_member=staff_member)
+    if start_date is not None:
+        rows = rows.filter(date__gte=_as_local_date(start_date, salon))
+    if end_date is not None:
+        rows = rows.filter(date__lte=_as_local_date(end_date, salon))
     return [_record(row) for row in rows]
 
 
-def export_shift_overrides_csv(salon, staff_member=None):
+def export_shift_overrides_csv(salon, staff_member=None, start_date=None,
+                               end_date=None, **kwargs):
     """Return ``salon``'s shift overrides as a CSV string.
 
     The header row is :data:`SHIFT_OVERRIDE_EXPORT_FIELDNAMES`
@@ -121,6 +200,11 @@ def export_shift_overrides_csv(salon, staff_member=None):
     the salon-wide export, unchanged; a given staff member
     exports only that member's overrides (header alone when that
     member has none, or belongs to another salon).
+
+    ``start_date`` / ``end_date`` are likewise passed through:
+    the defaults ``None`` are unbounded and unchanged; a given
+    window exports only overrides whose ``date`` falls inside
+    it (header alone for a reversed window).
     """
     buffer = io.StringIO()
     writer = csv.DictWriter(
@@ -129,7 +213,8 @@ def export_shift_overrides_csv(salon, staff_member=None):
     )
     writer.writeheader()
     for record in export_shift_overrides(
-            salon, staff_member=staff_member):
+            salon, staff_member=staff_member, start_date=start_date,
+            end_date=end_date, **kwargs):
         writer.writerow(record)
     return buffer.getvalue()
 

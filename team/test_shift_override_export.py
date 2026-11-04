@@ -165,6 +165,88 @@ class ShiftOverrideExportTests(TestCase):
                 self.other_salon, staff_member=self.other_staff)),
             1)
 
+    def test_window_defaults_none_is_unchanged(self):
+        self._placed()
+        self._off()
+        self.assertEqual(
+            export_shift_overrides(
+                self.salon, start_date=None, end_date=None),
+            export_shift_overrides(self.salon))
+        self.assertEqual(
+            export_shift_overrides_csv(
+                self.salon, start_date=None, end_date=None),
+            export_shift_overrides_csv(self.salon))
+
+    def test_window_inclusive_on_override_date(self):
+        placed = self._placed()
+        off = self._off()
+        records = export_shift_overrides(
+            self.salon, start_date=PLACED_DATE, end_date=PLACED_DATE)
+        self.assertEqual([r["id"] for r in records], [placed.pk])
+        records = export_shift_overrides(
+            self.salon, start_date=PLACED_DATE, end_date=OFF_DATE)
+        self.assertEqual([r["id"] for r in records],
+                         [placed.pk, off.pk])
+        parsed = list(csv.DictReader(io.StringIO(
+            export_shift_overrides_csv(
+                self.salon, start_date=OFF_DATE, end_date=OFF_DATE))))
+        self.assertEqual([int(r["id"]) for r in parsed], [off.pk])
+
+    def test_window_start_only_and_end_only(self):
+        placed = self._placed()
+        off = self._off()
+        self.assertEqual(
+            [r["id"] for r in export_shift_overrides(
+                self.salon, start_date=OFF_DATE)],
+            [off.pk])
+        self.assertEqual(
+            [r["id"] for r in export_shift_overrides(
+                self.salon, end_date=PLACED_DATE)],
+            [placed.pk])
+
+    def test_window_reversed_is_empty(self):
+        self._placed()
+        self._off()
+        self.assertEqual(
+            export_shift_overrides(
+                self.salon, start_date=OFF_DATE, end_date=PLACED_DATE),
+            [])
+        self.assertEqual(
+            export_shift_overrides_csv(
+                self.salon, start_date=OFF_DATE, end_date=PLACED_DATE),
+            ",".join(SHIFT_OVERRIDE_EXPORT_FIELDNAMES) + "\n")
+
+    def test_window_aliases_and_datetime_bounds(self):
+        self._placed()
+        self._off()
+        expected = export_shift_overrides(
+            self.salon, start_date=PLACED_DATE, end_date=PLACED_DATE)
+        self.assertEqual(
+            export_shift_overrides(
+                self.salon, start=PLACED_DATE, end=PLACED_DATE),
+            expected)
+        self.assertEqual(
+            export_shift_overrides(
+                self.salon, date_from=PLACED_DATE, date_to=PLACED_DATE),
+            expected)
+        self.assertEqual(
+            export_shift_overrides(
+                self.salon,
+                start_date=datetime.datetime(2026, 10, 31, 23, 0),
+                end_date=datetime.datetime(2026, 10, 31, 1, 0)),
+            expected)
+
+    def test_window_composes_with_staff_member(self):
+        eve = StaffMember.objects.create(
+            salon=self.salon, display_name="Eve")
+        placed = self._placed()
+        self._placed(staff=eve, day=PLACED_DATE)
+        self._off()
+        records = export_shift_overrides(
+            self.salon, staff_member=self.dana,
+            start_date=PLACED_DATE, end_date=PLACED_DATE)
+        self.assertEqual([r["id"] for r in records], [placed.pk])
+
     def test_read_only(self):
         self._placed()
         self._off()
