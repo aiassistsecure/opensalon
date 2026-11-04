@@ -57,6 +57,16 @@ applies and composes with the window (window AND product).
 The wrapped :func:`catalog.history.stock_history` service
 takes no window arguments, so the window is applied here to
 its entries; that service is called unchanged.
+
+Kind filter: both exports also take one optional ``kind``
+(default ``None`` = no kind filter, output identical to the
+unfiltered export). With a kind, only entries whose stored
+``kind`` exactly matches it are exported — ``kind=str(kind)``,
+so a ``StockMovement.Kind`` member works, with no case
+folding — mirroring the sibling categorical filters. The
+kind filter composes (AND) with the product and the window,
+and like the window it only selects which entries are
+exported: ``running_balance`` stays the full-ledger balance.
 """
 import csv
 import io
@@ -129,7 +139,8 @@ def _bound(value, *, is_end):
     return bound
 
 
-def export_stock_history(salon, product=None, start=None, end=None):
+def export_stock_history(salon, product=None, start=None, end=None,
+                         kind=None):
     """Return one product's stock history as a list of dicts.
 
     Each entry is a dict with exactly :data:`HISTORY_FIELDNAMES`
@@ -142,7 +153,10 @@ def export_stock_history(salon, product=None, start=None, end=None):
     The optional ``start`` / ``end`` window filters on each
     entry's ``created_at`` (see the module docstring for the
     semantics); the default ``None`` bounds export the full
-    history, unchanged. Records nothing.
+    history, unchanged. The optional ``kind`` filters by exact
+    stored kind value (AND with the product and the window);
+    ``None`` (the default) applies no kind filter. Records
+    nothing.
     """
     start_bound = _bound(start, is_end=False)
     end_bound = _bound(end, is_end=True)
@@ -152,25 +166,29 @@ def export_stock_history(salon, product=None, start=None, end=None):
         for entry in history.entries
         if (start_bound is None or entry.created_at >= start_bound)
         and (end_bound is None or entry.created_at < end_bound)
+        and (kind is None or entry.kind == str(kind))
     ]
 
 
-def export_stock_history_csv(salon, product=None, start=None, end=None):
+def export_stock_history_csv(salon, product=None, start=None, end=None,
+                             kind=None):
     """Return one product's stock history as a CSV string.
 
     The header row is :data:`HISTORY_FIELDNAMES` and every data
     row comes from :func:`export_stock_history` with the same
     arguments (including the optional ``start`` / ``end``
-    window), so the CSV and list exports always agree. A
-    product with no movements in the window exports as the
-    header row alone. Lines end with ``"\\n"``. Records nothing.
+    window and the optional ``kind`` filter), so the CSV and
+    list exports always agree. A product with no movements in
+    the window / of the kind exports as the header row alone.
+    Lines end with ``"\\n"``. Records nothing.
     """
     buffer = io.StringIO()
     writer = csv.DictWriter(
         buffer, fieldnames=HISTORY_FIELDNAMES, lineterminator="\n"
     )
     writer.writeheader()
-    for record in export_stock_history(salon, product, start=start, end=end):
+    for record in export_stock_history(
+            salon, product, start=start, end=end, kind=kind):
         writer.writerow(record)
     return buffer.getvalue()
 

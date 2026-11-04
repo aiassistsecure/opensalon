@@ -4,17 +4,24 @@ Usage:
     python manage.py export_stock_history --salon-id ID
         [--product-id PRODUCT_ID]
         [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD]
+        [--kind KIND]
         [--output PATH]
 
 Backend only — no views, templates, or UI. This command is a thin
 wrapper around
 :func:`catalog.history_export.export_stock_history_csv`:
 it resolves the salon by id, delegates to that service verbatim
-(with the same optional ``product`` and the same optional
-``start`` / ``end`` window), and writes the returned CSV
+(with the same optional ``product``, the same optional
+``start`` / ``end`` window, and the same optional ``kind``
+filter), and writes the returned CSV
 to ``--output`` when given, otherwise to stdout. It adds no fields,
 filtering, or export logic of its own, so the command output and
 the service output can never disagree — one source of truth.
+
+Kind semantics are the service's own: ``--kind`` narrows the
+export to movements whose stored kind exactly matches it and
+composes with the product and the window; without ``--kind``
+the command exports every kind, exactly as before.
 
 Window semantics are the service's own: start-inclusive,
 end-exclusive after normalisation, so a date end covers the whole
@@ -77,6 +84,11 @@ class Command(BaseCommand):
                  "is included; default: unbounded).",
         )
         parser.add_argument(
+            "--kind", dest="kind", default=None,
+            help="Movement kind value to filter by (default: "
+                 "all kinds).",
+        )
+        parser.add_argument(
             "--output", default=None,
             help="Path of the CSV file to write (default: stdout).",
         )
@@ -99,7 +111,8 @@ class Command(BaseCommand):
             end = options.get("end")
         try:
             text = export_stock_history_csv(
-                salon, product, start=start, end=end)
+                salon, product, start=start, end=end,
+                kind=options.get("kind"))
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options["output"]:
