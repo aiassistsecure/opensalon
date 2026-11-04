@@ -85,6 +85,52 @@ class ExportDedupeCandidatesCommandTests(TestCase):
             out.getvalue(), export_duplicate_candidates_csv(self.salon)
         )
 
+    def test_key_type_email_matches_service_output(self):
+        self._duplicates(self.salon)
+        # Phone-only duplicates in the same salon are excluded.
+        self._client(self.salon, "Bob", "Adams", phone="555-0102")
+        self._client(self.salon, "Robert", "Adams",
+                     phone="(555) 0102")
+        out = io.StringIO()
+        call_command(
+            "export_dedupe_candidates", salon_id=self.salon.id,
+            key_type="email", stdout=out,
+        )
+        self.assertEqual(
+            out.getvalue(),
+            export_duplicate_candidates_csv(
+                self.salon, key_type="email"))
+        self.assertIn("amy@example.com", out.getvalue())
+        self.assertNotIn("phone", out.getvalue())
+        self.assertNotIn("Bob", out.getvalue())
+
+    def test_key_type_phone_matches_service_output(self):
+        self._duplicates(self.salon)
+        self._client(self.salon, "Bob", "Adams", phone="555-0102")
+        self._client(self.salon, "Robert", "Adams",
+                     phone="(555) 0102")
+        out = io.StringIO()
+        call_command(
+            "export_dedupe_candidates", salon_id=self.salon.id,
+            key_type="phone", stdout=out,
+        )
+        self.assertEqual(
+            out.getvalue(),
+            export_duplicate_candidates_csv(
+                self.salon, key_type="phone"))
+        self.assertIn("phone", out.getvalue())
+        self.assertNotIn("amy@example.com", out.getvalue())
+
+    def test_key_type_omitted_is_unfiltered(self):
+        self._duplicates(self.salon)
+        out = io.StringIO()
+        call_command(
+            "export_dedupe_candidates", salon_id=self.salon.id,
+            stdout=out,
+        )
+        self.assertEqual(
+            out.getvalue(), export_duplicate_candidates_csv(self.salon))
+
     def test_unknown_salon_id_raises(self):
         with self.assertRaises(CommandError):
             call_command(

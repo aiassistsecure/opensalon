@@ -16,6 +16,12 @@ scoping, or the ordering. The CSV string is built from the dict
 list returned by :func:`export_duplicate_candidates`, so the two
 formats can never disagree.
 
+Filter: ``key_type`` (optional, default ``None`` = no filter,
+output identical to the unfiltered export) selects only the
+groups whose stored key type exactly matches it (``"email"`` or
+``"phone"``, the two keys :mod:`clients.dedupe` checks); it
+composes with the salon scope. Selection only -- read-only.
+
 Columns are only what ``find_duplicate_candidates`` actually
 exposes: per group, its ``key_type`` and its normalized ``key``;
 per client in the group, the client id (``client_id``) and the
@@ -48,14 +54,18 @@ DEDUPE_FIELDNAMES = [
 ]
 
 
-def export_duplicate_candidates(salon=None):
+def export_duplicate_candidates(salon=None, key_type=None):
     """Return duplicate candidates as a list of dicts.
 
-    The argument is exactly that of
+    The ``salon`` argument is exactly that of
     :func:`clients.dedupe.find_duplicate_candidates` and is
     passed through to it unchanged: ``salon``, when given, scopes
     the report to one salon; when ``None``, all salons are
-    considered. Each group the service returns contributes one
+    considered. ``key_type``, when given, selects only groups
+    whose key type exactly matches it (``"email"`` / ``"phone"``);
+    ``None`` (the default) applies no filter, so the output is
+    identical to the unfiltered export. Each group the service
+    returns (and the filter keeps) contributes one
     entry per client in that group, each a dict with exactly
     :data:`DEDUPE_FIELDNAMES` keys, in the service's order (groups
     by key type then key; clients by last name, first name, pk).
@@ -63,6 +73,8 @@ def export_duplicate_candidates(salon=None):
     """
     records = []
     for group in find_duplicate_candidates(salon=salon):
+        if key_type is not None and group["key_type"] != key_type:
+            continue
         for client in group["clients"]:
             records.append({
                 "key_type": group["key_type"],
@@ -74,14 +86,14 @@ def export_duplicate_candidates(salon=None):
     return records
 
 
-def export_duplicate_candidates_csv(salon=None):
+def export_duplicate_candidates_csv(salon=None, key_type=None):
     """Return duplicate candidates as a CSV string.
 
-    Arguments are the same as :func:`export_duplicate_candidates`
-    (and therefore the same as ``find_duplicate_candidates``). The
+    Arguments are the same as :func:`export_duplicate_candidates`.
+    The
     header row is :data:`DEDUPE_FIELDNAMES` and every data row
     comes from :func:`export_duplicate_candidates` with the same
-    argument, so the CSV and list exports always agree. No
+    arguments, so the CSV and list exports always agree. No
     candidates exports as the header row alone. Lines end with
     ``"\\n"``.
     """
@@ -90,7 +102,8 @@ def export_duplicate_candidates_csv(salon=None):
         buffer, fieldnames=DEDUPE_FIELDNAMES, lineterminator="\n"
     )
     writer.writeheader()
-    for record in export_duplicate_candidates(salon=salon):
+    for record in export_duplicate_candidates(
+            salon=salon, key_type=key_type):
         writer.writerow(record)
     return buffer.getvalue()
 
