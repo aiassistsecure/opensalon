@@ -110,6 +110,54 @@ class ExportAdjustCommandTests(TestCase):
             call_command("export_adjust", salon_id=self.salon.pk,
                          start_date="not-a-date", stdout=io.StringIO())
 
+    def make_conditioner(self):
+        conditioner = Product.objects.create(
+            salon=self.salon, name="Conditioner", sku="CO-002",
+            barcode="222", price=Decimal("12.00"))
+        self.move(conditioner, 6, note="Recount", on=self.day)
+        return conditioner
+
+    def test_product_id_flag_scopes_csv_to_that_product(self):
+        conditioner = self.make_conditioner()
+        out = io.StringIO()
+        call_command(
+            "export_adjust", "--salon-id", str(self.salon.pk),
+            "--product-id", str(conditioner.pk), stdout=out)
+        text = out.getvalue()
+        self.assertEqual(
+            text, self.expected_text(self.salon, product=conditioner))
+        rows = list(csv.DictReader(io.StringIO(text)))
+        self.assertEqual([r["product_name"] for r in rows],
+                         ["Conditioner"])
+        self.assertNotIn("Shampoo", text)
+
+    def test_product_id_kwarg_scopes_csv_to_that_product(self):
+        conditioner = self.make_conditioner()
+        out = io.StringIO()
+        call_command("export_adjust", salon_id=self.salon.pk,
+                     product_id=conditioner.pk, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            self.expected_text(self.salon, product=conditioner))
+        self.assertNotIn("Shampoo", out.getvalue())
+
+    def test_no_product_flag_is_salon_wide_as_before(self):
+        self.make_conditioner()
+        out = io.StringIO()
+        call_command("export_adjust", salon_id=self.salon.pk, stdout=out)
+        self.assertEqual(out.getvalue(), self.expected_text(self.salon))
+
+    def test_unknown_product_id_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command("export_adjust", salon_id=self.salon.pk,
+                         product_id=999999, stdout=io.StringIO())
+
+    def test_other_salon_product_id_raises_command_error(self):
+        foreign = Product.objects.get(salon=self.other, name="Foreign")
+        with self.assertRaises(CommandError):
+            call_command("export_adjust", salon_id=self.salon.pk,
+                         product_id=foreign.pk, stdout=io.StringIO())
+
     def test_unwritable_output_raises_command_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "missing-dir", "adjust.csv")
