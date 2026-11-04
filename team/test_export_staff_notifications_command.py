@@ -103,6 +103,79 @@ class ExportStaffNotificationsCommandTests(TestCase):
             export_staff_notifications_csv(
                 self.salon, staff_member=None))
 
+    def test_kind_filters_to_matching_kind(self):
+        start = timezone.now().replace(hour=10, minute=0, second=0,
+                                       microsecond=0)
+        appt2 = Appointment.objects.create(
+            client=Client.objects.create(
+                salon=self.salon, first_name="Pat", last_name="Guest"),
+            staff_member=self.staff, service=self.service,
+            service_name="Cut",
+            start=start + datetime.timedelta(days=1),
+            end=start + datetime.timedelta(days=1, hours=1))
+        StaffNotification.objects.create(
+            staff_member=self.staff, appointment=appt2, kind="reminder")
+        out = io.StringIO()
+        call_command("export_staff_notifications",
+                     salon_id=self.salon.id, kind="arrived", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_staff_notifications_csv(self.salon, kind="arrived"))
+        self.assertIn("arrived", out.getvalue())
+        self.assertNotIn("reminder", out.getvalue())
+
+    def test_no_kind_is_salon_wide_default(self):
+        out = io.StringIO()
+        call_command("export_staff_notifications",
+                     salon_id=self.salon.id, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_staff_notifications_csv(self.salon, kind=None))
+
+    def test_kind_with_no_matches_is_header_only(self):
+        out = io.StringIO()
+        call_command("export_staff_notifications",
+                     salon_id=self.salon.id, kind="unknown", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_staff_notifications_csv(self.salon, kind="unknown"))
+        self.assertEqual(len(out.getvalue().splitlines()), 1)
+
+    def test_kind_composes_with_staff_member_id(self):
+        eve = StaffMember.objects.create(
+            salon=self.salon, display_name="Eve")
+        start = timezone.now().replace(hour=10, minute=0, second=0,
+                                       microsecond=0)
+        appt2 = Appointment.objects.create(
+            client=Client.objects.create(
+                salon=self.salon, first_name="Pat", last_name="Guest"),
+            staff_member=eve, service=self.service,
+            service_name="Cut",
+            start=start + datetime.timedelta(days=1),
+            end=start + datetime.timedelta(days=1, hours=1))
+        StaffNotification.objects.create(
+            staff_member=eve, appointment=appt2, kind="arrived")
+        out = io.StringIO()
+        call_command("export_staff_notifications",
+                     salon_id=self.salon.id,
+                     staff_member_id=self.staff.id, kind="arrived",
+                     stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_staff_notifications_csv(
+                self.salon, staff_member=self.staff, kind="arrived"))
+        self.assertIn("Dana", out.getvalue())
+        self.assertNotIn("Eve", out.getvalue())
+        out = io.StringIO()
+        call_command("export_staff_notifications",
+                     salon_id=self.salon.id,
+                     staff_member_id=self.staff.id, kind="reminder",
+                     stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_staff_notifications_csv(
+                self.salon, staff_member=self.staff, kind="reminder"))
+
     def test_unknown_staff_member_id_raises(self):
         with self.assertRaises(CommandError):
             call_command("export_staff_notifications",
