@@ -2,6 +2,7 @@
 import io
 import os
 import tempfile
+from datetime import datetime, timezone
 
 from django.core.management import CommandError, call_command
 from django.test import TestCase
@@ -49,6 +50,36 @@ class ExportCampaignsCommandTests(TestCase):
                 written = fh.read()
         self.assertEqual(written, export_campaigns_csv(self.salon))
         self.assertEqual(out.getvalue(), "")
+
+    def test_status_filter_matches_service(self):
+        Campaign.objects.create(
+            salon=self.salon, name="Sent One", channel="sms",
+            body="Sent body", status=Campaign.Status.SENT,
+            sent_at=datetime(2026, 10, 3, 9, 0, tzinfo=timezone.utc))
+        out = io.StringIO()
+        call_command("export_campaigns", salon_id=self.salon.pk,
+                     status="sent", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_campaigns_csv(self.salon, status="sent"))
+        self.assertIn("Sent One", out.getvalue())
+        self.assertNotIn("Spring Offer", out.getvalue())
+
+    def test_status_filter_no_match_is_header_only(self):
+        out = io.StringIO()
+        call_command("export_campaigns", salon_id=self.salon.pk,
+                     status="sent", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_campaigns_csv(self.salon, status="sent"))
+        self.assertEqual(len(out.getvalue().strip().splitlines()), 1)
+
+    def test_no_status_matches_unfiltered_service(self):
+        out = io.StringIO()
+        call_command("export_campaigns", salon_id=self.salon.pk,
+                     stdout=out)
+        self.assertEqual(out.getvalue(),
+                         export_campaigns_csv(self.salon, status=None))
 
     def test_unknown_salon_raises(self):
         with self.assertRaises(CommandError):
