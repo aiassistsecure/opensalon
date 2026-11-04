@@ -122,6 +122,59 @@ class RefundExportTests(TestCase):
         amounts = [r["amount"] for r in export_refunds(self.salon, self.day)]
         self.assertEqual(amounts, ["5.00", "7.50", "9.99"])
 
+    def test_sale_filter_default_none_is_unchanged(self):
+        self._refund()
+        self._refund()
+        default = export_refunds(self.salon, self.day, self.day)
+        self.assertEqual(len(default), 2)
+        self.assertEqual(
+            export_refunds(self.salon, self.day, self.day, sale=None),
+            default)
+        self.assertEqual(
+            export_refunds_csv(self.salon, self.day, self.day, sale=None),
+            export_refunds_csv(self.salon, self.day, self.day))
+
+    def test_sale_filter_only_that_sale(self):
+        first = self._refund(amount="10.00")
+        second = self._refund(amount="20.00")
+        rows = export_refunds(
+            self.salon, self.day, self.day, sale=first.sale)
+        self.assertEqual([r["id"] for r in rows], [first.pk])
+        self.assertEqual(rows[0]["sale_id"], first.sale_id)
+        parsed = list(csv.DictReader(io.StringIO(export_refunds_csv(
+            self.salon, self.day, self.day, sale=second.sale))))
+        self.assertEqual([int(r["id"]) for r in parsed], [second.pk])
+
+    def test_sale_filter_date_window_still_applies(self):
+        refund = self._refund()
+        other_day = self.day + datetime.timedelta(days=5)
+        self.assertEqual(
+            export_refunds(self.salon, other_day, other_day,
+                           sale=refund.sale), [])
+        self.assertEqual(
+            export_refunds_csv(self.salon, other_day, other_day,
+                               sale=refund.sale),
+            ",".join(EXPORT_FIELDNAMES) + "\n")
+
+    def test_sale_filter_other_salon_sale_is_empty(self):
+        own = self._refund()
+        theirs = self._refund(salon=self.other)
+        self.assertEqual(
+            export_refunds(self.salon, self.day, self.day,
+                           sale=theirs.sale), [])
+        self.assertEqual(
+            export_refunds_csv(self.salon, self.day, self.day,
+                               sale=theirs.sale),
+            ",".join(EXPORT_FIELDNAMES) + "\n")
+        self.assertEqual(
+            [r["id"] for r in export_refunds(
+                self.other, self.day, self.day, sale=theirs.sale)],
+            [theirs.pk])
+        self.assertEqual(
+            [r["id"] for r in export_refunds(
+                self.salon, self.day, self.day, sale=own.sale)],
+            [own.pk])
+
     def test_export_is_read_only(self):
         refund = self._refund()
         export_refunds(self.salon, self.day, self.day)
