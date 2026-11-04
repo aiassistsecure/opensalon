@@ -10,6 +10,11 @@ break: ``id``, ``salon_id``, ``staff_member_id``,
 ``staff_name``, ``start``/``end`` (ISO-8601, as stored), and
 ``paid`` (the stored boolean). Empty salon/range = ``[]`` /
 header row alone. Lines end "\\n".
+
+Optional ``paid`` selection: ``paid=None`` (the default) is
+today's output unchanged; ``paid=True`` / ``paid=False``
+keep only rows whose stored ``paid`` matches exactly,
+composing (AND) with the window and ``staff_member``.
 """
 import csv
 import io
@@ -37,17 +42,21 @@ BREAK_EXPORT_FIELDNAMES = [
 EXPORT_FIELDNAMES = BREAK_EXPORT_FIELDNAMES
 
 
-def export_breaks(salon, date_from=None, date_to=None, *, staff_member=None):
+def export_breaks(salon, date_from=None, date_to=None, *, staff_member=None,
+                  paid=None):
     """Return verbatim break rows as plain dicts.
 
     Accepts exactly the parameters of
-    :func:`bookings.breaks.breaks`, passed through unchanged.
-    Each dict has exactly :data:`BREAK_EXPORT_FIELDNAMES` keys.
+    :func:`bookings.breaks.breaks`, passed through unchanged,
+    plus the optional ``paid`` selection described in the
+    module docstring. Each dict has exactly
+    :data:`BREAK_EXPORT_FIELDNAMES` keys.
     """
     return [
         record.as_dict()
         for record in breaks(
             salon, date_from, date_to, staff_member=staff_member)
+        if paid is None or bool(record.paid) == bool(paid)
     ]
 
 
@@ -55,14 +64,16 @@ def export_breaks(salon, date_from=None, date_to=None, *, staff_member=None):
 breaks_rows = export_breaks
 
 
-def export_breaks_csv(salon, date_from=None, date_to=None, *, staff_member=None):
+def export_breaks_csv(salon, date_from=None, date_to=None, *, staff_member=None,
+                      paid=None):
     """Return verbatim break rows for ``salon`` as a CSV string."""
     buffer = io.StringIO()
     writer = csv.DictWriter(
         buffer, fieldnames=BREAK_EXPORT_FIELDNAMES, lineterminator="\n"
     )
     writer.writeheader()
-    for row in export_breaks(salon, date_from, date_to, staff_member=staff_member):
+    for row in export_breaks(salon, date_from, date_to,
+                             staff_member=staff_member, paid=paid):
         writer.writerow({
             name: ("" if row[name] is None else row[name])
             for name in BREAK_EXPORT_FIELDNAMES
