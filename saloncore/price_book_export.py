@@ -59,6 +59,13 @@ Ordering is deterministic: by category ``sort_order``, then
 category name, then service name, then service ``id``; within
 a service, by staff level ``sort_order``, then level name,
 then price ``id``.
+
+Per-service filter: both export functions accept an optional
+``service`` (default ``None``). With ``None`` the output is the
+salon-wide export, unchanged. With a service, only that
+service's rows are included; an unpriced service still appears
+once with empty staff-level and price columns. The salon filter
+still applies, so a service from another salon exports as empty.
 """
 import csv
 import io
@@ -150,7 +157,7 @@ def _record(salon_id, service, price):
     return record
 
 
-def export_price_book(salon):
+def export_price_book(salon, service=None):
     """Return ``salon``'s full price book as dicts.
 
     Each entry is a dict with exactly
@@ -160,12 +167,22 @@ def export_price_book(salon):
     as described in the module docstring. A salon with no
     services exports as ``[]``; ``salon=None`` exports as
     ``[]``. Read-only.
+
+    ``service`` is optional: the default ``None`` is the
+    salon-wide export, unchanged. When a service is given, only
+    that service's rows are included (including its unpriced
+    row when it has no prices); a service belonging to another
+    salon exports as ``[]`` because the salon filter still
+    applies.
     """
     if salon is None:
         return []
     salon_id = getattr(salon, "pk", salon)
+    services = Service.objects.filter(category__salon_id=salon_id)
+    if service is not None:
+        services = services.filter(pk=getattr(service, "pk", service))
     services = (
-        Service.objects.filter(category__salon_id=salon_id)
+        services
         .select_related("category")
         .prefetch_related("prices__staff_level")
         .order_by(
@@ -186,20 +203,26 @@ def export_price_book(salon):
     return records
 
 
-def export_price_book_csv(salon):
+def export_price_book_csv(salon, service=None):
     """Return ``salon``'s full price book as CSV.
 
     The header row is :data:`PRICE_BOOK_FIELDNAMES` and every
     data row comes from :func:`export_price_book` with the
-    same argument, so the CSV and list exports always agree.
+    same arguments, so the CSV and list exports always agree.
     When any exported service carries a payload, a trailing
     ``payload`` column is added holding it as a JSON string
     (empty on rows whose service has none); a payload-free
     book's CSV is byte-identical to the export before TF-10.
     A salon with no services exports as the header row alone.
     Lines end ``"\\n"``.
+
+    ``service`` is optional and passed through to
+    :func:`export_price_book`: the default ``None`` is the
+    salon-wide export, unchanged; a given service exports only
+    that service's rows (header alone when that service belongs
+    to another salon).
     """
-    records = export_price_book(salon)
+    records = export_price_book(salon, service=service)
     fieldnames = list(PRICE_BOOK_FIELDNAMES)
     if any("payload" in record for record in records):
         fieldnames.append("payload")
