@@ -216,6 +216,125 @@ class CampaignExportTests(TestCase):
                          ["Elsewhere SMS"])
         self.assertEqual(export_campaigns(None, channel="sms"), [])
 
+    def _dated(self, name, when, **kwargs):
+        campaign = Campaign.objects.create(
+            salon=self.salon, name=name,
+            channel=kwargs.pop("channel", "email"),
+            subject="Hi", body="Body", **kwargs)
+        Campaign.objects.filter(pk=campaign.pk).update(created_at=when)
+        campaign.refresh_from_db()
+        return campaign
+
+    def test_date_window_dict_and_csv(self):
+        early = self._dated(
+            "Early", datetime(2026, 10, 1, 12, 0,
+                              tzinfo=dt_timezone.utc))
+        mid = self._dated(
+            "Mid", datetime(2026, 10, 3, 23, 59,
+                            tzinfo=dt_timezone.utc))
+        late = self._dated(
+            "Late", datetime(2026, 10, 5, 0, 1,
+                             tzinfo=dt_timezone.utc))
+        from datetime import date as _date
+        records = export_campaigns(
+            self.salon, start_date=_date(2026, 10, 3),
+            end_date=_date(2026, 10, 3))
+        # Whole end day included; setUp rows (created today) excluded.
+        self.assertEqual([r["name"] for r in records], ["Mid"])
+        parsed = list(csv.DictReader(io.StringIO(
+            export_campaigns_csv(
+                self.salon, start_date=_date(2026, 10, 3),
+                end_date=_date(2026, 10, 3)))))
+        self.assertEqual([r["name"] for r in parsed], ["Mid"])
+        # CSV twin agrees with dict export, same args.
+        self.assertEqual(
+            [(r["name"], r["created_at"]) for r in parsed],
+            [(r["name"], r["created_at"]) for r in records])
+
+    def test_date_window_open_ended_and_bounds(self):
+        from datetime import date as _date
+        self._dated("Early", datetime(2026, 10, 1, 12, 0,
+                                      tzinfo=dt_timezone.utc))
+        self._dated("Late", datetime(2026, 10, 5, 12, 0,
+                                     tzinfo=dt_timezone.utc))
+        records = export_campaigns(
+            self.salon, start_date=_date(2026, 10, 2))
+        self.assertEqual([r["name"] for r in records],
+                         ["November Offer", "November News", "Late"])
+        records = export_campaigns(
+            self.salon, end_date=_date(2026, 10, 2))
+        self.assertEqual([r["name"] for r in records], ["Early"])
+        # Start bound is start-of-day inclusive.
+        records = export_campaigns(
+            self.salon, start_date=_date(2026, 10, 1),
+            end_date=_date(2026, 10, 1))
+        self.assertEqual([r["name"] for r in records], ["Early"])
+
+    def test_date_window_defaults_identical_and_aliases(self):
+        from datetime import date as _date
+        self.assertEqual(
+            export_campaigns(self.salon, start_date=None, end_date=None),
+            export_campaigns(self.salon))
+        self.assertEqual(
+            export_campaigns_csv(self.salon, start_date=None,
+                                  end_date=None),
+            export_campaigns_csv(self.salon))
+        day = self.email.created_at.date()
+        self.assertEqual(
+            export_campaigns(self.salon, start=day, end=day),
+            export_campaigns(self.salon, start_date=day, end_date=day))
+        self.assertEqual(
+            export_campaigns(self.salon, date_from=day, date_to=day),
+            export_campaigns(self.salon, start_date=day, end_date=day))
+        # String and datetime bounds reduce to the local date.
+        self.assertEqual(
+            export_campaigns(self.salon, start_date=day.isoformat(),
+                             end_date=day.isoformat()),
+            export_campaigns(self.salon, start_date=day, end_date=day))
+        self.assertEqual(
+            export_campaigns(self.salon,
+                             start_date=self.email.created_at,
+                             end_date=self.email.created_at),
+            export_campaigns(self.salon, start_date=day, end_date=day))
+
+    def test_date_window_composes_with_status_channel_salon(self):
+        from datetime import date as _date
+        self._dated("Dated SMS", datetime(2026, 10, 3, 12, 0,
+                                          tzinfo=dt_timezone.utc),
+                    channel="sms", status=Campaign.Status.SENT,
+                    sent_at=SENT_AT)
+        day = _date(2026, 10, 3)
+        records = export_campaigns(
+            self.salon, start_date=day, end_date=day,
+            status="sent", channel="sms")
+        self.assertEqual([r["name"] for r in records], ["Dated SMS"])
+        self.assertEqual(export_campaigns(
+            self.salon, start_date=day, end_date=day,
+            status="draft", channel="sms"), [])
+        self.assertEqual(export_campaigns(
+            None, start_date=day, end_date=day), [])
+        other = Campaign.objects.create(
+            salon=self.other, name="Elsewhere Dated", channel="email",
+            subject="Hi", body="Body")
+        Campaign.objects.filter(pk=other.pk).update(
+            created_at=datetime(2026, 10, 3, 12, 0,
+                                tzinfo=dt_timezone.utc))
+        records = export_campaigns(
+            self.other, start_date=day, end_date=day)
+        self.assertEqual([r["name"] for r in records],
+                         ["Elsewhere Dated"])
+
+    def test_date_window_reversed_is_empty(self):
+        from datetime import date as _date
+        self.assertEqual(export_campaigns(
+            self.salon, start_date=_date(2026, 10, 5),
+            end_date=_date(2026, 10, 1)), [])
+        self.assertEqual(
+            export_campaigns_csv(
+                self.salon, start_date=_date(2026, 10, 5),
+                end_date=_date(2026, 10, 1)),
+            ",".join(CAMPAIGN_EXPORT_FIELDNAMES) + "\n")
+
     def test_no_send_count_or_aggregates(self):
         for record in export_campaigns(self.salon):
             self.assertNotIn("send_count", record)

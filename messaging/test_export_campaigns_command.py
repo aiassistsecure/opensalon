@@ -122,6 +122,90 @@ class ExportCampaignsCommandTests(TestCase):
         self.assertEqual(out.getvalue(),
                          export_campaigns_csv(self.salon, channel=None))
 
+    def _dated(self, name, when, salon=None, **kwargs):
+        campaign = Campaign.objects.create(
+            salon=salon or self.salon, name=name,
+            channel=kwargs.pop("channel", "email"),
+            subject="Hi", body="Body", **kwargs)
+        Campaign.objects.filter(pk=campaign.pk).update(created_at=when)
+        return campaign
+
+    def test_date_window_matches_service(self):
+        self._dated("Dated One", datetime(
+            2026, 10, 3, 12, 0, tzinfo=timezone.utc))
+        self._dated("Outside", datetime(
+            2026, 10, 9, 12, 0, tzinfo=timezone.utc))
+        out = io.StringIO()
+        call_command("export_campaigns", salon_id=self.salon.pk,
+                     start_date="2026-10-03", end_date="2026-10-03",
+                     stdout=out)
+        from datetime import date as _date
+        self.assertEqual(
+            out.getvalue(),
+            export_campaigns_csv(self.salon,
+                                  start_date=_date(2026, 10, 3),
+                                  end_date=_date(2026, 10, 3)))
+        self.assertIn("Dated One", out.getvalue())
+        self.assertNotIn("Outside", out.getvalue())
+        self.assertNotIn("Spring Offer", out.getvalue())
+
+    def test_date_window_single_bound_and_aliases(self):
+        self._dated("Dated One", datetime(
+            2026, 10, 3, 12, 0, tzinfo=timezone.utc))
+        out = io.StringIO()
+        call_command("export_campaigns", "--salon-id", str(self.salon.pk),
+                     "--start-date", "2026-10-03",
+                     "--end-date", "2026-10-03", stdout=out)
+        self.assertIn("Dated One", out.getvalue())
+        self.assertNotIn("Spring Offer", out.getvalue())
+        out = io.StringIO()
+        call_command("export_campaigns", salon_id=self.salon.pk,
+                     end_date="2026-10-03", stdout=out)
+        self.assertIn("Dated One", out.getvalue())
+        self.assertNotIn("Spring Offer", out.getvalue())
+
+    def test_date_window_composes_with_status_and_channel(self):
+        self._dated("Dated Sent SMS", datetime(
+            2026, 10, 3, 12, 0, tzinfo=timezone.utc),
+            channel="sms", status=Campaign.Status.SENT,
+            sent_at=datetime(2026, 10, 3, 9, 0, tzinfo=timezone.utc))
+        out = io.StringIO()
+        call_command("export_campaigns", salon_id=self.salon.pk,
+                     start_date="2026-10-03", end_date="2026-10-03",
+                     status="sent", channel="sms", stdout=out)
+        self.assertIn("Dated Sent SMS", out.getvalue())
+        self.assertNotIn("Spring Offer", out.getvalue())
+        out = io.StringIO()
+        call_command("export_campaigns", salon_id=self.salon.pk,
+                     start_date="2026-10-03", end_date="2026-10-03",
+                     status="draft", channel="sms", stdout=out)
+        self.assertEqual(len(out.getvalue().strip().splitlines()), 1)
+
+    def test_date_window_no_match_is_header_only(self):
+        out = io.StringIO()
+        call_command("export_campaigns", salon_id=self.salon.pk,
+                     start_date="2020-01-01", end_date="2020-01-02",
+                     stdout=out)
+        self.assertEqual(len(out.getvalue().strip().splitlines()), 1)
+
+    def test_no_dates_matches_unfiltered_service(self):
+        out = io.StringIO()
+        call_command("export_campaigns", salon_id=self.salon.pk,
+                     stdout=out)
+        from datetime import date as _date  # noqa: F401
+        self.assertEqual(
+            out.getvalue(),
+            export_campaigns_csv(self.salon, start_date=None,
+                                  end_date=None))
+
+    def test_invalid_date_raises(self):
+        with self.assertRaises(CommandError):
+            call_command("export_campaigns", salon_id=self.salon.pk,
+                         start_date="2026-13-40", stdout=io.StringIO())
+        with self.assertRaises(CommandError):
+            call_command("export_campaigns", salon_id=self.salon.pk,
+                         end_date="not-a-date", stdout=io.StringIO())
+
     def test_unknown_salon_raises(self):
         with self.assertRaises(CommandError):
             call_command("export_campaigns",
