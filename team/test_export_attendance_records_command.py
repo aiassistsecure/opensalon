@@ -55,6 +55,53 @@ class ExportAttendanceRecordsCommandTests(TestCase):
         self.assertEqual(out.getvalue(),
                          export_attendance_records_csv(empty))
 
+    def test_staff_member_id_filters_to_one_member(self):
+        eve = StaffMember.objects.create(
+            salon=self.salon, display_name="Eve")
+        AttendanceRecord.objects.create(
+            staff_member=eve, event_type="check_in",
+            recorded_at=datetime.datetime(
+                2026, 10, 31, 10, 0, tzinfo=UTC), note="eve note")
+        out = io.StringIO()
+        call_command("export_attendance_records",
+                     salon_id=self.salon.id,
+                     staff_member_id=self.staff.id, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_attendance_records_csv(
+                self.salon, staff_member=self.staff))
+        self.assertIn("Dana", out.getvalue())
+        self.assertNotIn("Eve", out.getvalue())
+        self.assertNotIn("eve note", out.getvalue())
+
+    def test_no_staff_member_id_is_salon_wide_default(self):
+        out = io.StringIO()
+        call_command("export_attendance_records",
+                     salon_id=self.salon.id, stdout=out)
+        self.assertEqual(out.getvalue(),
+                         export_attendance_records_csv(self.salon))
+        self.assertEqual(
+            out.getvalue(),
+            export_attendance_records_csv(
+                self.salon, staff_member=None))
+
+    def test_unknown_staff_member_id_raises(self):
+        with self.assertRaises(CommandError):
+            call_command("export_attendance_records",
+                         salon_id=self.salon.id,
+                         staff_member_id=999999,
+                         stdout=io.StringIO())
+
+    def test_staff_member_from_other_salon_raises(self):
+        other_salon = Salon.objects.create(name="Other", timezone="UTC")
+        theirs = StaffMember.objects.create(
+            salon=other_salon, display_name="Other Dana")
+        with self.assertRaises(CommandError):
+            call_command("export_attendance_records",
+                         salon_id=self.salon.id,
+                         staff_member_id=theirs.id,
+                         stdout=io.StringIO())
+
     def test_unknown_salon_required_id_and_unwritable(self):
         with self.assertRaises(CommandError):
             call_command("export_attendance_records",

@@ -119,6 +119,65 @@ class AttendanceRecordExportTests(TestCase):
         self.assertNotIn("1234", text)
         self.assertNotIn("dana@example.com", text)
 
+    def test_default_none_is_salon_wide_unchanged(self):
+        self._in()
+        self._out()
+        expected_records = export_attendance_records(self.salon)
+        expected_csv = export_attendance_records_csv(self.salon)
+        self.assertEqual(
+            export_attendance_records(self.salon, staff_member=None),
+            expected_records)
+        self.assertEqual(
+            export_attendance_records_csv(
+                self.salon, staff_member=None),
+            expected_csv)
+
+    def test_filtered_by_staff_member(self):
+        eve = StaffMember.objects.create(
+            salon=self.salon, display_name="Eve")
+        dana_in = self._in()
+        self._in(staff=eve, when=at(10))
+        dana_out = self._out()
+        records = export_attendance_records(
+            self.salon, staff_member=self.dana)
+        self.assertEqual([r["id"] for r in records],
+                         [dana_out.pk, dana_in.pk])
+        self.assertTrue(
+            all(r["staff_name"] == "Dana" for r in records))
+        parsed = list(csv.DictReader(io.StringIO(
+            export_attendance_records_csv(
+                self.salon, staff_member=self.dana))))
+        self.assertEqual([int(r["id"]) for r in parsed],
+                         [dana_out.pk, dana_in.pk])
+
+    def test_filtered_staff_member_with_no_records(self):
+        eve = StaffMember.objects.create(
+            salon=self.salon, display_name="Eve")
+        self._in()
+        self.assertEqual(
+            export_attendance_records(self.salon, staff_member=eve),
+            [])
+        self.assertEqual(
+            export_attendance_records_csv(
+                self.salon, staff_member=eve),
+            ",".join(ATTENDANCE_RECORD_EXPORT_FIELDNAMES) + "\n")
+
+    def test_filtered_staff_member_from_other_salon_is_empty(self):
+        self._in()
+        self._in(staff=self.other_staff)
+        self.assertEqual(
+            export_attendance_records(
+                self.salon, staff_member=self.other_staff),
+            [])
+        self.assertEqual(
+            export_attendance_records_csv(
+                self.salon, staff_member=self.other_staff),
+            ",".join(ATTENDANCE_RECORD_EXPORT_FIELDNAMES) + "\n")
+        self.assertEqual(
+            len(export_attendance_records(
+                self.other_salon, staff_member=self.other_staff)),
+            1)
+
     def test_read_only(self):
         self._in()
         self._out()
