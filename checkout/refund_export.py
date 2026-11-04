@@ -47,6 +47,13 @@ Ordering is deterministic and chronological: oldest first
 appended to an external ledger without re-sorting. An empty
 range exports as ``[]`` / the CSV header row alone, never
 ``None``.
+
+Per-sale filter: both export functions accept an optional
+``sale`` (default ``None``). With ``None`` the output is the
+salon-wide export, unchanged. With a sale, only that sale's
+refunds are included; the date window still applies, and the
+salon filter (``sale__salon``) still applies, so a sale from
+another salon exports as empty.
 """
 import csv
 import datetime
@@ -113,7 +120,7 @@ def refund_export_row(refund):
     }
 
 
-def export_refunds(salon, date_from, date_to=None):
+def export_refunds(salon, date_from, date_to=None, sale=None):
     """Return ``salon``'s refund rows in a date range, as dicts.
 
     ``date_from`` / ``date_to`` are inclusive whole local days
@@ -122,6 +129,12 @@ def export_refunds(salon, date_from, date_to=None):
     first (``created_at``, then ``id``). An empty or reversed
     range, a missing salon, or a missing start date exports as
     ``[]``. Read-only.
+
+    ``sale`` is optional: the default ``None`` is the salon-wide
+    export, unchanged. When a sale is given, only that sale's
+    refunds are included; a sale belonging to another salon
+    exports as ``[]`` because the ``sale__salon`` filter still
+    applies.
     """
     if salon is None or date_from is None:
         return []
@@ -145,10 +158,12 @@ def export_refunds(salon, date_from, date_to=None):
         .select_related("sale")
         .order_by("created_at", "id")
     )
+    if sale is not None:
+        refunds = refunds.filter(sale=sale)
     return [refund_export_row(refund) for refund in refunds]
 
 
-def export_refunds_csv(salon, date_from, date_to=None):
+def export_refunds_csv(salon, date_from, date_to=None, sale=None):
     """Return ``salon``'s refunds in a date range as a CSV string.
 
     The header row is :data:`EXPORT_FIELDNAMES` and every data
@@ -156,13 +171,18 @@ def export_refunds_csv(salon, date_from, date_to=None):
     arguments, so the CSV and list exports always agree. An
     empty range exports as the header row alone. Lines end
     with ``"\\n"``.
+
+    ``sale`` is optional and passed through to
+    :func:`export_refunds`: the default ``None`` is the
+    salon-wide export, unchanged; a given sale exports only
+    that sale's refunds.
     """
     buffer = io.StringIO()
     writer = csv.DictWriter(
         buffer, fieldnames=EXPORT_FIELDNAMES, lineterminator="\n"
     )
     writer.writeheader()
-    for record in export_refunds(salon, date_from, date_to):
+    for record in export_refunds(salon, date_from, date_to, sale=sale):
         writer.writerow(record)
     return buffer.getvalue()
 
