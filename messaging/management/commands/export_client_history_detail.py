@@ -2,7 +2,8 @@
 
 Usage:
     python manage.py export_client_history_detail --salon-id ID
-        --client-id ID [--limit N] [--output PATH]
+        --client-id ID [--limit N] [--start-date YYYY-MM-DD]
+        [--end-date YYYY-MM-DD] [--output PATH]
 
 Thin wrapper around the existing
 :func:`messaging.history_export.export_client_history_csv`
@@ -11,7 +12,13 @@ the bookings ``export_client_history`` command's resolution),
 and the client is passed to the service verbatim as
 ``export_client_history_csv(client, limit=...)`` -- its CSV
 text is written unchanged, to ``--output`` when given and to
-stdout otherwise. The service is client-scoped (rows come from
+stdout otherwise. The optional ``--start-date`` /
+``--end-date`` (spelled as ``export_message_history``
+spells them) are parsed to ``datetime.date`` objects and
+passed to the service as its ``start`` / ``end`` window on
+the send's ``sent_at``; omitted, the export is the full
+history, unchanged. An unparseable date raises
+``CommandError``. The service is client-scoped (rows come from
 the ``ReminderSend`` log for that client), so the salon is
 resolved only to validate it exists. A client from another
 salon is passed through too: the service exports that client's
@@ -32,6 +39,8 @@ unwritable ``--output`` path. Read-only. Core stays
 provider-agnostic -- no provider SDK, field, or name appears
 here.
 """
+import datetime
+
 from django.core.management.base import BaseCommand, CommandError
 
 from clients.models import Client
@@ -66,6 +75,21 @@ def _coerce_limit(value):
         ) from exc
 
 
+def _parse_date(value, label):
+    if value is None:
+        return None
+    if isinstance(value, datetime.datetime):
+        return value.date()
+    if isinstance(value, datetime.date):
+        return value
+    try:
+        return datetime.date.fromisoformat(str(value))
+    except ValueError as exc:
+        raise CommandError(
+            f"Invalid {label} {value!r}; expected YYYY-MM-DD."
+        ) from exc
+
+
 def _first(options, *keys):
     for key in keys:
         value = options.get(key)
@@ -93,6 +117,14 @@ class Command(BaseCommand):
                  "own default, the full history).",
         )
         parser.add_argument(
+            "--start-date", dest="start_date", default=None,
+            help="First day of the range, YYYY-MM-DD (inclusive).",
+        )
+        parser.add_argument(
+            "--end-date", dest="end_date", default=None,
+            help="Last day of the range, YYYY-MM-DD (inclusive).",
+        )
+        parser.add_argument(
             "--output", default=None,
             help="Path to write the CSV to (default: stdout).",
         )
@@ -107,8 +139,13 @@ class Command(BaseCommand):
         if client is None:
             raise CommandError("A --client-id is required.")
         limit = _coerce_limit(options.get("limit"))
+        start = _parse_date(
+            _first(options, "start_date", "start"), "start date")
+        end = _parse_date(
+            _first(options, "end_date", "end"), "end date")
         try:
-            text = export_client_history_csv(client, limit=limit)
+            text = export_client_history_csv(
+                client, limit=limit, start=start, end=end)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options.get("output"):

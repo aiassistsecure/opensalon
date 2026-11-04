@@ -31,7 +31,17 @@ count and every row comes exactly from the history service:
   :func:`messaging.history.client_send_history` for one
   client, most recent first, in the service's order. A
   client with no sends (or a missing client) exports as
-  ``[]`` / a header-only CSV.
+  ``[]`` / a header-only CSV. Both accept one optional
+  ``start`` / ``end`` window pair on the send's ``sent_at``
+  (default ``None`` = unbounded, output byte-identical to
+  before); the window applies BEFORE the existing
+  ``limit``. Range semantics mirror the sibling ledger
+  exports: start-inclusive and end-exclusive after
+  normalisation -- a ``date`` start means the start of
+  that day and a ``date`` end means the start of the
+  *following* day, so two dates include the whole end
+  day; a ``datetime`` is used as given (naive datetimes
+  are interpreted in the current time zone).
 
 Opt-in semantics are untouched: opt-in state lives only on
 ``clients.Client`` and is neither read nor duplicated here;
@@ -57,6 +67,9 @@ service's channel order; client rows in the service's order
 """
 import csv
 import io
+from datetime import date, datetime, time, timedelta
+
+from django.utils import timezone
 
 from .history import CHANNELS, client_send_history, reminder_history_summary
 
@@ -126,14 +139,49 @@ def export_history_summary_csv(start=None, end=None, **kwargs):
     return buffer.getvalue()
 
 
-def export_client_history(client, limit=None):
+def _bound(value, *, is_end):
+    """Normalise a range bound to an aware datetime or ``None``."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        bound = value
+    elif isinstance(value, date):
+        bound = datetime.combine(value, time.min)
+        if is_end:
+            bound += timedelta(days=1)
+    else:
+        raise ValueError("range bounds must be a date, datetime, or None")
+    if timezone.is_naive(bound):
+        bound = timezone.make_aware(bound, timezone.get_current_timezone())
+    return bound
+
+
+def export_client_history(client, limit=None, start=None, end=None):
     """Return one client's sends as dict rows.
 
     Rows are rendered verbatim from
     :func:`messaging.history.client_send_history`, in the
     service's order (most recent first). A missing client or
     a client with no sends returns ``[]``. Read-only.
+
+    ``start`` / ``end`` are one optional window pair on the
+    send's ``sent_at`` (see the module docstring for range
+    semantics); the default ``None`` / ``None`` is the full
+    history, unchanged. The window applies BEFORE ``limit``:
+    sends outside the window never consume the limit.
     """
+    sends = client_send_history(client)
+    start_bound = _bound(start, is_end=False)
+    end_bound = _bound(end, is_end=True)
+    if start_bound is not None or end_bound is not None:
+        sends = [
+            send for send in sends
+            if send.sent_at is not None
+            and (start_bound is None or send.sent_at >= start_bound)
+            and (end_bound is None or send.sent_at < end_bound)
+        ]
+    if limit is not None:
+        sends = sends[: int(limit)]
     return [{
         "id": send.pk,
         "appointment_id": send.appointment_id,
@@ -142,23 +190,25 @@ def export_client_history(client, limit=None):
         "status": send.status,
         "sent_at": send.sent_at.isoformat() if send.sent_at else "",
         "detail": send.detail,
-    } for send in client_send_history(client, limit=limit)]
+    } for send in sends]
 
 
-def export_client_history_csv(client, limit=None):
+def export_client_history_csv(client, limit=None, start=None, end=None):
     """Return :func:`export_client_history` as CSV text.
 
     The header row is :data:`CLIENT_HISTORY_FIELDNAMES` and
     every data row comes from :func:`export_client_history`
-    with the same arguments. A client with no sends exports
-    as the header row alone.
+    with the same arguments (including the optional
+    ``start`` / ``end`` window). A client with no sends in
+    the window exports as the header row alone.
     """
     buffer = io.StringIO()
     writer = csv.DictWriter(
         buffer, fieldnames=CLIENT_HISTORY_FIELDNAMES, lineterminator="\n"
     )
     writer.writeheader()
-    for record in export_client_history(client, limit=limit):
+    for record in export_client_history(
+            client, limit=limit, start=start, end=end):
         writer.writerow(record)
     return buffer.getvalue()
 

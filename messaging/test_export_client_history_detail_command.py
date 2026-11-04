@@ -185,6 +185,60 @@ class ExportClientHistoryDetailCommandTests(TestCase):
         self.assertEqual(
             out.getvalue(), export_client_history_csv(self.client))
 
+    def test_start_end_dates_pass_through(self):
+        out = io.StringIO()
+        call_command(
+            _cmd(), salon_id=self.salon.pk, client_id=self.client.pk,
+            start_date=DAY2, end_date=DAY2, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_client_history_csv(self.client, start=DAY2, end=DAY2))
+        self.assertEqual(len(out.getvalue().splitlines()), 2)
+
+    def test_start_end_dates_pass_through_with_cli_args(self):
+        out = io.StringIO()
+        call_command(
+            _cmd(), "--salon-id", str(self.salon.pk),
+            "--client-id", str(self.client.pk),
+            "--start-date", DAY1.isoformat(),
+            "--end-date", DAY1.isoformat(), stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_client_history_csv(self.client, start=DAY1, end=DAY1))
+        self.assertEqual(len(out.getvalue().splitlines()), 2)
+
+    def test_window_applies_before_limit_in_command(self):
+        out = io.StringIO()
+        call_command(
+            _cmd(), salon_id=self.salon.pk, client_id=self.client.pk,
+            start_date=DAY1, end_date=DAY1, limit=1, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_client_history_csv(
+                self.client, limit=1, start=DAY1, end=DAY1))
+
+    def test_start_date_only_passes_through(self):
+        out = io.StringIO()
+        call_command(
+            _cmd(), salon_id=self.salon.pk, client_id=self.client.pk,
+            start_date=DAY2, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_client_history_csv(self.client, start=DAY2))
+
+    def test_invalid_start_date_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                _cmd(), salon_id=self.salon.pk, client_id=self.client.pk,
+                start_date="not-a-date", stdout=io.StringIO())
+
+    def test_invalid_end_date_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                _cmd(), "--salon-id", str(self.salon.pk),
+                "--client-id", str(self.client.pk),
+                "--end-date", "2026-13-40", stdout=io.StringIO())
+
     def test_unknown_salon_raises_command_error(self):
         with self.assertRaises(CommandError):
             call_command(
