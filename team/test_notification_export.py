@@ -125,6 +125,54 @@ class StaffNotificationExportTests(TestCase):
             self.assertNotIn("dana@example.com",
                              [str(v) for v in record.values()])
 
+    def test_default_none_is_salon_wide_unchanged(self):
+        self._note()
+        self._note(appt=self.appt2, created=T2)
+        expected_records = export_staff_notifications(self.salon)
+        expected_csv = export_staff_notifications_csv(self.salon)
+        self.assertEqual(
+            export_staff_notifications(self.salon, staff_member=None),
+            expected_records)
+        self.assertEqual(
+            export_staff_notifications_csv(
+                self.salon, staff_member=None),
+            expected_csv)
+
+    def test_filtered_by_staff_member(self):
+        eve = StaffMember.objects.create(
+            salon=self.salon, display_name="Eve")
+        mine = self._note()
+        self._note(staff=eve, appt=self.appt2, created=T2)
+        records = export_staff_notifications(
+            self.salon, staff_member=self.staff)
+        self.assertEqual([r["id"] for r in records], [mine.pk])
+        self.assertTrue(
+            all(r["staff_name"] == "Dana" for r in records))
+        parsed = list(csv.DictReader(io.StringIO(
+            export_staff_notifications_csv(
+                self.salon, staff_member=self.staff))))
+        self.assertEqual([int(r["id"]) for r in parsed], [mine.pk])
+
+    def test_filtered_staff_member_with_no_notifications(self):
+        eve = StaffMember.objects.create(
+            salon=self.salon, display_name="Eve")
+        self._note()
+        self.assertEqual(
+            export_staff_notifications(self.salon, staff_member=eve),
+            [])
+        self.assertEqual(
+            export_staff_notifications_csv(
+                self.salon, staff_member=eve),
+            ",".join(NOTIFICATION_EXPORT_FIELDNAMES) + "\n")
+
+    def test_filtered_other_salon_staff_member_is_empty(self):
+        self._note()
+        self._note(staff=self.other_staff)
+        self.assertEqual(
+            export_staff_notifications(
+                self.salon, staff_member=self.other_staff),
+            [])
+
     def test_read_only(self):
         self._note()
         before = StaffNotification.objects.count()
