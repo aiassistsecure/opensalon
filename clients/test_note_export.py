@@ -162,3 +162,80 @@ class NoteExportTests(TestCase):
         export_notes_csv(self.salon)
         self.assertEqual(
             (Client.objects.count(), ClientNote.objects.count()), before)
+
+    def test_default_output_byte_identical(self):
+        # Hard-coded expected bytes for the salon-wide export: the
+        # default (and an explicit client=None) must match exactly.
+        amy = self.make_client("Amy", "Smith", external_id="ext-1")
+        bob = self.make_client("Bob", "Adams", external_id="ext-2")
+        base = timezone.now() - timedelta(days=3)
+        bob_note = self.make_note(bob, "Bob note", when=base)
+        amy_note = self.make_note(
+            amy, "Amy note", when=base + timedelta(days=1))
+        expected_records = [
+            {"client_external_id": "ext-2",
+             "client_first_name": "Bob", "client_last_name": "Adams",
+             "note_id": bob_note.pk,
+             "created_at": base.isoformat(), "author_name": "",
+             "body": "Bob note"},
+            {"client_external_id": "ext-1",
+             "client_first_name": "Amy", "client_last_name": "Smith",
+             "note_id": amy_note.pk,
+             "created_at": (base + timedelta(days=1)).isoformat(),
+             "author_name": "", "body": "Amy note"},
+        ]
+        expected_csv = (
+            ",".join(NOTE_FIELDNAMES) + "\n"
+            f"ext-2,Bob,Adams,{bob_note.pk},{base.isoformat()},,Bob note\n"
+            f"ext-1,Amy,Smith,{amy_note.pk},"
+            f"{(base + timedelta(days=1)).isoformat()},,Amy note\n"
+        )
+        self.assertEqual(export_notes(self.salon), expected_records)
+        self.assertEqual(
+            export_notes(self.salon, client=None), expected_records)
+        self.assertEqual(export_notes_csv(self.salon), expected_csv)
+        self.assertEqual(
+            export_notes_csv(self.salon, client=None), expected_csv)
+
+    def test_filtered_by_client(self):
+        amy = self.make_client("Amy", "Smith")
+        bob = self.make_client("Bob", "Adams")
+        base = timezone.now() - timedelta(days=3)
+        self.make_note(bob, "Bob note", when=base)
+        amy_late = self.make_note(
+            amy, "Amy late", when=base + timedelta(days=2))
+        amy_early = self.make_note(amy, "Amy early", when=base)
+        records = export_notes(self.salon, client=amy)
+        self.assertEqual(
+            [r["note_id"] for r in records],
+            [amy_early.pk, amy_late.pk])
+        self.assertTrue(
+            all(r["client_first_name"] == "Amy" for r in records))
+        parsed = list(csv.DictReader(io.StringIO(
+            export_notes_csv(self.salon, client=amy))))
+        self.assertEqual(
+            [int(r["note_id"]) for r in parsed],
+            [amy_early.pk, amy_late.pk])
+
+    def test_filtered_client_with_no_notes(self):
+        amy = self.make_client("Amy", "Smith")
+        bob = self.make_client("Bob", "Adams")
+        self.make_note(bob, "Bob note")
+        self.assertEqual(export_notes(self.salon, client=amy), [])
+        self.assertEqual(
+            export_notes_csv(self.salon, client=amy),
+            ",".join(NOTE_FIELDNAMES) + "\n")
+
+    def test_filtered_client_from_other_salon_is_empty(self):
+        mine = self.make_client("Amy", "Smith")
+        theirs = self.make_client("Bob", "Adams", salon=self.other)
+        self.make_note(mine, "Mine")
+        self.make_note(theirs, "Theirs")
+        # Salon filter still applies over the client filter.
+        self.assertEqual(export_notes(self.salon, client=theirs), [])
+        self.assertEqual(
+            export_notes_csv(self.salon, client=theirs),
+            ",".join(NOTE_FIELDNAMES) + "\n")
+        self.assertEqual(
+            [r["body"] for r in export_notes(self.other, client=theirs)],
+            ["Theirs"])
