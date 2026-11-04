@@ -198,6 +198,52 @@ class SaleItemExportTests(TestCase):
                 self.salon, sale=own[0].sale)],
             [item.pk for item in own])
 
+    def test_kind_filter_default_none_is_unchanged(self):
+        self._items()
+        default = export_sale_items(self.salon)
+        self.assertEqual(export_sale_items(self.salon, kind=None), default)
+        self.assertEqual(
+            export_sale_items_csv(self.salon, kind=None),
+            export_sale_items_csv(self.salon))
+
+    def test_kind_filter_each_core_kind(self):
+        items = self._items()
+        for kind, item in zip(
+                ("service", "product", "series"), items):
+            rows = export_sale_items(self.salon, kind=kind)
+            self.assertEqual([r["id"] for r in rows], [item.pk])
+            self.assertTrue(all(r["kind"] == kind for r in rows))
+            parsed = list(csv.DictReader(io.StringIO(
+                export_sale_items_csv(self.salon, kind=kind))))
+            self.assertEqual([int(r["id"]) for r in parsed], [item.pk])
+        # SaleItem.Kind members filter identically to their slugs.
+        rows = export_sale_items(
+            self.salon, kind=SaleItem.Kind.PRODUCT)
+        self.assertEqual([r["id"] for r in rows], [items[1].pk])
+
+    def test_kind_filter_unknown_kind_is_empty(self):
+        self._items()
+        self.assertEqual(export_sale_items(self.salon, kind="bogus"), [])
+        self.assertEqual(
+            export_sale_items_csv(self.salon, kind="bogus"),
+            ",".join(SALE_ITEM_EXPORT_FIELDNAMES) + "\n")
+
+    def test_kind_filter_composes_with_window_and_sale(self):
+        items = self._items(sale=self._sale(day=self.day))
+        other = self._items(sale=self._sale(day=self.day))
+        rows = export_sale_items(
+            self.salon, self.day, self.day, sale=items[0].sale,
+            kind="product")
+        self.assertEqual([r["id"] for r in rows], [items[1].pk])
+        rows = export_sale_items(
+            self.salon, self.day, self.day, kind="service")
+        self.assertEqual([r["id"] for r in rows],
+                         [items[0].pk, other[0].pk])
+        later = self.day + datetime.timedelta(days=5)
+        self.assertEqual(
+            export_sale_items(self.salon, later, later, kind="service"),
+            [])
+
     def test_reversed_range_and_read_only(self):
         items = self._items(sale=self._sale(day=self.day))
         later = self.day + datetime.timedelta(days=1)
