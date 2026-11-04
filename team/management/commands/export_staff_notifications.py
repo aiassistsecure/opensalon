@@ -2,7 +2,8 @@
 
 Usage:
     python manage.py export_staff_notifications --salon-id ID
-        [--staff-member-id ID] [--kind KIND] [--output PATH]
+        [--staff-member-id ID] [--kind KIND]
+        [--seen-only | --unseen-only] [--output PATH]
 
 Thin wrapper around the existing
 :func:`team.notification_export.export_staff_notifications_csv`
@@ -25,6 +26,12 @@ stored ``kind`` exactly equals it: the value is passed to the
 service as its optional ``kind`` argument. Without ``--kind``
 the command exports every kind, exactly as before. ``--kind``
 composes with ``--staff-member-id`` (both must match).
+
+With ``--seen-only`` only seen notifications (``seen_at`` not
+null) are exported; with ``--unseen-only`` only unseen ones.
+The flags conflict if both are given (``CommandError``).
+Without either, seen state is unfiltered, exactly as before.
+They compose with ``--staff-member-id`` and ``--kind``.
 
 An unknown salon raises ``CommandError``. Backend only -- no
 views, templates, or UI. Read-only.
@@ -53,10 +60,22 @@ class Command(BaseCommand):
             help="Notification kind to export "
                  "(default: all kinds).")
         parser.add_argument(
+            "--seen-only", action="store_true",
+            help="Only seen notifications.")
+        parser.add_argument(
+            "--unseen-only", action="store_true",
+            help="Only unseen notifications.")
+        parser.add_argument(
             "--output", default=None,
             help="Path of the CSV file to write (default: stdout).")
 
     def handle(self, *args, **options):
+        if options.get("seen_only") and options.get("unseen_only"):
+            raise CommandError(
+                "--seen-only and --unseen-only conflict.")
+        seen = (
+            True if options.get("seen_only")
+            else False if options.get("unseen_only") else None)
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist:
@@ -77,7 +96,7 @@ class Command(BaseCommand):
 
         text = export_staff_notifications_csv(
             salon, staff_member=staff_member,
-            kind=options.get("kind"))
+            kind=options.get("kind"), seen=seen)
 
         if options["output"]:
             try:

@@ -26,6 +26,13 @@ unchanged. With a kind, only notifications whose stored
 ``kind`` exactly equals it are included. The kind filter
 composes with ``staff_member`` (both must match).
 
+Seen filter: both export functions also accept an optional
+``seen`` (default ``None``). With ``None`` the output is
+unchanged. With ``True``, only notifications whose
+``seen_at`` is not null are included; with ``False``, only
+those whose ``seen_at`` is null. The seen filter composes
+with ``staff_member`` and ``kind`` (all must match).
+
 ``created_at`` / ``seen_at`` are rendered
 ISO-8601 exactly as stored (``seen_at`` empty when the row is
 unseen); ``kind`` is the stored string.
@@ -84,7 +91,8 @@ def _record(note):
     }
 
 
-def export_staff_notifications(salon, staff_member=None, kind=None):
+def export_staff_notifications(salon, staff_member=None, kind=None,
+                               seen=None):
     """Return ``salon``'s staff notifications as a list of dicts.
 
     The ``salon`` argument is exactly that of
@@ -103,16 +111,23 @@ def export_staff_notifications(salon, staff_member=None, kind=None):
     When a kind is given, only notifications whose stored
     ``kind`` exactly equals it are included. It composes with
     ``staff_member`` (both must match).
+
+    ``seen`` is optional: the default ``None`` is unchanged.
+    ``True`` includes only notifications whose ``seen_at`` is
+    not null; ``False`` only those whose ``seen_at`` is null.
+    It composes with ``staff_member`` and ``kind``.
     """
     return [
         _record(note) for note in staff_notifications(salon)
         if (staff_member is None
             or note.staff_member_id == staff_member.pk)
         and (kind is None or note.kind == kind)
+        and (seen is None or (note.seen_at is not None) == seen)
     ]
 
 
-def export_staff_notifications_csv(salon, staff_member=None, kind=None):
+def export_staff_notifications_csv(salon, staff_member=None, kind=None,
+                                   seen=None):
     """Return ``salon``'s staff notifications as a CSV string.
 
     The header row is :data:`NOTIFICATION_EXPORT_FIELDNAMES`
@@ -131,6 +146,11 @@ def export_staff_notifications_csv(salon, staff_member=None, kind=None):
     default ``None`` is unchanged; a given kind exports only
     notifications whose stored ``kind`` exactly equals it
     (header alone when none match).
+
+    ``seen`` is optional and passed through likewise: the
+    default ``None`` is unchanged; ``True`` exports only seen
+    notifications, ``False`` only unseen (header alone when
+    none match).
     """
     buffer = io.StringIO()
     writer = csv.DictWriter(
@@ -139,7 +159,7 @@ def export_staff_notifications_csv(salon, staff_member=None, kind=None):
     )
     writer.writeheader()
     for record in export_staff_notifications(
-            salon, staff_member=staff_member, kind=kind):
+            salon, staff_member=staff_member, kind=kind, seen=seen):
         writer.writerow(record)
     return buffer.getvalue()
 
