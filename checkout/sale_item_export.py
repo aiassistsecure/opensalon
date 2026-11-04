@@ -31,6 +31,15 @@ salon-wide export, unchanged. With a sale, only that sale's
 items are included; the date window still applies, and the
 salon filter (``sale__salon``) still applies, so a sale from
 another salon exports as empty.
+
+Kind filter: both export functions accept an optional
+``kind`` (default ``None`` = no kind filter, output
+byte-identical to the unfiltered export). With a kind, only
+items whose stored ``kind`` exactly matches it are included
+-- the core :class:`SaleItem.Kind` slugs only (``service`` /
+``product`` / ``series``); no provider concept enters here.
+The kind filter composes (AND) with the date window and the
+per-sale filter.
 """
 import csv
 import datetime
@@ -101,7 +110,8 @@ def sale_item_export_row(item):
     }
 
 
-def export_sale_items(salon, date_from=None, date_to=None, sale=None):
+def export_sale_items(salon, date_from=None, date_to=None, sale=None,
+                      kind=None):
     """Return ``salon``'s sale items verbatim as dicts (see module).
 
     ``sale`` is optional: the default ``None`` is the salon-wide
@@ -109,6 +119,11 @@ def export_sale_items(salon, date_from=None, date_to=None, sale=None):
     items are included; a sale belonging to another salon
     exports as ``[]`` because the ``sale__salon`` filter still
     applies.
+
+    ``kind`` is optional: the default ``None`` applies no kind
+    filter, unchanged. When a kind is given, only items whose
+    stored ``kind`` exactly matches it are included; it
+    composes (AND) with the date window and ``sale``.
     """
     if salon is None:
         return []
@@ -118,6 +133,8 @@ def export_sale_items(salon, date_from=None, date_to=None, sale=None):
     items = SaleItem.objects.filter(sale__salon_id=salon_id)
     if sale is not None:
         items = items.filter(sale=sale)
+    if kind is not None:
+        items = items.filter(kind=kind)
     if date_from is not None:
         tz = _tz_for(salon)
         first = _as_local_date(date_from, tz)
@@ -138,7 +155,8 @@ def export_sale_items(salon, date_from=None, date_to=None, sale=None):
     return [sale_item_export_row(item) for item in items]
 
 
-def export_sale_items_csv(salon, date_from=None, date_to=None, sale=None):
+def export_sale_items_csv(salon, date_from=None, date_to=None, sale=None,
+                          kind=None):
     """Return ``salon``'s sale items as a CSV string.
 
     The header row is :data:`SALE_ITEM_EXPORT_FIELDNAMES` and
@@ -150,6 +168,10 @@ def export_sale_items_csv(salon, date_from=None, date_to=None, sale=None):
     :func:`export_sale_items`: the default ``None`` is the
     salon-wide export, unchanged; a given sale exports only
     that sale's items.
+
+    ``kind`` is optional and passed through likewise: the
+    default ``None`` applies no kind filter, unchanged; a
+    given kind exports only items of that stored kind.
     """
     buffer = io.StringIO()
     writer = csv.DictWriter(
@@ -157,7 +179,8 @@ def export_sale_items_csv(salon, date_from=None, date_to=None, sale=None):
         lineterminator="\n",
     )
     writer.writeheader()
-    for record in export_sale_items(salon, date_from, date_to, sale=sale):
+    for record in export_sale_items(salon, date_from, date_to, sale=sale,
+                                    kind=kind):
         writer.writerow(record)
     return buffer.getvalue()
 

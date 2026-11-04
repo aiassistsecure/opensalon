@@ -36,12 +36,15 @@ class ExportSaleItemsCommandTests(TestCase):
         self.salon = Salon.objects.create(name="Item Salon", timezone="UTC")
         self.other = Salon.objects.create(name="Other Salon", timezone="UTC")
 
-    def _item(self, salon=None, day=DAY):
-        sale = Sale.objects.create(
-            salon=salon or self.salon, status=Sale.Status.COMPLETED)
-        Sale.objects.filter(pk=sale.pk).update(created_at=_stamp(day))
+    def _item(self, salon=None, day=DAY, kind=SaleItem.Kind.SERVICE,
+              sale=None):
+        if sale is None:
+            sale = Sale.objects.create(
+                salon=salon or self.salon, status=Sale.Status.COMPLETED)
+            Sale.objects.filter(pk=sale.pk).update(
+                created_at=_stamp(day))
         return SaleItem.objects.create(
-            sale=sale, kind=SaleItem.Kind.SERVICE, description="Haircut",
+            sale=sale, kind=kind, description="Haircut",
             quantity=1, unit_price=Decimal("85.00"))
 
     def test_stdout_matches_service_no_range(self):
@@ -108,6 +111,58 @@ class ExportSaleItemsCommandTests(TestCase):
         self.assertEqual(
             out.getvalue(),
             export_sale_items_csv(self.salon, sale=None))
+
+    def test_kind_filters_to_one_kind(self):
+        service = self._item()
+        self._item(kind=SaleItem.Kind.PRODUCT, sale=service.sale)
+        self._item(kind=SaleItem.Kind.SERIES, sale=service.sale)
+        out = io.StringIO()
+        call_command(
+            "export_sale_items", salon_id=self.salon.pk,
+            kind="product", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_sale_items_csv(self.salon, kind="product"))
+        self.assertEqual(len(out.getvalue().strip().splitlines()), 2)
+
+    def test_kind_via_cli_flag(self):
+        self._item()
+        out = io.StringIO()
+        call_command(
+            "export_sale_items", "--salon-id", str(self.salon.pk),
+            "--kind", "service", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_sale_items_csv(self.salon, kind="service"))
+
+    def test_no_kind_is_all_kinds_default(self):
+        service = self._item()
+        self._item(kind=SaleItem.Kind.PRODUCT, sale=service.sale)
+        out = io.StringIO()
+        call_command(
+            "export_sale_items", salon_id=self.salon.pk, stdout=out)
+        self.assertEqual(out.getvalue(), export_sale_items_csv(self.salon))
+        self.assertEqual(
+            out.getvalue(),
+            export_sale_items_csv(self.salon, kind=None))
+        self.assertEqual(len(out.getvalue().strip().splitlines()), 3)
+
+    def test_kind_composes_with_sale_and_range(self):
+        service = self._item()
+        product = self._item(
+            kind=SaleItem.Kind.PRODUCT, sale=service.sale)
+        self._item()
+        out = io.StringIO()
+        call_command(
+            "export_sale_items", salon_id=self.salon.pk,
+            sale_id=service.sale_id, kind="product",
+            start_date=DAY, end_date=DAY, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_sale_items_csv(
+                self.salon, DAY, DAY, sale=service.sale, kind="product"))
+        self.assertIn(str(product.pk), out.getvalue())
+        self.assertEqual(len(out.getvalue().strip().splitlines()), 2)
 
     def test_unknown_sale_id_raises_command_error(self):
         with self.assertRaises(CommandError):

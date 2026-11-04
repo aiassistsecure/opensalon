@@ -3,7 +3,7 @@
 Usage:
     python manage.py export_sale_items --salon-id ID
         [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD]
-        [--sale-id ID] [--output PATH]
+        [--sale-id ID] [--kind KIND] [--output PATH]
 
 Thin wrapper around
 :func:`checkout.sale_item_export.export_sale_items_csv` -- the
@@ -23,6 +23,13 @@ a sale from another salon is a ``CommandError``. The resolved
 sale is passed to the service as its optional ``sale``
 argument. Without ``--sale-id`` the command exports the whole
 salon, exactly as before.
+
+With ``--kind`` the export is narrowed to sale items whose
+stored kind exactly matches it (the core ``SaleItem.Kind``
+slugs only); it composes with the window and ``--sale-id``,
+and is passed to the service as its optional ``kind``
+argument. Without ``--kind`` the command exports every kind,
+exactly as before.
 """
 import datetime
 
@@ -74,6 +81,11 @@ class Command(BaseCommand):
                  "to export (default: all sales).",
         )
         parser.add_argument(
+            "--kind", dest="kind", default=None,
+            help="Sale item kind value to filter by (default: "
+                 "all kinds).",
+        )
+        parser.add_argument(
             "--output", default=None,
             help="Path to write the CSV to (default: stdout).",
         )
@@ -108,7 +120,9 @@ class Command(BaseCommand):
                 f"{start.isoformat()}."
             )
         try:
-            text = export_sale_items_csv(salon, start, end, sale=sale)
+            text = export_sale_items_csv(
+                salon, start, end, sale=sale,
+                kind=options.get("kind"))
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options["output"]:
