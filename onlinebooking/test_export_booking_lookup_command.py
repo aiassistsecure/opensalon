@@ -11,15 +11,17 @@ records -- unit logic only.
 import csv
 import datetime
 import io
+import json
 import os
 import tempfile
 
 from django.core.management import CommandError, call_command
+from django.core.serializers.json import DjangoJSONEncoder
 from django.test import TestCase
 
 from bookings.models import Appointment
 from clients.models import Client
-from onlinebooking.lookup_export import export_lookup_csv
+from onlinebooking.lookup_export import export_lookup, export_lookup_csv
 from saloncore.models import Salon, Service, ServiceCategory
 from team.models import StaffMember
 
@@ -132,6 +134,59 @@ class ExportBookingLookupCommandTests(TestCase):
     def test_invalid_now_raises_command_error(self):
         with self.assertRaises(CommandError):
             self.run_export(now="not-a-datetime")
+
+    def test_default_format_is_csv_byte_identical(self):
+        out = self.run_export()
+        self.assertEqual(out, export_lookup_csv(self.salon, None, now=NOW))
+
+    def test_explicit_csv_matches_service(self):
+        out = self.run_export(format="csv")
+        self.assertEqual(out, export_lookup_csv(self.salon, None, now=NOW))
+        out = io.StringIO()
+        call_command(
+            "export_booking_lookup", "--salon-id", str(self.salon.pk),
+            "--now", NOW.isoformat(), "--format", "csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_lookup_csv(self.salon, None, now=NOW))
+
+    def test_json_parses_and_equals_dict_service_rows(self):
+        rows = export_lookup(self.salon, None, now=NOW)
+        out = self.run_export(format="json")
+        self.assertEqual(json.loads(out), rows)
+        self.assertEqual(
+            out, json.dumps(rows, indent=2, cls=DjangoJSONEncoder) + "\n")
+        self.assertIn("Alice", out)
+
+    def test_json_for_client_matches_dict_service(self):
+        rows = export_lookup(self.salon, self.client, now=NOW)
+        out = self.run_export(format="json", client_id=self.client.pk)
+        self.assertEqual(json.loads(out), rows)
+        self.assertEqual([r["id"] for r in json.loads(out)], [self.mine.pk])
+        out = io.StringIO()
+        call_command(
+            "export_booking_lookup", "--salon-id", str(self.salon.pk),
+            "--client-id", str(self.client.pk),
+            "--now", NOW.isoformat(), "--format", "json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()), rows)
+
+    def test_json_output_file_matches_dict_service(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "booking_lookup.json")
+            out = self.run_export(format="json", output=path)
+            self.assertEqual(out, "")
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(
+                    json.load(fh),
+                    export_lookup(self.salon, None, now=NOW))
+
+    def test_unknown_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            self.run_export(format="xml")
+        with self.assertRaises((CommandError, SystemExit)):
+            call_command(
+                "export_booking_lookup", "--salon-id", str(self.salon.pk),
+                "--now", NOW.isoformat(), "--format", "xml",
+                stdout=io.StringIO())
 
     def test_unwritable_output_raises_command_error(self):
         with tempfile.TemporaryDirectory() as tmp:

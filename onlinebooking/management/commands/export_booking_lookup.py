@@ -1,9 +1,9 @@
-"""Export one salon's online booking lookup results as CSV.
+"""Export one salon's online booking lookup results as CSV or JSON.
 
 Usage:
     python manage.py export_booking_lookup --salon-id ID
         [--client-id ID] [--now ISO-DATETIME]
-        [--output PATH]
+        [--format json|csv] [--output PATH]
 
 Thin wrapper around the existing
 :func:`onlinebooking.lookup_export.export_lookup_csv`
@@ -11,6 +11,12 @@ service: this command delegates verbatim to
 ``export_lookup_csv(salon, client, now=now)``
 and adds no export logic of its own, so the command output and
 the service output can never disagree -- one source of truth.
+For ``--format csv`` (the default) that CSV output is exactly
+as before, byte-identical; for ``--format json`` the same
+arguments are passed to the dict service
+:func:`onlinebooking.lookup_export.export_lookup`
+(beside its CSV twin) and its rows are serialised as JSON via
+``DjangoJSONEncoder``, so the two formats can never disagree.
 
 Both lookup arguments are optional and default to ``None``
 exactly as the service defines them: no ``--client-id`` means
@@ -23,18 +29,22 @@ exists elsewhere.
 
 Output goes to stdout unless ``--output`` names a file.
 Invalid input -- an unknown salon, an unknown client, or an
-unparseable ``--now`` -- raises ``CommandError``, as do
-service errors and unwritable output.
+unparseable ``--now``, or an unknown format -- raises
+``CommandError``, as do service errors and unwritable output.
 Backend only -- no views, templates, or UI. Read-only.
 """
 import datetime
+import json
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.core.management.base import BaseCommand, CommandError
+from django.core.serializers.json import DjangoJSONEncoder
 
 from clients.models import Client
-from onlinebooking.lookup_export import export_lookup_csv
+from onlinebooking.lookup_export import export_lookup, export_lookup_csv
 from saloncore.models import Salon
+
+_FORMATS = ("json", "csv")
 
 
 def _tz_for(salon):
@@ -71,7 +81,7 @@ def _parse_now(value, salon):
 
 
 class Command(BaseCommand):
-    help = "Export one salon's online booking lookup results as CSV."
+    help = "Export one salon's online booking lookup results as CSV or JSON."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -86,10 +96,17 @@ class Command(BaseCommand):
             help="Reference instant for upcoming, ISO datetime "
                  "(default: the service's own default).")
         parser.add_argument(
+            "--format", dest="format", default="csv", choices=_FORMATS,
+            help="Export format: csv (default) or json.")
+        parser.add_argument(
             "--output", default=None,
-            help="Path of the CSV file to write (default: stdout).")
+            help="Path of the export file to write (default: stdout).")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist:
@@ -107,7 +124,12 @@ class Command(BaseCommand):
         now = _parse_now(options.get("now"), salon)
 
         try:
-            text = export_lookup_csv(salon, client, now=now)
+            if fmt == "json":
+                rows = export_lookup(salon, client, now=now)
+                text = json.dumps(
+                    rows, indent=2, cls=DjangoJSONEncoder) + "\n"
+            else:
+                text = export_lookup_csv(salon, client, now=now)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
 
