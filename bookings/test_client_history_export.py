@@ -338,3 +338,101 @@ class ClientHistoryExportStatusTests(TestCase):
             [int(r["id"]) for r in csv_rows],
             [self.future_completed.pk, self.completed.pk])
         self.assertTrue(all(r["status"] == "completed" for r in csv_rows))
+
+
+class ClientHistoryExportServiceFilterTests(TestCase):
+    """The optional service filter on the appointment service FK."""
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon", timezone="UTC")
+        self.level = StaffLevel.objects.create(salon=self.salon, name="Level 6")
+        self.staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Stylist One",
+            staff_level=self.level)
+        self.client = Client.objects.create(
+            salon=self.salon, first_name="Test", last_name="Example")
+        self.other = Client.objects.create(
+            salon=self.salon, first_name="Other", last_name="Person")
+        cat = ServiceCategory.objects.create(salon=self.salon, name="Hair")
+        self.service = Service.objects.create(
+            category=cat, name="Haircut", service_minutes=45)
+        self.service2 = Service.objects.create(
+            category=cat, name="Colour", service_minutes=60)
+        self.cut_past = self._appt(at(-10, 9))
+        self.colour = self._appt(
+            at(-1, 9), service=self.service2,
+            status=Appointment.Status.COMPLETED)
+        self.cut = self._appt(at(-1, 10))
+        self.colour_future = self._appt(at(3, 9), service=self.service2)
+        self.snapshot = self._appt(at(4, 9), service=None)
+        self.other_colour = self._appt(
+            at(-1, 11), client=self.other, service=self.service2)
+
+    def _appt(self, start, client=None, **kw):
+        return Appointment.objects.create(
+            client=client or self.client, staff_member=self.staff,
+            service=kw.pop("service", self.service), start=start,
+            end=start + datetime.timedelta(minutes=45), **kw)
+
+    def _ids(self, **kw):
+        return [r["id"] for r in export_client_history(
+            self.salon, self.client, **kw)]
+
+    def test_no_service_is_previous_output(self):
+        self.assertEqual(
+            self._ids(),
+            [self.snapshot.pk, self.colour_future.pk, self.cut.pk,
+             self.colour.pk, self.cut_past.pk])
+        self.assertEqual(
+            export_client_history_csv(self.salon, self.client),
+            export_client_history_csv(self.salon, self.client, service=None))
+
+    def test_service_filter_by_instance_and_pk(self):
+        self.assertEqual(
+            self._ids(service=self.service),
+            [self.cut.pk, self.cut_past.pk])
+        self.assertEqual(
+            self._ids(service=self.service2.pk),
+            [self.colour_future.pk, self.colour.pk])
+        rows = export_client_history(
+            self.salon, self.client, service=self.service2)
+        self.assertTrue(
+            all(r["service_id"] == self.service2.pk for r in rows))
+
+    def test_service_composes_with_client_and_status(self):
+        rows = export_client_history(
+            self.salon, self.other, service=self.service2)
+        self.assertEqual([r["id"] for r in rows], [self.other_colour.pk])
+        self.assertEqual(
+            self._ids(service=self.service2, status="completed"),
+            [self.colour.pk])
+        self.assertEqual(
+            self._ids(service=self.service, status="completed"), [])
+
+    def test_service_composes_with_upcoming_and_window(self):
+        self.assertEqual(
+            self._ids(upcoming_only=True, now=NOW, service=self.service2),
+            [self.colour_future.pk])
+        day = datetime.date(2026, 11, 1)
+        self.assertEqual(
+            self._ids(start_date=day, end_date=day, service=self.service2),
+            [self.colour.pk])
+
+    def test_other_salon_service_and_snapshot_are_empty(self):
+        other_salon = Salon.objects.create(name="Other", timezone="UTC")
+        cat = ServiceCategory.objects.create(salon=other_salon, name="Hair")
+        outsider = Service.objects.create(
+            category=cat, name="Other Cut", service_minutes=30)
+        self.assertEqual(self._ids(service=outsider), [])
+        self.assertEqual(
+            export_client_history_csv(
+                self.salon, self.client, service=outsider),
+            ",".join(CLIENT_HISTORY_EXPORT_FIELDNAMES) + "\n")
+
+    def test_csv_twin_matches_service_rows(self):
+        text = export_client_history_csv(
+            self.salon, self.client, service=self.service2)
+        csv_rows = list(csv.DictReader(io.StringIO(text)))
+        self.assertEqual(
+            [int(r["id"]) for r in csv_rows],
+            [self.colour_future.pk, self.colour.pk])

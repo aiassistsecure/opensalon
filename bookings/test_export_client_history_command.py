@@ -339,3 +339,104 @@ class ExportClientHistoryStatusCommandTests(TestCase):
         self.assertEqual(
             out.getvalue(),
             export_client_history_csv(self.salon, self.client, status=None))
+
+
+class ExportClientHistoryServiceCommandTests(TestCase):
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon", timezone="UTC")
+        self.level = StaffLevel.objects.create(salon=self.salon, name="Level 6")
+        self.staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Stylist One",
+            staff_level=self.level)
+        self.client = Client.objects.create(
+            salon=self.salon, first_name="Test", last_name="Example")
+        cat = ServiceCategory.objects.create(salon=self.salon, name="Hair")
+        self.service = Service.objects.create(
+            category=cat, name="Haircut", service_minutes=45)
+        self.service2 = Service.objects.create(
+            category=cat, name="Colour", service_minutes=60)
+        self.past = Appointment.objects.create(
+            client=self.client, staff_member=self.staff,
+            service=self.service, start=at(-1, 9),
+            end=at(-1, 9) + datetime.timedelta(minutes=45),
+            status=Appointment.Status.COMPLETED)
+        self.future = Appointment.objects.create(
+            client=self.client, staff_member=self.staff,
+            service=self.service2, start=at(3, 9),
+            end=at(3, 9) + datetime.timedelta(minutes=45))
+
+    def test_service_flag_matches_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_client_history", "--salon-id", str(self.salon.pk),
+            "--client-id", str(self.client.pk),
+            "--service-id", str(self.service.pk), stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_client_history_csv(
+                self.salon, self.client, service=self.service))
+        self.assertIn(self.past.start.isoformat(), out.getvalue())
+        self.assertNotIn(self.future.start.isoformat(), out.getvalue())
+
+    def test_service_kwargs_match_service(self):
+        for kwargs in ({"service_id": self.service2.pk},
+                       {"service_id": self.service2},
+                       {"service": self.service2}):
+            out = io.StringIO()
+            call_command(
+                "export_client_history", salon_id=self.salon.pk,
+                client_id=self.client.pk, stdout=out, **kwargs)
+            self.assertEqual(
+                out.getvalue(),
+                export_client_history_csv(
+                    self.salon, self.client, service=self.service2))
+
+    def test_service_composes_with_status_window_upcoming(self):
+        out = io.StringIO()
+        call_command(
+            "export_client_history", salon_id=self.salon.pk,
+            client_id=self.client.pk, service_id=self.service.pk,
+            status="completed", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_client_history_csv(
+                self.salon, self.client, service=self.service,
+                status="completed"))
+        self.assertIn(self.past.start.isoformat(), out.getvalue())
+        out = io.StringIO()
+        call_command(
+            "export_client_history", "--salon-id", str(self.salon.pk),
+            "--client-id", str(self.client.pk),
+            "--start-date", "2026-11-05", "--end-date", "2026-11-05",
+            "--service-id", str(self.service2.pk), stdout=out)
+        self.assertIn(self.future.start.isoformat(), out.getvalue())
+        out = io.StringIO()
+        call_command(
+            "export_client_history", salon_id=self.salon.pk,
+            client_id=self.client.pk, upcoming_only=True, now=NOW,
+            service_id=self.service.pk, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            ",".join(CLIENT_HISTORY_EXPORT_FIELDNAMES) + "\n")
+
+    def test_unknown_service_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_client_history", "--salon-id", str(self.salon.pk),
+                "--client-id", str(self.client.pk),
+                "--service-id", str(self.service.pk + 1000),
+                stdout=io.StringIO())
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_client_history", salon_id=self.salon.pk,
+                client_id=self.client.pk, service_id=999999,
+                stdout=io.StringIO())
+
+    def test_no_service_is_default(self):
+        out = io.StringIO()
+        call_command(
+            "export_client_history", salon_id=self.salon.pk,
+            client_id=self.client.pk, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_client_history_csv(self.salon, self.client, service=None))

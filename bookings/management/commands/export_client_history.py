@@ -5,7 +5,7 @@ Usage:
         --client-id ID [--upcoming-only]
         [--now ISO-8601-DATETIME]
         [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD]
-        [--status STATUS]
+        [--status STATUS] [--service-id ID]
         [--output PATH]
 
 Thin wrapper around the existing
@@ -14,11 +14,16 @@ service: the salon and client are resolved by id, and both are
 passed to the service verbatim as
 ``export_client_history_csv(salon, client,
 upcoming_only=..., now=..., start_date=..., end_date=...,
-status=...)`` --
+status=..., service=...)`` --
 its CSV text is written unchanged, to ``--output`` when given
 and to stdout otherwise. ``--status`` is the optional exact
 stored appointment status to filter by, spelled as the other
 history commands spell it; omitted, no status filter applies.
+``--service-id`` is the optional id of the service to filter
+by on the appointment's service FK; it is resolved the same
+way the salon and client are (an unknown id raises
+``CommandError``) and passed to the service as its ``service``
+filter; omitted, no service filter applies.
 ``--start-date`` / ``--end-date`` are
 the optional inclusive local-date window on appointment
 ``start``, spelled as the other bookings ledger commands spell
@@ -37,7 +42,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 from bookings.client_history_export import export_client_history_csv
 from clients.models import Client
-from saloncore.models import Salon
+from saloncore.models import Salon, Service
 
 
 def _parse_datetime(value):
@@ -149,6 +154,12 @@ class Command(BaseCommand):
                  "no status filter, as the service defines it).",
         )
         parser.add_argument(
+            "--service-id", "--service", dest="service_id",
+            type=int, default=None,
+            help="Id of the service to filter by (default: "
+                 "no service filter, as the service defines it).",
+        )
+        parser.add_argument(
             "--output", default=None,
             help="Path to write the CSV to (default: stdout).",
         )
@@ -163,6 +174,10 @@ class Command(BaseCommand):
         now = _coerce_now(options.get("now"))
         start_date = _coerce_date(options.get("start_date"), "start-date")
         end_date = _coerce_date(options.get("end_date"), "end-date")
+        service_raw = options.get("service_id")
+        if service_raw is None:
+            service_raw = options.get("service")
+        service = _resolve(Service, service_raw, "service")
         try:
             text = export_client_history_csv(
                 salon, client,
@@ -171,6 +186,7 @@ class Command(BaseCommand):
                 start_date=start_date,
                 end_date=end_date,
                 status=options.get("status"),
+                service=service,
             )
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc

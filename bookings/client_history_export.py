@@ -71,6 +71,18 @@ byte-identical. It composes with the ``client``,
 ordering still come from :mod:`bookings.client_history` alone,
 and the filter only drops rows whose stored ``status`` does
 not exactly match it.
+
+Service filter: ``service`` is an optional selection -- a
+``saloncore.Service`` instance or its pk -- matched on the
+appointment's per-record ``service`` FK (``service_id``). It
+defaults ``None``, which is exactly the previous output,
+byte-identical. It composes with the ``client``,
+``upcoming_only``, window, and ``status`` parameters:
+membership and ordering still come from
+:mod:`bookings.client_history` alone, and the filter only
+drops rows whose ``service_id`` does not match it, so
+snapshot-only appointments (``service_id`` is ``None``) and
+a service from another salon export as empty.
 """
 import csv
 import datetime
@@ -162,8 +174,18 @@ def _in_window(start, salon, start_date, end_date):
     return True
 
 
+def _service_pk(service):
+    """Reduce a Service instance (or a raw pk) to its pk."""
+    pk = getattr(service, "pk", service)
+    try:
+        return int(pk)
+    except (TypeError, ValueError):
+        return pk
+
+
 def export_client_history(salon, client=None, upcoming_only=False, now=None,
-                          start_date=None, end_date=None, status=None):
+                          start_date=None, end_date=None, status=None,
+                          service=None):
     """Return one client's appointment-history rows as dicts.
 
     Args:
@@ -181,6 +203,10 @@ def export_client_history(salon, client=None, upcoming_only=False, now=None,
         status: optional exact stored appointment ``status``
             to filter by; default ``None`` = no status filter,
             the previous output verbatim.
+        service: optional ``saloncore.Service`` instance (or
+            its pk) to filter by on the appointment's
+            ``service_id``; default ``None`` = no service
+            filter, the previous output verbatim.
 
     Returns:
         A list of dicts with exactly
@@ -202,6 +228,11 @@ def export_client_history(salon, client=None, upcoming_only=False, now=None,
     if status is not None:
         appointments = [
             appt for appt in appointments if appt.status == status
+        ]
+    if service is not None:
+        service_pk = _service_pk(service)
+        appointments = [
+            appt for appt in appointments if appt.service_id == service_pk
         ]
     # One price-book query for every (service, staff level) pair,
     # as in bookings.export, rather than a lookup per appointment.
@@ -246,7 +277,8 @@ def export_client_history(salon, client=None, upcoming_only=False, now=None,
 
 
 def export_client_history_csv(salon, client=None, upcoming_only=False, now=None,
-                              start_date=None, end_date=None, status=None):
+                              start_date=None, end_date=None, status=None,
+                              service=None):
     """Return one client's appointment history as a CSV string.
 
     Arguments are the same as :func:`export_client_history`.
@@ -265,6 +297,7 @@ def export_client_history_csv(salon, client=None, upcoming_only=False, now=None,
     for row in export_client_history(
         salon, client, upcoming_only=upcoming_only, now=now,
         start_date=start_date, end_date=end_date, status=status,
+        service=service,
     ):
         writer.writerow({
             name: ("" if row[name] is None else row[name])
