@@ -37,17 +37,20 @@ def _aware(day, hour=12):
         datetime.datetime.combine(day, datetime.time(hour)))
 
 
-def _service_text(salon, date_from=None, date_to=None):
+def _service_text(salon, date_from=None, date_to=None, delivery_status=None):
     return json.dumps(
-        export_receipts(date_from, date_to, salon=salon), indent=2) + "\n"
+        export_receipts(date_from, date_to, salon=salon,
+                        delivery_status=delivery_status),
+        indent=2) + "\n"
 
 
-def _csv_text(salon, date_from=None, date_to=None):
+def _csv_text(salon, date_from=None, date_to=None, delivery_status=None):
     buffer = io.StringIO()
     writer = csv.DictWriter(
         buffer, fieldnames=EXPORT_FIELDNAMES, lineterminator="\n")
     writer.writeheader()
-    for row in export_receipts(date_from, date_to, salon=salon):
+    for row in export_receipts(date_from, date_to, salon=salon,
+                                delivery_status=delivery_status):
         writer.writerow(row)
     return buffer.getvalue()
 
@@ -67,7 +70,7 @@ class ExportReceiptCommandTests(TestCase):
             salon=self.salon, first_name="Test", last_name="Example",
             email="client@example.com")
 
-    def _receipt(self, issued_day, salon=None, client="default"):
+    def _receipt(self, issued_day, salon=None, client="default", sent=False):
         sale = Sale.objects.create(
             salon=salon or self.salon,
             client=self.client if client == "default" else client,
@@ -77,8 +80,11 @@ class ExportReceiptCommandTests(TestCase):
             sale=sale, kind="service", description="Haircut",
             unit_price=Decimal("85.00"))
         receipt = build_receipt(sale)
-        Receipt.objects.filter(pk=receipt.pk).update(
-            issued_at=_aware(issued_day))
+        updates = {"issued_at": _aware(issued_day)}
+        if sent:
+            updates["recipient_email"] = "client@example.com"
+            updates["sent_at"] = _aware(issued_day, hour=13)
+        Receipt.objects.filter(pk=receipt.pk).update(**updates)
         receipt.refresh_from_db()
         return receipt
 
@@ -243,6 +249,86 @@ class ExportReceiptCommandTests(TestCase):
             start_date=DAY, end_date=DAY, format="csv", stdout=out)
         self.assertEqual(
             out.getvalue(), ",".join(EXPORT_FIELDNAMES) + "\n")
+
+    def test_delivery_status_filters_to_matching_receipts(self):
+        sent = self._receipt(DAY, sent=True)
+        self._receipt(DAY)
+        out = io.StringIO()
+        call_command(
+            "export_receipt", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, delivery_status="sent",
+            stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            _service_text(self.salon, DAY, DAY, delivery_status="sent"))
+        rows = json.loads(out.getvalue())
+        self.assertEqual([r["id"] for r in rows], [sent.pk])
+
+    def test_delivery_status_via_cli_flag(self):
+        self._receipt(DAY, sent=True)
+        unsent = self._receipt(DAY)
+        out = io.StringIO()
+        call_command(
+            "export_receipt", "--salon-id", str(self.salon.pk),
+            "--start-date", DAY.isoformat(), "--end-date", DAY.isoformat(),
+            "--delivery-status", "not_sent", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            _service_text(self.salon, DAY, DAY,
+                          delivery_status="not_sent"))
+        rows = json.loads(out.getvalue())
+        self.assertEqual([r["id"] for r in rows], [unsent.pk])
+
+    def test_delivery_status_composes_with_sale_id(self):
+        sent = self._receipt(DAY, sent=True)
+        self._receipt(DAY, sent=True)
+        out = io.StringIO()
+        call_command(
+            "export_receipt", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, sale_id=sent.sale_id,
+            delivery_status="not_sent", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            _service_text(self.salon, DAY, DAY,
+                          delivery_status="not_sent"))
+        self.assertEqual(json.loads(out.getvalue()), [])
+
+    def test_delivery_status_csv_format(self):
+        self._receipt(DAY, sent=True)
+        self._receipt(DAY)
+        out = io.StringIO()
+        call_command(
+            "export_receipt", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, format="csv",
+            delivery_status="sent", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            _csv_text(self.salon, DAY, DAY, delivery_status="sent"))
+        self.assertEqual(len(out.getvalue().strip().splitlines()), 2)
+
+    def test_no_delivery_status_is_all_statuses_default(self):
+        self._receipt(DAY, sent=True)
+        self._receipt(DAY)
+        out = io.StringIO()
+        call_command(
+            "export_receipt", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            _service_text(self.salon, DAY, DAY, delivery_status=None))
+        self.assertEqual(len(json.loads(out.getvalue())), 2)
+
+    def test_unknown_delivery_status_is_empty(self):
+        self._receipt(DAY, sent=True)
+        out = io.StringIO()
+        call_command(
+            "export_receipt", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, delivery_status="bogus",
+            stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            _service_text(self.salon, DAY, DAY, delivery_status="bogus"))
+        self.assertEqual(json.loads(out.getvalue()), [])
 
     def test_invalid_format_raises_command_error(self):
         with self.assertRaises(CommandError):

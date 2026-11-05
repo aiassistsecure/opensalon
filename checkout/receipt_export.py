@@ -57,6 +57,17 @@ exporting nothing. :func:`export_receipts_csv` is the CSV
 twin of :func:`export_receipts`, built from that same list,
 so the two formats can never disagree.
 
+Delivery-status filter: both export functions also accept an
+optional keyword-only ``delivery_status`` (default ``None``).
+With ``None`` the output is unchanged. With a status, only
+receipts whose derived ``delivery_status`` — exactly as
+:func:`receipt_export_row` defines it, ``"sent"`` when
+``sent_at`` is set and ``"not_sent"`` otherwise — matches it
+exactly are included; it composes with the date window, the
+salon scope, and the per-sale filter (all AND). An unknown
+status matches nothing — ``[]`` / a header-only CSV — exactly
+as the sibling categorical filters behave.
+
 Core stays provider-agnostic: no payment-provider SDK, field,
 or name appears here; tender detail stays on the receipt
 snapshot itself and is not part of these rows.
@@ -190,7 +201,8 @@ def _resolve_sale(sale, salon):
             f"no sale with id {sale_id!r} for this salon") from exc
 
 
-def export_receipts(date_from=None, date_to=None, salon=None, *, sale=None):
+def export_receipts(date_from=None, date_to=None, salon=None, *, sale=None,
+                    delivery_status=None):
     """Return receipt rows issued in a range, as a list of dicts.
 
     Dates are inclusive whole local days (in ``salon``'s
@@ -206,6 +218,13 @@ def export_receipts(date_from=None, date_to=None, salon=None, *, sale=None):
     it is resolved within ``salon``, so an unknown id, an
     unsaved instance, or another salon's sale raises
     ``ValueError``.
+
+    ``delivery_status`` is optional and keyword-only: the
+    default ``None`` is unchanged. When a status is given,
+    only receipts whose derived delivery status matches it
+    exactly are included (``"sent"`` is ``sent_at`` set,
+    ``"not_sent"`` is ``sent_at`` unset); an unknown status
+    matches nothing.
     """
     resolved_sale = _resolve_sale(sale, salon) if sale is not None else None
     tz = _tz_for(salon)
@@ -215,6 +234,13 @@ def export_receipts(date_from=None, date_to=None, salon=None, *, sale=None):
         qs = qs.filter(sale__salon=salon)
     if resolved_sale is not None:
         qs = qs.filter(sale=resolved_sale)
+    if delivery_status is not None:
+        if delivery_status == "sent":
+            qs = qs.filter(sent_at__isnull=False)
+        elif delivery_status == "not_sent":
+            qs = qs.filter(sent_at__isnull=True)
+        else:
+            qs = qs.none()
     if start_dt is not None:
         qs = qs.filter(issued_at__gte=start_dt)
     if end_dt is not None:
@@ -228,7 +254,8 @@ def export_receipts(date_from=None, date_to=None, salon=None, *, sale=None):
     ]
 
 
-def export_receipts_csv(date_from=None, date_to=None, salon=None, *, sale=None):
+def export_receipts_csv(date_from=None, date_to=None, salon=None, *, sale=None,
+                        delivery_status=None):
     """Return receipt rows issued in a range as a CSV string.
 
     The header row is :data:`EXPORT_FIELDNAMES` and every data
@@ -241,13 +268,20 @@ def export_receipts_csv(date_from=None, date_to=None, salon=None, *, sale=None):
     :func:`export_receipts`: the default ``None`` is the
     salon-wide export, unchanged; a given sale exports only
     that sale's receipts.
+
+    ``delivery_status`` is likewise optional and keyword-only
+    and passed through: the default ``None`` is unchanged; a
+    given status exports only receipts with that derived
+    delivery status.
     """
     buffer = io.StringIO()
     writer = csv.DictWriter(
         buffer, fieldnames=EXPORT_FIELDNAMES, lineterminator="\n"
     )
     writer.writeheader()
-    for record in export_receipts(date_from, date_to, salon=salon, sale=sale):
+    for record in export_receipts(
+            date_from, date_to, salon=salon, sale=sale,
+            delivery_status=delivery_status):
         writer.writerow(record)
     return buffer.getvalue()
 

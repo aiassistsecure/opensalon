@@ -3,7 +3,8 @@
 Usage:
     python manage.py export_receipt --salon-id ID
         [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD]
-        [--sale-id ID] [--format json|csv] [--output PATH]
+        [--sale-id ID] [--delivery-status STATUS]
+        [--format json|csv] [--output PATH]
 
 Thin wrapper around the existing
 :func:`checkout.receipt_export.export_receipts` service:
@@ -29,6 +30,16 @@ an unknown id or a sale from another salon is a
 ``CommandError``. The resolved sale is passed to the service
 as its optional ``sale`` argument. Without ``--sale-id`` the
 command exports the whole salon range, exactly as before.
+
+With ``--delivery-status`` the export is narrowed to
+receipts whose derived delivery status exactly matches that
+value (``sent`` / ``not_sent``, exactly as the service
+defines it): it is passed to the service as its optional
+``delivery_status`` argument and composes with the range and
+``--sale-id``. Without ``--delivery-status`` the command
+exports every delivery status, exactly as before. An unknown
+status matches nothing, exactly as the sibling categorical
+filters behave.
 
 Invalid input -- an unparseable date, a reversed range, or
 an unknown format -- raises ``CommandError``, as do service
@@ -92,6 +103,11 @@ class Command(BaseCommand):
                  "export (default: all sales in the range).",
         )
         parser.add_argument(
+            "--delivery-status", dest="delivery_status", default=None,
+            help="Derived delivery status to filter by (sent / "
+                 "not_sent; default: all statuses).",
+        )
+        parser.add_argument(
             "--format", dest="format", default="json", choices=_FORMATS,
             help="Export format: json (default) or csv.",
         )
@@ -130,7 +146,9 @@ class Command(BaseCommand):
                 f"{start.isoformat()}."
             )
         try:
-            rows = export_receipts(start, end, salon=salon, sale=sale)
+            rows = export_receipts(
+                start, end, salon=salon, sale=sale,
+                delivery_status=options.get("delivery_status"))
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if fmt == "csv":
