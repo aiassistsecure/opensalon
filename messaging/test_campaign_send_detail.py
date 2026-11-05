@@ -1,11 +1,13 @@
 """Tests for campaign_send_detail service + export command."""
 import csv
 import io
+import json
 from datetime import date, datetime, time
 from unittest import mock
 from zoneinfo import ZoneInfo
 
 from django.core.management import CommandError, call_command, load_command_class
+from django.core.serializers.json import DjangoJSONEncoder
 from django.test import TestCase
 
 from clients.models import Client
@@ -281,6 +283,89 @@ class DetailCommandTests(CampaignSendDetailBase):
             call_command(_cmd(), salon_id=self.salon.pk,
                          date_from=DAY1, campaign_id=foreign.pk,
                          stdout=io.StringIO())
+
+    def test_default_is_csv_byte_identical(self):
+        default_out = io.StringIO()
+        call_command(_cmd(), salon_id=self.salon.pk,
+                     date_from=DAY1, date_to=DAY3, stdout=default_out)
+        csv_out = io.StringIO()
+        call_command(_cmd(), salon_id=self.salon.pk,
+                     date_from=DAY1, date_to=DAY3, format="csv",
+                     stdout=csv_out)
+        self.assertEqual(default_out.getvalue(), csv_out.getvalue())
+        self.assertEqual(default_out.getvalue(),
+                         export_campaign_send_detail_csv(self.salon, DAY1, DAY3))
+
+    def test_explicit_csv_via_cli_matches_service(self):
+        out = io.StringIO()
+        call_command(_cmd(), "--salon-id", str(self.salon.pk),
+                     "--date-from", DAY1.isoformat(),
+                     "--date-to", DAY3.isoformat(),
+                     "--format", "csv", stdout=out)
+        self.assertEqual(out.getvalue(),
+                         export_campaign_send_detail_csv(self.salon, DAY1, DAY3))
+
+    def test_json_parses_and_equals_dict_service_rows(self):
+        out = io.StringIO()
+        call_command(_cmd(), salon_id=self.salon.pk,
+                     date_from=DAY1, date_to=DAY3, format="json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()),
+                         export_campaign_send_detail(self.salon, DAY1, DAY3))
+        self.assertEqual(out.getvalue(),
+                         json.dumps(export_campaign_send_detail(
+                             self.salon, DAY1, DAY3),
+                             indent=2, cls=DjangoJSONEncoder) + "\n")
+
+    def test_json_via_cli_with_campaign_matches_dict_service(self):
+        target = CampaignSend.objects.filter(
+            campaign__salon=self.salon).order_by("id").first()
+        campaign = Campaign.objects.get(pk=target.campaign_id)
+        out = io.StringIO()
+        call_command(_cmd(), "--salon-id", str(self.salon.pk),
+                     "--date-from", DAY1.isoformat(),
+                     "--date-to", DAY3.isoformat(),
+                     "--campaign-id", str(target.campaign_id),
+                     "--format", "json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()),
+                         export_campaign_send_detail(
+                             self.salon, DAY1, DAY3, campaign=campaign))
+        self.assertEqual(len(json.loads(out.getvalue())), 1)
+
+    def test_json_delegates_to_dict_service_verbatim(self):
+        with mock.patch(
+            "messaging.management.commands.export_campaign_send_detail"
+            ".export_campaign_send_detail",
+            wraps=export_campaign_send_detail,
+        ) as spy:
+            call_command(_cmd(), salon_id=self.salon.pk,
+                         date_from=DAY1, date_to=DAY3, format="json",
+                         stdout=io.StringIO())
+        spy.assert_called_once_with(
+            self.salon, DAY1, DAY3, campaign=None)
+
+    def test_json_output_file_matches_dict_service(self):
+        out = io.StringIO()
+        opener = mock.mock_open()
+        with mock.patch("builtins.open", opener):
+            call_command(_cmd(), salon_id=self.salon.pk,
+                         date_from=DAY1, date_to=DAY3, format="json",
+                         output="detail.json", stdout=out)
+        written = "".join(
+            call.args[0] for call in opener().write.call_args_list)
+        self.assertEqual(json.loads(written),
+                         export_campaign_send_detail(self.salon, DAY1, DAY3))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_unknown_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(_cmd(), salon_id=self.salon.pk,
+                         date_from=DAY1, format="xml", stdout=io.StringIO())
+
+    def test_unknown_format_via_cli_is_rejected(self):
+        with self.assertRaises(CommandError):
+            call_command(_cmd(), "--salon-id", str(self.salon.pk),
+                         "--date-from", DAY1.isoformat(),
+                         "--format", "xml", stdout=io.StringIO())
 
     def test_unknown_salon_and_unwritable_output(self):
         with self.assertRaises(CommandError):
