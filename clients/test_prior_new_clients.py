@@ -6,10 +6,11 @@ per-day counts bucket new_clients first-visit dates, each
 current day paired with the day 7 days earlier. Count-shaped
 only — no client rows or names in comparison or export.
 """
-import csv, datetime, io  # noqa: E401
+import csv, datetime, io, json, os, tempfile  # noqa: E401
 from decimal import Decimal
 
 from django.core.management import CommandError, call_command
+from django.core.serializers.json import DjangoJSONEncoder
 from django.test import TestCase
 
 from bookings.models import Appointment
@@ -168,3 +169,97 @@ class CommandTests(Base):
                        dict(salon_id=self.salon.id, start_date="2026-10-14", end_date="2026-10-08")):
             with self.assertRaises(CommandError):
                 call_command("export_prior_new_clients", stdout=io.StringIO(), **kwargs)
+
+
+class FormatCommandTests(Base):
+    def _call(self, **extra):
+        out = io.StringIO()
+        call_command("export_prior_new_clients", salon_id=self.salon.id,
+                     start_date="2026-10-08", end_date="2026-10-14",
+                     stdout=out, **extra)
+        return out.getvalue()
+
+    def test_default_format_is_csv_byte_identical(self):
+        self._book()
+        self.assertEqual(self._call(),
+                         export_prior_new_clients_csv(self.salon, START, END))
+
+    def test_explicit_csv_format_matches_service(self):
+        self._book()
+        want = export_prior_new_clients_csv(self.salon, START, END)
+        self.assertEqual(self._call(format="csv"), want)
+        out = io.StringIO()
+        call_command("export_prior_new_clients", "--salon-id", str(self.salon.id),
+                     "--start-date", "2026-10-08", "--end-date", "2026-10-14",
+                     "--format", "csv", stdout=out)
+        self.assertEqual(out.getvalue(), want)
+
+    def test_json_output_matches_dict_service_rows(self):
+        self._book()
+        rows = export_prior_new_clients(self.salon, START, END)
+        text = self._call(format="json")
+        self.assertEqual(text, json.dumps(rows, indent=2,
+                                          cls=DjangoJSONEncoder) + "\n")
+        parsed = json.loads(text)
+        self.assertEqual(len(parsed), 8)  # total + 7 days
+        self.assertEqual((parsed[0]["day"], parsed[0]["current_count"],
+                          parsed[0]["prior_count"], parsed[0]["delta"],
+                          parsed[0]["percent_change"]),
+                         ("total", 4, 3, 1, "33.33"))
+        self.assertIsNone(parsed[2]["percent_change"])  # Oct 9: 0 vs 0
+
+    def test_json_flag_matches_dict_service(self):
+        self._book()
+        out = io.StringIO()
+        call_command("export_prior_new_clients", "--salon-id", str(self.salon.id),
+                     "--start-date", "2026-10-08", "--end-date", "2026-10-14",
+                     "--format", "json", stdout=out)
+        self.assertEqual(out.getvalue(),
+                         json.dumps(export_prior_new_clients(self.salon, START, END),
+                                    indent=2, cls=DjangoJSONEncoder) + "\n")
+
+    def test_json_composes_with_window_and_salon(self):
+        self._book()
+        out = io.StringIO()
+        call_command("export_prior_new_clients", salon_id=self.salon.id,
+                     start_date="2026-10-08", end_date="2026-10-08",
+                     format="json", stdout=out)
+        self.assertEqual(out.getvalue(),
+                         json.dumps(export_prior_new_clients(self.salon, START, START),
+                                    indent=2, cls=DjangoJSONEncoder) + "\n")
+        parsed = json.loads(out.getvalue())
+        self.assertEqual(len(parsed), 2)  # total + 1 day
+        other = io.StringIO()
+        call_command("export_prior_new_clients", salon_id=self.other.id,
+                     start_date="2026-10-08", end_date="2026-10-14",
+                     format="json", stdout=other)
+        self.assertEqual(json.loads(other.getvalue())[0]["current_count"], 0)
+
+    def test_json_output_file_matches_dict_service(self):
+        self._book()
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "prior_new_clients.json")
+            call_command("export_prior_new_clients", salon_id=self.salon.id,
+                         start_date="2026-10-08", end_date="2026-10-14",
+                         format="json", output=path, stdout=out)
+            with open(path, encoding="utf-8") as fh:
+                written = fh.read()
+        self.assertEqual(written,
+                         json.dumps(export_prior_new_clients(self.salon, START, END),
+                                    indent=2, cls=DjangoJSONEncoder) + "\n")
+        self.assertEqual(out.getvalue(), "")
+
+    def test_invalid_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            self._call(format="xml")
+        with self.assertRaises(CommandError):
+            call_command("export_prior_new_clients", "--salon-id", str(self.salon.id),
+                         "--start-date", "2026-10-08", "--end-date", "2026-10-14",
+                         "--format", "xml", stdout=io.StringIO())
+
+    def test_json_reversed_range_raises(self):
+        with self.assertRaises(CommandError):
+            call_command("export_prior_new_clients", salon_id=self.salon.id,
+                         start_date="2026-10-14", end_date="2026-10-08",
+                         format="json", stdout=io.StringIO())

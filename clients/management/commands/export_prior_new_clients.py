@@ -1,20 +1,35 @@
-"""Export one salon's prior-period new-client comparison as CSV.
+"""Export one salon's prior-period new-client comparison as CSV or JSON.
 
 Usage: python manage.py export_prior_new_clients --salon-id ID
-    --start-date YYYY-MM-DD --end-date YYYY-MM-DD [--output PATH]
+    --start-date YYYY-MM-DD --end-date YYYY-MM-DD
+    [--format json|csv] [--output PATH]
 
 Thin wrapper around ``clients.prior_new_clients_export``: salon
-resolved by id, dates parsed and passed verbatim; CSV written
-unchanged to ``--output`` or stdout. Both dates required;
-unknown salon, unparseable/missing date, or a service error
-(e.g. reversed range) raises ``CommandError``.
+resolved by id, dates parsed and passed verbatim; for
+``--format csv`` (the default) the CSV from
+:func:`clients.prior_new_clients_export.export_prior_new_clients_csv`
+is written unchanged to ``--output`` or stdout; for
+``--format json`` the SAME dict rows from
+:func:`clients.prior_new_clients_export.export_prior_new_clients`
+are serialised via ``DjangoJSONEncoder`` (indent=2, trailing
+newline), so the two formats can never disagree. Both dates
+required; unknown salon, unparseable/missing date, unknown
+format, or a service error (e.g. reversed range) raises
+``CommandError``.
 """
 import datetime
+import json
 
 from django.core.management.base import BaseCommand, CommandError
+from django.core.serializers.json import DjangoJSONEncoder
 
-from clients.prior_new_clients_export import export_prior_new_clients_csv
+from clients.prior_new_clients_export import (
+    export_prior_new_clients,
+    export_prior_new_clients_csv,
+)
 from saloncore.models import Salon
+
+_FORMATS = ("json", "csv")
 
 
 def _parse_date(value, label):
@@ -32,7 +47,8 @@ def _parse_date(value, label):
 
 
 class Command(BaseCommand):
-    help = "Export one salon's prior-period new-client count comparison as CSV."
+    help = ("Export one salon's prior-period new-client count comparison "
+            "as CSV (default) or JSON.")
 
     def add_arguments(self, parser):
         parser.add_argument("--salon-id", type=int, required=True,
@@ -43,10 +59,18 @@ class Command(BaseCommand):
         parser.add_argument("--end-date", "--end", "--date-to",
                             dest="end_date", default=None,
                             help="Last day of the current window, YYYY-MM-DD.")
+        parser.add_argument("--format", dest="format", default="csv",
+                            choices=_FORMATS,
+                            help="Export format: csv (default) or json.")
         parser.add_argument("--output", default=None,
-                            help="Path of the CSV file to write (default: stdout).")
+                            help="Path of the export file to write "
+                                 "(default: stdout).")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist:
@@ -56,7 +80,12 @@ class Command(BaseCommand):
         if start_date is None or end_date is None:
             raise CommandError("Both --start-date and --end-date are required.")
         try:
-            text = export_prior_new_clients_csv(salon, start_date, end_date)
+            if fmt == "json":
+                rows = export_prior_new_clients(salon, start_date, end_date)
+                text = json.dumps(
+                    rows, indent=2, cls=DjangoJSONEncoder) + "\n"
+            else:
+                text = export_prior_new_clients_csv(salon, start_date, end_date)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options["output"]:
