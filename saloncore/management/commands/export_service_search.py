@@ -1,30 +1,41 @@
-"""Export a salon's price-book search results as CSV.
+"""Export a salon's price-book search results as CSV or JSON.
 
 Usage:
     python manage.py export_service_search --salon-id ID
-        [--query TEXT] [--include-inactive] [--output PATH]
+        [--query TEXT] [--include-inactive] [--format json|csv]
+        [--output PATH]
 
 Backend only -- no views, templates, or UI. This command is a
-thin wrapper around
-:func:`saloncore.search_export.export_search_services_csv`:
-it resolves the salon by id, delegates to that service
-verbatim (with the same ``query`` and ``include_inactive``),
-and writes the returned CSV to ``--output`` when given,
-otherwise to stdout. It adds no fields, filtering, or
-formatting of its own, so the command output and the service
-output can never disagree -- one source of truth.
+thin wrapper around :mod:`saloncore.search_export`: it
+resolves the salon by id, delegates to that service verbatim
+(with the same ``query`` and ``include_inactive``), and writes
+the result to ``--output`` when given, otherwise to stdout.
+For ``--format csv`` (the default) it writes
+:func:`saloncore.search_export.export_search_services_csv`'s
+CSV string, exactly as before; for ``--format json`` it
+serialises the SAME dict rows from
+:func:`saloncore.search_export.export_search_services` as
+JSON. It adds no fields, filtering, or formatting of its own,
+so the formats can never disagree -- one source of truth.
 
 Founding rule (Exit Principle): anything a salon can enter, it
 can fully export.
 """
+import json
+
 from django.core.management.base import BaseCommand, CommandError
 
 from saloncore.models import Salon
-from saloncore.search_export import export_search_services_csv
+from saloncore.search_export import (
+    export_search_services,
+    export_search_services_csv,
+)
+
+_FORMATS = ("json", "csv")
 
 
 class Command(BaseCommand):
-    help = "Export a salon's price-book search results as CSV."
+    help = "Export a salon's price-book search results as CSV (default) or JSON."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -43,20 +54,34 @@ class Command(BaseCommand):
             help="Include inactive services (default: excluded).",
         )
         parser.add_argument(
+            "--format", dest="format", default="csv", choices=_FORMATS,
+            help="Export format: csv (default) or json.",
+        )
+        parser.add_argument(
             "--output", default=None,
-            help="Path of the CSV file to write (default: stdout).",
+            help="Path of the export file to write (default: stdout).",
         )
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist as exc:
             raise CommandError(
                 f"No salon with id {options['salon_id']}.") from exc
         try:
-            text = export_search_services_csv(
-                salon, options["query"],
-                include_inactive=options["include_inactive"])
+            if fmt == "json":
+                rows = export_search_services(
+                    salon, options["query"],
+                    include_inactive=options["include_inactive"])
+                text = json.dumps(rows, indent=2) + "\n"
+            else:
+                text = export_search_services_csv(
+                    salon, options["query"],
+                    include_inactive=options["include_inactive"])
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options["output"]:
