@@ -1,17 +1,22 @@
-"""Export one salon's Break rows verbatim as CSV.
+"""Export one salon's Break rows verbatim as CSV or JSON.
 
 Usage:
     python manage.py export_breaks --salon-id ID
         [--date-from YYYY-MM-DD] [--date-to YYYY-MM-DD]
         [--staff-member ID] [--paid-only | --unpaid-only]
-        [--output PATH]
+        [--format json|csv] [--output PATH]
 
 Thin wrapper around
 :func:`bookings.breaks_export.export_breaks_csv`: the salon is
 resolved by id, the dates are parsed to ``datetime.date``
 objects, and both are passed to the service verbatim -- its
 CSV text is written unchanged, to ``--output`` when given and
-to stdout otherwise. With no dates, every break for the salon
+to stdout otherwise. For ``--format csv`` (the default) that
+CSV output is exactly as before, byte-identical; for
+``--format json`` the same arguments are passed to the dict
+service :func:`bookings.breaks_export.export_breaks` (beside
+its CSV twin) and its rows are serialised as JSON, so the two
+formats can never disagree. With no dates, every break for the salon
 is exported. This command adds no export logic of its own, so
 command and service output can never disagree -- one source
 of truth. An unknown salon raises ``CommandError``.
@@ -19,11 +24,14 @@ Backend only; read-only.
 """
 import argparse
 import datetime
+import json
 
 from django.core.management.base import BaseCommand, CommandError
 
-from bookings.breaks_export import export_breaks_csv
+from bookings.breaks_export import export_breaks, export_breaks_csv
 from saloncore.models import Salon
+
+_FORMATS = ("json", "csv")
 
 
 def _parse_date(value):
@@ -62,7 +70,10 @@ def _coerce_staff(value):
         ) from exc
 
 class Command(BaseCommand):
-    help = "Export one salon's Break rows verbatim as CSV."
+    help = (
+        "Export one salon's Break rows verbatim "
+        "as CSV (default) or JSON."
+    )
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -99,11 +110,19 @@ class Command(BaseCommand):
             help="Only unpaid breaks.",
         )
         parser.add_argument(
+            "--format", dest="format", default="csv", choices=_FORMATS,
+            help="Export format: csv (default) or json.",
+        )
+        parser.add_argument(
             "--output", default=None,
-            help="Path to write the CSV to (default: stdout).",
+            help="Path to write the export to (default: stdout).",
         )
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         if options.get("paid_only") and options.get("unpaid_only"):
             raise CommandError(
                 "--paid-only and --unpaid-only conflict.")
@@ -123,9 +142,15 @@ class Command(BaseCommand):
             staff_raw = options.get("staff_member_id")
         staff_member = _coerce_staff(staff_raw)
         try:
-            text = export_breaks_csv(
-                salon, date_from, date_to, staff_member=staff_member,
-                paid=paid)
+            if fmt == "json":
+                rows = export_breaks(
+                    salon, date_from, date_to,
+                    staff_member=staff_member, paid=paid)
+                text = json.dumps(rows, indent=2) + "\n"
+            else:
+                text = export_breaks_csv(
+                    salon, date_from, date_to, staff_member=staff_member,
+                    paid=paid)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options.get("output"):
