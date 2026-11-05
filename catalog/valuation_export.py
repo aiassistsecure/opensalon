@@ -40,6 +40,7 @@ __all__ = [
     "STOCK_VALUATION_FIELDNAMES",
     "VALUATION_EXPORT_FIELDNAMES",
     "EXPORT_FIELDNAMES",
+    "export_stock_valuation",
     "export_stock_valuation_csv",
     "valuation_csv",
     "stock_valuation_csv",
@@ -67,33 +68,46 @@ def _money(value):
     return str(Decimal(value).quantize(_CENTS))
 
 
+def export_stock_valuation(salon):
+    """Return ``salon``'s stock valuation as a list of dicts.
+
+    Every row mirrors a CSV cell exactly: keys are
+    :data:`VALUATION_FIELDNAMES` in order, ``product_id`` and
+    ``on_hand`` are ints, and money is a string to two decimal
+    places. Rows come verbatim from
+    :func:`catalog.valuation.stock_valuation` for the same salon,
+    in that service's order. Only ``salon``'s active products are
+    included (the service's scoping). A salon with no active
+    products exports as an empty list. Records nothing.
+    """
+    report = stock_valuation(salon)
+    return [{
+        "product_id": row.product.pk,
+        "product_name": row.product.name,
+        "sku": row.sku,
+        "barcode": row.barcode,
+        "on_hand": int(row.on_hand),
+        "unit_price": _money(row.unit_price),
+        "retail_value": _money(row.retail_value),
+    } for row in report.rows]
+
+
 def export_stock_valuation_csv(salon):
     """Return ``salon``'s stock valuation as a CSV string.
 
     The header row is :data:`VALUATION_FIELDNAMES` and every data
-    row comes verbatim from
-    :func:`catalog.valuation.stock_valuation` for the same salon,
-    in that service's order. Only ``salon``'s active products are
-    included (the service's scoping). A salon with no active
-    products exports as the header row alone. Lines end with
-    ``"\\n"``. Records nothing.
+    row comes from :func:`export_stock_valuation` for the same
+    salon, so CSV and dict exports can never disagree. A salon
+    with no active products exports as the header row alone.
+    Lines end with ``"\\n"``. Records nothing.
     """
-    report = stock_valuation(salon)
     buffer = io.StringIO()
     writer = csv.DictWriter(
         buffer, fieldnames=VALUATION_FIELDNAMES, lineterminator="\n"
     )
     writer.writeheader()
-    for row in report.rows:
-        writer.writerow({
-            "product_id": row.product.pk,
-            "product_name": row.product.name,
-            "sku": row.sku,
-            "barcode": row.barcode,
-            "on_hand": int(row.on_hand),
-            "unit_price": _money(row.unit_price),
-            "retail_value": _money(row.retail_value),
-        })
+    for row in export_stock_valuation(salon):
+        writer.writerow(row)
     return buffer.getvalue()
 
 
