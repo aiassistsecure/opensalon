@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import tempfile
 from decimal import Decimal
@@ -9,6 +10,7 @@ from django.test import TestCase
 
 from catalog.low_stock_export import (
     LOW_STOCK_FIELDNAMES,
+    export_low_stock,
     export_low_stock_csv,
 )
 from catalog.models import Product, StockMovement
@@ -81,3 +83,90 @@ class ExportLowStockCommandTests(TestCase):
             with self.assertRaises(CommandError):
                 call_command("export_low_stock", salon_id=self.salon.pk,
                              output=path, stdout=io.StringIO())
+
+
+class ExportLowStockFormatCommandTests(TestCase):
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon")
+        self.empty = Salon.objects.create(name="Empty Salon")
+        p = Product.objects.create(
+            salon=self.salon, name="Shampoo", sku="SH-001",
+            barcode="012345678905", price=Decimal("10.00"))
+        StockMovement.objects.create(
+            product=p, kind=StockMovement.Kind.RECEIVE, quantity_delta=2)
+        Product.objects.create(
+            salon=self.salon, name="Serum", sku="SE-002",
+            barcode="222333444555", price=Decimal("19.99"))
+
+    def test_default_format_is_csv_byte_identical(self):
+        out = io.StringIO()
+        call_command("export_low_stock", salon_id=self.salon.pk, stdout=out)
+        self.assertEqual(out.getvalue(), export_low_stock_csv(self.salon))
+
+    def test_explicit_csv_format_kwargs_matches_service(self):
+        out = io.StringIO()
+        call_command("export_low_stock", salon_id=self.salon.pk,
+                     format="csv", stdout=out)
+        self.assertEqual(out.getvalue(), export_low_stock_csv(self.salon))
+
+    def test_explicit_csv_format_via_cli_flag(self):
+        out = io.StringIO()
+        call_command("export_low_stock", "--salon-id", str(self.salon.pk),
+                     "--format", "csv", stdout=out)
+        self.assertEqual(out.getvalue(), export_low_stock_csv(self.salon))
+
+    def test_json_parses_and_equals_dict_service_rows(self):
+        out = io.StringIO()
+        call_command("export_low_stock", salon_id=self.salon.pk,
+                     format="json", stdout=out)
+        rows = export_low_stock(self.salon)
+        self.assertEqual(json.loads(out.getvalue()), rows)
+        self.assertEqual(out.getvalue(), json.dumps(rows, indent=2) + "\n")
+
+    def test_json_via_cli_flag(self):
+        out = io.StringIO()
+        call_command("export_low_stock", "--salon-id", str(self.salon.pk),
+                     "--format", "json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()),
+                         export_low_stock(self.salon))
+
+    def test_json_empty_salon_is_empty_list(self):
+        out = io.StringIO()
+        call_command("export_low_stock", salon_id=self.empty.pk,
+                     format="json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()), [])
+        self.assertEqual(json.loads(out.getvalue()),
+                         export_low_stock(self.empty))
+        self.assertEqual(out.getvalue(), "[]\n")
+
+    def test_json_composes_with_threshold(self):
+        out = io.StringIO()
+        call_command("export_low_stock", salon_id=self.salon.pk,
+                     format="json", threshold=0, stdout=out)
+        rows = json.loads(out.getvalue())
+        self.assertEqual(rows, export_low_stock(self.salon, threshold=0))
+        self.assertEqual([r["product_name"] for r in rows], ["Serum"])
+
+    def test_json_output_file_parses_and_equals_service(self):
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "low_stock.json")
+            call_command("export_low_stock", salon_id=self.salon.pk,
+                         format="json", output=path, stdout=out)
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+        rows = export_low_stock(self.salon)
+        self.assertEqual(json.loads(text), rows)
+        self.assertEqual(text, json.dumps(rows, indent=2) + "\n")
+        self.assertEqual(out.getvalue(), "")
+
+    def test_unknown_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command("export_low_stock", salon_id=self.salon.pk,
+                         format="xml", stdout=io.StringIO())
+
+    def test_unknown_format_via_cli_is_rejected(self):
+        with self.assertRaises((CommandError, SystemExit)):
+            call_command("export_low_stock", "--salon-id",
+                         str(self.salon.pk), "--format", "xml",
+                         stdout=io.StringIO())
