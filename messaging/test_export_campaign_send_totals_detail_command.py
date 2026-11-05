@@ -1,5 +1,6 @@
 """Tests for export_campaign_send_totals_detail (thin wrapper)."""
 import io
+import json
 import os
 import tempfile
 from datetime import date, datetime, time
@@ -11,6 +12,7 @@ from django.test import TestCase
 
 from clients.models import Client
 from messaging.campaign_send_export import (
+    export_campaign_send_totals_detail,
     export_campaign_send_totals_detail_csv,
 )
 from messaging.campaign_send_totals_export import (
@@ -149,4 +151,110 @@ class ExportCampaignSendTotalsDetailCommandTests(TestCase):
             with self.assertRaises(CommandError):
                 call_command(_cmd(), salon_id=self.salon.pk,
                              date_from=DAY1, output=path,
+                             stdout=io.StringIO())
+
+    def test_default_format_is_csv_byte_identical(self):
+        out = io.StringIO()
+        call_command(_cmd(), salon_id=self.salon.pk,
+                     date_from=DAY1, date_to=DAY3, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_campaign_send_totals_detail_csv(self.salon, DAY1, DAY3))
+
+    def test_explicit_csv_matches_service(self):
+        out = io.StringIO()
+        call_command(_cmd(), salon_id=self.salon.pk,
+                     date_from=DAY1, date_to=DAY3, format="csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_campaign_send_totals_detail_csv(self.salon, DAY1, DAY3))
+        out = io.StringIO()
+        call_command(_cmd(), "--salon-id", str(self.salon.pk),
+                     "--date-from", DAY1.isoformat(),
+                     "--date-to", DAY3.isoformat(),
+                     "--format", "csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_campaign_send_totals_detail_csv(self.salon, DAY1, DAY3))
+
+    def test_json_parses_and_equals_dict_service_rows(self):
+        out = io.StringIO()
+        call_command(_cmd(), salon_id=self.salon.pk,
+                     date_from=DAY1, date_to=DAY3, format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_campaign_send_totals_detail(self.salon, DAY1, DAY3))
+        self.assertEqual(
+            out.getvalue(),
+            json.dumps(
+                export_campaign_send_totals_detail(self.salon, DAY1, DAY3),
+                indent=2) + "\n")
+
+    def test_json_via_cli_flags(self):
+        out = io.StringIO()
+        call_command(_cmd(), "--salon-id", str(self.salon.pk),
+                     "--date-from", DAY1.isoformat(),
+                     "--date-to", DAY3.isoformat(),
+                     "--format", "json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_campaign_send_totals_detail(self.salon, DAY1, DAY3))
+
+    def test_json_composes_with_range_salon_and_aliases(self):
+        out = io.StringIO()
+        call_command(_cmd(), salon_id=self.salon.pk,
+                     start=DAY1, end=DAY2, format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_campaign_send_totals_detail(self.salon, DAY1, DAY2))
+        other_out = io.StringIO()
+        call_command(_cmd(), salon_id=self.other.pk,
+                     date_from=DAY1, date_to=DAY3, format="json",
+                     stdout=other_out)
+        self.assertEqual(
+            json.loads(other_out.getvalue()),
+            export_campaign_send_totals_detail(self.other, DAY1, DAY3))
+
+    def test_json_output_file_matches_dict_service(self):
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "campaign_detail.json")
+            call_command(_cmd(), salon_id=self.salon.pk,
+                         date_from=DAY1, date_to=DAY3, format="json",
+                         output=path, stdout=out)
+            with open(path, encoding="utf-8") as fh:
+                written = fh.read()
+        self.assertEqual(
+            json.loads(written),
+            export_campaign_send_totals_detail(self.salon, DAY1, DAY3))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_json_reversed_range_matches_service(self):
+        out = io.StringIO()
+        call_command(_cmd(), salon_id=self.salon.pk,
+                     date_from=DAY3, date_to=DAY1, format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_campaign_send_totals_detail(self.salon, DAY3, DAY1))
+
+    def test_invalid_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(_cmd(), salon_id=self.salon.pk,
+                         date_from=DAY1, format="xml", stdout=io.StringIO())
+
+    def test_invalid_format_via_cli_is_rejected(self):
+        with self.assertRaises(CommandError):
+            call_command(_cmd(), "--salon-id", str(self.salon.pk),
+                         "--date-from", DAY1.isoformat(),
+                         "--format", "xml", stdout=io.StringIO())
+
+    def test_json_service_error_raises_command_error(self):
+        with mock.patch(
+                "messaging.management.commands."
+                "export_campaign_send_totals_detail."
+                "export_campaign_send_totals_detail",
+                side_effect=ValueError("boom")):
+            with self.assertRaises(CommandError):
+                call_command(_cmd(), salon_id=self.salon.pk,
+                             date_from=DAY1, format="json",
                              stdout=io.StringIO())
