@@ -241,3 +241,100 @@ class ClientHistoryExportWindowTests(TestCase):
         self.assertEqual(
             [int(r["id"]) for r in csv_rows],
             [self.recent_late.pk, self.recent.pk])
+
+
+class ClientHistoryExportStatusTests(TestCase):
+    """The optional status filter on stored Appointment.Status."""
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon", timezone="UTC")
+        self.level = StaffLevel.objects.create(salon=self.salon, name="Level 6")
+        self.staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Stylist One",
+            staff_level=self.level)
+        self.client = Client.objects.create(
+            salon=self.salon, first_name="Test", last_name="Example")
+        self.other = Client.objects.create(
+            salon=self.salon, first_name="Other", last_name="Person")
+        cat = ServiceCategory.objects.create(salon=self.salon, name="Hair")
+        self.service = Service.objects.create(
+            category=cat, name="Haircut", service_minutes=45)
+        self.completed = self._appt(
+            at(-10, 9), status=Appointment.Status.COMPLETED)
+        self.booked = self._appt(at(-1, 9))
+        self.cancelled = self._appt(
+            at(-1, 10), status=Appointment.Status.CANCELLED)
+        self.future_completed = self._appt(
+            at(3, 9), status=Appointment.Status.COMPLETED)
+        self.future = self._appt(at(4, 9))
+        self.other_completed = self._appt(
+            at(-1, 11), client=self.other,
+            status=Appointment.Status.COMPLETED)
+
+    def _appt(self, start, client=None, **kw):
+        return Appointment.objects.create(
+            client=client or self.client, staff_member=self.staff,
+            service=self.service, start=start,
+            end=start + datetime.timedelta(minutes=45), **kw)
+
+    def _ids(self, **kw):
+        return [r["id"] for r in export_client_history(
+            self.salon, self.client, **kw)]
+
+    def test_no_status_is_previous_output(self):
+        self.assertEqual(
+            self._ids(),
+            [self.future.pk, self.future_completed.pk, self.cancelled.pk,
+             self.booked.pk, self.completed.pk])
+        self.assertEqual(
+            export_client_history_csv(self.salon, self.client),
+            export_client_history_csv(self.salon, self.client, status=None))
+
+    def test_status_filter_only_exact_matching(self):
+        rows = export_client_history(
+            self.salon, self.client, status=Appointment.Status.COMPLETED)
+        self.assertEqual(
+            [r["id"] for r in rows],
+            [self.future_completed.pk, self.completed.pk])
+        self.assertTrue(all(r["status"] == "completed" for r in rows))
+        self.assertEqual(
+            self._ids(status="booked"), [self.future.pk, self.booked.pk])
+
+    def test_status_composes_with_client_filter(self):
+        rows = export_client_history(
+            self.salon, self.other, status="completed")
+        self.assertEqual([r["id"] for r in rows], [self.other_completed.pk])
+        self.assertEqual(
+            export_client_history(self.salon, self.other, status="booked"),
+            [])
+
+    def test_status_composes_with_upcoming_only(self):
+        self.assertEqual(
+            self._ids(upcoming_only=True, now=NOW, status="completed"),
+            [self.future_completed.pk])
+        self.assertEqual(
+            self._ids(upcoming_only=True, now=NOW, status="booked"),
+            [self.future.pk])
+
+    def test_status_composes_with_window(self):
+        day = datetime.date(2026, 11, 1)
+        self.assertEqual(
+            self._ids(start_date=day, end_date=day, status="cancelled"),
+            [self.cancelled.pk])
+        self.assertEqual(
+            self._ids(start_date=day, end_date=day, status="completed"), [])
+
+    def test_unknown_status_is_empty(self):
+        self.assertEqual(self._ids(status="nope"), [])
+        self.assertEqual(
+            export_client_history_csv(self.salon, self.client, status="nope"),
+            ",".join(CLIENT_HISTORY_EXPORT_FIELDNAMES) + "\n")
+
+    def test_csv_twin_matches_status_rows(self):
+        text = export_client_history_csv(
+            self.salon, self.client, status="completed")
+        csv_rows = list(csv.DictReader(io.StringIO(text)))
+        self.assertEqual(
+            [int(r["id"]) for r in csv_rows],
+            [self.future_completed.pk, self.completed.pk])
+        self.assertTrue(all(r["status"] == "completed" for r in csv_rows))

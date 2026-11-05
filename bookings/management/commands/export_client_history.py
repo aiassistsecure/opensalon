@@ -5,6 +5,7 @@ Usage:
         --client-id ID [--upcoming-only]
         [--now ISO-8601-DATETIME]
         [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD]
+        [--status STATUS]
         [--output PATH]
 
 Thin wrapper around the existing
@@ -12,9 +13,13 @@ Thin wrapper around the existing
 service: the salon and client are resolved by id, and both are
 passed to the service verbatim as
 ``export_client_history_csv(salon, client,
-upcoming_only=..., now=..., start_date=..., end_date=...)`` --
+upcoming_only=..., now=..., start_date=..., end_date=...,
+status=...)`` --
 its CSV text is written unchanged, to ``--output`` when given
-and to stdout otherwise. ``--start-date`` / ``--end-date`` are
+and to stdout otherwise. ``--status`` is the optional exact
+stored appointment status to filter by, spelled as the other
+history commands spell it; omitted, no status filter applies.
+``--start-date`` / ``--end-date`` are
 the optional inclusive local-date window on appointment
 ``start``, spelled as the other bookings ledger commands spell
 them (``--date-from`` / ``--date-to`` accepted as aliases);
@@ -139,6 +144,11 @@ class Command(BaseCommand):
                  "start, YYYY-MM-DD (default: unbounded).",
         )
         parser.add_argument(
+            "--status", dest="status", default=None,
+            help="Appointment status value to filter by (default: "
+                 "no status filter, as the service defines it).",
+        )
+        parser.add_argument(
             "--output", default=None,
             help="Path to write the CSV to (default: stdout).",
         )
@@ -160,6 +170,7 @@ class Command(BaseCommand):
                 now=now,
                 start_date=start_date,
                 end_date=end_date,
+                status=options.get("status"),
             )
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
