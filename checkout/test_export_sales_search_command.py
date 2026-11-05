@@ -20,17 +20,20 @@ also pins ``get_commands()`` mapping the new name to
 """
 import datetime
 import io
+import json
 import os
 import tempfile
 from decimal import Decimal
 
 from django.core.management import (
     CommandError, call_command, get_commands, load_command_class)
+from django.core.serializers.json import DjangoJSONEncoder
 from django.test import TestCase
 from django.utils import timezone
 
 from checkout.models import Sale, SaleItem
-from checkout.search_export import export_search_sales_csv
+from checkout.search_export import (
+    export_search_sales, export_search_sales_csv)
 from clients.models import Client
 from saloncore.models import Salon
 
@@ -135,6 +138,79 @@ class ExportSalesSearchCommandTests(TestCase):
             written,
             export_search_sales_csv(self.salon, client_name="ana"))
         self.assertEqual(out.getvalue(), "")
+
+    def test_default_is_csv_byte_identical(self):
+        self._sale(client=self.ana)
+        default_out = io.StringIO()
+        call_command(_cmd(), salon_id=self.salon.pk, stdout=default_out)
+        csv_out = io.StringIO()
+        call_command(
+            _cmd(), salon_id=self.salon.pk, format="csv", stdout=csv_out)
+        self.assertEqual(default_out.getvalue(), csv_out.getvalue())
+        self.assertEqual(
+            default_out.getvalue(), export_search_sales_csv(self.salon))
+
+    def test_explicit_csv_via_cli_matches_service(self):
+        self._sale(client=self.ana)
+        out = io.StringIO()
+        call_command(
+            _cmd(), "--salon-id", str(self.salon.pk),
+            "--format", "csv", stdout=out)
+        self.assertEqual(out.getvalue(), export_search_sales_csv(self.salon))
+
+    def test_json_parses_and_equals_dict_service_rows(self):
+        self._sale(client=self.ana)
+        out = io.StringIO()
+        call_command(
+            _cmd(), salon_id=self.salon.pk, format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()), export_search_sales(self.salon))
+        self.assertEqual(
+            out.getvalue(),
+            json.dumps(
+                export_search_sales(self.salon),
+                indent=2, cls=DjangoJSONEncoder) + "\n")
+
+    def test_json_via_cli_with_filters_matches_dict_service(self):
+        self._sale(client=self.ana)
+        self._sale(day=NEXT)
+        out = io.StringIO()
+        call_command(
+            _cmd(), "--salon-id", str(self.salon.pk),
+            "--client-name", "lopez",
+            "--date-from", DAY.isoformat(), "--date-to", DAY.isoformat(),
+            "--min-total", "10.00", "--format", "json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_search_sales(
+                self.salon, client_name="lopez", date_from=DAY,
+                date_to=DAY, min_total="10.00"))
+
+    def test_json_output_file_parses_and_equals_dict_service(self):
+        self._sale(client=self.ana)
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "search.json")
+            call_command(
+                _cmd(), salon_id=self.salon.pk, format="json",
+                output=path, stdout=out)
+            with open(path, encoding="utf-8") as fh:
+                written = fh.read()
+        self.assertEqual(
+            json.loads(written), export_search_sales(self.salon))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_unknown_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                _cmd(), salon_id=self.salon.pk, format="xml",
+                stdout=io.StringIO())
+
+    def test_unknown_format_via_cli_is_rejected(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                _cmd(), "--salon-id", str(self.salon.pk),
+                "--format", "xml", stdout=io.StringIO())
 
     def test_unknown_salon_raises_command_error(self):
         with self.assertRaises(CommandError):
