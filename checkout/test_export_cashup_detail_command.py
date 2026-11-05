@@ -1,5 +1,6 @@
 import datetime
 import io
+import json
 import os
 import tempfile
 from decimal import Decimal
@@ -10,7 +11,10 @@ from django.test import TestCase
 from django.utils import timezone
 
 from checkout.cashup_detail import cashup_detail
-from checkout.cashup_detail_export import export_cashup_detail_csv
+from checkout.cashup_detail_export import (
+    export_cashup_detail,
+    export_cashup_detail_csv,
+)
 from checkout.models import Payment, Sale, SaleItem
 from saloncore.models import Salon
 
@@ -92,6 +96,99 @@ class ExportCashupDetailCommandTests(TestCase):
             call_command(
                 "export_cashup_detail", salon_id=self.salon.pk,
                 start_date=NEXT, end_date=DAY, stdout=io.StringIO())
+
+    def test_default_is_csv_byte_identical(self):
+        default_out = io.StringIO()
+        call_command(
+            "export_cashup_detail", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, stdout=default_out)
+        csv_out = io.StringIO()
+        call_command(
+            "export_cashup_detail", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, format="csv", stdout=csv_out)
+        self.assertEqual(default_out.getvalue(), csv_out.getvalue())
+        self.assertEqual(
+            default_out.getvalue(),
+            export_cashup_detail_csv(self.salon, DAY, DAY))
+
+    def test_explicit_csv_via_cli_matches_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_cashup_detail", "--salon-id", str(self.salon.pk),
+            "--start-date", DAY.isoformat(), "--end-date", DAY.isoformat(),
+            "--format", "csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_cashup_detail_csv(self.salon, DAY, DAY))
+
+    def test_json_parses_and_equals_dict_service_rows(self):
+        out = io.StringIO()
+        call_command(
+            "export_cashup_detail", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_cashup_detail(self.salon, DAY, DAY))
+        self.assertIn("85.00", out.getvalue())
+
+    def test_json_via_cli_matches_dict_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_cashup_detail", "--salon-id", str(self.salon.pk),
+            "--start-date", DAY.isoformat(), "--end-date", NEXT.isoformat(),
+            "--format", "json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_cashup_detail(self.salon, DAY, NEXT))
+
+    def test_json_delegates_to_dict_service_verbatim(self):
+        with mock.patch(
+            "checkout.management.commands.export_cashup_detail"
+            ".export_cashup_detail",
+            wraps=export_cashup_detail,
+        ) as spy:
+            call_command(
+                "export_cashup_detail", salon_id=self.salon.pk,
+                start_date=DAY, end_date=DAY, format="json",
+                stdout=io.StringIO())
+        spy.assert_called_once_with(self.salon, DAY, DAY)
+
+    def test_json_output_file_parses_and_equals_dict_service(self):
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "cashup_detail.json")
+            call_command(
+                "export_cashup_detail", salon_id=self.salon.pk,
+                start_date=DAY, end_date=DAY, format="json",
+                output=path, stdout=out)
+            with open(path, encoding="utf-8") as fh:
+                written = fh.read()
+        self.assertEqual(
+            json.loads(written),
+            export_cashup_detail(self.salon, DAY, DAY))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_json_service_error_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_cashup_detail", salon_id=self.salon.pk,
+                start_date=NEXT, end_date=DAY, format="json",
+                stdout=io.StringIO())
+
+    def test_unknown_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_cashup_detail", salon_id=self.salon.pk,
+                start_date=DAY, end_date=DAY, format="xml",
+                stdout=io.StringIO())
+
+    def test_unknown_format_via_cli_is_rejected(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_cashup_detail", "--salon-id", str(self.salon.pk),
+                "--start-date", DAY.isoformat(),
+                "--end-date", DAY.isoformat(),
+                "--format", "xml", stdout=io.StringIO())
 
     def test_values_match_underlying_detail_service(self):
         out = io.StringIO()
