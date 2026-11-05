@@ -7,6 +7,7 @@ that salon scoping is honoured, and that unknown salons and
 unwritable outputs fail cleanly as ``CommandError``.
 """
 import io
+import json
 import os
 import tempfile
 from datetime import date, datetime, time, timedelta
@@ -19,7 +20,7 @@ from django.utils import timezone
 from bookings.models import Appointment
 from clients.models import Client
 from messaging.models import ReminderSend
-from messaging.send_export import export_sends_csv
+from messaging.send_export import export_sends, export_sends_csv
 from saloncore.models import Salon, Service, ServiceCategory
 from team.models import StaffMember
 
@@ -323,3 +324,106 @@ class ExportSendCommandTests(TestCase):
                 call_command(
                     "export_send", salon_id=self.salon.pk,
                     date_from=DAY1, output=path, stdout=io.StringIO())
+
+    def test_default_format_is_csv_byte_identical(self):
+        out = io.StringIO()
+        call_command(
+            "export_send", salon_id=self.salon.pk,
+            date_from=DAY1, date_to=DAY3, stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_sends_csv(self.salon, DAY1, DAY3))
+
+    def test_explicit_csv_matches_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_send", salon_id=self.salon.pk,
+            date_from=DAY1, date_to=DAY3, format="csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_sends_csv(self.salon, DAY1, DAY3))
+        out = io.StringIO()
+        call_command(
+            "export_send", "--salon-id", str(self.salon.pk),
+            "--date-from", DAY1.isoformat(),
+            "--date-to", DAY3.isoformat(),
+            "--format", "csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_sends_csv(self.salon, DAY1, DAY3))
+
+    def test_json_parses_and_equals_dict_service_rows(self):
+        out = io.StringIO()
+        call_command(
+            "export_send", salon_id=self.salon.pk,
+            date_from=DAY1, date_to=DAY3, format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_sends(self.salon, DAY1, DAY3))
+        self.assertEqual(
+            out.getvalue(),
+            json.dumps(export_sends(self.salon, DAY1, DAY3), indent=2)
+            + "\n")
+
+    def test_json_via_cli_flags(self):
+        out = io.StringIO()
+        call_command(
+            "export_send", "--salon-id", str(self.salon.pk),
+            "--date-from", DAY1.isoformat(),
+            "--date-to", DAY3.isoformat(),
+            "--format", "json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_sends(self.salon, DAY1, DAY3))
+
+    def test_json_composes_with_channel_and_status(self):
+        out = io.StringIO()
+        call_command(
+            "export_send", salon_id=self.salon.pk,
+            date_from=DAY1, date_to=DAY3, format="json",
+            channel="sms", status="sent", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_sends(
+                self.salon, DAY1, DAY3, channel="sms", status="sent"))
+        self.assertEqual(len(json.loads(out.getvalue())), 1)
+
+    def test_json_composes_with_appointment_id(self):
+        target = ReminderSend.objects.filter(
+            client__salon=self.salon).order_by("id").first()
+        out = io.StringIO()
+        call_command(
+            "export_send", salon_id=self.salon.pk,
+            date_from=DAY1, date_to=DAY3, format="json",
+            appointment_id=target.appointment_id, stdout=out)
+        appointment = Appointment.objects.get(pk=target.appointment_id)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_sends(
+                self.salon, DAY1, DAY3, appointment=appointment))
+
+    def test_json_output_file_matches_dict_service(self):
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "sends.json")
+            call_command(
+                "export_send", salon_id=self.salon.pk,
+                date_from=DAY1, date_to=DAY3, format="json",
+                output=path, stdout=out)
+            with open(path, encoding="utf-8", newline="") as fh:
+                written = fh.read()
+        self.assertEqual(
+            written,
+            json.dumps(export_sends(self.salon, DAY1, DAY3), indent=2)
+            + "\n")
+        self.assertEqual(out.getvalue(), "")
+
+    def test_invalid_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_send", salon_id=self.salon.pk,
+                date_from=DAY1, format="xml", stdout=io.StringIO())
+
+    def test_invalid_format_via_cli_is_rejected(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_send", "--salon-id", str(self.salon.pk),
+                "--date-from", DAY1.isoformat(),
+                "--format", "xml", stdout=io.StringIO())
