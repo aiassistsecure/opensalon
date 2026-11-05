@@ -1,34 +1,43 @@
-"""Export one salon's campaign-send totals summary as CSV.
+"""Export one salon's campaign-send totals summary as CSV or JSON.
 
 Usage:
     python manage.py export_campaign_send_totals --salon-id ID
         --date-from YYYY-MM-DD [--date-to YYYY-MM-DD]
-        [--output PATH]
+        [--format json|csv] [--output PATH]
 
 Thin wrapper around the existing
 :func:`messaging.campaign_send_totals_export.export_campaign_send_totals_summary_csv`
-service: the salon is resolved by id, the dates are parsed to
+service and its dict twin
+:func:`messaging.campaign_send_totals_export.export_campaign_send_totals_summary`:
+the salon is resolved by id, the dates are parsed to
 ``datetime.date`` objects, and they are passed to the service
-verbatim as ``(salon, date_from, date_to)`` -- its CSV text is
-written unchanged, to ``--output`` when given and to stdout
-otherwise. This command adds no export logic of its own, so
-command and service output can never disagree -- one source
-of truth.
+verbatim as ``(salon, date_from, date_to)`` -- for
+``--format csv`` (the default) its CSV text is written
+unchanged, exactly as before; for ``--format json`` the same
+dict rows are serialised as JSON. Output goes to ``--output``
+when given and to stdout otherwise. This command adds no
+export logic of its own, so command and service output can
+never disagree -- one source of truth.
 
-Invalid input -- an unknown salon or a service error -- raises
-``CommandError``, as does an unwritable ``--output`` path.
+Invalid input -- an unknown salon, an unknown ``--format``,
+or a service error -- raises ``CommandError``, as does an
+unwritable ``--output`` path.
 Read-only. Core stays provider-agnostic -- no provider SDK,
 field, or name appears here.
 """
 import argparse
 import datetime
+import json
 
 from django.core.management.base import BaseCommand, CommandError
 
 from messaging.campaign_send_totals_export import (
+    export_campaign_send_totals_summary,
     export_campaign_send_totals_summary_csv,
 )
 from saloncore.models import Salon
+
+_FORMATS = ("json", "csv")
 
 
 def _parse_date(value):
@@ -61,7 +70,7 @@ def _first(options, *keys):
 
 
 class Command(BaseCommand):
-    help = "Export one salon's campaign-send totals summary as CSV."
+    help = "Export one salon's campaign-send totals summary as CSV or JSON."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -95,11 +104,18 @@ class Command(BaseCommand):
             default=None, help="Alias for --date-to.",
         )
         parser.add_argument(
+            "--format", dest="format", default="csv", choices=_FORMATS,
+            help="Export format: csv (default) or json.")
+        parser.add_argument(
             "--output", default=None,
-            help="Path to write the CSV to (default: stdout).",
+            help="Path to write the export to (default: stdout).",
         )
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist as exc:
@@ -112,9 +128,15 @@ class Command(BaseCommand):
         date_to = _coerce_date(
             _first(options, "date_to", "end", "end_date"), "date_to")
         try:
-            text = export_campaign_send_totals_summary_csv(
-                salon, date_from, date_to,
-            )
+            if fmt == "json":
+                rows = export_campaign_send_totals_summary(
+                    salon, date_from, date_to,
+                )
+                text = json.dumps(rows, indent=2) + "\n"
+            else:
+                text = export_campaign_send_totals_summary_csv(
+                    salon, date_from, date_to,
+                )
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options.get("output"):
