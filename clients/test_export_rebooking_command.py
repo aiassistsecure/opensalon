@@ -2,21 +2,29 @@
 
 Synthetic fixtures only -- no real salon/client data. The command
 is a thin wrapper around
-``clients.rebooking_export.export_rebooking_csv``; these tests
+``clients.rebooking_export.export_rebooking_csv`` and its dict
+source ``export_rebooking_candidates``; these tests
 verify stdout/file output matches that service verbatim and that
 salon scoping, parameter passthrough, and invalid input handling
 apply.
 """
+import csv
 import datetime
 import io
+import json
+import os
 import tempfile
 
 from django.core.management import CommandError, call_command
+from django.core.serializers.json import DjangoJSONEncoder
 from django.test import TestCase
 
 from bookings.models import Appointment
 from clients.models import Client
-from clients.rebooking_export import export_rebooking_csv
+from clients.rebooking_export import (
+    export_rebooking_candidates,
+    export_rebooking_csv,
+)
 from saloncore.models import Salon, Service, ServiceCategory
 from team.models import StaffMember
 
@@ -164,3 +172,97 @@ class ExportRebookingCommandTests(TestCase):
                 "export_rebooking", salon_id=self.salon.id,
                 reference_date=REF, output="/nonexistent-dir/out.csv",
                 stdout=io.StringIO())
+
+    def test_default_and_explicit_csv_byte_identical(self):
+        self._client_with_visit("Dana", "Due")
+        self._client_with_visit("Wendy", "Window")
+        expected = export_rebooking_csv(self.salon, reference_date=REF)
+        for kwargs in ({}, {"format": "csv"}):
+            out = io.StringIO()
+            call_command(
+                "export_rebooking", salon_id=self.salon.id,
+                reference_date=REF, stdout=out, **kwargs)
+            self.assertEqual(out.getvalue(), expected)
+
+    def test_json_stdout_equals_dict_rows(self):
+        self._client_with_visit("Dana", "Due")
+        out = io.StringIO()
+        call_command(
+            "export_rebooking", salon_id=self.salon.id,
+            reference_date=REF, format="json", stdout=out)
+        rows = export_rebooking_candidates(self.salon, reference_date=REF)
+        self.assertEqual(json.loads(out.getvalue()), rows)
+        self.assertEqual(
+            out.getvalue(),
+            json.dumps(rows, indent=2, cls=DjangoJSONEncoder) + "\n")
+
+    def test_json_and_csv_rows_agree(self):
+        self._client_with_visit("Dana", "Due")
+        self._client_with_visit("Wendy", "Window")
+        csv_out = io.StringIO()
+        call_command(
+            "export_rebooking", salon_id=self.salon.id,
+            reference_date=REF, format="csv", stdout=csv_out)
+        json_out = io.StringIO()
+        call_command(
+            "export_rebooking", salon_id=self.salon.id,
+            reference_date=REF, format="json", stdout=json_out)
+        csv_rows = list(csv.DictReader(io.StringIO(csv_out.getvalue())))
+        json_rows = json.loads(json_out.getvalue())
+        self.assertEqual(len(csv_rows), len(json_rows))
+        for csv_row, json_row in zip(csv_rows, json_rows):
+            self.assertEqual(list(csv_row), list(json_row))
+            for key, value in json_row.items():
+                self.assertEqual(
+                    csv_row[key], "" if value is None else str(value))
+
+    def test_json_via_cli_flags(self):
+        self._client_with_visit("Dana", "Due")
+        out = io.StringIO()
+        call_command(
+            "export_rebooking", "--salon-id", str(self.salon.id),
+            "--reference-date", "2026-11-02",
+            "--format", "json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_rebooking_candidates(self.salon, reference_date=REF))
+
+    def test_json_output_file(self):
+        self._client_with_visit("Dana", "Due")
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "rebooking.json")
+            call_command(
+                "export_rebooking", salon_id=self.salon.id,
+                reference_date=REF, format="json", output=path,
+                stdout=out)
+            with open(path, encoding="utf-8", newline="") as fh:
+                written = fh.read()
+        self.assertEqual(
+            json.loads(written),
+            export_rebooking_candidates(self.salon, reference_date=REF))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_json_composes_with_lookback_and_window(self):
+        self._client_with_visit("Wendy", "Window")
+        out = io.StringIO()
+        call_command(
+            "export_rebooking", salon_id=self.salon.id,
+            reference_date=REF, lookback_days=14, window_days=21,
+            format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_rebooking_candidates(
+                self.salon, reference_date=REF, lookback_days=14,
+                window_days=21))
+        self.assertIn("Wendy", out.getvalue())
+
+    def test_unknown_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_rebooking", salon_id=self.salon.id,
+                reference_date=REF, format="xml", stdout=io.StringIO())
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_rebooking", "--salon-id", str(self.salon.id),
+                "--format", "xml", stdout=io.StringIO())
