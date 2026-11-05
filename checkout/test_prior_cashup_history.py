@@ -3,9 +3,12 @@ Synthetic fixtures; current 2026-10-08..14, prior 10-01..07."""
 import csv
 import datetime
 import io
+import json
 import os
 import shutil
+import tempfile
 from decimal import Decimal
+from unittest import mock
 
 from django.core.management import CommandError, call_command
 from django.test import TestCase
@@ -171,3 +174,83 @@ class PriorCashupHistoryTests(TestCase):
         for kwargs in cases:
             with self.assertRaises(CommandError):
                 call_command("export_prior_cashup_history", stdout=io.StringIO(), **kwargs)
+
+    def test_command_default_is_csv_byte_identical(self):
+        default_out, csv_out = io.StringIO(), io.StringIO()
+        call_command("export_prior_cashup_history", salon_id=self.salon.pk,
+                     start_date=START, end_date=END, stdout=default_out)
+        call_command("export_prior_cashup_history", salon_id=self.salon.pk,
+                     start_date=START, end_date=END, format="csv",
+                     stdout=csv_out)
+        self.assertEqual(default_out.getvalue(), csv_out.getvalue())
+        self.assertEqual(default_out.getvalue(),
+                         export_prior_cashup_history_csv(self.salon, START, END))
+
+    def test_command_explicit_csv_via_cli_matches_service(self):
+        out = io.StringIO()
+        call_command("export_prior_cashup_history", "--salon-id",
+                     str(self.salon.pk), "--start-date", START.isoformat(),
+                     "--end-date", END.isoformat(), "--format", "csv",
+                     stdout=out)
+        self.assertEqual(out.getvalue(),
+                         export_prior_cashup_history_csv(self.salon, START, END))
+
+    def test_command_json_parses_and_equals_dict_service(self):
+        out = io.StringIO()
+        call_command("export_prior_cashup_history", salon_id=self.salon.pk,
+                     start_date=START, end_date=END, format="json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()),
+                         export_prior_cashup_history(self.salon, START, END))
+        self.assertIn("200.00", out.getvalue())
+
+    def test_command_json_via_cli_matches_dict_service(self):
+        out = io.StringIO()
+        call_command("export_prior_cashup_history", "--salon-id",
+                     str(self.salon.pk), "--start-date", START.isoformat(),
+                     "--end-date", END.isoformat(), "--format", "json",
+                     stdout=out)
+        self.assertEqual(json.loads(out.getvalue()),
+                         export_prior_cashup_history(self.salon, START, END))
+
+    def test_command_json_delegates_to_dict_service_verbatim(self):
+        with mock.patch(
+            "checkout.management.commands.export_prior_cashup_history"
+            ".export_prior_cashup_history",
+            wraps=export_prior_cashup_history,
+        ) as spy:
+            call_command("export_prior_cashup_history",
+                         salon_id=self.salon.pk, start_date=START,
+                         end_date=END, format="json", stdout=io.StringIO())
+        spy.assert_called_once_with(self.salon, START, END)
+
+    def test_command_json_output_file_matches_dict_service(self):
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "prior_cashup_history.json")
+            call_command("export_prior_cashup_history",
+                         salon_id=self.salon.pk, start_date=START,
+                         end_date=END, format="json", output=path, stdout=out)
+            with open(path, encoding="utf-8") as fh:
+                written = fh.read()
+        self.assertEqual(json.loads(written),
+                         export_prior_cashup_history(self.salon, START, END))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_command_json_service_error_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command("export_prior_cashup_history",
+                         salon_id=self.salon.pk, start_date=END,
+                         end_date=START, format="json", stdout=io.StringIO())
+
+    def test_command_unknown_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command("export_prior_cashup_history",
+                         salon_id=self.salon.pk, start_date=START,
+                         end_date=END, format="xml", stdout=io.StringIO())
+
+    def test_command_unknown_format_via_cli_is_rejected(self):
+        with self.assertRaises(CommandError):
+            call_command("export_prior_cashup_history", "--salon-id",
+                         str(self.salon.pk), "--start-date", START.isoformat(),
+                         "--end-date", END.isoformat(), "--format", "xml",
+                         stdout=io.StringIO())
