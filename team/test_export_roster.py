@@ -8,6 +8,7 @@ Fixtures are tiny synthetic records -- unit logic only.
 """
 import datetime
 import io
+import json
 import os
 import tempfile
 
@@ -16,7 +17,10 @@ from django.test import TestCase
 
 from saloncore.models import Salon
 from team.models import RosterPattern, StaffMember
-from team.roster_export import export_roster_patterns_csv
+from team.roster_export import (
+    export_roster_patterns,
+    export_roster_patterns_csv,
+)
 
 
 class ExportRosterCommandTests(TestCase):
@@ -106,6 +110,72 @@ class ExportRosterCommandTests(TestCase):
                 self.assertEqual(
                     fh.read(), export_roster_patterns_csv(
                         self.salon, include_inactive=True))
+
+    def test_default_format_is_csv_byte_identical(self):
+        out = self.run_export(salon_id=self.salon.pk)
+        self.assertEqual(out, export_roster_patterns_csv(self.salon))
+
+    def test_explicit_csv_format_matches_service(self):
+        out = self.run_export(salon_id=self.salon.pk, format="csv")
+        self.assertEqual(out, export_roster_patterns_csv(self.salon))
+
+    def test_csv_flag_matches_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_roster", f"--salon-id={self.salon.pk}",
+            "--format", "csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_roster_patterns_csv(self.salon))
+
+    def test_json_output_parses_and_equals_dict_service_rows(self):
+        out = self.run_export(salon_id=self.salon.pk, format="json")
+        self.assertEqual(
+            json.loads(out), export_roster_patterns(self.salon))
+
+    def test_json_flag_matches_dict_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_roster", f"--salon-id={self.salon.pk}",
+            "--format", "json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_roster_patterns(self.salon))
+        self.assertIn("Stylist One", out.getvalue())
+
+    def test_json_include_inactive_composes(self):
+        self._inactive_pattern()
+        out = self.run_export(
+            salon_id=self.salon.pk, format="json", include_inactive=True)
+        self.assertEqual(
+            json.loads(out),
+            export_roster_patterns(self.salon, include_inactive=True))
+
+    def test_json_default_excludes_inactive(self):
+        self._inactive_pattern()
+        out = self.run_export(salon_id=self.salon.pk, format="json")
+        self.assertEqual(
+            json.loads(out), export_roster_patterns(self.salon))
+
+    def test_json_output_file_matches_dict_service(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "roster.json")
+            out = self.run_export(
+                salon_id=self.salon.pk, output=path, format="json")
+            self.assertEqual(out, "")
+            with open(path, encoding="utf-8", newline="") as fh:
+                self.assertEqual(
+                    json.loads(fh.read()),
+                    export_roster_patterns(self.salon))
+
+    def test_invalid_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            self.run_export(salon_id=self.salon.pk, format="xml")
+
+    def test_invalid_format_via_cli_is_rejected(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_roster", f"--salon-id={self.salon.pk}",
+                "--format", "xml", stdout=io.StringIO())
 
     def test_unknown_salon_id_is_command_error(self):
         with self.assertRaises(CommandError):
