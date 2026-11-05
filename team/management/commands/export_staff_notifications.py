@@ -1,19 +1,27 @@
-"""Export one salon's staff notifications as CSV.
+"""Export one salon's staff notifications as CSV or JSON.
 
 Usage:
     python manage.py export_staff_notifications --salon-id ID
         [--staff-member-id ID] [--kind KIND]
         [--seen-only | --unseen-only]
         [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD]
+        [--format json|csv]
         [--output PATH]
 
 Thin wrapper around the existing
-:func:`team.notification_export.export_staff_notifications_csv`
-service: the salon is resolved by id and passed to the service
-verbatim -- its CSV text is written unchanged, to ``--output``
-when given and to stdout otherwise. This command adds no
-export logic of its own, so command and service output can
-never disagree -- one source of truth.
+:mod:`team.notification_export` service: the salon is resolved
+by id and passed to the service verbatim. For ``--format csv``
+(the default) it delegates verbatim to
+:func:`team.notification_export.export_staff_notifications_csv`,
+so CSV output is byte-identical to before; for
+``--format json`` it serialises the SAME dict rows from
+:func:`team.notification_export.export_staff_notifications` as
+JSON via ``DjangoJSONEncoder``, so the two formats can never
+disagree -- one source of truth. The text is written to
+``--output`` when given and to stdout otherwise. An unknown
+``--format`` raises ``CommandError`` (argparse ``choices``
+reject it on the CLI; the explicit check covers
+``call_command`` kwargs).
 
 With ``--staff-member-id`` the export is narrowed to that one
 staff member's notifications: the staff member is resolved
@@ -52,12 +60,19 @@ raises ``CommandError``. Backend only -- no views,
 templates, or UI. Read-only.
 """
 import datetime
+import json
 
 from django.core.management.base import BaseCommand, CommandError
+from django.core.serializers.json import DjangoJSONEncoder
 
 from saloncore.models import Salon
 from team.models import StaffMember
-from team.notification_export import export_staff_notifications_csv
+from team.notification_export import (
+    export_staff_notifications,
+    export_staff_notifications_csv,
+)
+
+_FORMATS = ("json", "csv")
 
 
 def _parse_date(value, label):
@@ -76,7 +91,7 @@ def _parse_date(value, label):
 
 
 class Command(BaseCommand):
-    help = "Export one salon's staff notifications as CSV."
+    help = "Export one salon's staff notifications as CSV (default) or JSON."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -108,10 +123,17 @@ class Command(BaseCommand):
             help="Last day of the range on created_at, "
                  "YYYY-MM-DD (inclusive; default: unbounded).")
         parser.add_argument(
+            "--format", dest="format", default="csv", choices=_FORMATS,
+            help="Export format: csv (default) or json.")
+        parser.add_argument(
             "--output", default=None,
-            help="Path of the CSV file to write (default: stdout).")
+            help="Path of the export file to write (default: stdout).")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         if options.get("seen_only") and options.get("unseen_only"):
             raise CommandError(
                 "--seen-only and --unseen-only conflict.")
@@ -142,10 +164,18 @@ class Command(BaseCommand):
             raise CommandError(
                 "range end must not be before range start")
         try:
-            text = export_staff_notifications_csv(
-                salon, staff_member=staff_member,
-                kind=options.get("kind"), seen=seen,
-                start=start, end=end)
+            if fmt == "json":
+                rows = export_staff_notifications(
+                    salon, staff_member=staff_member,
+                    kind=options.get("kind"), seen=seen,
+                    start=start, end=end)
+                text = json.dumps(
+                    rows, indent=2, cls=DjangoJSONEncoder) + "\n"
+            else:
+                text = export_staff_notifications_csv(
+                    salon, staff_member=staff_member,
+                    kind=options.get("kind"), seen=seen,
+                    start=start, end=end)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
 
