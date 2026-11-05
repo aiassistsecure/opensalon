@@ -15,18 +15,23 @@ command, not the global name resolution.
 """
 import datetime
 import io
+import json
 import os
 import tempfile
 from decimal import Decimal
 from unittest import mock
 
 from django.core.management import CommandError, call_command, load_command_class
+from django.core.serializers.json import DjangoJSONEncoder
 from django.test import TestCase
 from django.utils import timezone
 
 from checkout.models import Sale, SaleItem
 from checkout.void import void_sale
-from checkout.void_export import export_voided_sales_csv
+from checkout.void_export import (
+    export_voided_sales,
+    export_voided_sales_csv,
+)
 from saloncore.models import Salon
 
 DAY = datetime.date(2026, 10, 3)
@@ -151,3 +156,95 @@ class ExportVoidCommandTests(TestCase):
                 call_command(
                     _cmd(), salon_id=self.salon.pk, date_from=DAY,
                     stdout=io.StringIO())
+
+    def test_default_is_csv_byte_identical(self):
+        self._voided_sale()
+        default_out = io.StringIO()
+        call_command(
+            _cmd(), salon_id=self.salon.pk, date_from=DAY,
+            stdout=default_out)
+        csv_out = io.StringIO()
+        call_command(
+            _cmd(), salon_id=self.salon.pk, date_from=DAY,
+            format="csv", stdout=csv_out)
+        self.assertEqual(default_out.getvalue(), csv_out.getvalue())
+        self.assertEqual(
+            default_out.getvalue(),
+            export_voided_sales_csv(self.salon, DAY))
+
+    def test_explicit_csv_via_cli_matches_service(self):
+        self._voided_sale()
+        out = io.StringIO()
+        call_command(
+            _cmd(), "--salon-id", str(self.salon.pk),
+            "--date-from", DAY.isoformat(), "--format", "csv",
+            stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_voided_sales_csv(self.salon, DAY))
+
+    def test_json_parses_and_equals_dict_service_rows(self):
+        self._voided_sale()
+        out = io.StringIO()
+        call_command(
+            _cmd(), salon_id=self.salon.pk, date_from=DAY,
+            format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_voided_sales(self.salon, DAY))
+        self.assertEqual(
+            out.getvalue(),
+            json.dumps(
+                export_voided_sales(self.salon, DAY),
+                indent=2, cls=DjangoJSONEncoder) + "\n")
+
+    def test_json_via_cli_with_range_matches_dict_service(self):
+        self._voided_sale()
+        self._voided_sale(day=NEXT)
+        out = io.StringIO()
+        call_command(
+            _cmd(), "--salon-id", str(self.salon.pk),
+            "--date-from", DAY.isoformat(),
+            "--date-to", NEXT.isoformat(), "--format", "json",
+            stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_voided_sales(self.salon, DAY, NEXT))
+
+    def test_json_output_file_parses_and_equals_dict_service(self):
+        self._voided_sale()
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "void.json")
+            call_command(
+                _cmd(), salon_id=self.salon.pk, date_from=DAY,
+                date_to=NEXT, format="json", output=path, stdout=out)
+            with open(path, encoding="utf-8") as fh:
+                written = fh.read()
+        self.assertEqual(
+            json.loads(written),
+            export_voided_sales(self.salon, DAY, NEXT))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_unknown_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                _cmd(), salon_id=self.salon.pk, date_from=DAY,
+                format="xml", stdout=io.StringIO())
+
+    def test_unknown_format_via_cli_is_rejected(self):
+        with self.assertRaises((CommandError, SystemExit)):
+            call_command(
+                _cmd(), "--salon-id", str(self.salon.pk),
+                "--date-from", DAY.isoformat(), "--format", "xml",
+                stdout=io.StringIO())
+
+    def test_json_service_error_raises_command_error(self):
+        with mock.patch(
+            "checkout.management.commands.export_void."
+            "export_voided_sales",
+            side_effect=ValueError("boom"),
+        ):
+            with self.assertRaises(CommandError):
+                call_command(
+                    _cmd(), salon_id=self.salon.pk, date_from=DAY,
+                    format="json", stdout=io.StringIO())
