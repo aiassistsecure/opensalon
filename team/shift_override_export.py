@@ -28,6 +28,14 @@ member, only that member's overrides are included; the salon
 filter still applies, so a staff member from another salon
 exports as empty.
 
+Is-off selection: both export functions also accept an
+optional ``is_off`` (default ``None``). With ``None`` the
+output is unchanged. With ``True`` only full-day-off rows
+(stored ``is_off`` true) are included; with ``False`` only
+placed-shift rows (stored ``is_off`` false). It composes
+with the staff-member and date-window filters (all must
+match).
+
 Date window: both export functions also accept an optional
 ``start_date`` / ``end_date`` window pair, filtering on the
 override's own ``date`` as inclusive salon-local dates (each
@@ -151,7 +159,7 @@ def _resolve_window(start_date, end_date, kwargs):
 
 
 def export_shift_overrides(salon, staff_member=None, start_date=None,
-                           end_date=None, **kwargs):
+                           end_date=None, is_off=None, **kwargs):
     """Return ``salon``'s shift overrides as a list of dicts.
 
     Each entry is one stored :class:`team.models.ShiftOverride`
@@ -170,6 +178,11 @@ def export_shift_overrides(salon, staff_member=None, start_date=None,
     ``None`` are unbounded, so the default output is unchanged.
     See the module docstring for the window semantics. The
     window composes with ``staff_member`` (window AND member).
+
+    ``is_off`` is optional: the default ``None`` is unchanged.
+    ``True`` includes only full-day-off rows; ``False`` only
+    placed-shift rows. It composes with ``staff_member`` and
+    the window (all must match).
     """
     start_date, end_date = _resolve_window(start_date, end_date, kwargs)
     rows = (
@@ -178,6 +191,8 @@ def export_shift_overrides(salon, staff_member=None, start_date=None,
     )
     if staff_member is not None:
         rows = rows.filter(staff_member=staff_member)
+    if is_off is not None:
+        rows = rows.filter(is_off=bool(is_off))
     if start_date is not None:
         rows = rows.filter(date__gte=_as_local_date(start_date, salon))
     if end_date is not None:
@@ -186,7 +201,7 @@ def export_shift_overrides(salon, staff_member=None, start_date=None,
 
 
 def export_shift_overrides_csv(salon, staff_member=None, start_date=None,
-                               end_date=None, **kwargs):
+                               end_date=None, is_off=None, **kwargs):
     """Return ``salon``'s shift overrides as a CSV string.
 
     The header row is :data:`SHIFT_OVERRIDE_EXPORT_FIELDNAMES`
@@ -205,6 +220,11 @@ def export_shift_overrides_csv(salon, staff_member=None, start_date=None,
     the defaults ``None`` are unbounded and unchanged; a given
     window exports only overrides whose ``date`` falls inside
     it (header alone for a reversed window).
+
+    ``is_off`` is likewise passed through: the default
+    ``None`` is unchanged; ``True`` exports only full-day-off
+    rows, ``False`` only placed-shift rows (header alone when
+    none match).
     """
     buffer = io.StringIO()
     writer = csv.DictWriter(
@@ -214,7 +234,7 @@ def export_shift_overrides_csv(salon, staff_member=None, start_date=None,
     writer.writeheader()
     for record in export_shift_overrides(
             salon, staff_member=staff_member, start_date=start_date,
-            end_date=end_date, **kwargs):
+            end_date=end_date, is_off=is_off, **kwargs):
         writer.writerow(record)
     return buffer.getvalue()
 
