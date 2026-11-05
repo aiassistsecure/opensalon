@@ -1,27 +1,38 @@
-"""Export a salon's per-product margin as CSV.
+"""Export a salon's per-product margin as CSV or JSON.
 
 Usage:
     python manage.py export_product_margin --salon-id ID [--output PATH]
         [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD]
+        [--format json|csv]
 
 Backend only — no views, templates, or UI. This command is a thin
-wrapper around
-:func:`catalog.margin_export.export_product_margin_csv`: it
-resolves the salon by id, delegates to that service verbatim, and
-writes the returned CSV to ``--output`` when given, otherwise to
-stdout. It adds no fields, filtering, or formatting of its own,
-so the command output and the service output can never disagree
-— one source of truth.
+wrapper around :mod:`catalog.margin_export`: it resolves the
+salon by id, delegates to that service verbatim, and writes the
+result to ``--output`` when given, otherwise to stdout. For
+``--format csv`` (the default) it writes
+:func:`catalog.margin_export.export_product_margin_csv`'s CSV
+string as-is, so the historical CSV output is byte-identical;
+for ``--format json`` it serializes the dict rows from
+:func:`catalog.margin_export.export_product_margin` — the same
+rows the CSV is built from — as JSON. It adds no fields,
+filtering, or formatting of its own, so the command output and
+the service output can never disagree — one source of truth.
 
 Founding rule (Exit Principle): anything a salon can enter, it can
 fully export.
 """
 import datetime
+import json
 
 from django.core.management.base import BaseCommand, CommandError
 
-from catalog.margin_export import export_product_margin_csv
+from catalog.margin_export import (
+    export_product_margin,
+    export_product_margin_csv,
+)
 from saloncore.models import Salon
+
+_FORMATS = ("json", "csv")
 
 
 def _parse_date(value):
@@ -39,7 +50,7 @@ def _parse_date(value):
 
 
 class Command(BaseCommand):
-    help = "Export a salon's per-product margin as CSV."
+    help = "Export a salon's per-product margin as CSV or JSON."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -55,11 +66,19 @@ class Command(BaseCommand):
             help="Last day of the sales window, YYYY-MM-DD (inclusive).",
         )
         parser.add_argument(
+            "--format", dest="format", default="csv", choices=_FORMATS,
+            help="Export format: csv (default) or json.",
+        )
+        parser.add_argument(
             "--output", default=None,
-            help="Path of the CSV file to write (default: stdout).",
+            help="Path of the export file to write (default: stdout).",
         )
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist as exc:
@@ -68,8 +87,13 @@ class Command(BaseCommand):
         start = _parse_date(options["start_date"])
         end = _parse_date(options["end_date"])
         try:
-            text = export_product_margin_csv(
-                salon, start_date=start, end_date=end)
+            if fmt == "json":
+                records = export_product_margin(
+                    salon, start_date=start, end_date=end)
+                text = json.dumps(records, indent=2) + "\n"
+            else:
+                text = export_product_margin_csv(
+                    salon, start_date=start, end_date=end)
         except ValueError as exc:
             raise CommandError(str(exc)) from exc
         if options["output"]:
