@@ -2,11 +2,13 @@
 import csv
 import datetime
 import io
+import json
 import os
 import tempfile
 from decimal import Decimal
 
 from django.core.management import CommandError, call_command
+from django.core.serializers.json import DjangoJSONEncoder
 from django.test import TestCase
 
 from saloncore.models import Salon
@@ -285,3 +287,98 @@ class PriorRosterWeekTests(TestCase):
                        dict(salon_id=self.salon.pk)):
             with self.assertRaises(CommandError):
                 call_command("export_prior_roster_week", stdout=io.StringIO(), **kwargs)
+
+    def test_command_default_format_is_csv_and_byte_identical(self):
+        self._book()
+        out = io.StringIO()
+        call_command("export_prior_roster_week", salon_id=self.salon.pk,
+                     week_start=MONDAY, stdout=out)
+        self.assertEqual(out.getvalue(),
+                         export_prior_roster_week_csv(self.salon, MONDAY))
+
+    def test_command_explicit_csv_matches_service(self):
+        self._book()
+        out = io.StringIO()
+        call_command("export_prior_roster_week", salon_id=self.salon.pk,
+                     week_start=MONDAY, format="csv", stdout=out)
+        self.assertEqual(out.getvalue(),
+                         export_prior_roster_week_csv(self.salon, MONDAY))
+
+    def test_command_json_parses_and_equals_dict_service_rows(self):
+        self._book()
+        rows = export_prior_roster_week(self.salon, MONDAY)
+        out = io.StringIO()
+        call_command("export_prior_roster_week", salon_id=self.salon.pk,
+                     week_start=MONDAY, format="json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()), rows)
+        self.assertEqual(out.getvalue(), json.dumps(
+            rows, indent=2, cls=DjangoJSONEncoder) + "\n")
+
+    def test_command_json_cli_spelling_matches_dict_service(self):
+        self._book()
+        out = io.StringIO()
+        call_command("export_prior_roster_week", "--salon-id",
+                     str(self.salon.pk), "--week-start", MONDAY.isoformat(),
+                     "--format", "json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()),
+                         export_prior_roster_week(self.salon, MONDAY))
+
+    def test_command_csv_cli_spelling_matches_service(self):
+        self._book()
+        out = io.StringIO()
+        call_command("export_prior_roster_week", "--salon-id",
+                     str(self.salon.pk), "--week-start", MONDAY.isoformat(),
+                     "--format", "csv", stdout=out)
+        self.assertEqual(out.getvalue(),
+                         export_prior_roster_week_csv(self.salon, MONDAY))
+
+    def test_command_json_composes_with_week_start(self):
+        self._book()
+        other = MONDAY + datetime.timedelta(days=7)
+        rows = export_prior_roster_week(self.salon, other)
+        out = io.StringIO()
+        call_command("export_prior_roster_week", salon_id=self.salon.pk,
+                     week_start=other, format="json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()), rows)
+        out = io.StringIO()
+        call_command("export_prior_roster_week", salon_id=self.salon.pk,
+                     week_start=other, format="csv", stdout=out)
+        self.assertEqual(out.getvalue(),
+                         export_prior_roster_week_csv(self.salon, other))
+
+    def test_command_json_output_file_matches_dict_service(self):
+        self._book()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "out.json")
+            out = io.StringIO()
+            call_command("export_prior_roster_week", salon_id=self.salon.pk,
+                         week_start=MONDAY, format="json", output=path,
+                         stdout=out)
+            self.assertEqual(out.getvalue(), "")
+            with open(path, encoding="utf-8") as fh:
+                written = fh.read()
+        rows = export_prior_roster_week(self.salon, MONDAY)
+        self.assertEqual(json.loads(written), rows)
+        self.assertEqual(written, json.dumps(
+            rows, indent=2, cls=DjangoJSONEncoder) + "\n")
+
+    def test_command_invalid_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command("export_prior_roster_week", salon_id=self.salon.pk,
+                         week_start=MONDAY, format="xml",
+                         stdout=io.StringIO())
+
+    def test_command_invalid_format_via_cli_is_rejected(self):
+        with self.assertRaises(CommandError):
+            call_command("export_prior_roster_week", "--salon-id",
+                         str(self.salon.pk), "--week-start",
+                         MONDAY.isoformat(), "--format", "xml",
+                         stdout=io.StringIO())
+
+    def test_command_json_unknown_salon_and_bad_date_raise(self):
+        for kwargs in (dict(salon_id=self.salon.pk + 1000, week_start=MONDAY),
+                       dict(salon_id=self.salon.pk, week_start="bad"),
+                       dict(salon_id=self.salon.pk)):
+            with self.assertRaises(CommandError):
+                call_command("export_prior_roster_week", format="json",
+                             stdout=io.StringIO(), **kwargs)
