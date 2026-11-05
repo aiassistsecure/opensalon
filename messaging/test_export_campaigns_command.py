@@ -1,13 +1,14 @@
 """export_campaigns command: thin wrapper over campaign_export."""
 import io
+import json
 import os
 import tempfile
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from django.core.management import CommandError, call_command
 from django.test import TestCase
 
-from messaging.campaign_export import export_campaigns_csv
+from messaging.campaign_export import export_campaigns, export_campaigns_csv
 from messaging.models import Campaign
 from saloncore.models import Salon
 
@@ -218,3 +219,79 @@ class ExportCampaignsCommandTests(TestCase):
             with self.assertRaises(CommandError):
                 call_command("export_campaigns", salon_id=self.salon.pk,
                              output=path, stdout=io.StringIO())
+
+    def test_default_format_is_csv_byte_identical(self):
+        out = io.StringIO()
+        call_command("export_campaigns", salon_id=self.salon.pk, stdout=out)
+        self.assertEqual(out.getvalue(), export_campaigns_csv(self.salon))
+
+    def test_explicit_csv_matches_service(self):
+        out = io.StringIO()
+        call_command("export_campaigns", salon_id=self.salon.pk,
+                     format="csv", stdout=out)
+        self.assertEqual(out.getvalue(), export_campaigns_csv(self.salon))
+        out = io.StringIO()
+        call_command("export_campaigns", "--salon-id", str(self.salon.pk),
+                     "--format", "csv", stdout=out)
+        self.assertEqual(out.getvalue(), export_campaigns_csv(self.salon))
+
+    def test_json_parses_and_equals_dict_service_rows(self):
+        out = io.StringIO()
+        call_command("export_campaigns", salon_id=self.salon.pk,
+                     format="json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()),
+                         export_campaigns(self.salon))
+        self.assertEqual(
+            out.getvalue(),
+            json.dumps(export_campaigns(self.salon), indent=2) + "\n")
+
+    def test_json_via_cli_flags(self):
+        out = io.StringIO()
+        call_command("export_campaigns", "--salon-id", str(self.salon.pk),
+                     "--format", "json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()),
+                         export_campaigns(self.salon))
+
+    def test_json_composes_with_status_and_channel(self):
+        Campaign.objects.create(
+            salon=self.salon, name="Sent Email", channel="email",
+            body="Sent email body", status=Campaign.Status.SENT,
+            sent_at=datetime(2026, 10, 3, 9, 0, tzinfo=timezone.utc))
+        out = io.StringIO()
+        call_command("export_campaigns", salon_id=self.salon.pk,
+                     format="json", status="sent", channel="email",
+                     stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_campaigns(self.salon, status="sent", channel="email"))
+        self.assertEqual(
+            [row["name"] for row in json.loads(out.getvalue())],
+            ["Sent Email"])
+
+    def test_json_composes_with_date_window(self):
+        self._dated("Dated One", datetime(
+            2026, 10, 3, 12, 0, tzinfo=timezone.utc))
+        self._dated("Outside", datetime(
+            2026, 10, 9, 12, 0, tzinfo=timezone.utc))
+        out = io.StringIO()
+        call_command("export_campaigns", salon_id=self.salon.pk,
+                     format="json", start_date="2026-10-03",
+                     end_date="2026-10-03", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_campaigns(self.salon, start_date=date(2026, 10, 3),
+                             end_date=date(2026, 10, 3)))
+        self.assertEqual(
+            [row["name"] for row in json.loads(out.getvalue())],
+            ["Dated One"])
+
+    def test_invalid_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command("export_campaigns", salon_id=self.salon.pk,
+                         format="xml", stdout=io.StringIO())
+
+    def test_invalid_format_via_cli_is_rejected(self):
+        with self.assertRaises(CommandError):
+            call_command("export_campaigns", "--salon-id",
+                         str(self.salon.pk), "--format", "xml",
+                         stdout=io.StringIO())

@@ -1,20 +1,24 @@
-"""Export one salon's campaigns verbatim as CSV.
+"""Export one salon's campaigns verbatim as CSV or JSON.
 
 Usage:
     python manage.py export_campaigns --salon-id ID
         [--status STATUS] [--channel CHANNEL]
         [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD]
-        [--output PATH]
+        [--format json|csv] [--output PATH]
 
 Thin wrapper around
-:func:`messaging.campaign_export.export_campaigns_csv`:
+:func:`messaging.campaign_export.export_campaigns_csv` and
+its dict twin
+:func:`messaging.campaign_export.export_campaigns`:
 the salon is resolved by id and passed to the service
-verbatim -- its CSV text is written unchanged, to
-``--output`` when given and to stdout otherwise. This
-command adds no export logic of its own, so command and
-service output can never disagree -- one source of truth.
-Rows carry every stored campaign field, including ``body``
-and ``updated_at``.
+verbatim -- for ``--format csv`` (the default) its CSV text
+is written unchanged, exactly as before; for
+``--format json`` the same dict rows are serialised as
+JSON. Output goes to ``--output`` when given and to stdout
+otherwise. This command adds no export logic of its own, so
+command and service output can never disagree -- one source
+of truth. Rows carry every stored campaign field, including
+``body`` and ``updated_at``.
 
 With ``--start-date`` / ``--end-date`` (spelled exactly as
 the Family XI ledger commands spell them; ``--start`` /
@@ -29,19 +33,26 @@ either, the command exports every campaign, exactly as
 before. The window composes with ``--status`` and
 ``--channel`` (window AND status AND channel).
 
-An unknown salon, an unparseable date, or an unwritable
-``--output`` path raises ``CommandError``. Backend only --
+An unknown salon, an unparseable date, an unknown
+``--format``, or an unwritable ``--output`` path raises
+``CommandError``. Backend only --
 no views, templates, or UI. Read-only; nothing is sent or
 dispatched. Core stays provider-agnostic -- no provider
 SDK, field, or name appears here.
 """
 import argparse
 import datetime
+import json
 
 from django.core.management.base import BaseCommand, CommandError
 
-from messaging.campaign_export import export_campaigns_csv
+from messaging.campaign_export import (
+    export_campaigns,
+    export_campaigns_csv,
+)
 from saloncore.models import Salon
+
+_FORMATS = ("json", "csv")
 
 
 def _parse_date(value):
@@ -69,7 +80,7 @@ def _coerce_date(value, label):
 
 
 class Command(BaseCommand):
-    help = "Export one salon's campaigns verbatim as CSV."
+    help = "Export one salon's campaigns verbatim as CSV or JSON."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -92,10 +103,17 @@ class Command(BaseCommand):
             help="Last day of the window on created_at, "
                  "YYYY-MM-DD (inclusive; default: unbounded).")
         parser.add_argument(
+            "--format", dest="format", default="csv", choices=_FORMATS,
+            help="Export format: csv (default) or json.")
+        parser.add_argument(
             "--output", default=None,
-            help="Path of the CSV file to write (default: stdout).")
+            help="Path of the export file to write (default: stdout).")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist:
@@ -105,10 +123,17 @@ class Command(BaseCommand):
         start_date = _coerce_date(options.get("start_date"), "start date")
         end_date = _coerce_date(options.get("end_date"), "end date")
         try:
-            text = export_campaigns_csv(
-                salon, status=options.get("status"),
-                channel=options.get("channel"),
-                start_date=start_date, end_date=end_date)
+            if fmt == "json":
+                rows = export_campaigns(
+                    salon, status=options.get("status"),
+                    channel=options.get("channel"),
+                    start_date=start_date, end_date=end_date)
+                text = json.dumps(rows, indent=2) + "\n"
+            else:
+                text = export_campaigns_csv(
+                    salon, status=options.get("status"),
+                    channel=options.get("channel"),
+                    start_date=start_date, end_date=end_date)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
 
