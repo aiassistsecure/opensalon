@@ -9,6 +9,9 @@ must play no part.
 import csv
 import datetime
 import io
+import json
+import tempfile
+from unittest import mock
 
 from django.core.management import CommandError, call_command
 from django.test import TestCase
@@ -173,6 +176,99 @@ class CommandTests(NewClientsBase):
                      start_date="2026-10-01", end_date="2026-10-31", stdout=out)
         self.assertEqual(out.getvalue(),
                          export_new_clients_csv(self.salon, START, END))
+
+    def test_default_format_is_csv_byte_identical(self):
+        c = self._client(); self._appt(c, at(10))
+        out = io.StringIO()
+        call_command("export_new_clients", salon_id=self.salon.id,
+                     start_date="2026-10-01", end_date="2026-10-31", stdout=out)
+        self.assertEqual(out.getvalue(),
+                         export_new_clients_csv(self.salon, START, END))
+
+    def test_explicit_csv_format_matches_service(self):
+        c = self._client(); self._appt(c, at(10))
+        out = io.StringIO()
+        call_command("export_new_clients", salon_id=self.salon.id,
+                     start_date="2026-10-01", end_date="2026-10-31",
+                     format="csv", stdout=out)
+        self.assertEqual(out.getvalue(),
+                         export_new_clients_csv(self.salon, START, END))
+
+    def test_json_output_parses_and_equals_dict_service_rows(self):
+        c = self._client(); self._appt(c, at(10))
+        out = io.StringIO()
+        call_command("export_new_clients", salon_id=self.salon.id,
+                     start_date="2026-10-01", end_date="2026-10-31",
+                     format="json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()),
+                         export_new_clients(self.salon, START, END))
+
+    def test_json_flag_matches_dict_service(self):
+        c = self._client(); self._appt(c, at(10))
+        out = io.StringIO()
+        call_command("export_new_clients", "--salon-id", str(self.salon.id),
+                     "--start-date", "2026-10-01", "--end-date", "2026-10-31",
+                     "--format", "json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()),
+                         export_new_clients(self.salon, START, END))
+
+    def test_json_empty_exports_empty_list(self):
+        out = io.StringIO()
+        call_command("export_new_clients", salon_id=self.salon.id,
+                     start_date="2026-10-01", end_date="2026-10-31",
+                     format="json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()), [])
+
+    def test_json_output_file_matches_dict_service(self):
+        c = self._client(); self._appt(c, at(10))
+        with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".json", delete=False,
+                encoding="utf-8") as fh:
+            path = fh.name
+        out = io.StringIO()
+        call_command("export_new_clients", salon_id=self.salon.id,
+                     start_date="2026-10-01", end_date="2026-10-31",
+                     format="json", output=path, stdout=out)
+        with open(path, encoding="utf-8", newline="") as exported:
+            data = exported.read()
+        self.assertEqual(json.loads(data),
+                         export_new_clients(self.salon, START, END))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_json_salon_scoping_excludes_other_salons(self):
+        mine = self._client(); self._appt(mine, at(10))
+        theirs = self._client(salon=self.other); self._appt(theirs, at(11))
+        out = io.StringIO()
+        call_command("export_new_clients", salon_id=self.salon.id,
+                     start_date="2026-10-01", end_date="2026-10-31",
+                     format="json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()),
+                         export_new_clients(self.salon, START, END))
+        self.assertEqual(
+            [r["client_id"] for r in json.loads(out.getvalue())], [mine.pk])
+
+    def test_invalid_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command("export_new_clients", salon_id=self.salon.id,
+                         start_date="2026-10-01", end_date="2026-10-31",
+                         format="xml", stdout=io.StringIO())
+
+    def test_invalid_format_via_cli_is_rejected(self):
+        with self.assertRaises((CommandError, SystemExit)):
+            call_command("export_new_clients", "--salon-id",
+                         str(self.salon.id), "--start-date", "2026-10-01",
+                         "--end-date", "2026-10-31", "--format", "xml",
+                         stdout=io.StringIO())
+
+    def test_json_service_error_surfaces_as_command_error(self):
+        with mock.patch(
+                "clients.management.commands.export_new_clients"
+                ".export_new_clients",
+                side_effect=ValueError("boom")):
+            with self.assertRaises(CommandError):
+                call_command("export_new_clients", salon_id=self.salon.id,
+                             start_date="2026-10-01", end_date="2026-10-31",
+                             format="json", stdout=io.StringIO())
 
     def test_unknown_salon_and_missing_dates_and_reversed(self):
         with self.assertRaises(CommandError):
