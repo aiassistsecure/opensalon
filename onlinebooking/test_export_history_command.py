@@ -267,3 +267,56 @@ class ExportHistoryCommandTests(TestCase):
                 "--start-date", "not-a-date", stdout=io.StringIO())
         with self.assertRaises(CommandError):
             self.run_export(start_date="not-a-date")
+
+    def test_service_string_arg_matches_service(self):
+        colour_cat = ServiceCategory.objects.create(
+            salon=self.salon, name="Colour")
+        colour = Service.objects.create(
+            category=colour_cat, name="Colour", service_minutes=90)
+        coloured = self._appt(at(-1, 11), service=colour)
+        out = io.StringIO()
+        call_command(
+            "export_history", "--salon-id", str(self.salon.pk),
+            "--now", NOW.isoformat(), "--service-id", str(colour.pk),
+            stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_history_csv(
+                self.salon, None, now=NOW, service=colour))
+        self.assertEqual(self.exported_ids(out.getvalue()), [coloured.pk])
+
+    def test_service_kwarg_matches_service(self):
+        colour_cat = ServiceCategory.objects.create(
+            salon=self.salon, name="Colour")
+        colour = Service.objects.create(
+            category=colour_cat, name="Colour", service_minutes=90)
+        coloured = self._appt(at(-1, 11), client=self.client, service=colour)
+        out = self.run_export(client_id=self.client.pk, service_id=colour.pk)
+        self.assertEqual(
+            out, export_history_csv(
+                self.salon, self.client, now=NOW, service=colour))
+        self.assertEqual(self.exported_ids(out), [coloured.pk])
+
+    def test_service_composes_with_staff_status_window_and_limit(self):
+        colour_cat = ServiceCategory.objects.create(
+            salon=self.salon, name="Colour")
+        colour = Service.objects.create(
+            category=colour_cat, name="Colour", service_minutes=90)
+        bob = StaffMember.objects.create(
+            salon=self.salon, display_name="Bob")
+        self._appt(at(-1, 11), staff=bob, service=colour, status="cancelled")
+        completed = self._appt(
+            at(-2, 11), staff=bob, service=colour, status="completed")
+        out = self.run_export(
+            service_id=colour.pk, staff_id=bob.pk, status="completed",
+            limit=1, start_date=datetime.date(2026, 10, 31),
+            end_date=datetime.date(2026, 10, 31))
+        self.assertEqual(self.exported_ids(out), [completed.pk])
+
+    def test_no_service_is_previous_output(self):
+        out = self.run_export()
+        self.assertEqual(
+            out, export_history_csv(self.salon, None, now=NOW, service=None))
+
+    def test_unknown_service_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            self.run_export(service_id=self.service.pk + 999)

@@ -79,6 +79,16 @@ the previous output, byte-identical. It composes with
 ``client``, the date window, ``status``, and ``limit``
 (staff, status, and window apply before ``limit``), in both
 the per-client and salon-wide scopes.
+
+Service filter: ``service`` is an optional service
+(a ``saloncore.Service`` instance or its pk) matched on the
+row's service. It defaults ``None``, which is exactly the
+previous output, byte-identical. A snapshot-only appointment
+(``service=None``) never matches a service filter. It
+composes with ``client``, the date window, ``status``,
+``staff_member``, and ``limit`` (service, staff, status, and
+window apply before ``limit``), in both the per-client and
+salon-wide scopes.
 """
 import csv
 import datetime
@@ -181,13 +191,25 @@ def _staff_pk(staff_member):
         return pk
 
 
+def _service_pk(service):
+    """Reduce a Service instance (or a raw pk) to its pk."""
+    pk = getattr(service, "pk", service)
+    try:
+        return int(pk)
+    except (TypeError, ValueError):
+        return pk
+
+
 def _online_rows(salon, client, now, limit, start_date=None, end_date=None,
-                 status=None, staff_member=None):
+                 status=None, staff_member=None, service=None):
     rows = past_bookings(salon, client, now=now, limit=limit)
     rows = [r for r in rows if r.appointment.origin == Appointment.Origin.ONLINE]
     if staff_member is not None:
         staff_pk = _staff_pk(staff_member)
         rows = [r for r in rows if r.appointment.staff_member_id == staff_pk]
+    if service is not None:
+        service_pk = _service_pk(service)
+        rows = [r for r in rows if r.appointment.service_id == service_pk]
     if status is not None:
         rows = [r for r in rows if r.appointment.status == status]
     if start_date is not None or end_date is not None:
@@ -200,7 +222,7 @@ def _online_rows(salon, client, now, limit, start_date=None, end_date=None,
 
 def export_history(salon, client=None, now=None, limit=None,
                    start_date=None, end_date=None, status=None,
-                   staff_member=None):
+                   staff_member=None, service=None):
     """Return past online bookings as dict rows.
 
     Args:
@@ -228,6 +250,10 @@ def export_history(salon, client=None, now=None, limit=None,
             (or its pk) to filter by the row's staff member;
             default ``None`` = no staff filter, the previous
             output verbatim. Applies before ``limit``.
+        service: optional ``saloncore.Service`` instance
+            (or its pk) to filter by the row's service;
+            default ``None`` = no service filter, the previous
+            output verbatim. Applies before ``limit``.
 
     Returns:
         A list of dicts with exactly :data:`EXPORT_FIELDNAMES`
@@ -240,12 +266,12 @@ def export_history(salon, client=None, now=None, limit=None,
         return []
     filtered = (
         start_date is not None or end_date is not None or status is not None
-        or staff_member is not None)
+        or staff_member is not None or service is not None)
     if client is not None:
         rows = _online_rows(
             salon, client, now, None if filtered else limit,
             start_date=start_date, end_date=end_date, status=status,
-            staff_member=staff_member)
+            staff_member=staff_member, service=service)
         if filtered and limit is not None:
             rows = rows[:limit]
     else:
@@ -254,7 +280,7 @@ def export_history(salon, client=None, now=None, limit=None,
             rows.extend(_online_rows(
                 salon, salon_client, now, None,
                 start_date=start_date, end_date=end_date, status=status,
-                staff_member=staff_member))
+                staff_member=staff_member, service=service))
         rows.sort(key=lambda r: (r.start, r.appointment.pk), reverse=True)
         if limit is not None:
             rows = rows[:limit]
@@ -263,7 +289,7 @@ def export_history(salon, client=None, now=None, limit=None,
 
 def export_history_csv(salon, client=None, now=None, limit=None,
                        start_date=None, end_date=None, status=None,
-                       staff_member=None, **kwargs):
+                       staff_member=None, service=None, **kwargs):
     """Return the history export as a CSV string.
 
     Header is :data:`EXPORT_FIELDNAMES`; every data row comes
@@ -287,6 +313,8 @@ def export_history_csv(salon, client=None, now=None, limit=None,
         status = kwargs.pop("status")
     if "staff_member" in kwargs:
         staff_member = kwargs.pop("staff_member")
+    if "service" in kwargs:
+        service = kwargs.pop("service")
     if kwargs:
         raise TypeError(f"unexpected arguments: {', '.join(sorted(kwargs))}")
     buffer = io.StringIO()
@@ -296,7 +324,7 @@ def export_history_csv(salon, client=None, now=None, limit=None,
     for record in export_history(
             salon, client, now=now, limit=limit,
             start_date=start_date, end_date=end_date, status=status,
-            staff_member=staff_member):
+            staff_member=staff_member, service=service):
         writer.writerow(record)
     return buffer.getvalue()
 
