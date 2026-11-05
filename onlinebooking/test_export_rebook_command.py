@@ -16,6 +16,7 @@ command, not the global name resolution.
 import csv
 import datetime
 import io
+import json
 import os
 import tempfile
 from unittest import mock
@@ -25,7 +26,7 @@ from django.test import TestCase
 
 from bookings.models import Appointment
 from clients.models import Client
-from onlinebooking.rebook_export import export_rebook_csv
+from onlinebooking.rebook_export import export_rebook, export_rebook_csv
 from saloncore.models import Salon, Service, ServiceCategory
 from team.models import StaffMember
 
@@ -124,6 +125,69 @@ class ExportRebookCommandTests(TestCase):
             with open(path, encoding="utf-8", newline="") as fh:
                 self.assertEqual(
                     fh.read(), export_rebook_csv(self.salon, self.client))
+
+    def test_default_format_is_csv_byte_identical(self):
+        out = self.run_export()
+        self.assertEqual(out, export_rebook_csv(self.salon, None))
+
+    def test_explicit_csv_matches_service(self):
+        out = self.run_export(format="csv")
+        self.assertEqual(out, export_rebook_csv(self.salon, None))
+        out = io.StringIO()
+        call_command(
+            _cmd(), "--salon-id", str(self.salon.pk),
+            "--format", "csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_rebook_csv(self.salon, None))
+
+    def test_json_parses_and_equals_dict_service_rows(self):
+        out = self.run_export(format="json")
+        self.assertEqual(json.loads(out), export_rebook(self.salon, None))
+        self.assertEqual(
+            [r["staff_name"] for r in json.loads(out)],
+            ["Alice", "Alice"])
+        out = io.StringIO()
+        call_command(
+            _cmd(), "--salon-id", str(self.salon.pk),
+            "--format", "json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()), export_rebook(self.salon, None))
+
+    def test_json_filters_compose(self):
+        out = self.run_export(format="json", client_id=self.client.pk)
+        self.assertEqual(
+            json.loads(out), export_rebook(self.salon, self.client))
+        self.assertEqual(
+            [r["id"] for r in json.loads(out)], [self.mine.pk])
+        self.assertNotEqual(
+            json.loads(out), export_rebook(self.salon, None))
+
+    def test_json_output_file_matches_dict_service(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "rebook.json")
+            out = self.run_export(
+                format="json", client_id=self.client.pk, output=path)
+            self.assertEqual(out, "")
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(
+                    json.load(fh), export_rebook(self.salon, self.client))
+
+    def test_unknown_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            self.run_export(format="xml")
+        with self.assertRaises((CommandError, SystemExit)):
+            call_command(
+                _cmd(), "--salon-id", str(self.salon.pk),
+                "--format", "xml", stdout=io.StringIO())
+
+    def test_json_service_error_raises_command_error(self):
+        with mock.patch(
+            "onlinebooking.management.commands.export_rebook."
+            "export_rebook",
+            side_effect=ValueError("boom"),
+        ):
+            with self.assertRaises(CommandError):
+                self.run_export(format="json")
 
     def test_unknown_salon_raises_command_error(self):
         with self.assertRaises(CommandError):
