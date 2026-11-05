@@ -1,22 +1,24 @@
-"""Export a salon's stock adjustments as CSV via the adjust export service.
+"""Export a salon's stock adjustments as CSV or JSON.
 
 Usage:
     python manage.py export_adjust --salon-id ID
         [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD]
-        [--product-id ID] [--output PATH]
+        [--product-id ID] [--output PATH] [--format json|csv]
 
 Backend only — no views, templates, or UI. This command is a thin
 wrapper around
-:func:`catalog.adjust_export.export_stock_adjustments_csv`:
-it resolves the salon by id, parses the optional dates, delegates
-to that service verbatim (with the same optional ``start`` /
-``end``), and writes the returned CSV to ``--output`` when given,
-otherwise to stdout. It adds no fields, filtering, or export logic
-of its own, so the command output and the service output can
-never disagree — one source of truth. (The service also offers a
-JSON-serializable list export built from the same records; this
-command uses its CSV variant, as in the ``export_stock_history``
-command, so no JSON rendering is needed.)
+:mod:`catalog.adjust_export`: it resolves the salon by id, parses
+the optional dates, delegates to that service verbatim (with the
+same optional ``start`` / ``end``), and writes the result to
+``--output`` when given, otherwise to stdout. For ``--format csv``
+(the default) it writes
+:func:`catalog.adjust_export.export_stock_adjustments_csv`'s CSV
+string as-is, so the historical CSV output is byte-identical; for
+``--format json`` it serializes the dict rows from
+:func:`catalog.adjust_export.export_stock_adjustments` — the same
+rows the CSV is built from — as JSON. It adds no fields, filtering,
+or export logic of its own, so the command output and the service
+output can never disagree — one source of truth.
 
 Range semantics are the service's own: start-inclusive,
 end-exclusive after normalisation, so a date end covers the whole
@@ -33,12 +35,18 @@ fully export.
 """
 import argparse
 import datetime
+import json
 
 from django.core.management.base import BaseCommand, CommandError
 
-from catalog.adjust_export import export_stock_adjustments_csv
+from catalog.adjust_export import (
+    export_stock_adjustments,
+    export_stock_adjustments_csv,
+)
 from catalog.models import Product
 from saloncore.models import Salon
+
+_FORMATS = ("json", "csv")
 
 
 def _parse_date(value):
@@ -70,7 +78,7 @@ def _resolve_product(value, salon):
 
 
 class Command(BaseCommand):
-    help = "Export a salon's stock adjustments as CSV."
+    help = "Export a salon's stock adjustments as CSV or JSON."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -96,11 +104,19 @@ class Command(BaseCommand):
                  "every product in the salon).",
         )
         parser.add_argument(
+            "--format", dest="format", default="csv", choices=_FORMATS,
+            help="Export format: csv (default) or json.",
+        )
+        parser.add_argument(
             "--output", default=None,
-            help="Path of the CSV file to write (default: stdout).",
+            help="Path of the export file to write (default: stdout).",
         )
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist as exc:
@@ -111,9 +127,15 @@ class Command(BaseCommand):
             product_raw = options.get("product")
         product = _resolve_product(product_raw, salon)
         try:
-            text = export_stock_adjustments_csv(
-                salon, start=options["start_date"],
-                end=options["end_date"], product=product)
+            if fmt == "json":
+                records = export_stock_adjustments(
+                    salon, start=options["start_date"],
+                    end=options["end_date"], product=product)
+                text = json.dumps(records, indent=2) + "\n"
+            else:
+                text = export_stock_adjustments_csv(
+                    salon, start=options["start_date"],
+                    end=options["end_date"], product=product)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options["output"]:
