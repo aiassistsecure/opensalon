@@ -247,6 +247,67 @@ class ShiftOverrideExportTests(TestCase):
             start_date=PLACED_DATE, end_date=PLACED_DATE)
         self.assertEqual([r["id"] for r in records], [placed.pk])
 
+    def test_is_off_default_none_is_unchanged(self):
+        self._placed()
+        self._off()
+        self.assertEqual(
+            export_shift_overrides(self.salon, is_off=None),
+            export_shift_overrides(self.salon))
+        self.assertEqual(
+            export_shift_overrides_csv(self.salon, is_off=None),
+            export_shift_overrides_csv(self.salon))
+
+    def test_is_off_true_only_off_rows(self):
+        self._placed()
+        off = self._off()
+        records = export_shift_overrides(self.salon, is_off=True)
+        self.assertEqual([r["id"] for r in records], [off.pk])
+        self.assertTrue(all(r["is_off"] for r in records))
+        parsed = list(csv.DictReader(io.StringIO(
+            export_shift_overrides_csv(self.salon, is_off=True))))
+        self.assertEqual([int(r["id"]) for r in parsed], [off.pk])
+        self.assertEqual(parsed[0]["is_off"], "True")
+
+    def test_is_off_false_only_placed_rows(self):
+        placed = self._placed()
+        self._off()
+        records = export_shift_overrides(self.salon, is_off=False)
+        self.assertEqual([r["id"] for r in records], [placed.pk])
+        self.assertFalse(records[0]["is_off"])
+        parsed = list(csv.DictReader(io.StringIO(
+            export_shift_overrides_csv(self.salon, is_off=False))))
+        self.assertEqual([int(r["id"]) for r in parsed], [placed.pk])
+        self.assertEqual(parsed[0]["is_off"], "False")
+
+    def test_is_off_no_match_is_header_only(self):
+        self._placed()
+        self.assertEqual(
+            export_shift_overrides(self.salon, is_off=True), [])
+        self.assertEqual(
+            export_shift_overrides_csv(self.salon, is_off=True),
+            ",".join(SHIFT_OVERRIDE_EXPORT_FIELDNAMES) + "\n")
+
+    def test_is_off_composes_with_staff_and_window(self):
+        eve = StaffMember.objects.create(
+            salon=self.salon, display_name="Eve")
+        placed = self._placed()
+        off = self._off()
+        self._off(staff=eve, day=datetime.date(2026, 11, 8))
+        self.assertEqual(
+            [r["id"] for r in export_shift_overrides(
+                self.salon, staff_member=self.dana, is_off=True)],
+            [off.pk])
+        self.assertEqual(
+            [r["id"] for r in export_shift_overrides(
+                self.salon, is_off=False,
+                start_date=PLACED_DATE, end_date=PLACED_DATE)],
+            [placed.pk])
+        self.assertEqual(
+            export_shift_overrides(
+                self.salon, is_off=True,
+                start_date=PLACED_DATE, end_date=PLACED_DATE),
+            [])
+
     def test_read_only(self):
         self._placed()
         self._off()

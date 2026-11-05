@@ -4,6 +4,7 @@ Usage:
     python manage.py export_shift_overrides --salon-id ID
         [--staff-member-id ID]
         [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD]
+        [--is-off-only | --is-on-only]
         [--output PATH]
 
 Thin wrapper around the existing
@@ -32,6 +33,13 @@ arguments. Each bound is optional; without either, the
 command exports every override, exactly as before. A reversed
 window exports the header alone. The window composes with
 ``--staff-member-id`` (window AND member).
+
+With ``--is-off-only`` only full-day-off overrides (stored
+``is_off`` true) are exported; with ``--is-on-only`` only
+placed-shift overrides (stored ``is_off`` false). The flags
+conflict if both are given (``CommandError``). Without
+either, the selection is unfiltered, exactly as before. They
+compose with ``--staff-member-id`` and the date window.
 
 An unknown salon raises ``CommandError``. Backend only -- no
 views, templates, or UI. Read-only.
@@ -93,10 +101,22 @@ class Command(BaseCommand):
                  "override date, YYYY-MM-DD "
                  "(default: unbounded).")
         parser.add_argument(
+            "--is-off-only", action="store_true",
+            help="Only full-day-off overrides (is_off).")
+        parser.add_argument(
+            "--is-on-only", action="store_true",
+            help="Only placed-shift overrides (not is_off).")
+        parser.add_argument(
             "--output", default=None,
             help="Path of the CSV file to write (default: stdout).")
 
     def handle(self, *args, **options):
+        if options.get("is_off_only") and options.get("is_on_only"):
+            raise CommandError(
+                "--is-off-only and --is-on-only conflict.")
+        is_off = (
+            True if options.get("is_off_only")
+            else False if options.get("is_on_only") else None)
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist:
@@ -121,7 +141,8 @@ class Command(BaseCommand):
         try:
             text = export_shift_overrides_csv(
                 salon, staff_member=staff_member,
-                start_date=start_date, end_date=end_date)
+                start_date=start_date, end_date=end_date,
+                is_off=is_off)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
 

@@ -189,6 +189,96 @@ class ExportShiftOverridesCommandTests(TestCase):
                          salon_id=self.salon.id,
                          start_date="not-a-date", stdout=io.StringIO())
 
+    def _off(self):
+        return ShiftOverride.objects.create(
+            staff_member=self.staff,
+            date=datetime.date(2026, 11, 7), is_off=True)
+
+    def test_is_off_only_flag(self):
+        self._off()
+        out = io.StringIO()
+        call_command("export_shift_overrides",
+                     salon_id=self.salon.id, is_off_only=True,
+                     stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_shift_overrides_csv(self.salon, is_off=True))
+        self.assertIn("2026-11-07", out.getvalue())
+        self.assertNotIn("2026-10-31", out.getvalue())
+
+    def test_is_on_only_flag(self):
+        self._off()
+        out = io.StringIO()
+        call_command("export_shift_overrides",
+                     salon_id=self.salon.id, is_on_only=True,
+                     stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_shift_overrides_csv(self.salon, is_off=False))
+        self.assertIn("2026-10-31", out.getvalue())
+        self.assertNotIn("2026-11-07", out.getvalue())
+
+    def test_is_off_only_cli_spelling(self):
+        self._off()
+        out = io.StringIO()
+        call_command("export_shift_overrides",
+                     "--salon-id", str(self.salon.id),
+                     "--is-off-only", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_shift_overrides_csv(self.salon, is_off=True))
+
+    def test_is_on_only_cli_spelling(self):
+        self._off()
+        out = io.StringIO()
+        call_command("export_shift_overrides",
+                     "--salon-id", str(self.salon.id),
+                     "--is-on-only", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_shift_overrides_csv(self.salon, is_off=False))
+
+    def test_is_off_and_is_on_only_conflict(self):
+        with self.assertRaises(CommandError):
+            call_command("export_shift_overrides",
+                         salon_id=self.salon.id, is_off_only=True,
+                         is_on_only=True, stdout=io.StringIO())
+
+    def test_no_is_off_flag_is_default(self):
+        self._off()
+        out = io.StringIO()
+        call_command("export_shift_overrides",
+                     salon_id=self.salon.id, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_shift_overrides_csv(self.salon, is_off=None))
+        self.assertEqual(out.getvalue(),
+                         export_shift_overrides_csv(self.salon))
+
+    def test_is_off_composes_with_staff_and_window(self):
+        eve = StaffMember.objects.create(
+            salon=self.salon, display_name="Eve")
+        ShiftOverride.objects.create(
+            staff_member=eve, date=datetime.date(2026, 11, 7),
+            is_off=True)
+        self._off()
+        out = io.StringIO()
+        call_command("export_shift_overrides",
+                     salon_id=self.salon.id,
+                     staff_member_id=self.staff.id,
+                     start_date=datetime.date(2026, 11, 1),
+                     end_date=datetime.date(2026, 11, 30),
+                     is_off_only=True, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_shift_overrides_csv(
+                self.salon, staff_member=self.staff,
+                start_date=datetime.date(2026, 11, 1),
+                end_date=datetime.date(2026, 11, 30), is_off=True))
+        self.assertIn("Dana", out.getvalue())
+        self.assertNotIn("Eve", out.getvalue())
+        self.assertNotIn("2026-10-31", out.getvalue())
+
     def test_unknown_salon_required_id_and_unwritable(self):
         with self.assertRaises(CommandError):
             call_command("export_shift_overrides",
