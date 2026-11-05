@@ -1,4 +1,6 @@
+import csv
 import datetime
+import io
 from decimal import Decimal
 
 from django.test import TestCase
@@ -8,6 +10,7 @@ from checkout.models import Receipt, Sale, SaleItem
 from checkout.receipt_export import (
     EXPORT_FIELDNAMES,
     export_receipts,
+    export_receipts_csv,
     receipt_export_row,
 )
 from checkout.receipts import build_receipt
@@ -123,6 +126,80 @@ class ReceiptExportTests(TestCase):
             export_receipts(
                 self.day + datetime.timedelta(days=1), self.day
             )
+
+    def test_delivery_status_filter_default_none_is_unchanged(self):
+        self._receipt(self.day, sent=True)
+        self._receipt(self.day)
+        default = export_receipts(self.day, self.day, salon=self.salon)
+        self.assertEqual(len(default), 2)
+        self.assertEqual(
+            export_receipts(self.day, self.day, salon=self.salon,
+                            delivery_status=None), default)
+        self.assertEqual(
+            export_receipts_csv(self.day, self.day, salon=self.salon,
+                                delivery_status=None),
+            export_receipts_csv(self.day, self.day, salon=self.salon))
+
+    def test_delivery_status_filter_only_matching_status(self):
+        sent = self._receipt(self.day, sent=True)
+        unsent = self._receipt(self.day)
+        rows = export_receipts(self.day, self.day, salon=self.salon,
+                               delivery_status="sent")
+        self.assertEqual([r["id"] for r in rows], [sent.pk])
+        self.assertEqual(rows[0]["delivery_status"], "sent")
+        rows = export_receipts(self.day, self.day, salon=self.salon,
+                               delivery_status="not_sent")
+        self.assertEqual([r["id"] for r in rows], [unsent.pk])
+        self.assertEqual(rows[0]["delivery_status"], "not_sent")
+        parsed = list(csv.DictReader(io.StringIO(export_receipts_csv(
+            self.day, self.day, salon=self.salon,
+            delivery_status="sent"))))
+        self.assertEqual([int(r["id"]) for r in parsed], [sent.pk])
+
+    def test_delivery_status_is_derived_from_sent_at_only(self):
+        # A recipient recorded without a send is still not_sent,
+        # exactly as receipt_export_row derives the status.
+        receipt = self._receipt(self.day)
+        Receipt.objects.filter(pk=receipt.pk).update(
+            recipient_email="client@example.com")
+        self.assertEqual(
+            export_receipts(self.day, self.day, salon=self.salon,
+                            delivery_status="sent"), [])
+        self.assertEqual(
+            [r["id"] for r in export_receipts(
+                self.day, self.day, salon=self.salon,
+                delivery_status="not_sent")], [receipt.pk])
+
+    def test_delivery_status_composes_with_sale_and_window(self):
+        sent = self._receipt(self.day, sent=True)
+        self._receipt(self.day, sent=True)
+        self._receipt(self.day)
+        rows = export_receipts(self.day, self.day, salon=self.salon,
+                               sale=sent.sale, delivery_status="sent")
+        self.assertEqual([r["id"] for r in rows], [sent.pk])
+        self.assertEqual(
+            export_receipts(self.day, self.day, salon=self.salon,
+                            sale=sent.sale, delivery_status="not_sent"),
+            [])
+        other_day = self.day + datetime.timedelta(days=5)
+        self.assertEqual(
+            export_receipts(other_day, other_day, salon=self.salon,
+                            delivery_status="sent"), [])
+
+    def test_delivery_status_unknown_is_empty_and_header_only_csv(self):
+        self._receipt(self.day, sent=True)
+        self.assertEqual(
+            export_receipts(self.day, self.day, salon=self.salon,
+                            delivery_status="bogus"), [])
+        self.assertEqual(
+            export_receipts_csv(self.day, self.day, salon=self.salon,
+                                delivery_status="bogus"),
+            ",".join(EXPORT_FIELDNAMES) + "\n")
+
+    def test_delivery_status_is_keyword_only(self):
+        self._receipt(self.day, sent=True)
+        with self.assertRaises(TypeError):
+            export_receipts(self.day, self.day, self.salon, None, "sent")
 
     def test_export_is_read_only(self):
         self._receipt(self.day, sent=True)
