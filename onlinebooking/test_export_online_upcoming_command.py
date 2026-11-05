@@ -18,15 +18,17 @@ app's command, not the global name resolution.
 import csv
 import datetime
 import io
+import json
 import os
 import tempfile
 
 from django.core.management import CommandError, call_command, load_command_class
+from django.core.serializers.json import DjangoJSONEncoder
 from django.test import TestCase
 
 from bookings.models import Appointment
 from clients.models import Client
-from onlinebooking.export_upcoming import export_upcoming_csv
+from onlinebooking.export_upcoming import export_upcoming, export_upcoming_csv
 from saloncore.models import Salon, Service, ServiceCategory
 from team.models import StaffMember
 
@@ -150,6 +152,47 @@ class ExportOnlineUpcomingCommandTests(TestCase):
     def test_invalid_days_raises_command_error(self):
         with self.assertRaises(CommandError):
             self.run_export(days="seven")
+
+    def test_default_format_is_csv_byte_identical(self):
+        out = self.run_export()
+        self.assertEqual(out, export_upcoming_csv(self.salon, now=NOW))
+
+    def test_explicit_csv_matches_service(self):
+        out = self.run_export(format="csv")
+        self.assertEqual(out, export_upcoming_csv(self.salon, now=NOW))
+        out = io.StringIO()
+        call_command(
+            _cmd(), "--salon-id", str(self.salon.pk),
+            "--now", NOW.isoformat(), "--format", "csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_upcoming_csv(self.salon, now=NOW))
+
+    def test_json_parses_and_equals_dict_service_rows(self):
+        rows = export_upcoming(self.salon, now=NOW)
+        out = self.run_export(format="json")
+        self.assertEqual(json.loads(out), rows)
+        self.assertEqual(
+            out, json.dumps(rows, indent=2, cls=DjangoJSONEncoder) + "\n")
+        self.assertEqual(
+            [r["id"] for r in json.loads(out)], [self.soon.pk, self.far.pk])
+
+    def test_json_output_file_matches_dict_service(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "online_upcoming.json")
+            out = self.run_export(format="json", output=path)
+            self.assertEqual(out, "")
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(
+                    json.load(fh), export_upcoming(self.salon, now=NOW))
+
+    def test_unknown_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            self.run_export(format="xml")
+        with self.assertRaises((CommandError, SystemExit)):
+            call_command(
+                _cmd(), "--salon-id", str(self.salon.pk),
+                "--now", NOW.isoformat(), "--format", "xml",
+                stdout=io.StringIO())
 
     def test_unwritable_output_raises_command_error(self):
         with tempfile.TemporaryDirectory() as tmp:

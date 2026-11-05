@@ -1,17 +1,22 @@
-"""Export one salon's upcoming online bookings as CSV.
+"""Export one salon's upcoming online bookings as CSV or JSON.
 
 Usage:
     python manage.py export_online_upcoming --salon-id ID
         [--now ISO-DATETIME] [--start ISO-DATETIME]
-        [--days N] [--horizon-days N] [--output PATH]
+        [--days N] [--horizon-days N]
+        [--format json|csv] [--output PATH]
 
 Thin wrapper around the existing
-:func:`onlinebooking.export_upcoming.export_upcoming_csv`
-service: this command delegates verbatim to
-``export_upcoming_csv(salon, now=now, days=days, start=start,
-horizon_days=horizon_days)`` and adds no export logic of its
+:mod:`onlinebooking.export_upcoming` services: for
+``--format csv`` (the default) this command delegates verbatim
+to ``export_upcoming_csv(salon, now=now, days=days, start=start,
+horizon_days=horizon_days)``; for ``--format json`` the same
+arguments are passed to the dict service ``export_upcoming``
+(beside its CSV twin) and its rows are serialised as JSON via
+``DjangoJSONEncoder``. The command adds no export logic of its
 own, so the command output and the service output can never
-disagree -- one source of truth.
+disagree -- one source of truth, and the CSV output is exactly
+as before, byte-identical.
 
 The distinct name ``export_online_upcoming`` is deliberate:
 the global name ``export_upcoming`` is already owned by a
@@ -26,18 +31,22 @@ the service's alias for ``days`` (and wins when given).
 
 Output goes to stdout unless ``--output`` names a file.
 Invalid input -- an unknown salon, an unparseable
-``--now`` / ``--start``, or a non-integer ``--days`` /
-``--horizon-days`` -- raises ``CommandError``, as do service
-errors and unwritable output.
+``--now`` / ``--start``, a non-integer ``--days`` /
+``--horizon-days``, or an unknown format -- raises
+``CommandError``, as do service errors and unwritable output.
 Backend only -- no views, templates, or UI. Read-only.
 """
 import datetime
+import json
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.core.management.base import BaseCommand, CommandError
+from django.core.serializers.json import DjangoJSONEncoder
 
-from onlinebooking.export_upcoming import export_upcoming_csv
+from onlinebooking.export_upcoming import export_upcoming, export_upcoming_csv
 from saloncore.models import Salon
+
+_FORMATS = ("json", "csv")
 
 
 def _tz_for(salon):
@@ -85,7 +94,7 @@ def _coerce_days(value, label):
 
 
 class Command(BaseCommand):
-    help = "Export one salon's upcoming online bookings as CSV."
+    help = "Export one salon's upcoming online bookings as CSV or JSON."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -111,10 +120,17 @@ class Command(BaseCommand):
             help="Alias for --days, exactly as the service "
                  "defines it (wins when given).")
         parser.add_argument(
+            "--format", dest="format", default="csv", choices=_FORMATS,
+            help="Export format: csv (default) or json.")
+        parser.add_argument(
             "--output", default=None,
-            help="Path of the CSV file to write (default: stdout).")
+            help="Path of the export file to write (default: stdout).")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist:
@@ -128,9 +144,16 @@ class Command(BaseCommand):
             options.get("horizon_days"), "horizon-days")
 
         try:
-            text = export_upcoming_csv(
-                salon, now=now, days=days, start=start,
-                horizon_days=horizon_days)
+            if fmt == "json":
+                rows = export_upcoming(
+                    salon, now=now, days=days, start=start,
+                    horizon_days=horizon_days)
+                text = json.dumps(
+                    rows, indent=2, cls=DjangoJSONEncoder) + "\n"
+            else:
+                text = export_upcoming_csv(
+                    salon, now=now, days=days, start=start,
+                    horizon_days=horizon_days)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
 
