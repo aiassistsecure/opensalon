@@ -20,6 +20,7 @@ also pins ``get_commands()`` mapping the new name to
 """
 import datetime
 import io
+import json
 import os
 import tempfile
 from decimal import Decimal
@@ -30,7 +31,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from checkout.models import Sale, SaleItem
-from checkout.summary_export import export_summary_csv
+from checkout.summary_export import export_summary, export_summary_csv
 from saloncore.models import Salon
 
 DAY = datetime.date(2026, 10, 3)
@@ -143,3 +144,102 @@ class ExportSalesSummaryCommandTests(TestCase):
             call_command(
                 _cmd(), salon_id=self.salon.pk, date_from=NEXT,
                 date_to=DAY, stdout=io.StringIO())
+
+
+class ExportSalesSummaryCommandFormatTests(TestCase):
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon", timezone="UTC")
+
+    def _sale(self, price="85.00", day=DAY):
+        sale = Sale.objects.create(
+            salon=self.salon, status=Sale.Status.COMPLETED)
+        SaleItem.objects.create(
+            sale=sale, kind="service", description="service",
+            unit_price=Decimal(price), quantity=1)
+        stamp = _stamp(day)
+        Sale.objects.filter(pk=sale.pk).update(
+            created_at=stamp, completed_at=stamp)
+        sale.refresh_from_db()
+        return sale
+
+    def test_default_is_csv_byte_identical(self):
+        self._sale()
+        default_out = io.StringIO()
+        call_command(
+            _cmd(), salon_id=self.salon.pk, date_from=DAY,
+            stdout=default_out)
+        csv_out = io.StringIO()
+        call_command(
+            _cmd(), salon_id=self.salon.pk, date_from=DAY,
+            format="csv", stdout=csv_out)
+        self.assertEqual(default_out.getvalue(), csv_out.getvalue())
+        self.assertEqual(
+            default_out.getvalue(), export_summary_csv(self.salon, DAY))
+
+    def test_explicit_csv_via_cli_matches_service(self):
+        self._sale()
+        out = io.StringIO()
+        call_command(
+            _cmd(), "--salon-id", str(self.salon.pk),
+            "--date-from", DAY.isoformat(), "--date-to", NEXT.isoformat(),
+            "--format", "csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_summary_csv(self.salon, DAY, NEXT))
+
+    def test_json_parses_and_equals_dict_service_rows(self):
+        self._sale()
+        out = io.StringIO()
+        call_command(
+            _cmd(), salon_id=self.salon.pk, date_from=DAY, date_to=NEXT,
+            format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_summary(self.salon, DAY, NEXT))
+
+    def test_json_via_cli_matches_dict_service(self):
+        self._sale()
+        out = io.StringIO()
+        call_command(
+            _cmd(), "--salon-id", str(self.salon.pk),
+            "--date-from", DAY.isoformat(), "--date-to", NEXT.isoformat(),
+            "--format", "json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_summary(self.salon, DAY, NEXT))
+
+    def test_json_single_day_when_date_to_omitted(self):
+        self._sale()
+        out = io.StringIO()
+        call_command(
+            _cmd(), salon_id=self.salon.pk, date_from=DAY,
+            format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_summary(self.salon, DAY, None))
+
+    def test_json_output_file_parses_and_equals_dict_service(self):
+        self._sale()
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "summary.json")
+            call_command(
+                _cmd(), salon_id=self.salon.pk, date_from=DAY,
+                date_to=NEXT, format="json", output=path, stdout=out)
+            with open(path, encoding="utf-8") as fh:
+                written = fh.read()
+        self.assertEqual(
+            json.loads(written), export_summary(self.salon, DAY, NEXT))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_unknown_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                _cmd(), salon_id=self.salon.pk, date_from=DAY,
+                format="xml", stdout=io.StringIO())
+
+    def test_unknown_format_via_cli_is_rejected(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                _cmd(), "--salon-id", str(self.salon.pk),
+                "--date-from", DAY.isoformat(),
+                "--format", "xml", stdout=io.StringIO())
