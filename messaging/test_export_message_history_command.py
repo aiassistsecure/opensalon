@@ -1,17 +1,22 @@
 import datetime
 import io
+import json
 import os
 import tempfile
 from datetime import time, timedelta
 from zoneinfo import ZoneInfo
 
 from django.core.management import CommandError, call_command
+from django.core.serializers.json import DjangoJSONEncoder
 from django.test import TestCase
 from django.utils import timezone
 
 from bookings.models import Appointment
 from clients.models import Client
-from messaging.history_export import export_history_summary_csv
+from messaging.history_export import (
+    export_history_summary,
+    export_history_summary_csv,
+)
 from messaging.models import ReminderSend
 from saloncore.models import Salon, Service, ServiceCategory
 from team.models import StaffMember
@@ -150,3 +155,96 @@ class ExportMessageHistoryCommandTests(TestCase):
             call_command(
                 "export_message_history",
                 start_date=NEXT, end_date=DAY, stdout=io.StringIO())
+
+    def test_default_is_csv_byte_identical(self):
+        default_out = io.StringIO()
+        call_command(
+            "export_message_history",
+            start_date=DAY, end_date=DAY, stdout=default_out)
+        csv_out = io.StringIO()
+        call_command(
+            "export_message_history",
+            start_date=DAY, end_date=DAY, format="csv", stdout=csv_out)
+        self.assertEqual(default_out.getvalue(), csv_out.getvalue())
+        self.assertEqual(
+            default_out.getvalue(), export_history_summary_csv(DAY, DAY))
+
+    def test_explicit_csv_via_cli_matches_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_message_history",
+            "--start-date", DAY.isoformat(), "--end-date", DAY.isoformat(),
+            "--format", "csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_history_summary_csv(DAY, DAY))
+
+    def test_json_parses_and_equals_dict_service_rows(self):
+        out = io.StringIO()
+        call_command(
+            "export_message_history",
+            start_date=DAY, end_date=DAY, format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()), export_history_summary(DAY, DAY))
+        self.assertEqual(
+            out.getvalue(),
+            json.dumps(
+                export_history_summary(DAY, DAY),
+                indent=2, cls=DjangoJSONEncoder) + "\n")
+
+    def test_json_via_cli_with_salon_filter_matches_dict_service(self):
+        other = self._add_other_salon_send()
+        salon = Salon.objects.get(name="Example Salon")
+        out = io.StringIO()
+        call_command(
+            "export_message_history",
+            "--start-date", DAY.isoformat(), "--end-date", DAY.isoformat(),
+            "--salon-id", str(salon.pk), "--format", "json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_history_summary(DAY, DAY, salon=salon))
+        self.assertNotEqual(
+            json.loads(out.getvalue()), export_history_summary(DAY, DAY))
+        other_out = io.StringIO()
+        call_command(
+            "export_message_history",
+            start_date=DAY, end_date=DAY, salon_id=other.pk,
+            format="json", stdout=other_out)
+        self.assertEqual(
+            json.loads(other_out.getvalue()),
+            export_history_summary(DAY, DAY, salon=other))
+
+    def test_json_output_file_parses_and_equals_dict_service(self):
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "message_history.json")
+            call_command(
+                "export_message_history",
+                start_date=DAY, end_date=NEXT, format="json",
+                output=path, stdout=out)
+            with open(path, encoding="utf-8") as fh:
+                written = fh.read()
+        self.assertEqual(
+            json.loads(written), export_history_summary(DAY, NEXT))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_unknown_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_message_history",
+                start_date=DAY, end_date=DAY, format="xml",
+                stdout=io.StringIO())
+
+    def test_unknown_format_via_cli_is_rejected(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_message_history",
+                "--start-date", DAY.isoformat(),
+                "--end-date", DAY.isoformat(),
+                "--format", "xml", stdout=io.StringIO())
+
+    def test_json_reversed_range_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_message_history",
+                start_date=NEXT, end_date=DAY, format="json",
+                stdout=io.StringIO())
