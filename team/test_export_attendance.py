@@ -1,13 +1,17 @@
 """Tests for the export_attendance management command.
 
-The command is a thin wrapper around
-``team.attendance_export.export_attendance_summary_csv``:
-these tests pin that its stdout and file output match that
-service verbatim and that invalid input raises CommandError.
+The command is a thin wrapper around the
+``team.attendance_export`` services: these tests pin that
+its CSV stdout and file output match
+``export_attendance_summary_csv`` verbatim, that its JSON
+output parses and equals the dict rows from
+``export_attendance_summary``, and that invalid input
+raises CommandError.
 Fixtures are tiny synthetic records -- unit logic only.
 """
 import datetime
 import io
+import json
 import os
 import tempfile
 
@@ -15,7 +19,10 @@ from django.core.management import CommandError, call_command
 from django.test import TestCase
 
 from saloncore.models import Salon
-from team.attendance_export import export_attendance_summary_csv
+from team.attendance_export import (
+    export_attendance_summary,
+    export_attendance_summary_csv,
+)
 from team.models import AttendanceRecord, StaffMember
 
 DAY1 = datetime.date(2026, 11, 2)
@@ -73,6 +80,92 @@ class ExportAttendanceCommandTests(TestCase):
                     fh.read(),
                     export_attendance_summary_csv(
                         self.salon, DAY1, DAY2))
+
+    def test_default_format_is_csv_byte_identical(self):
+        out = self.run_export(
+            salon_id=self.salon.pk, start_date=DAY1, end_date=DAY2)
+        self.assertEqual(
+            out, export_attendance_summary_csv(self.salon, DAY1, DAY2))
+
+    def test_explicit_csv_format_matches_service(self):
+        out = self.run_export(
+            salon_id=self.salon.pk, start_date=DAY1, end_date=DAY2,
+            format="csv")
+        self.assertEqual(
+            out, export_attendance_summary_csv(self.salon, DAY1, DAY2))
+
+    def test_csv_flag_matches_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_attendance", "--salon-id", str(self.salon.pk),
+            "--start-date", DAY1.isoformat(),
+            "--end-date", DAY2.isoformat(), "--format", "csv",
+            stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_attendance_summary_csv(self.salon, DAY1, DAY2))
+
+    def test_json_output_parses_and_equals_dict_service_rows(self):
+        out = self.run_export(
+            salon_id=self.salon.pk, start_date=DAY1, end_date=DAY2,
+            format="json")
+        self.assertEqual(
+            json.loads(out),
+            export_attendance_summary(self.salon, DAY1, DAY2))
+        self.assertIn("Stylist One", out)
+
+    def test_json_flag_matches_dict_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_attendance", "--salon-id", str(self.salon.pk),
+            "--start-date", DAY1.isoformat(),
+            "--end-date", DAY2.isoformat(), "--format", "json",
+            stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_attendance_summary(self.salon, DAY1, DAY2))
+
+    def test_json_composes_with_date_range(self):
+        out = self.run_export(
+            salon_id=self.salon.pk, start_date=DAY1, end_date=DAY1,
+            format="json")
+        self.assertEqual(
+            json.loads(out),
+            export_attendance_summary(self.salon, DAY1, DAY1))
+        self.assertIn(DAY1.isoformat(), out)
+
+    def test_json_output_file_matches_dict_service(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "attendance.json")
+            out = self.run_export(
+                salon_id=self.salon.pk, start_date=DAY1,
+                end_date=DAY2, format="json", output=path)
+            self.assertEqual(out, "")
+            with open(path, encoding="utf-8", newline="") as fh:
+                self.assertEqual(
+                    json.loads(fh.read()),
+                    export_attendance_summary(
+                        self.salon, DAY1, DAY2))
+
+    def test_invalid_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            self.run_export(
+                salon_id=self.salon.pk, start_date=DAY1,
+                end_date=DAY2, format="xml")
+
+    def test_invalid_format_via_cli_is_rejected(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_attendance", "--salon-id", str(self.salon.pk),
+                "--start-date", DAY1.isoformat(),
+                "--end-date", DAY2.isoformat(), "--format", "xml",
+                stdout=io.StringIO())
+
+    def test_json_reversed_range_is_command_error(self):
+        with self.assertRaises(CommandError):
+            self.run_export(
+                salon_id=self.salon.pk, start_date=DAY2,
+                end_date=DAY1, format="json")
 
     def test_unknown_salon_id_is_command_error(self):
         with self.assertRaises(CommandError):

@@ -1,17 +1,28 @@
-"""Export one salon's attendance summary as CSV.
+"""Export one salon's attendance summary as CSV or JSON.
 
 Usage:
     python manage.py export_attendance --salon-id ID
-        --start-date YYYY-MM-DD --end-date YYYY-MM-DD [--output PATH]
+        --start-date YYYY-MM-DD --end-date YYYY-MM-DD
+        [--format json|csv] [--output PATH]
 
 Thin wrapper around the existing
+:mod:`team.attendance_export` services: for ``--format csv``
+(the default) it delegates verbatim to
 :func:`team.attendance_export.export_attendance_summary_csv`
-service: the salon is resolved by id, the dates are parsed to
+-- the salon is resolved by id, the dates are parsed to
 ``datetime.date`` objects, and all three are passed to the
 service verbatim -- its CSV text is written unchanged, to
-``--output`` when given and to stdout otherwise. This command
-adds no export logic of its own, so command and service output
-can never disagree -- one source of truth.
+``--output`` when given and to stdout otherwise. For
+``--format json`` it serialises the SAME dict rows from
+:func:`team.attendance_export.export_attendance_summary`
+with the same arguments, so the two formats can never
+disagree -- one source of truth. This command adds no
+export logic of its own.
+
+Every filter composes with both formats. An unknown
+``--format`` raises ``CommandError`` (argparse ``choices``
+reject it on the CLI; the explicit check covers
+``call_command`` kwargs).
 
 Invalid input -- an unknown salon, an unparseable date, or a
 reversed range -- raises ``CommandError``. Dates mean whole
@@ -20,11 +31,17 @@ exactly as the service defines them. Backend only -- no
 views, templates, or UI. Read-only.
 """
 import datetime
+import json
 
 from django.core.management.base import BaseCommand, CommandError
 
 from saloncore.models import Salon
-from team.attendance_export import export_attendance_summary_csv
+from team.attendance_export import (
+    export_attendance_summary,
+    export_attendance_summary_csv,
+)
+
+_FORMATS = ("json", "csv")
 
 
 def _parse_date(value, label):
@@ -41,7 +58,7 @@ def _parse_date(value, label):
 
 
 class Command(BaseCommand):
-    help = "Export one salon's attendance summary as CSV."
+    help = "Export one salon's attendance summary as CSV (default) or JSON."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -54,10 +71,17 @@ class Command(BaseCommand):
             "--end-date", dest="end_date", required=True,
             help="Last day of the range, YYYY-MM-DD (inclusive).")
         parser.add_argument(
+            "--format", dest="format", default="csv", choices=_FORMATS,
+            help="Export format: csv (default) or json.")
+        parser.add_argument(
             "--output", default=None,
-            help="Path of the CSV file to write (default: stdout).")
+            help="Path of the export file to write (default: stdout).")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist:
@@ -67,7 +91,11 @@ class Command(BaseCommand):
         start = _parse_date(options["start_date"], "start date")
         end = _parse_date(options["end_date"], "end date")
         try:
-            text = export_attendance_summary_csv(salon, start, end)
+            if fmt == "json":
+                rows = export_attendance_summary(salon, start, end)
+                text = json.dumps(rows, indent=2) + "\n"
+            else:
+                text = export_attendance_summary_csv(salon, start, end)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
 
