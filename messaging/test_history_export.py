@@ -267,6 +267,75 @@ class ClientHistoryWindowTests(HistoryExportBase):
             header)
 
 
+class ClientHistoryChannelTests(HistoryExportBase):
+    def setUp(self):
+        super().setUp()
+        self.client = self._client()
+        self.oldest = self._send(self.client, "email", _at(DAY1, 9))
+        self.middle = self._send(self.client, "sms", _at(DAY2, 9))
+        self.newest = self._send(self.client, "email", _at(DAY3, 9))
+
+    def _ids(self, rows):
+        return [r["id"] for r in rows]
+
+    def test_channel_filter_dict_and_csv(self):
+        self.assertEqual(
+            self._ids(export_client_history(self.client, channel="email")),
+            [self.newest.id, self.oldest.id])
+        self.assertEqual(
+            self._ids(export_client_history(self.client, channel="sms")),
+            [self.middle.id])
+        parsed = _rows(export_client_history_csv(
+            self.client, channel="sms"))
+        self.assertEqual([int(r["id"]) for r in parsed], [self.middle.id])
+        self.assertTrue(all(r["channel"] == "sms" for r in parsed))
+
+    def test_channel_default_none_is_byte_identical(self):
+        self.assertEqual(
+            export_client_history(self.client),
+            export_client_history(self.client, channel=None))
+        self.assertEqual(
+            export_client_history_csv(self.client),
+            export_client_history_csv(self.client, channel=None))
+
+    def test_channel_filter_exact_no_case_folding(self):
+        self.assertEqual(
+            export_client_history(self.client, channel="EMAIL"), [])
+        self.assertEqual(
+            export_client_history(self.client, channel="Sms"), [])
+
+    def test_channel_filter_unknown_channel_is_empty(self):
+        header = ",".join(CLIENT_HISTORY_FIELDNAMES) + "\n"
+        self.assertEqual(
+            export_client_history(self.client, channel="pigeon"), [])
+        self.assertEqual(
+            export_client_history_csv(self.client, channel="pigeon"),
+            header)
+
+    def test_channel_composes_with_window(self):
+        self.assertEqual(
+            self._ids(export_client_history(
+                self.client, start=DAY2, end=DAY3, channel="email")),
+            [self.newest.id])
+        self.assertEqual(
+            self._ids(export_client_history(
+                self.client, start=DAY1, end=DAY2, channel="email")),
+            [self.oldest.id])
+
+    def test_channel_applies_before_limit(self):
+        rows = export_client_history(
+            self.client, limit=1, channel="sms")
+        self.assertEqual(self._ids(rows), [self.middle.id])
+
+    def test_channel_is_keyword_only(self):
+        with self.assertRaises(TypeError):
+            export_client_history(
+                self.client, None, None, None, "email")
+        with self.assertRaises(TypeError):
+            export_client_history_csv(
+                self.client, None, None, None, "email")
+
+
 class ReadOnlyTests(HistoryExportBase):
     def test_export_mutates_nothing(self):
         client = self._client()

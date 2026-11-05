@@ -3,7 +3,8 @@
 Usage:
     python manage.py export_client_history_detail --salon-id ID
         --client-id ID [--limit N] [--start-date YYYY-MM-DD]
-        [--end-date YYYY-MM-DD] [--output PATH]
+        [--end-date YYYY-MM-DD] [--channel CHANNEL]
+        [--output PATH]
 
 Thin wrapper around the existing
 :func:`messaging.history_export.export_client_history_csv`
@@ -18,7 +19,13 @@ spells them) are parsed to ``datetime.date`` objects and
 passed to the service as its ``start`` / ``end`` window on
 the send's ``sent_at``; omitted, the export is the full
 history, unchanged. An unparseable date raises
-``CommandError``. The service is client-scoped (rows come from
+``CommandError``. The optional ``--channel`` is passed to
+the service as its ``channel`` argument (the spelling the
+``export_due_reminders`` and ``export_send`` commands use),
+composing with the window and ``--limit``; omitted, the
+export covers every channel, exactly as before, and an
+unknown channel exports as the header row alone, exactly
+as the service behaves. The service is client-scoped (rows come from
 the ``ReminderSend`` log for that client), so the salon is
 resolved only to validate it exists. A client from another
 salon is passed through too: the service exports that client's
@@ -125,6 +132,11 @@ class Command(BaseCommand):
             help="Last day of the range, YYYY-MM-DD (inclusive).",
         )
         parser.add_argument(
+            "--channel", dest="channel", default=None,
+            help="Reminder send channel value to filter by "
+                 "(default: all channels).",
+        )
+        parser.add_argument(
             "--output", default=None,
             help="Path to write the CSV to (default: stdout).",
         )
@@ -145,7 +157,8 @@ class Command(BaseCommand):
             _first(options, "end_date", "end"), "end date")
         try:
             text = export_client_history_csv(
-                client, limit=limit, start=start, end=end)
+                client, limit=limit, start=start, end=end,
+                channel=options.get("channel"))
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options.get("output"):
