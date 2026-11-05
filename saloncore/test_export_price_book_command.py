@@ -6,6 +6,7 @@ tests check delegation (stdout/file match the service output
 verbatim) and clean failure for an unknown salon.
 """
 import io
+import json
 import os
 import tempfile
 from decimal import Decimal
@@ -20,7 +21,10 @@ from saloncore.models import (
     ServicePrice,
     StaffLevel,
 )
-from saloncore.price_book_export import export_price_book_csv
+from saloncore.price_book_export import (
+    export_price_book,
+    export_price_book_csv,
+)
 
 
 class ExportPriceBookCommandTests(TestCase):
@@ -176,3 +180,95 @@ class ExportPriceBookCommandTests(TestCase):
             call_command(
                 "export_price_book", salon_id=999999,
                 stdout=io.StringIO())
+
+    def test_default_format_is_csv_byte_identical(self):
+        out = io.StringIO()
+        call_command(
+            "export_price_book", salon_id=self.salon.pk, stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_price_book_csv(self.salon))
+
+    def test_explicit_csv_format_matches_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_price_book", salon_id=self.salon.pk,
+            format="csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_price_book_csv(self.salon))
+
+    def test_csv_flag_matches_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_price_book", "--salon-id", str(self.salon.pk),
+            "--format", "csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_price_book_csv(self.salon))
+
+    def test_json_output_parses_and_equals_dict_service_rows(self):
+        out = io.StringIO()
+        call_command(
+            "export_price_book", salon_id=self.salon.pk,
+            format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()), export_price_book(self.salon))
+
+    def test_json_flag_matches_dict_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_price_book", "--salon-id", str(self.salon.pk),
+            "--format", "json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()), export_price_book(self.salon))
+        self.assertIn("Single Process Color", out.getvalue())
+
+    def test_json_filters_compose(self):
+        other_category = ServiceCategory.objects.create(
+            salon=self.salon, name="Haircuts", sort_order=2)
+        other_service = Service.objects.create(
+            category=other_category, name="Haircut",
+            service_minutes=30)
+        ServicePrice.objects.create(
+            service=other_service, staff_level=self.level,
+            amount=Decimal("50.00"))
+        out = io.StringIO()
+        call_command(
+            "export_price_book", salon_id=self.salon.pk,
+            service_id=self.service.pk, format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_price_book(self.salon, service=self.service))
+        out = io.StringIO()
+        call_command(
+            "export_price_book", salon_id=self.salon.pk,
+            category_id=self.category.pk, format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_price_book(self.salon, category=self.category))
+        out = io.StringIO()
+        call_command(
+            "export_price_book", salon_id=self.salon.pk,
+            service_id=self.service.pk,
+            category_id=self.category.pk, format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_price_book(
+                self.salon, service=self.service,
+                category=self.category))
+        out = io.StringIO()
+        call_command(
+            "export_price_book", salon_id=self.salon.pk,
+            service_id=self.service.pk,
+            category_id=other_category.pk, format="json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()), [])
+
+    def test_invalid_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_price_book", salon_id=self.salon.pk,
+                format="xml", stdout=io.StringIO())
+
+    def test_invalid_format_via_cli_is_rejected(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_price_book", "--salon-id", str(self.salon.pk),
+                "--format", "xml", stdout=io.StringIO())
