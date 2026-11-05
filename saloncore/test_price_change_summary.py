@@ -1,12 +1,14 @@
 """Tests for price-change window summary: service, export, command."""
 import csv
 import io
+import json
 import os
 import tempfile
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from django.core.management import CommandError, call_command
+from django.core.serializers.json import DjangoJSONEncoder
 from django.db.models.query import QuerySet as PlainQuerySet
 from django.test import TestCase
 from django.utils import timezone
@@ -185,4 +187,115 @@ class PriceChangeSummaryTests(TestCase):
                        dict(salon_id=self.salon.pk)):
             with self.assertRaises(CommandError):
                 call_command("export_price_change_summary",
+                             stdout=io.StringIO(), **kwargs)
+
+    def _expected_json_rows(self):
+        rows = export_price_change_summary(self.salon, START, END)
+        return json.loads(json.dumps(rows, cls=DjangoJSONEncoder))
+
+    def test_command_default_format_is_csv_byte_identical(self):
+        self.seed()
+        out = io.StringIO()
+        call_command("export_price_change_summary", salon_id=self.salon.pk,
+                     start_date=START, end_date=END, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_price_change_summary_csv(self.salon, START, END))
+
+    def test_command_explicit_csv_format_matches_service(self):
+        self.seed()
+        expected = export_price_change_summary_csv(self.salon, START, END)
+        out = io.StringIO()
+        call_command("export_price_change_summary", salon_id=self.salon.pk,
+                     start_date=START, end_date=END, format="csv", stdout=out)
+        self.assertEqual(out.getvalue(), expected)
+        out = io.StringIO()
+        call_command("export_price_change_summary",
+                     "--salon-id", str(self.salon.pk),
+                     "--start-date", START.isoformat(),
+                     "--end-date", END.isoformat(),
+                     "--format", "csv", stdout=out)
+        self.assertEqual(out.getvalue(), expected)
+
+    def test_command_json_output_equals_dict_service_rows(self):
+        self.seed()
+        out = io.StringIO()
+        call_command("export_price_change_summary", salon_id=self.salon.pk,
+                     start_date=START, end_date=END, format="json",
+                     stdout=out)
+        rows = export_price_change_summary(self.salon, START, END)
+        self.assertEqual(
+            out.getvalue(),
+            json.dumps(rows, indent=2, cls=DjangoJSONEncoder) + "\n")
+        parsed = json.loads(out.getvalue())
+        self.assertEqual(parsed, self._expected_json_rows())
+        self.assertEqual(
+            (parsed[0]["current_change_count"],
+             parsed[0]["current_net_amount_delta"],
+             parsed[0]["decrease_count_percent_change"]),
+            (4, "15.00", None))
+
+    def test_command_json_flag_matches_dict_service(self):
+        self.seed()
+        out = io.StringIO()
+        call_command("export_price_change_summary",
+                     "--salon-id", str(self.salon.pk),
+                     "--start-date", START.isoformat(),
+                     "--end-date", END.isoformat(),
+                     "--format", "json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()),
+                         self._expected_json_rows())
+
+    def test_command_json_date_window_composes(self):
+        self.seed()
+        out = io.StringIO()
+        call_command("export_price_change_summary", salon_id=self.salon.pk,
+                     start_date=START, end_date=END, format="json",
+                     stdout=out)
+        self.assertEqual(len(json.loads(out.getvalue())), 3)
+        empty = date(2027, 1, 7)
+        out = io.StringIO()
+        call_command("export_price_change_summary", salon_id=self.salon.pk,
+                     start_date=empty, end_date=empty, format="json",
+                     stdout=out)
+        parsed = json.loads(out.getvalue())
+        self.assertEqual((len(parsed), parsed[0]["current_change_count"]),
+                         (1, 0))
+
+    def test_command_json_output_option_writes_file(self):
+        self.seed()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "out.json")
+            out = io.StringIO()
+            call_command("export_price_change_summary",
+                         salon_id=self.salon.pk, start_date=START,
+                         end_date=END, format="json", output=path,
+                         stdout=out)
+            with open(path, encoding="utf-8") as fh:
+                written = fh.read()
+            self.assertEqual(out.getvalue(), "")
+        self.assertEqual(json.loads(written), self._expected_json_rows())
+
+    def test_command_invalid_format_raises_command_error(self):
+        self.seed()
+        with self.assertRaises(CommandError):
+            call_command("export_price_change_summary",
+                         salon_id=self.salon.pk, start_date=START,
+                         end_date=END, format="xml", stdout=io.StringIO())
+        with self.assertRaises(CommandError):
+            call_command("export_price_change_summary",
+                         "--salon-id", str(self.salon.pk),
+                         "--start-date", START.isoformat(),
+                         "--end-date", END.isoformat(),
+                         "--format", "xml", stdout=io.StringIO())
+
+    def test_command_json_errors_still_command_error(self):
+        self.seed()
+        for kwargs in (dict(salon_id=self.salon.pk + 1000, start_date=START,
+                            end_date=END),
+                       dict(salon_id=self.salon.pk, start_date=END,
+                            end_date=START),
+                       dict(salon_id=self.salon.pk)):
+            with self.assertRaises(CommandError):
+                call_command("export_price_change_summary", format="json",
                              stdout=io.StringIO(), **kwargs)
