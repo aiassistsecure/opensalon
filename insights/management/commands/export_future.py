@@ -1,15 +1,23 @@
-"""Export a salon's future appointments value report as CSV.
+"""Export a salon's future appointments value report as CSV or JSON.
 
 Usage:
     python manage.py export_future --salon-id ID
-        [--as-of ISO-8601-DATETIME] [--output PATH]
+        [--as-of ISO-8601-DATETIME] [--format json|csv]
+        [--output PATH]
 
 Thin wrapper around the existing
-:func:`insights.future_export.export_future_appointments_value_csv`
-service: the salon is resolved by id, ``--as-of`` is parsed to
-a timezone-aware ``datetime.datetime``, and both are passed to
-the service verbatim — its CSV text is written unchanged, to
-``--output`` when given and to stdout otherwise. ``--as-of``
+:mod:`insights.future_export` service: the salon is resolved
+by id, ``--as-of`` is parsed to a timezone-aware
+``datetime.datetime``, and both are passed to the service
+verbatim — its output is written unchanged, to ``--output``
+when given and to stdout otherwise. For ``--format csv`` (the
+default) it writes
+:func:`insights.future_export.export_future_appointments_value_csv`'s
+CSV string, exactly as before; for ``--format json`` it
+serialises the SAME dict rows from
+:func:`insights.future_export.export_future_appointments_value`
+as JSON. Money values are already strings in those rows, so
+JSON carries them as strings, never floats. ``--as-of``
 defaults to ``None``, exactly as the service defines it (the
 service's own "now"). A date-only ``--as-of`` means the start
 of that day in the salon's timezone; a naive datetime is read
@@ -17,16 +25,22 @@ in the salon's timezone. This command adds no export logic of
 its own, so command and service output can never disagree —
 one source of truth.
 
-An unknown salon, an unparseable ``--as-of``, or a service
-error raises ``CommandError``. Read-only.
+An unknown salon, an unparseable ``--as-of``, an unknown
+format, or a service error raises ``CommandError``. Read-only.
 """
 import datetime
+import json
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.core.management.base import BaseCommand, CommandError
 
-from insights.future_export import export_future_appointments_value_csv
+from insights.future_export import (
+    export_future_appointments_value,
+    export_future_appointments_value_csv,
+)
 from saloncore.models import Salon
+
+_FORMATS = ("json", "csv")
 
 
 def _salon_tz(salon):
@@ -66,7 +80,7 @@ def _parse_as_of(value, salon):
 
 
 class Command(BaseCommand):
-    help = "Export a salon's future appointments value report as CSV."
+    help = "Export a salon's future appointments value report as CSV (default) or JSON."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -80,11 +94,19 @@ class Command(BaseCommand):
                  "(default: the service's own default).",
         )
         parser.add_argument(
+            "--format", dest="format", default="csv", choices=_FORMATS,
+            help="Export format: csv (default) or json.",
+        )
+        parser.add_argument(
             "--output", default=None,
-            help="Path to write the CSV to (default: stdout).",
+            help="Path to write the export to (default: stdout).",
         )
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist as exc:
@@ -93,7 +115,11 @@ class Command(BaseCommand):
             ) from exc
         as_of = _parse_as_of(options.get("as_of"), salon)
         try:
-            text = export_future_appointments_value_csv(salon, as_of)
+            if fmt == "json":
+                rows = export_future_appointments_value(salon, as_of)
+                text = json.dumps(rows, indent=2) + "\n"
+            else:
+                text = export_future_appointments_value_csv(salon, as_of)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options["output"]:
