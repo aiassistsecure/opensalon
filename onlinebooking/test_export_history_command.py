@@ -12,6 +12,7 @@ records -- unit logic only.
 import csv
 import datetime
 import io
+import json
 import os
 import tempfile
 
@@ -20,7 +21,7 @@ from django.test import TestCase
 
 from bookings.models import Appointment
 from clients.models import Client
-from onlinebooking.export_history import export_history_csv
+from onlinebooking.export_history import export_history, export_history_csv
 from saloncore.models import Salon, Service, ServiceCategory
 from team.models import StaffMember
 
@@ -320,3 +321,86 @@ class ExportHistoryCommandTests(TestCase):
     def test_unknown_service_raises_command_error(self):
         with self.assertRaises(CommandError):
             self.run_export(service_id=self.service.pk + 999)
+
+    def test_default_format_is_csv_byte_identical(self):
+        out = self.run_export()
+        self.assertEqual(out, export_history_csv(self.salon, None, now=NOW))
+
+    def test_explicit_csv_matches_service(self):
+        out = self.run_export(format="csv")
+        self.assertEqual(out, export_history_csv(self.salon, None, now=NOW))
+        out = io.StringIO()
+        call_command(
+            "export_history", "--salon-id", str(self.salon.pk),
+            "--now", NOW.isoformat(), "--format", "csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_history_csv(self.salon, None, now=NOW))
+
+    def test_json_parses_and_equals_dict_service_rows(self):
+        out = self.run_export(format="json")
+        self.assertEqual(
+            json.loads(out), export_history(self.salon, None, now=NOW))
+        self.assertEqual(
+            [r["id"] for r in json.loads(out)],
+            [self.newer.pk, self.older.pk])
+        out = io.StringIO()
+        call_command(
+            "export_history", "--salon-id", str(self.salon.pk),
+            "--client-id", str(self.client.pk), "--now", NOW.isoformat(),
+            "--format", "json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_history(self.salon, self.client, now=NOW))
+
+    def test_json_filters_compose(self):
+        bob = StaffMember.objects.create(
+            salon=self.salon, display_name="Bob")
+        colour_cat = ServiceCategory.objects.create(
+            salon=self.salon, name="Colour")
+        colour = Service.objects.create(
+            category=colour_cat, name="Colour", service_minutes=90)
+        target = self._appt(
+            at(-2, 11), staff=bob, service=colour, status="completed")
+        self._appt(at(-1, 11), staff=bob, service=colour, status="cancelled")
+        out = self.run_export(
+            format="json", staff_id=bob.pk, service_id=colour.pk,
+            status="completed", limit=1,
+            start_date=datetime.date(2026, 10, 31),
+            end_date=datetime.date(2026, 10, 31))
+        self.assertEqual(
+            json.loads(out),
+            export_history(
+                self.salon, None, now=NOW, staff_member=bob,
+                service=colour, status="completed", limit=1,
+                start_date=datetime.date(2026, 10, 31),
+                end_date=datetime.date(2026, 10, 31)))
+        self.assertEqual([r["id"] for r in json.loads(out)], [target.pk])
+        out = io.StringIO()
+        call_command(
+            "export_history", "--salon-id", str(self.salon.pk),
+            "--now", NOW.isoformat(), "--format", "json",
+            "--staff-id", str(bob.pk), "--service-id", str(colour.pk),
+            "--status", "completed",
+            "--start-date", "2026-10-31", "--end-date", "2026-10-31",
+            stdout=out)
+        self.assertEqual(
+            [r["id"] for r in json.loads(out.getvalue())], [target.pk])
+
+    def test_json_output_file_matches_dict_service(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "history.json")
+            out = self.run_export(
+                client_id=self.client.pk, format="json", output=path)
+            self.assertEqual(out, "")
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(
+                    json.load(fh),
+                    export_history(self.salon, self.client, now=NOW))
+
+    def test_unknown_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            self.run_export(format="xml")
+        with self.assertRaises((CommandError, SystemExit)):
+            call_command(
+                "export_history", "--salon-id", str(self.salon.pk),
+                "--format", "xml", stdout=io.StringIO())
