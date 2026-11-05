@@ -1,18 +1,23 @@
-"""Export a salon's price-change audit history as CSV.
+"""Export a salon's price-change audit history as CSV or JSON.
 
 Usage:
     python manage.py export_price_changes --salon-id ID
         [--service-id ID]
         [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD]
-        [--output PATH]
+        [--format json|csv] [--output PATH]
 
-Thin wrapper around :func:`saloncore.price_change_export.export_price_changes_csv`
--- that service is the one source of truth for the price-change
+Thin wrapper around :mod:`saloncore.price_change_export` -- that
+service is the one source of truth for the price-change
 export; this command only resolves the salon, parses the optional
 dates to ``datetime.date`` objects, delegates to the service
-verbatim, and writes the CSV it returns (to ``--output`` when
-given, otherwise to stdout). Date semantics are exactly the
-service's: start-inclusive, end covers the whole end day.
+verbatim, and writes what it returns (to ``--output`` when
+given, otherwise to stdout). For ``--format csv`` (the default)
+it writes :func:`saloncore.price_change_export.export_price_changes_csv`'s
+CSV string, exactly as before; for ``--format json`` it
+serialises the SAME dict rows from
+:func:`saloncore.price_change_export.export_price_changes` as
+JSON. Date semantics are exactly the service's:
+start-inclusive, end covers the whole end day.
 
 With ``--service-id`` the export is narrowed to that one
 service's price changes: the service is resolved by id within
@@ -21,16 +26,23 @@ convention; a service from another salon, or an unknown id, is
 a ``CommandError``), and the resolved service is passed to the
 service as its optional ``service`` argument. Without
 ``--service-id`` the command exports the whole salon, exactly
-as before.
+as before. ``--format`` composes with ``--service-id`` and the
+date filters exactly as they do for CSV.
 Backend only; read-only.
 """
 import argparse
 import datetime
+import json
 
 from django.core.management.base import BaseCommand, CommandError
 
 from saloncore.models import Salon, Service
-from saloncore.price_change_export import export_price_changes_csv
+from saloncore.price_change_export import (
+    export_price_changes,
+    export_price_changes_csv,
+)
+
+_FORMATS = ("json", "csv")
 
 
 def _parse_date(value):
@@ -43,7 +55,10 @@ def _parse_date(value):
 
 
 class Command(BaseCommand):
-    help = "Export a salon's price-change audit history as CSV."
+    help = (
+        "Export a salon's price-change audit history as "
+        "CSV (default) or JSON."
+    )
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -68,11 +83,19 @@ class Command(BaseCommand):
                  "default: unbounded).",
         )
         parser.add_argument(
+            "--format", dest="format", default="csv", choices=_FORMATS,
+            help="Export format: csv (default) or json.",
+        )
+        parser.add_argument(
             "--output", default=None,
-            help="Path of the CSV file to write (default: stdout).",
+            help="Path of the export file to write (default: stdout).",
         )
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist:
@@ -89,16 +112,22 @@ class Command(BaseCommand):
                     f"No service with id {options['service_id']} "
                     f"for salon {options['salon_id']}."
                 ) from None
-        csv_text = export_price_changes_csv(
-            salon, start=options["start_date"], end=options["end_date"],
-            service=service)
+        if fmt == "json":
+            rows = export_price_changes(
+                salon, start=options["start_date"],
+                end=options["end_date"], service=service)
+            text = json.dumps(rows, indent=2) + "\n"
+        else:
+            text = export_price_changes_csv(
+                salon, start=options["start_date"],
+                end=options["end_date"], service=service)
         if options["output"]:
             try:
                 with open(options["output"], "w", encoding="utf-8", newline="") as fh:
-                    fh.write(csv_text)
+                    fh.write(text)
             except OSError as exc:
                 raise CommandError(
                     f"Cannot write export file {options['output']}: {exc}"
                 ) from exc
         else:
-            self.stdout.write(csv_text, ending="")
+            self.stdout.write(text, ending="")
