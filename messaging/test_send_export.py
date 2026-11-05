@@ -116,10 +116,11 @@ class TotalsExportTests(SendExportBase):
 
 
 class RecordExportTests(SendExportBase):
-    def _send_for(self, appointment, channel, when, detail=""):
+    def _send_for(self, appointment, channel, when, detail="",
+                  status="sent"):
         return ReminderSend.objects.create(
             appointment=appointment, client=appointment.client,
-            channel=channel, status="sent", sent_at=when, detail=detail)
+            channel=channel, status=status, sent_at=when, detail=detail)
 
     def test_record_rows_only_real_fields_oldest_first(self):
         later = self._own("sms", _at(DAY2, 9), detail="ref-2")
@@ -237,6 +238,57 @@ class RecordExportTests(SendExportBase):
             export_sends(self.salon, DAY1, DAY3, channel="pigeon"), [])
         self.assertEqual(
             export_sends_csv(self.salon, DAY1, DAY3, channel="pigeon"),
+            header)
+
+    def test_status_filter_filters_to_one_status(self):
+        first = self._own("email", _at(DAY1, 9))
+        appointment = Appointment.objects.get(pk=first.appointment_id)
+        failed = self._send_for(
+            appointment, "sms", _at(DAY1, 10), status="failed")
+        rows = export_sends(self.salon, DAY1, DAY3, status="sent")
+        self.assertEqual([r["id"] for r in rows], [first.pk])
+        self.assertTrue(all(r["status"] == "sent" for r in rows))
+        rows = export_sends(self.salon, DAY1, DAY3, status="failed")
+        self.assertEqual([r["id"] for r in rows], [failed.pk])
+        self.assertEqual(
+            export_sends(
+                self.salon, DAY1, DAY3,
+                status=ReminderSend.Status.SENT),
+            export_sends(self.salon, DAY1, DAY3, status="sent"))
+        parsed = _rows(export_sends_csv(
+            self.salon, DAY1, DAY3, status="failed"))
+        self.assertEqual([int(r["id"]) for r in parsed], [failed.pk])
+
+    def test_status_filter_default_is_byte_identical(self):
+        self._own("email", _at(DAY1, 9))
+        self._own("sms", _at(DAY2, 9))
+        self.assertEqual(
+            export_sends(self.salon, DAY1, DAY3),
+            export_sends(self.salon, DAY1, DAY3, status=None))
+        self.assertEqual(
+            export_sends_csv(self.salon, DAY1, DAY3),
+            export_sends_csv(self.salon, DAY1, DAY3, status=None))
+
+    def test_status_filter_composes_with_appointment_channel_window(self):
+        first = self._own("email", _at(DAY1, 9))
+        appointment = Appointment.objects.get(pk=first.appointment_id)
+        self._send_for(appointment, "email", _at(DAY1, 10),
+                       status="failed")
+        self._send_for(appointment, "sms", _at(DAY1, 11))
+        self._send_for(appointment, "email", _at(DAY3, 9))
+        self._own("email", _at(DAY1, 12))
+        rows = export_sends(
+            self.salon, DAY1, DAY1, appointment=appointment,
+            channel="email", status="sent")
+        self.assertEqual([r["id"] for r in rows], [first.pk])
+
+    def test_status_filter_unknown_status_is_empty(self):
+        self._own("email", _at(DAY1, 9))
+        header = ",".join(RECORD_FIELDNAMES) + "\n"
+        self.assertEqual(
+            export_sends(self.salon, DAY1, DAY3, status="pigeon"), [])
+        self.assertEqual(
+            export_sends_csv(self.salon, DAY1, DAY3, status="pigeon"),
             header)
 
     def test_read_only_no_mutation(self):
