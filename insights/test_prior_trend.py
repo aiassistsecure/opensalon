@@ -1,9 +1,10 @@
-import csv, io, os, tempfile
+import csv, io, json, os, tempfile
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from django.core.management import CommandError, call_command
+from django.core.serializers.json import DjangoJSONEncoder
 from django.test import TestCase
 
 from checkout.models import Sale, SaleItem
@@ -154,3 +155,61 @@ class ExportPriorTrendCommandTests(_Base):
         with self.assertRaises(CommandError):
             call_command("export_prior_trend", salon_id=self.salon.pk,
                          start_date=END, end_date=START, stdout=io.StringIO())
+
+    def test_default_and_explicit_csv_match_service(self):
+        want = export_prior_trend_csv(self.salon, START, END)
+        out = io.StringIO()
+        call_command("export_prior_trend", salon_id=self.salon.pk,
+                     start_date=START, end_date=END, stdout=out)
+        self.assertEqual(out.getvalue(), want)
+        out = io.StringIO()
+        call_command("export_prior_trend", salon_id=self.salon.pk,
+                     start_date=START, end_date=END, format="csv", stdout=out)
+        self.assertEqual(out.getvalue(), want)
+        out = io.StringIO()
+        call_command("export_prior_trend", "--salon-id", str(self.salon.pk),
+                     "--start-date", START.isoformat(),
+                     "--end-date", END.isoformat(), "--format", "csv",
+                     stdout=out)
+        self.assertEqual(out.getvalue(), want)
+
+    def test_json_output_parses_and_equals_dict_service_rows(self):
+        rows = export_prior_trend(self.salon, START, END)
+        out = io.StringIO()
+        call_command("export_prior_trend", salon_id=self.salon.pk,
+                     start_date=START, end_date=END, format="json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()), rows)
+        self.assertEqual(out.getvalue(), json.dumps(
+            rows, indent=2, cls=DjangoJSONEncoder) + "\n")
+
+    def test_json_flag_matches_dict_service(self):
+        out = io.StringIO()
+        call_command("export_prior_trend", "--salon-id", str(self.salon.pk),
+                     "--start-date", START.isoformat(),
+                     "--end-date", END.isoformat(), "--format", "json",
+                     stdout=out)
+        self.assertEqual(json.loads(out.getvalue()),
+                         export_prior_trend(self.salon, START, END))
+
+    def test_json_output_file_matches_dict_service(self):
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "prior_trend.json")
+            call_command("export_prior_trend", salon_id=self.salon.pk,
+                         start_date=START, end_date=END, format="json",
+                         output=path, stdout=out)
+            with open(path, encoding="utf-8") as fh: written = fh.read()
+        self.assertEqual(json.loads(written),
+                         export_prior_trend(self.salon, START, END))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_invalid_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command("export_prior_trend", salon_id=self.salon.pk,
+                         start_date=START, end_date=END, format="xml",
+                         stdout=io.StringIO())
+        with self.assertRaises(CommandError):
+            call_command("export_prior_trend", "--salon-id",
+                         str(self.salon.pk), "--start-date", START.isoformat(),
+                         "--end-date", END.isoformat(), "--format", "xml",
+                         stdout=io.StringIO())
