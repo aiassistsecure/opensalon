@@ -105,6 +105,7 @@ from django.db.backends.postgresql.base import (
 from django.db.backends.postgresql.client import DatabaseClient
 from django.db.backends.postgresql.introspection import DatabaseIntrospection
 
+from . import embedded as _embedded
 from .creation import DatabaseCreation
 from .features import DatabaseFeatures
 from .operations import DatabaseOperations
@@ -123,6 +124,15 @@ class DatabaseWrapper(PostgresDatabaseWrapper):
     introspection_class = DatabaseIntrospection
     ops_class = DatabaseOperations
     SchemaEditorClass = DatabaseSchemaEditor
+
+    # -- embedded mode: in-process NedbCore, no pgwire ---------------
+
+    def get_new_connection(self, conn_params):
+        if _embedded.embedded_enabled(self.settings_dict):
+            return _embedded.EmbeddedConnection(
+                self.settings_dict["NAME"], self.settings_dict
+            )
+        return super().get_new_connection(conn_params)
 
     # -- connection setup: no session SQL is ever sent to NEDB ---------
 
