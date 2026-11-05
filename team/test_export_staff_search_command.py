@@ -1,13 +1,19 @@
 """Tests for export_staff_search: stdout/file == service verbatim."""
 import io
+import json
+import os
 import tempfile
 
 from django.core.management import CommandError, call_command
+from django.core.serializers.json import DjangoJSONEncoder
 from django.test import TestCase
 
 from saloncore.models import Salon, StaffLevel
 from team.models import StaffMember
-from team.search_export import export_staff_search_results_csv
+from team.search_export import (
+    export_staff_search_results,
+    export_staff_search_results_csv,
+)
 
 
 class ExportStaffSearchCommandTests(TestCase):
@@ -74,6 +80,87 @@ class ExportStaffSearchCommandTests(TestCase):
             call_command("export_staff_search", salon_id=self.salon.id, active_only=True, inactive_only=True, stdout=io.StringIO())
         with self.assertRaises(CommandError):
             call_command("export_staff_search", salon_id=self.salon.id, online_bookable_only=True, not_online_bookable=True, stdout=io.StringIO())
+
+    def test_default_and_explicit_csv_match_service(self):
+        self._staff("Amy Smith")
+        self._staff("Bob Adams")
+        want = export_staff_search_results_csv(self.salon)
+        out = io.StringIO()
+        call_command("export_staff_search", salon_id=self.salon.id, stdout=out)
+        self.assertEqual(out.getvalue(), want)
+        out = io.StringIO()
+        call_command("export_staff_search", salon_id=self.salon.id, format="csv", stdout=out)
+        self.assertEqual(out.getvalue(), want)
+        out = io.StringIO()
+        call_command("export_staff_search", "--salon-id", str(self.salon.id), "--format", "csv", stdout=out)
+        self.assertEqual(out.getvalue(), want)
+
+    def test_json_output_parses_and_equals_dict_service_rows(self):
+        self._staff("Amy Smith")
+        self._staff("Bob Adams")
+        rows = export_staff_search_results(self.salon)
+        out = io.StringIO()
+        call_command("export_staff_search", salon_id=self.salon.id, format="json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()), rows)
+        self.assertEqual(
+            out.getvalue(),
+            json.dumps(rows, indent=2, cls=DjangoJSONEncoder) + "\n")
+        self.assertIsInstance(json.loads(out.getvalue())[0]["id"], int)
+
+    def test_json_flag_matches_dict_service(self):
+        self._staff("Amy Smith")
+        out = io.StringIO()
+        call_command("export_staff_search", "--salon-id", str(self.salon.id), "--format", "json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()), export_staff_search_results(self.salon))
+
+    def test_json_composes_with_filters(self):
+        self._staff("Amy Smith", online_bookable=False)
+        self._staff("Bob Adams", active=False)
+        self._staff("Cara Jones")
+        cases = [
+            ({"query": "amy"}, {"query": "amy"}),
+            ({"inactive_only": True}, {"active": False}),
+            ({"active_only": True}, {"active": True}),
+            ({"not_online_bookable": True}, {"online_bookable": False}),
+            ({"online_bookable_only": True}, {"online_bookable": True}),
+            ({"query": "level 6", "active_only": True},
+             {"query": "level 6", "active": True}),
+        ]
+        for cmd_kw, svc_kw in cases:
+            out = io.StringIO()
+            call_command("export_staff_search", salon_id=self.salon.id, format="json", stdout=out, **cmd_kw)
+            self.assertEqual(
+                json.loads(out.getvalue()),
+                export_staff_search_results(self.salon, **svc_kw))
+
+    def test_json_salon_scoping_and_no_match(self):
+        self._staff("Amy Smith")
+        self._staff("Amy Theirs", salon=self.other)
+        out = io.StringIO()
+        call_command("export_staff_search", salon_id=self.salon.id, query="amy", format="json", stdout=out)
+        names = [r["display_name"] for r in json.loads(out.getvalue())]
+        self.assertEqual(names, ["Amy Smith"])
+        out = io.StringIO()
+        call_command("export_staff_search", salon_id=self.salon.id, query="zzz", format="json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()), [])
+
+    def test_json_output_file_matches_dict_service(self):
+        self._staff("Amy Smith")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "staff_search.json")
+            out = io.StringIO()
+            call_command("export_staff_search", salon_id=self.salon.id, query="amy", format="json", output=path, stdout=out)
+            with open(path, encoding="utf-8") as fh:
+                written = fh.read()
+        self.assertEqual(json.loads(written), export_staff_search_results(self.salon, query="amy"))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_invalid_format_raises_command_error(self):
+        self._staff("Amy Smith")
+        with self.assertRaises(CommandError):
+            call_command("export_staff_search", salon_id=self.salon.id, format="xml", stdout=io.StringIO())
+        with self.assertRaises(CommandError):
+            call_command("export_staff_search", "--salon-id", str(self.salon.id), "--format", "xml", stdout=io.StringIO())
 
     def test_unknown_salon_and_required_id_and_unwritable(self):
         with self.assertRaises(CommandError):
