@@ -254,6 +254,59 @@ class AttendanceRecordExportTests(TestCase):
                 self.salon, start=far, end=far),
             ",".join(ATTENDANCE_RECORD_EXPORT_FIELDNAMES) + "\n")
 
+    def test_event_type_default_none_unchanged(self):
+        self._in()
+        self._out()
+        self.assertEqual(
+            export_attendance_records(self.salon, event_type=None),
+            export_attendance_records(self.salon))
+        self.assertEqual(
+            export_attendance_records_csv(self.salon, event_type=None),
+            export_attendance_records_csv(self.salon))
+
+    def test_event_type_check_in_only(self):
+        inn = self._in()
+        self._out()
+        records = export_attendance_records(
+            self.salon, event_type="check_in")
+        self.assertEqual([r["id"] for r in records], [inn.pk])
+        parsed = list(csv.DictReader(io.StringIO(
+            export_attendance_records_csv(
+                self.salon, event_type="check_in"))))
+        self.assertEqual([int(r["id"]) for r in parsed], [inn.pk])
+
+    def test_event_type_check_out_only(self):
+        self._in()
+        out = self._out()
+        records = export_attendance_records(
+            self.salon, event_type="check_out")
+        self.assertEqual([r["id"] for r in records], [out.pk])
+        self.assertTrue(
+            all(r["event_type"] == "check_out" for r in records))
+
+    def test_event_type_exact_match_no_records(self):
+        self._in()
+        self.assertEqual(
+            export_attendance_records(self.salon, event_type="check"),
+            [])
+        self.assertEqual(
+            export_attendance_records_csv(
+                self.salon, event_type="check"),
+            ",".join(ATTENDANCE_RECORD_EXPORT_FIELDNAMES) + "\n")
+
+    def test_event_type_composes_with_staff_and_window(self):
+        eve = StaffMember.objects.create(
+            salon=self.salon, display_name="Eve")
+        dana_in = self._in()
+        self._out()
+        self._in(staff=eve, when=at(10))
+        self._in(when=datetime.datetime(
+            2026, 11, 5, 9, 0, tzinfo=UTC), note="late in")
+        records = export_attendance_records(
+            self.salon, staff_member=self.dana,
+            start=DAY, end=DAY, event_type="check_in")
+        self.assertEqual([r["id"] for r in records], [dana_in.pk])
+
     def test_read_only(self):
         self._in()
         self._out()

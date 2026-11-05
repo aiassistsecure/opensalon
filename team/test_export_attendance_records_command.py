@@ -172,6 +172,63 @@ class ExportAttendanceRecordsCommandTests(TestCase):
                          end_date=datetime.date(2026, 11, 1),
                          stdout=io.StringIO())
 
+    def test_event_type_filters(self):
+        AttendanceRecord.objects.create(
+            staff_member=self.staff, event_type="check_out",
+            recorded_at=datetime.datetime(
+                2026, 10, 31, 17, 0, tzinfo=UTC), note="done")
+        out = io.StringIO()
+        call_command("export_attendance_records",
+                     salon_id=self.salon.id, event_type="check_in",
+                     stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_attendance_records_csv(
+                self.salon, event_type="check_in"))
+        self.assertIn("front desk", out.getvalue())
+        self.assertNotIn("done", out.getvalue())
+
+    def test_event_type_cli_spelling(self):
+        out = io.StringIO()
+        call_command("export_attendance_records",
+                     "--salon-id", str(self.salon.id),
+                     "--event-type", "check_out", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_attendance_records_csv(
+                self.salon, event_type="check_out"))
+        self.assertNotIn("front desk", out.getvalue())
+
+    def test_no_event_type_is_default(self):
+        out = io.StringIO()
+        call_command("export_attendance_records",
+                     salon_id=self.salon.id, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_attendance_records_csv(self.salon, event_type=None))
+
+    def test_event_type_composes_with_staff_and_window(self):
+        eve = StaffMember.objects.create(
+            salon=self.salon, display_name="Eve")
+        AttendanceRecord.objects.create(
+            staff_member=eve, event_type="check_in",
+            recorded_at=datetime.datetime(
+                2026, 10, 31, 10, 0, tzinfo=UTC), note="eve note")
+        AttendanceRecord.objects.create(
+            staff_member=self.staff, event_type="check_out",
+            recorded_at=datetime.datetime(
+                2026, 10, 31, 17, 0, tzinfo=UTC), note="dana out")
+        out = io.StringIO()
+        call_command("export_attendance_records",
+                     salon_id=self.salon.id,
+                     staff_member_id=self.staff.id,
+                     start_date=datetime.date(2026, 10, 31),
+                     end_date=datetime.date(2026, 10, 31),
+                     event_type="check_in", stdout=out)
+        self.assertIn("front desk", out.getvalue())
+        self.assertNotIn("eve note", out.getvalue())
+        self.assertNotIn("dana out", out.getvalue())
+
     def test_unknown_salon_required_id_and_unwritable(self):
         with self.assertRaises(CommandError):
             call_command("export_attendance_records",
