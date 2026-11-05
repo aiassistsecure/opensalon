@@ -7,19 +7,25 @@ verbatim, that salon scoping is honoured, and that unknown
 salons and unwritable outputs fail cleanly as ``CommandError``.
 """
 import io
+import json
 import os
 import tempfile
 from datetime import date, datetime, time, timedelta
+from unittest import mock
 from zoneinfo import ZoneInfo
 
 from django.core.management import CommandError, call_command
+from django.core.serializers.json import DjangoJSONEncoder
 from django.test import TestCase
 from django.utils import timezone
 
 from bookings.models import Appointment
 from clients.models import Client
 from messaging.models import ReminderSend
-from messaging.send_search_export import export_search_sends_csv
+from messaging.send_search_export import (
+    export_search_sends,
+    export_search_sends_csv,
+)
 from saloncore.models import Salon, Service, ServiceCategory
 from team.models import StaffMember
 
@@ -128,6 +134,102 @@ class ExportSendSearchCommandTests(TestCase):
         self.assertEqual(
             written, export_search_sends_csv(self.salon, "alice"))
         self.assertEqual(out.getvalue(), "")
+
+    def test_default_is_csv_byte_identical(self):
+        default_out = io.StringIO()
+        call_command(
+            "export_send_search", salon_id=self.salon.pk,
+            stdout=default_out)
+        csv_out = io.StringIO()
+        call_command(
+            "export_send_search", salon_id=self.salon.pk,
+            format="csv", stdout=csv_out)
+        self.assertEqual(default_out.getvalue(), csv_out.getvalue())
+        self.assertEqual(
+            default_out.getvalue(),
+            export_search_sends_csv(self.salon))
+
+    def test_explicit_csv_via_cli_matches_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_send_search", "--salon-id", str(self.salon.pk),
+            "--format", "csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_search_sends_csv(self.salon))
+
+    def test_json_parses_and_equals_dict_service_rows(self):
+        out = io.StringIO()
+        call_command(
+            "export_send_search", salon_id=self.salon.pk,
+            format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_search_sends(self.salon))
+        self.assertEqual(
+            out.getvalue(),
+            json.dumps(
+                export_search_sends(self.salon),
+                indent=2, cls=DjangoJSONEncoder) + "\n")
+
+    def test_json_via_cli_with_filters_matches_dict_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_send_search", "--salon-id", str(self.salon.pk),
+            "--term", "alice", "--channel", "sms",
+            "--status", "sent", "--start", DAY2.isoformat(),
+            "--end", DAY2.isoformat(), "--format", "json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_search_sends(
+                self.salon, "alice", channel="sms", status="sent",
+                start=DAY2, end=DAY2))
+        self.assertEqual(len(json.loads(out.getvalue())), 1)
+
+    def test_json_delegates_to_dict_service_verbatim(self):
+        with mock.patch(
+            "messaging.management.commands.export_send_search"
+            ".export_search_sends",
+            wraps=export_search_sends,
+        ) as spy:
+            call_command(
+                "export_send_search", salon_id=self.salon.pk,
+                format="json", stdout=io.StringIO())
+        spy.assert_called_once_with(
+            self.salon, None, channel=None, status=None,
+            start=None, end=None)
+
+    def test_json_output_file_parses_and_equals_dict_service(self):
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "send_search.json")
+            call_command(
+                "export_send_search", salon_id=self.salon.pk,
+                term="alice", format="json", output=path, stdout=out)
+            with open(path, encoding="utf-8") as fh:
+                written = fh.read()
+        self.assertEqual(
+            json.loads(written),
+            export_search_sends(self.salon, "alice"))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_json_service_error_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_send_search", salon_id=self.salon.pk,
+                start=DAY2, end=DAY1, format="json",
+                stdout=io.StringIO())
+
+    def test_unknown_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_send_search", salon_id=self.salon.pk,
+                format="xml", stdout=io.StringIO())
+
+    def test_unknown_format_via_cli_is_rejected(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_send_search", "--salon-id", str(self.salon.pk),
+                "--format", "xml", stdout=io.StringIO())
 
     def test_unknown_salon_raises_command_error(self):
         with self.assertRaises(CommandError):
