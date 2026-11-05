@@ -1,8 +1,9 @@
-import csv, datetime, io  # noqa: E401
+import csv, datetime, io, json  # noqa: E401
 from decimal import Decimal
 from unittest import mock
 
 from django.core.management import CommandError, call_command
+from django.core.serializers.json import DjangoJSONEncoder
 from django.test import TestCase
 from django.utils import timezone
 
@@ -528,3 +529,80 @@ class PriorSendTotalsTests(TestCase):
                          output="out.csv")
         written = "".join(c.args[0] for c in m().write.call_args_list)
         self.assertIn("66.67", written)
+
+    def _json_expected(self, salon, start, end):
+        rows = export_prior_send_totals(salon, start, end)
+        return [{**row, "percent_change": (
+            None if row["percent_change"] is None
+            else str(row["percent_change"]))} for row in rows]
+
+    def test_command_default_and_explicit_csv_byte_identical(self):
+        self._book()
+        expected = export_prior_send_totals_csv(self.salon, C1, C2)
+        for kwargs in ({}, {"format": "csv"}):
+            out = io.StringIO()
+            call_command("export_prior_send_totals",
+                         salon_id=self.salon.pk, start_date=C1,
+                         end_date=C2, stdout=out, **kwargs)
+            self.assertEqual(out.getvalue(), expected)
+
+    def test_command_json_parses_and_equals_dict_rows(self):
+        self._book()
+        out = io.StringIO()
+        call_command("export_prior_send_totals", salon_id=self.salon.pk,
+                     start_date=C1, end_date=C2,
+                     format="json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()),
+                         self._json_expected(self.salon, C1, C2))
+        self.assertEqual(
+            out.getvalue(),
+            json.dumps(export_prior_send_totals(
+                self.salon, C1, C2), indent=2,
+                cls=DjangoJSONEncoder) + "\n")
+
+    def test_command_json_via_cli_flags(self):
+        self._book()
+        out = io.StringIO()
+        call_command("export_prior_send_totals",
+                     "--salon-id", str(self.salon.pk),
+                     "--start-date", C1.isoformat(),
+                     "--end-date", C2.isoformat(),
+                     "--format", "json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()),
+                         self._json_expected(self.salon, C1, C2))
+
+    def test_command_json_output_file(self):
+        self._book()
+        m = mock.mock_open()
+        with mock.patch(
+                "messaging.management.commands.export_prior_send_totals.open", m):
+            call_command("export_prior_send_totals", salon_id=self.salon.pk,
+                         start_date="2026-03-03", end_date="2026-03-04",
+                         format="json", output="out.json")
+        written = "".join(c.args[0] for c in m().write.call_args_list)
+        self.assertEqual(json.loads(written),
+                         self._json_expected(self.salon, C1, C2))
+
+    def test_command_invalid_format_raises(self):
+        self._book()
+        with self.assertRaises(CommandError):
+            call_command("export_prior_send_totals",
+                         salon_id=self.salon.pk, start_date=C1,
+                         end_date=C2, format="xml", stdout=io.StringIO())
+        with self.assertRaises(CommandError):
+            call_command("export_prior_send_totals",
+                         "--salon-id", str(self.salon.pk),
+                         "--start-date", C1.isoformat(),
+                         "--end-date", C2.isoformat(),
+                         "--format", "xml", stdout=io.StringIO())
+
+    def test_command_json_service_error_raises(self):
+        with mock.patch(
+                "messaging.management.commands.export_prior_send_totals."
+                "export_prior_send_totals",
+                side_effect=ValueError("boom")):
+            with self.assertRaises(CommandError):
+                call_command("export_prior_send_totals",
+                             salon_id=self.salon.pk, start_date=C1,
+                             end_date=C2, format="json",
+                             stdout=io.StringIO())
