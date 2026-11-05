@@ -1,17 +1,23 @@
-"""Export a salon's persistent client record notes as CSV.
+"""Export a salon's persistent client record notes as CSV or JSON.
 
 Usage:
     python manage.py export_notes --salon-id ID
         [--client-id ID] [--start-date YYYY-MM-DD]
-        [--end-date YYYY-MM-DD] [--output PATH]
+        [--end-date YYYY-MM-DD] [--format json|csv] [--output PATH]
 
-Thin wrapper around ``clients.note_export.export_notes_csv`` --
-that service is the one source of truth for the record-note export
-shape; this command only resolves the salon, delegates verbatim,
-and routes the CSV it returns to the ``--output`` file when given
-or to stdout otherwise. It never reimplements serialization or
+Thin wrapper around ``clients.note_export`` -- that service is
+the one source of truth for the record-note export shape; this
+command only resolves the salon, delegates verbatim, and routes
+what it returns to the ``--output`` file when given or to
+stdout otherwise. It never reimplements serialization or
 querying. Only persistent client record notes are exported;
 appointment-only notes live in the bookings app and never appear.
+
+For ``--format csv`` (the default) it writes
+:func:`clients.note_export.export_notes_csv`'s CSV string,
+exactly as before (byte-identical); for ``--format json`` it
+serialises the SAME dict rows from
+:func:`clients.note_export.export_notes` as JSON.
 
 With ``--client-id`` the export is narrowed to that one client's
 record notes: the client is resolved by id within the salon (a
@@ -31,16 +37,20 @@ day. Either bound may be given alone (the other stays
 unbounded); with neither, the command exports the whole salon,
 exactly as before. The window composes with ``--client-id``
 (window AND record). An unparseable date is a ``CommandError``.
+Both filters compose with ``--format`` exactly as they do for CSV.
 
 Backend only: no views, templates, or UI. No provider concepts.
 """
 import datetime
+import json
 
 from django.core.management.base import BaseCommand, CommandError
 
 from clients.models import Client
-from clients.note_export import export_notes_csv
+from clients.note_export import export_notes, export_notes_csv
 from saloncore.models import Salon
+
+_FORMATS = ("json", "csv")
 
 
 def _parse_date(value, label):
@@ -59,7 +69,7 @@ def _parse_date(value, label):
 
 
 class Command(BaseCommand):
-    help = "Export a salon's persistent client record notes as CSV."
+    help = "Export a salon's persistent client record notes as CSV (default) or JSON."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -84,11 +94,19 @@ class Command(BaseCommand):
                  "default: unbounded).",
         )
         parser.add_argument(
+            "--format", dest="format", default="csv", choices=_FORMATS,
+            help="Export format: csv (default) or json.",
+        )
+        parser.add_argument(
             "--output", default=None,
-            help="Path of the CSV file to write (default: stdout).",
+            help="Path of the export file to write (default: stdout).",
         )
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist:
@@ -112,8 +130,15 @@ class Command(BaseCommand):
         end_date = _parse_date(options.get("end_date"), "end date")
 
         try:
-            text = export_notes_csv(
-                salon, client=client, start=start_date, end=end_date)
+            if fmt == "json":
+                rows = export_notes(
+                    salon, client=client, start=start_date, end=end_date)
+                text = json.dumps(rows, indent=2) + "\n"
+            else:
+                text = export_notes_csv(
+                    salon, client=client, start=start_date, end=end_date)
+        except CommandError:
+            raise
         except Exception as exc:
             raise CommandError(f"Notes export failed: {exc}") from exc
 
