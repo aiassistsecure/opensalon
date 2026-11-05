@@ -1,16 +1,21 @@
-"""Export one salon's campaign sends, one row per send, as CSV.
+"""Export one salon's campaign sends, one row per send, as CSV or JSON.
 
 Usage: python manage.py export_campaign_send_detail
     --salon-id ID --date-from YYYY-MM-DD [--date-to YYYY-MM-DD]
-    [--campaign-id ID] [--output PATH]
+    [--campaign-id ID] [--format json|csv] [--output PATH]
 
 Thin wrapper around
-:func:`messaging.campaign_send_detail.export_campaign_send_detail_csv`:
-salon resolved by id, dates parsed and passed verbatim, CSV
-written unchanged to --output or stdout. Distinct from the
+:func:`messaging.campaign_send_detail.export_campaign_send_detail_csv`
+and :func:`messaging.campaign_send_detail.export_campaign_send_detail`:
+salon resolved by id, dates parsed and passed verbatim. For
+``--format csv`` (the default) the CSV is written unchanged to
+--output or stdout; for ``--format json`` the same dict rows are
+serialised as JSON via ``DjangoJSONEncoder``, so the two formats
+can never disagree -- one source of truth. Distinct from the
 aggregate commands ``export_campaign_send_totals`` and
-``export_campaign_send_totals_detail``. Unknown salon / service
-error / unwritable output raise CommandError. Read-only.
+``export_campaign_send_totals_detail``. Unknown salon / unknown
+format / service error / unwritable output raise CommandError.
+Read-only.
 
 With ``--campaign-id`` the export is narrowed to that one
 campaign's sends: the campaign is resolved by id within the
@@ -22,14 +27,19 @@ as before.
 """
 import argparse
 import datetime
+import json
 
 from django.core.management.base import BaseCommand, CommandError
+from django.core.serializers.json import DjangoJSONEncoder
 
 from messaging.campaign_send_detail import (
+    export_campaign_send_detail,
     export_campaign_send_detail_csv,
 )
 from messaging.models import Campaign
 from saloncore.models import Salon
+
+_FORMATS = ("json", "csv")
 
 
 def _parse_date(value):
@@ -62,7 +72,7 @@ def _first(options, *keys):
 
 
 class Command(BaseCommand):
-    help = "Export one salon's campaign sends, row per send, as CSV."
+    help = "Export one salon's campaign sends, row per send, as CSV or JSON."
 
     def add_arguments(self, parser):
         parser.add_argument("--salon-id", type=int, required=True,
@@ -82,10 +92,17 @@ class Command(BaseCommand):
         parser.add_argument("--campaign-id", type=int, default=None,
             help="Id of the campaign (in the salon) whose sends "
                  "to export (default: all campaigns).")
+        parser.add_argument("--format", dest="format", default="csv",
+            choices=_FORMATS,
+            help="Export format: csv (default) or json.")
         parser.add_argument("--output", default=None,
-            help="Path to write the CSV to (default: stdout).")
+            help="Path to write the export to (default: stdout).")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist as exc:
@@ -108,9 +125,16 @@ class Command(BaseCommand):
                     f"for salon {salon.pk}."
                 ) from exc
         try:
-            text = export_campaign_send_detail_csv(
-                salon, date_from, date_to, campaign=campaign,
-            )
+            if fmt == "json":
+                rows = export_campaign_send_detail(
+                    salon, date_from, date_to, campaign=campaign,
+                )
+                text = json.dumps(
+                    rows, indent=2, cls=DjangoJSONEncoder) + "\n"
+            else:
+                text = export_campaign_send_detail_csv(
+                    salon, date_from, date_to, campaign=campaign,
+                )
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options.get("output"):
