@@ -1,22 +1,34 @@
-"""Export one salon's combined per-staff payroll feed as CSV.
+"""Export one salon's combined per-staff payroll feed as CSV or JSON.
 
 Usage: export_payroll_feed --salon-id ID --start-date YYYY-MM-DD
---end-date YYYY-MM-DD [--staff-member ID] [--output PATH].
+--end-date YYYY-MM-DD [--staff-member ID] [--format json|csv]
+[--output PATH].
 Thin wrapper around
 :func:`bookings.payroll_feed_export.export_payroll_feed_csv`:
 the staff id is resolved to its ``StaffMember`` (the service
 scopes on the instance) and passed through; an unknown or
 invalid staff id raises ``CommandError``. Omitted, the export
-is the previous salon-wide feed verbatim.
+is the previous salon-wide feed verbatim. For ``--format csv``
+(the default) that CSV output is exactly as before,
+byte-identical; for ``--format json`` the same arguments are
+passed to
+:func:`bookings.payroll_feed_export.payroll_feed_rows` (the
+dict list the CSV is built from) and its rows are serialised
+as JSON via ``DjangoJSONEncoder``, so the two formats can
+never disagree.
 """
 import argparse
 import datetime
+import json
 
 from django.core.management.base import BaseCommand, CommandError
+from django.core.serializers.json import DjangoJSONEncoder
 
-from bookings.payroll_feed_export import export_payroll_feed_csv
+from bookings.payroll_feed_export import export_payroll_feed_csv, payroll_feed_rows
 from saloncore.models import Salon
 from team.models import StaffMember
+
+_FORMATS = ("json", "csv")
 
 
 def _parse_date(value):
@@ -53,7 +65,7 @@ def _resolve_staff(value):
 
 
 class Command(BaseCommand):
-    help = "Export one salon's combined per-staff payroll feed as CSV."
+    help = "Export one salon's combined per-staff payroll feed as CSV (default) or JSON."
 
     def add_arguments(self, parser):
         parser.add_argument("--salon-id", type=int, required=True,
@@ -73,10 +85,17 @@ class Command(BaseCommand):
         parser.add_argument("--staff", dest="staff_member_id",
                             type=int, default=None,
                             help="Alias for --staff-member (id).")
+        parser.add_argument("--format", dest="format", default="csv",
+                            choices=_FORMATS,
+                            help="Export format: csv (default) or json.")
         parser.add_argument("--output", default=None,
-                            help="Path to write the CSV to (default: stdout).")
+                            help="Path to write the export to (default: stdout).")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist as exc:
@@ -95,8 +114,14 @@ class Command(BaseCommand):
             staff_raw = options.get("staff_member_id")
         staff_member = _resolve_staff(staff_raw)
         try:
-            text = export_payroll_feed_csv(
-                salon, start, end, staff_member=staff_member)
+            if fmt == "json":
+                rows = payroll_feed_rows(
+                    salon, start, end, staff_member=staff_member)
+                text = json.dumps(
+                    rows, indent=2, cls=DjangoJSONEncoder) + "\n"
+            else:
+                text = export_payroll_feed_csv(
+                    salon, start, end, staff_member=staff_member)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options.get("output"):
