@@ -1,17 +1,21 @@
-"""Export a salon's duplicate client candidates as CSV.
+"""Export a salon's duplicate client candidates as CSV or JSON.
 
 Usage:
     python manage.py export_dedupe_candidates --salon-id ID
-        [--key-type KEY_TYPE] [--output PATH]
+        [--key-type KEY_TYPE] [--format json|csv] [--output PATH]
 
-Thin wrapper around
-``clients.dedupe_export.export_duplicate_candidates_csv`` --
-that service is the one source of truth for the dedupe export
-shape; this command only resolves the salon, delegates verbatim
-(with the same optional ``key_type`` filter), and routes the CSV
-it returns to the ``--output`` file when given
-or to stdout otherwise. It never reimplements serialization or
-querying.
+Thin wrapper around ``clients.dedupe_export`` -- that service is
+the one source of truth for the dedupe export shape; this command
+only resolves the salon, delegates verbatim (with the same
+optional ``key_type`` filter), and routes the result to the
+``--output`` file when given or to stdout otherwise. For
+``--format csv`` (the default) it writes
+:func:`clients.dedupe_export.export_duplicate_candidates_csv`'s
+CSV string, exactly as before; for ``--format json`` it serialises
+the SAME dict rows from
+:func:`clients.dedupe_export.export_duplicate_candidates` as JSON
+via ``DjangoJSONEncoder``, so the two formats can never disagree.
+It never reimplements serialization or querying.
 
 Key-type semantics are the service's own: ``--key-type`` narrows
 the export to groups whose key type exactly matches it
@@ -22,14 +26,22 @@ nothing.
 
 Backend only: no views, templates, or UI. No provider concepts.
 """
-from django.core.management.base import BaseCommand, CommandError
+import json
 
-from clients.dedupe_export import export_duplicate_candidates_csv
+from django.core.management.base import BaseCommand, CommandError
+from django.core.serializers.json import DjangoJSONEncoder
+
+from clients.dedupe_export import (
+    export_duplicate_candidates,
+    export_duplicate_candidates_csv,
+)
 from saloncore.models import Salon
+
+_FORMATS = ("json", "csv")
 
 
 class Command(BaseCommand):
-    help = "Export a salon's duplicate client candidates as CSV."
+    help = "Export a salon's duplicate client candidates as CSV (default) or JSON."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -42,11 +54,19 @@ class Command(BaseCommand):
                  "default: all key types).",
         )
         parser.add_argument(
+            "--format", dest="format", default="csv", choices=_FORMATS,
+            help="Export format: csv (default) or json.",
+        )
+        parser.add_argument(
             "--output", default=None,
-            help="Path of the CSV file to write (default: stdout).",
+            help="Path of the export file to write (default: stdout).",
         )
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist:
@@ -55,8 +75,14 @@ class Command(BaseCommand):
             ) from None
 
         try:
-            text = export_duplicate_candidates_csv(
-                salon, key_type=options.get("key_type"))
+            if fmt == "json":
+                rows = export_duplicate_candidates(
+                    salon, key_type=options.get("key_type"))
+                text = json.dumps(
+                    rows, indent=2, cls=DjangoJSONEncoder) + "\n"
+            else:
+                text = export_duplicate_candidates_csv(
+                    salon, key_type=options.get("key_type"))
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
 
