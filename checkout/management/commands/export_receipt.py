@@ -4,6 +4,7 @@ Usage:
     python manage.py export_receipt --salon-id ID
         [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD]
         [--sale-id ID] [--delivery-status STATUS]
+        [--client-id ID]
         [--format json|csv] [--output PATH]
 
 Thin wrapper around the existing
@@ -41,6 +42,17 @@ exports every delivery status, exactly as before. An unknown
 status matches nothing, exactly as the sibling categorical
 filters behave.
 
+With ``--client-id`` the export is narrowed to that one
+client's receipts (through their sales): the client is
+resolved by id within the salon, exactly as the other
+``--client-id`` commands resolve it, and an unknown id or a
+client from another salon is a ``CommandError``. The
+resolved client is passed to the service as its optional
+``client`` argument and composes with the range,
+``--sale-id``, and ``--delivery-status``. Without
+``--client-id`` the command exports every client, exactly
+as before.
+
 Invalid input -- an unparseable date, a reversed range, or
 an unknown format -- raises ``CommandError``, as do service
 errors. Dates mean whole local days in the salon's timezone,
@@ -57,6 +69,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 from checkout.models import Sale
 from checkout.receipt_export import EXPORT_FIELDNAMES, export_receipts
+from clients.models import Client
 from saloncore.models import Salon
 
 _FORMATS = ("json", "csv")
@@ -108,6 +121,11 @@ class Command(BaseCommand):
                  "not_sent; default: all statuses).",
         )
         parser.add_argument(
+            "--client-id", dest="client_id", type=int, default=None,
+            help="Id of the client (in the salon) whose receipts to "
+                 "export (default: all clients in the range).",
+        )
+        parser.add_argument(
             "--format", dest="format", default="json", choices=_FORMATS,
             help="Export format: json (default) or csv.",
         )
@@ -138,6 +156,25 @@ class Command(BaseCommand):
                     f"No sale with id {options['sale_id']} "
                     f"for salon {options['salon_id']}."
                 ) from exc
+        client = None
+        client_raw = options.get("client_id")
+        if client_raw is None:
+            client_raw = options.get("client")
+        if client_raw is not None:
+            client_pk = getattr(client_raw, "pk", client_raw)
+            try:
+                client_pk = int(client_pk)
+            except (TypeError, ValueError) as exc:
+                raise CommandError(
+                    f"Invalid client {client_raw!r}; expected an id."
+                ) from exc
+            try:
+                client = Client.objects.get(pk=client_pk, salon=salon)
+            except Client.DoesNotExist as exc:
+                raise CommandError(
+                    f"No client with id {client_pk} "
+                    f"for salon {options['salon_id']}."
+                ) from exc
         start = _parse_date(options["start_date"], "start date")
         end = _parse_date(options["end_date"], "end date")
         if start is not None and end is not None and end < start:
@@ -148,7 +185,8 @@ class Command(BaseCommand):
         try:
             rows = export_receipts(
                 start, end, salon=salon, sale=sale,
-                delivery_status=options.get("delivery_status"))
+                delivery_status=options.get("delivery_status"),
+                client=client)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if fmt == "csv":

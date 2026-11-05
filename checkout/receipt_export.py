@@ -68,6 +68,20 @@ salon scope, and the per-sale filter (all AND). An unknown
 status matches nothing — ``[]`` / a header-only CSV — exactly
 as the sibling categorical filters behave.
 
+Client filter: both export functions also accept an optional
+keyword-only ``client`` (default ``None``). With ``None`` the
+output is unchanged. With a client, only receipts whose sale
+belongs to that client are included (rows already carry
+``client_id`` through the sale; walk-in sales, whose
+``client_id`` is ``None``, never match); it composes with the
+date window, the salon scope, the per-sale filter, and the
+delivery-status filter (all AND). The client — a saved
+``Client`` instance or its id — is resolved within the salon
+(through ``sale__client__salon`` / the client's ``salon``),
+so an unknown id, an unsaved instance, or another salon's
+client raises ``ValueError`` rather than leaking or silently
+exporting nothing.
+
 Core stays provider-agnostic: no payment-provider SDK, field,
 or name appears here; tender detail stays on the receipt
 snapshot itself and is not part of these rows.
@@ -77,6 +91,8 @@ import datetime
 import io
 from decimal import Decimal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from clients.models import Client
 
 from .models import Receipt, Sale
 
@@ -201,8 +217,33 @@ def _resolve_sale(sale, salon):
             f"no sale with id {sale_id!r} for this salon") from exc
 
 
+def _resolve_client(client, salon):
+    """Resolve ``client`` (instance or id) to a saved client in scope.
+
+    Scope is the salon, following the client scoping used
+    across checkout's sibling exports: when ``salon`` is given
+    the client must belong to it. An unknown id, an unsaved
+    instance, or another salon's client raises ``ValueError``.
+    """
+    if isinstance(client, Client):
+        if client.pk is None:
+            raise ValueError(
+                "receipt export client filter needs a saved client")
+        client_id = client.pk
+    else:
+        client_id = client
+    clients = Client.objects.all()
+    if salon is not None:
+        clients = clients.filter(salon_id=getattr(salon, "pk", salon))
+    try:
+        return clients.get(pk=client_id)
+    except (Client.DoesNotExist, TypeError, ValueError) as exc:
+        raise ValueError(
+            f"no client with id {client_id!r} for this salon") from exc
+
+
 def export_receipts(date_from=None, date_to=None, salon=None, *, sale=None,
-                    delivery_status=None):
+                    delivery_status=None, client=None):
     """Return receipt rows issued in a range, as a list of dicts.
 
     Dates are inclusive whole local days (in ``salon``'s
@@ -225,8 +266,17 @@ def export_receipts(date_from=None, date_to=None, salon=None, *, sale=None,
     exactly are included (``"sent"`` is ``sent_at`` set,
     ``"not_sent"`` is ``sent_at`` unset); an unknown status
     matches nothing.
+
+    ``client`` is optional and keyword-only: the default
+    ``None`` is unchanged. When a client (instance or id) is
+    given, only receipts whose sale belongs to that client
+    are included; it is resolved within ``salon``, so an
+    unknown id, an unsaved instance, or another salon's
+    client raises ``ValueError``.
     """
     resolved_sale = _resolve_sale(sale, salon) if sale is not None else None
+    resolved_client = (
+        _resolve_client(client, salon) if client is not None else None)
     tz = _tz_for(salon)
     start_dt, end_dt, end_inclusive = _window(date_from, date_to, tz)
     qs = Receipt.objects.select_related("sale").all()
@@ -234,6 +284,8 @@ def export_receipts(date_from=None, date_to=None, salon=None, *, sale=None,
         qs = qs.filter(sale__salon=salon)
     if resolved_sale is not None:
         qs = qs.filter(sale=resolved_sale)
+    if resolved_client is not None:
+        qs = qs.filter(sale__client=resolved_client)
     if delivery_status is not None:
         if delivery_status == "sent":
             qs = qs.filter(sent_at__isnull=False)
@@ -255,7 +307,7 @@ def export_receipts(date_from=None, date_to=None, salon=None, *, sale=None,
 
 
 def export_receipts_csv(date_from=None, date_to=None, salon=None, *, sale=None,
-                        delivery_status=None):
+                        delivery_status=None, client=None):
     """Return receipt rows issued in a range as a CSV string.
 
     The header row is :data:`EXPORT_FIELDNAMES` and every data
@@ -273,6 +325,11 @@ def export_receipts_csv(date_from=None, date_to=None, salon=None, *, sale=None,
     and passed through: the default ``None`` is unchanged; a
     given status exports only receipts with that derived
     delivery status.
+
+    ``client`` is likewise optional and keyword-only and
+    passed through: the default ``None`` is unchanged; a
+    given client exports only receipts whose sale belongs
+    to that client.
     """
     buffer = io.StringIO()
     writer = csv.DictWriter(
@@ -281,7 +338,7 @@ def export_receipts_csv(date_from=None, date_to=None, salon=None, *, sale=None,
     writer.writeheader()
     for record in export_receipts(
             date_from, date_to, salon=salon, sale=sale,
-            delivery_status=delivery_status):
+            delivery_status=delivery_status, client=client):
         writer.writerow(record)
     return buffer.getvalue()
 
