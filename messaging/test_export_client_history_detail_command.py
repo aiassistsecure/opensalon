@@ -226,6 +226,58 @@ class ExportClientHistoryDetailCommandTests(TestCase):
             out.getvalue(),
             export_client_history_csv(self.client, start=DAY2))
 
+    def test_channel_kwarg_matches_service(self):
+        out = io.StringIO()
+        call_command(
+            _cmd(), salon_id=self.salon.pk, client_id=self.client.pk,
+            channel="sms", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_client_history_csv(self.client, channel="sms"))
+        self.assertEqual(len(out.getvalue().splitlines()), 2)
+
+    def test_channel_flag_matches_service(self):
+        out = io.StringIO()
+        call_command(
+            _cmd(), "--salon-id", str(self.salon.pk),
+            "--client-id", str(self.client.pk),
+            "--channel", "email", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_client_history_csv(self.client, channel="email"))
+        self.assertEqual(len(out.getvalue().splitlines()), 2)
+
+    def test_no_channel_matches_unfiltered_service(self):
+        out = io.StringIO()
+        call_command(
+            _cmd(), salon_id=self.salon.pk, client_id=self.client.pk,
+            channel=None, stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_client_history_csv(self.client))
+
+    def test_unknown_channel_is_header_only(self):
+        out = io.StringIO()
+        call_command(
+            _cmd(), salon_id=self.salon.pk, client_id=self.client.pk,
+            channel="pigeon", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_client_history_csv(self.client, channel="pigeon"))
+        self.assertEqual(len(out.getvalue().splitlines()), 1)
+
+    def test_channel_composes_with_window_and_limit(self):
+        out = io.StringIO()
+        call_command(
+            _cmd(), salon_id=self.salon.pk, client_id=self.client.pk,
+            start_date=DAY1, end_date=DAY2, limit=1, channel="sms",
+            stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_client_history_csv(
+                self.client, limit=1, start=DAY1, end=DAY2,
+                channel="sms"))
+        self.assertEqual(len(out.getvalue().splitlines()), 2)
+
     def test_invalid_start_date_raises_command_error(self):
         with self.assertRaises(CommandError):
             call_command(

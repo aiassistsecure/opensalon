@@ -42,6 +42,16 @@ count and every row comes exactly from the history service:
   *following* day, so two dates include the whole end
   day; a ``datetime`` is used as given (naive datetimes
   are interpreted in the current time zone).
+  Both also accept one optional keyword-only ``channel``
+  filter (default ``None`` = no filter, output
+  byte-identical to before): when a channel is given, only
+  sends whose stored ``channel`` matches it exactly are
+  included (no case folding, so an unknown channel matches
+  nothing and exports as ``[]`` / a header-only CSV),
+  exactly as the sibling ``export_sends`` and
+  ``export_due_reminders`` channel filters behave. It
+  composes with the window (window AND channel) and
+  applies BEFORE the existing ``limit``.
 
 Opt-in semantics are untouched: opt-in state lives only on
 ``clients.Client`` and is neither read nor duplicated here;
@@ -156,7 +166,8 @@ def _bound(value, *, is_end):
     return bound
 
 
-def export_client_history(client, limit=None, start=None, end=None):
+def export_client_history(client, limit=None, start=None, end=None,
+                          *, channel=None):
     """Return one client's sends as dict rows.
 
     Rows are rendered verbatim from
@@ -169,8 +180,17 @@ def export_client_history(client, limit=None, start=None, end=None):
     semantics); the default ``None`` / ``None`` is the full
     history, unchanged. The window applies BEFORE ``limit``:
     sends outside the window never consume the limit.
+
+    ``channel`` is optional and keyword-only: the default
+    ``None`` applies no channel filter, unchanged. When a
+    channel is given, only sends whose stored ``channel``
+    matches it exactly are included; it composes with the
+    window and likewise applies BEFORE ``limit``.
     """
     sends = client_send_history(client)
+    if channel is not None:
+        channel = str(channel)
+        sends = [send for send in sends if send.channel == channel]
     start_bound = _bound(start, is_end=False)
     end_bound = _bound(end, is_end=True)
     if start_bound is not None or end_bound is not None:
@@ -193,14 +213,16 @@ def export_client_history(client, limit=None, start=None, end=None):
     } for send in sends]
 
 
-def export_client_history_csv(client, limit=None, start=None, end=None):
+def export_client_history_csv(client, limit=None, start=None, end=None,
+                              *, channel=None):
     """Return :func:`export_client_history` as CSV text.
 
     The header row is :data:`CLIENT_HISTORY_FIELDNAMES` and
     every data row comes from :func:`export_client_history`
     with the same arguments (including the optional
-    ``start`` / ``end`` window). A client with no sends in
-    the window exports as the header row alone.
+    ``start`` / ``end`` window and the optional keyword-only
+    ``channel`` filter). A client with no sends in the
+    window on that channel exports as the header row alone.
     """
     buffer = io.StringIO()
     writer = csv.DictWriter(
@@ -208,7 +230,7 @@ def export_client_history_csv(client, limit=None, start=None, end=None):
     )
     writer.writeheader()
     for record in export_client_history(
-            client, limit=limit, start=start, end=end):
+            client, limit=limit, start=start, end=end, channel=channel):
         writer.writerow(record)
     return buffer.getvalue()
 
