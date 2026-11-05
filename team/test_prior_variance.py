@@ -2,11 +2,13 @@
 import csv
 import datetime
 import io
+import json
 import os
 import tempfile
 from decimal import Decimal
 
 from django.core.management import CommandError, call_command
+from django.core.serializers.json import DjangoJSONEncoder
 from django.test import TestCase
 
 from saloncore.models import Salon
@@ -144,3 +146,72 @@ class PriorVarianceTests(TestCase):
                        dict(salon_id=self.salon.pk)):
             with self.assertRaises(CommandError):
                 call_command("export_prior_variance", stdout=io.StringIO(), **kwargs)
+
+    def test_command_default_and_explicit_csv_match_service(self):
+        self._book()
+        want = export_prior_variance_csv(self.salon, DAY, DAY)
+        out = io.StringIO()
+        call_command("export_prior_variance", salon_id=self.salon.pk,
+                     start_date=DAY, end_date=DAY, stdout=out)
+        self.assertEqual(out.getvalue(), want)
+        out = io.StringIO()
+        call_command("export_prior_variance", salon_id=self.salon.pk,
+                     start_date=DAY, end_date=DAY, format="csv", stdout=out)
+        self.assertEqual(out.getvalue(), want)
+        out = io.StringIO()
+        call_command("export_prior_variance",
+                     "--salon-id", str(self.salon.pk),
+                     "--start-date", str(DAY), "--end-date", str(DAY),
+                     "--format", "csv", stdout=out)
+        self.assertEqual(out.getvalue(), want)
+
+    def test_command_json_parses_and_equals_dict_service_rows(self):
+        self._book()
+        rows = export_prior_variance(self.salon, DAY, DAY)
+        out = io.StringIO()
+        call_command("export_prior_variance", salon_id=self.salon.pk,
+                     start_date=DAY, end_date=DAY, format="json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()), rows)
+        self.assertEqual(
+            out.getvalue(),
+            json.dumps(rows, indent=2, cls=DjangoJSONEncoder) + "\n")
+        parsed = json.loads(out.getvalue())
+        one = next(r for r in parsed if r["staff_name"] == "Stylist One")
+        self.assertEqual((one["current_actual_minutes"],
+                          one["actual_minutes_percent_change"]),
+                         (240, "-50.00"))
+        self.assertEqual(one["prior_end_date"], PRIOR_DAY.isoformat())
+
+    def test_command_json_flag_matches_dict_service(self):
+        out = io.StringIO()
+        call_command("export_prior_variance",
+                     "--salon-id", str(self.salon.pk),
+                     "--start-date", str(DAY), "--end-date", str(DAY),
+                     "--format", "json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()),
+                         export_prior_variance(self.salon, DAY, DAY))
+
+    def test_command_json_output_file_matches_dict_service(self):
+        self._book()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "prior.json")
+            out = io.StringIO()
+            call_command("export_prior_variance", salon_id=self.salon.pk,
+                         start_date=DAY, end_date=DAY, format="json",
+                         output=path, stdout=out)
+            with open(path, encoding="utf-8") as fh:
+                written = fh.read()
+        self.assertEqual(json.loads(written),
+                         export_prior_variance(self.salon, DAY, DAY))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_command_invalid_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command("export_prior_variance", salon_id=self.salon.pk,
+                         start_date=DAY, end_date=DAY, format="xml",
+                         stdout=io.StringIO())
+        with self.assertRaises(CommandError):
+            call_command("export_prior_variance",
+                         "--salon-id", str(self.salon.pk),
+                         "--start-date", str(DAY), "--end-date", str(DAY),
+                         "--format", "xml", stdout=io.StringIO())
