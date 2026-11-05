@@ -4,6 +4,7 @@ Usage:
     python manage.py export_attendance_records --salon-id ID
         [--staff-member-id ID]
         [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD]
+        [--event-type EVENT_TYPE]
         [--output PATH]
 
 Thin wrapper around the existing
@@ -32,6 +33,15 @@ includes the whole end day. Each bound is optional; without
 either, the command exports every record, exactly as
 before. The window composes with ``--staff-member-id``
 (window AND record).
+
+With ``--event-type`` the export is narrowed to records
+whose stored event type exactly matches it (the
+``AttendanceRecord.EventType`` slugs ``check_in`` /
+``check_out``): the value is passed to the service as its
+optional ``event_type`` argument. Without ``--event-type``
+the command exports every event type, exactly as before.
+It composes with ``--staff-member-id`` and the date window
+(all AND).
 
 An unknown salon, an unparseable date, or a reversed range
 raises ``CommandError``. Backend only -- no views,
@@ -82,6 +92,10 @@ class Command(BaseCommand):
             help="Last day of the range, YYYY-MM-DD (inclusive; "
                  "default: unbounded).")
         parser.add_argument(
+            "--event-type", dest="event_type", default=None,
+            help="Event type value to filter by (default: "
+                 "all event types).")
+        parser.add_argument(
             "--output", default=None,
             help="Path of the CSV file to write (default: stdout).")
 
@@ -111,7 +125,8 @@ class Command(BaseCommand):
                 "range end must not be before range start")
         try:
             text = export_attendance_records_csv(
-                salon, staff_member=staff_member, start=start, end=end)
+                salon, staff_member=staff_member, start=start, end=end,
+                event_type=options.get("event_type"))
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
 

@@ -28,6 +28,14 @@ member, only that member's records are included; the salon
 filter still applies, so a staff member from another salon
 exports as empty.
 
+Event-type filter: both export functions also accept an
+optional ``event_type`` (default ``None``). With ``None``
+the output is unchanged. With a value, only records whose
+stored ``event_type`` exactly matches it (the
+``AttendanceRecord.EventType`` slugs ``check_in`` /
+``check_out``) are included. It composes with the
+staff-member filter and the date window (all AND).
+
 Date window: both export functions also accept an optional
 ``start`` / ``end`` window pair (aliases ``start_date`` /
 ``end_date``), filtering on ``recorded_at``. Each bound may
@@ -138,7 +146,7 @@ def _resolve_window(start, end, kwargs):
 
 
 def export_attendance_records(salon, staff_member=None, start=None,
-                              end=None, **kwargs):
+                              end=None, event_type=None, **kwargs):
     """Return ``salon``'s attendance records as a list of dicts.
 
     Each entry is one stored :class:`team.models.AttendanceRecord`
@@ -157,6 +165,11 @@ def export_attendance_records(salon, staff_member=None, start=None,
     ``None`` are unbounded, so the default output is unchanged.
     See the module docstring for the range semantics. The
     window composes with ``staff_member`` (window AND record).
+
+    ``event_type`` is optional: the default ``None`` is
+    unchanged. When given, only records whose stored
+    ``event_type`` exactly matches it are included. It
+    composes with ``staff_member`` and the window (all AND).
     """
     start, end = _resolve_window(start, end, kwargs)
     rows = (
@@ -165,6 +178,8 @@ def export_attendance_records(salon, staff_member=None, start=None,
     )
     if staff_member is not None:
         rows = rows.filter(staff_member=staff_member)
+    if event_type is not None:
+        rows = rows.filter(event_type=event_type)
     start_bound = _bound(start, is_end=False)
     end_bound = _bound(end, is_end=True)
     if start_bound is not None:
@@ -175,7 +190,7 @@ def export_attendance_records(salon, staff_member=None, start=None,
 
 
 def export_attendance_records_csv(salon, staff_member=None, start=None,
-                                  end=None, **kwargs):
+                                  end=None, event_type=None, **kwargs):
     """Return ``salon``'s attendance records as a CSV string.
 
     The header row is :data:`ATTENDANCE_RECORD_EXPORT_FIELDNAMES`
@@ -194,6 +209,10 @@ def export_attendance_records_csv(salon, staff_member=None, start=None,
     are likewise passed through: the defaults ``None`` are
     unbounded and unchanged; a given window exports only
     records whose ``recorded_at`` falls inside it.
+
+    ``event_type`` is likewise passed through: the default
+    ``None`` is unchanged; a given value exports only records
+    whose stored ``event_type`` exactly matches it.
     """
     buffer = io.StringIO()
     writer = csv.DictWriter(
@@ -203,7 +222,7 @@ def export_attendance_records_csv(salon, staff_member=None, start=None,
     writer.writeheader()
     for record in export_attendance_records(
             salon, staff_member=staff_member, start=start, end=end,
-            **kwargs):
+            event_type=event_type, **kwargs):
         writer.writerow(record)
     return buffer.getvalue()
 
