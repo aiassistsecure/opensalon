@@ -1,19 +1,25 @@
-"""Export a salon's stock movement summary as CSV.
+"""Export a salon's stock movement summary as CSV or JSON.
 
 Usage:
     python manage.py export_movement_summary --salon-id ID
         --start-date YYYY-MM-DD --end-date YYYY-MM-DD
-        [--output PATH]
+        [--output PATH] [--format json|csv]
 
 Backend only — no views, templates, or UI. This command is a thin
 wrapper around
-:func:`catalog.movement_summary_export.export_movement_summary_csv`:
-it resolves the salon by id, parses the dates, delegates to that
-service verbatim (with the same ``start`` / ``end`` / ``salon``),
-and writes the returned CSV to ``--output`` when given, otherwise
-to stdout. It adds no fields, filtering, or formatting of its
-own, so the command output and the service output can never
-disagree — one source of truth.
+:mod:`catalog.movement_summary_export`: it resolves the salon
+by id, parses the dates, delegates to that service verbatim (with
+the same ``start`` / ``end`` / ``salon``), and writes the result
+to ``--output`` when given, otherwise to stdout. For
+``--format csv`` (the default) it writes
+:func:`catalog.movement_summary_export.export_movement_summary_csv`'s
+CSV string as-is, so the historical CSV output is byte-identical;
+for ``--format json`` it serializes the dict rows from
+:func:`catalog.movement_summary_export.export_movement_summary`
+— the same rows the CSV is built from — as JSON. It adds no
+fields, filtering, or formatting of its own, so the command
+output and the service output can never disagree — one source
+of truth.
 
 Range semantics are the service's own: both bounds are required,
 inclusive, and cover whole local days; a reversed range raises
@@ -24,11 +30,17 @@ Founding rule (Exit Principle): anything a salon can enter, it can
 fully export.
 """
 import datetime
+import json
 
 from django.core.management.base import BaseCommand, CommandError
 
-from catalog.movement_summary_export import export_movement_summary_csv
+from catalog.movement_summary_export import (
+    export_movement_summary,
+    export_movement_summary_csv,
+)
 from saloncore.models import Salon
+
+_FORMATS = ("json", "csv")
 
 
 def _parse_date(value):
@@ -47,7 +59,7 @@ def _parse_date(value):
 
 
 class Command(BaseCommand):
-    help = "Export a salon's stock movement summary as CSV."
+    help = "Export a salon's stock movement summary as CSV or JSON."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -67,11 +79,19 @@ class Command(BaseCommand):
                  "required by the service).",
         )
         parser.add_argument(
+            "--format", dest="format", default="csv", choices=_FORMATS,
+            help="Export format: csv (default) or json.",
+        )
+        parser.add_argument(
             "--output", default=None,
-            help="Path of the CSV file to write (default: stdout).",
+            help="Path of the export file to write (default: stdout).",
         )
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist as exc:
@@ -80,7 +100,11 @@ class Command(BaseCommand):
         start = _parse_date(options["start_date"])
         end = _parse_date(options["end_date"])
         try:
-            text = export_movement_summary_csv(start, end, salon=salon)
+            if fmt == "json":
+                records = export_movement_summary(start, end, salon=salon)
+                text = json.dumps(records, indent=2) + "\n"
+            else:
+                text = export_movement_summary_csv(start, end, salon=salon)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options["output"]:
