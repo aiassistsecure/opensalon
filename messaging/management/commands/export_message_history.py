@@ -1,34 +1,45 @@
-"""Export reminder message history as CSV.
+"""Export reminder message history as CSV or JSON.
 
 Usage:
     python manage.py export_message_history
         --start-date YYYY-MM-DD --end-date YYYY-MM-DD
-        [--salon-id ID] [--output PATH]
+        [--salon-id ID] [--format json|csv] [--output PATH]
 
 Thin wrapper around the existing
 :func:`messaging.history_export.export_history_summary_csv`
-service: the dates are parsed to ``datetime.date`` objects and
-passed to the service verbatim as ``(start, end)`` -- its CSV
-text is written unchanged, to ``--output`` when given and to
-stdout otherwise. The service derives counts from the
+and :func:`messaging.history_export.export_history_summary`
+services: the dates are parsed to ``datetime.date`` objects and
+passed to the service verbatim as ``(start, end)``. For
+``--format csv`` (the default) its CSV text is written unchanged,
+to ``--output`` when given and to stdout otherwise; for
+``--format json`` the same dict rows are serialised as JSON via
+``DjangoJSONEncoder``, so the two formats can never disagree --
+one source of truth. The service derives counts from the
 ``ReminderSend`` log over an inclusive date range; an optional
 ``--salon-id`` scopes those counts to one salon (resolved by
 id and passed to the service, which matches sends through
 ``client__salon``). Omitting ``--salon-id`` keeps the previous
 all-salons behaviour, byte-identical.
 
-Invalid input -- an unparseable date, a reversed range, or an
-unknown salon -- raises ``CommandError``. Dates mean whole
-local days, inclusive at both ends, exactly as the service
-defines them. Read-only. Core stays provider-agnostic -- no
-provider SDK, field, or name appears here.
+Invalid input -- an unparseable date, a reversed range, an
+unknown format, or an unknown salon -- raises ``CommandError``.
+Dates mean whole local days, inclusive at both ends, exactly as
+the service defines them. Read-only. Core stays
+provider-agnostic -- no provider SDK, field, or name appears here.
 """
 import datetime
+import json
 
 from django.core.management.base import BaseCommand, CommandError
+from django.core.serializers.json import DjangoJSONEncoder
 
-from messaging.history_export import export_history_summary_csv
+from messaging.history_export import (
+    export_history_summary,
+    export_history_summary_csv,
+)
 from saloncore.models import Salon
+
+_FORMATS = ("json", "csv")
 
 
 def _parse_date(value, label):
@@ -45,7 +56,7 @@ def _parse_date(value, label):
 
 
 class Command(BaseCommand):
-    help = "Export reminder message history as CSV."
+    help = "Export reminder message history as CSV or JSON."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -62,11 +73,20 @@ class Command(BaseCommand):
                  "(default: all salons).",
         )
         parser.add_argument(
+            "--format", dest="format", default="csv",
+            choices=_FORMATS,
+            help="Export format: csv (default) or json.",
+        )
+        parser.add_argument(
             "--output", default=None,
-            help="Path to write the CSV to (default: stdout).",
+            help="Path to write the export to (default: stdout).",
         )
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         start = _parse_date(options["start_date"], "start date")
         end = _parse_date(options["end_date"], "end date")
         salon = None
@@ -77,12 +97,14 @@ class Command(BaseCommand):
                 raise CommandError(
                     f"No salon with id {options['salon_id']}."
                 ) from exc
+        kwargs = {} if salon is None else {"salon": salon}
         try:
-            if salon is None:
-                text = export_history_summary_csv(start, end)
+            if fmt == "json":
+                rows = export_history_summary(start, end, **kwargs)
+                text = json.dumps(
+                    rows, indent=2, cls=DjangoJSONEncoder) + "\n"
             else:
-                text = export_history_summary_csv(
-                    start, end, salon=salon)
+                text = export_history_summary_csv(start, end, **kwargs)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options["output"]:
