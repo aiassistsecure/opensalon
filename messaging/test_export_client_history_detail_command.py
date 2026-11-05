@@ -17,6 +17,7 @@ this detail command neither produces that appointment output nor
 invokes that bookings service.
 """
 import io
+import json
 import os
 import tempfile
 from datetime import date, datetime, time, timedelta
@@ -24,6 +25,7 @@ from unittest import mock
 from zoneinfo import ZoneInfo
 
 from django.core.management import CommandError, call_command, load_command_class
+from django.core.serializers.json import DjangoJSONEncoder
 from django.test import TestCase
 from django.utils import timezone
 
@@ -32,7 +34,10 @@ from bookings.client_history_export import (
 )
 from bookings.models import Appointment
 from clients.models import Client
-from messaging.history_export import export_client_history_csv
+from messaging.history_export import (
+    export_client_history,
+    export_client_history_csv,
+)
 from messaging.models import ReminderSend
 from saloncore.models import Salon, Service, ServiceCategory
 from team.models import StaffMember
@@ -311,3 +316,61 @@ class ExportClientHistoryDetailCommandTests(TestCase):
                     _cmd(), salon_id=self.salon.pk,
                     client_id=self.client.pk, output=path,
                     stdout=io.StringIO())
+
+    def test_default_and_explicit_csv_byte_identical(self):
+        expected = export_client_history_csv(self.client)
+        for kwargs in ({}, {"format": "csv"}):
+            out = io.StringIO()
+            call_command(
+                _cmd(), salon_id=self.salon.pk,
+                client_id=self.client.pk, stdout=out, **kwargs)
+            self.assertEqual(out.getvalue(), expected)
+
+    def test_json_stdout_equals_dict_rows(self):
+        out = io.StringIO()
+        call_command(
+            _cmd(), salon_id=self.salon.pk, client_id=self.client.pk,
+            format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_client_history(self.client))
+        self.assertEqual(
+            out.getvalue(),
+            json.dumps(export_client_history(self.client), indent=2,
+                       cls=DjangoJSONEncoder) + "\n")
+
+    def test_json_via_cli_flags(self):
+        out = io.StringIO()
+        call_command(
+            _cmd(), "--salon-id", str(self.salon.pk),
+            "--client-id", str(self.client.pk),
+            "--format", "json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_client_history(self.client))
+
+    def test_json_output_file(self):
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "client_history_detail.json")
+            call_command(
+                _cmd(), salon_id=self.salon.pk,
+                client_id=self.client.pk, format="json",
+                output=path, stdout=out)
+            with open(path, encoding="utf-8", newline="") as fh:
+                written = fh.read()
+        self.assertEqual(
+            json.loads(written), export_client_history(self.client))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_unknown_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                _cmd(), salon_id=self.salon.pk,
+                client_id=self.client.pk, format="xml",
+                stdout=io.StringIO())
+        with self.assertRaises(CommandError):
+            call_command(
+                _cmd(), "--salon-id", str(self.salon.pk),
+                "--client-id", str(self.client.pk),
+                "--format", "xml", stdout=io.StringIO())
