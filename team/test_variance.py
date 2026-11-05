@@ -2,8 +2,12 @@
 import csv
 import datetime
 import io
+import json
+import os
+import tempfile
 
 from django.core.management import CommandError, call_command
+from django.core.serializers.json import DjangoJSONEncoder
 from django.test import TestCase
 
 from saloncore.models import Salon
@@ -143,3 +147,79 @@ class RosterVarianceTests(TestCase):
         with self.assertRaises(CommandError):
             call_command("export_roster_variance", salon_id=self.salon.pk,
                          start_date="bad", end_date=WED, stdout=io.StringIO())
+
+    def test_command_default_and_explicit_csv_match_service(self):
+        self._session(self.staff, MON)
+        want = export_roster_variance_csv(self.salon, MON, WED)
+        out = io.StringIO()
+        call_command("export_roster_variance", salon_id=self.salon.pk,
+                     start_date=MON, end_date=WED, stdout=out)
+        self.assertEqual(out.getvalue(), want)
+        out = io.StringIO()
+        call_command("export_roster_variance", salon_id=self.salon.pk,
+                     start_date=MON, end_date=WED, format="csv", stdout=out)
+        self.assertEqual(out.getvalue(), want)
+        out = io.StringIO()
+        call_command("export_roster_variance",
+                     "--salon-id", str(self.salon.pk),
+                     "--start-date", str(MON), "--end-date", str(WED),
+                     "--format", "csv", stdout=out)
+        self.assertEqual(out.getvalue(), want)
+
+    def test_command_json_parses_and_equals_dict_service_rows(self):
+        self._session(self.staff, MON)
+        rows = export_roster_variance(self.salon, MON, WED)
+        out = io.StringIO()
+        call_command("export_roster_variance", salon_id=self.salon.pk,
+                     start_date=MON, end_date=WED, format="json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()), rows)
+        self.assertEqual(
+            out.getvalue(),
+            json.dumps(rows, indent=2, cls=DjangoJSONEncoder) + "\n")
+        parsed = json.loads(out.getvalue())
+        row = [r for r in parsed if r["staff_name"] == "Stylist One"][0]
+        self.assertEqual((row["rostered_minutes"], row["variance_minutes"]),
+                         (1440, -960))
+        self.assertEqual(row["start_date"], MON.isoformat())
+
+    def test_command_json_flag_matches_dict_service(self):
+        out = io.StringIO()
+        call_command("export_roster_variance",
+                     "--salon-id", str(self.salon.pk),
+                     "--start-date", str(MON), "--end-date", str(WED),
+                     "--format", "json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()),
+                         export_roster_variance(self.salon, MON, WED))
+
+    def test_command_json_empty_salon_is_empty_list(self):
+        empty = Salon.objects.create(name="Empty JSON", timezone="UTC")
+        out = io.StringIO()
+        call_command("export_roster_variance", salon_id=empty.pk,
+                     start_date=MON, end_date=WED, format="json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()), [])
+        self.assertEqual(out.getvalue(), "[]\n")
+
+    def test_command_json_output_file_matches_dict_service(self):
+        self._session(self.staff, MON)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "variance.json")
+            out = io.StringIO()
+            call_command("export_roster_variance", salon_id=self.salon.pk,
+                         start_date=MON, end_date=WED, format="json",
+                         output=path, stdout=out)
+            with open(path, encoding="utf-8") as fh:
+                written = fh.read()
+        self.assertEqual(json.loads(written),
+                         export_roster_variance(self.salon, MON, WED))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_command_invalid_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command("export_roster_variance", salon_id=self.salon.pk,
+                         start_date=MON, end_date=WED, format="xml",
+                         stdout=io.StringIO())
+        with self.assertRaises(CommandError):
+            call_command("export_roster_variance",
+                         "--salon-id", str(self.salon.pk),
+                         "--start-date", str(MON), "--end-date", str(WED),
+                         "--format", "xml", stdout=io.StringIO())
