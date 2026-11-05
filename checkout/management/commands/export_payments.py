@@ -1,21 +1,26 @@
-"""Export a salon's payments as CSV.
+"""Export a salon's payments as CSV or JSON.
 
 Usage:
     python manage.py export_payments --salon-id ID
         --start-date YYYY-MM-DD [--end-date YYYY-MM-DD]
-        [--sale-id ID] [--status STATUS] [--method METHOD] [--output PATH]
+        [--sale-id ID] [--status STATUS] [--method METHOD]
+        [--format json|csv] [--output PATH]
 
 Thin wrapper around the existing
-:func:`checkout.payment_export.export_payments_csv` service:
+:func:`checkout.payment_export.export_payments_csv` and
+:func:`checkout.payment_export.export_payments` services:
 the salon is resolved by id, the dates are parsed to
 ``datetime.date`` objects, and both are passed to the service
-verbatim -- its CSV text is written unchanged, to ``--output``
-when given and to stdout otherwise. The service's ``date_to``
-is optional, so ``--end-date`` is optional here too and
-defaults to a single-day export exactly as the service
-defines it. This command adds no export logic of its own, so
-command and service output can never disagree -- one source
-of truth.
+verbatim -- its output is written unchanged, to ``--output``
+when given and to stdout otherwise. For ``--format csv`` (the
+default) the service's CSV text is written exactly as before;
+for ``--format json`` the same dict rows from
+:func:`checkout.payment_export.export_payments` are serialised
+as JSON, so the two formats can never disagree -- one source
+of truth. The service's ``date_to`` is optional, so
+``--end-date`` is optional here too and defaults to a
+single-day export exactly as the service defines it. This
+command adds no export logic of its own.
 
 With ``--sale-id`` the export is narrowed to that one sale's
 payments: the sale is resolved by id within the salon (the
@@ -40,20 +45,23 @@ argument and composes with the range, ``--sale-id``, and
 ``--status``. Without ``--method`` the command exports every
 method, exactly as before.
 
-Invalid input -- an unparseable date or a reversed range --
-raises ``CommandError``. Dates mean whole local days in the
-salon's timezone, inclusive at both ends, exactly as the
-service defines them. Read-only. Core stays
-provider-agnostic -- no payment-provider SDK, field, or name
-appears here.
+Invalid input -- an unparseable date, a reversed range, or
+an unknown format -- raises ``CommandError``. Dates mean
+whole local days in the salon's timezone, inclusive at both
+ends, exactly as the service defines them. Read-only. Core
+stays provider-agnostic -- no payment-provider SDK, field,
+or name appears here.
 """
 import datetime
+import json
 
 from django.core.management.base import BaseCommand, CommandError
 
 from checkout.models import Sale
-from checkout.payment_export import export_payments_csv
+from checkout.payment_export import export_payments, export_payments_csv
 from saloncore.models import Salon
+
+_FORMATS = ("json", "csv")
 
 
 def _parse_date(value, label):
@@ -72,7 +80,7 @@ def _parse_date(value, label):
 
 
 class Command(BaseCommand):
-    help = "Export a salon's payments as CSV."
+    help = "Export a salon's payments as CSV or JSON."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -104,11 +112,19 @@ class Command(BaseCommand):
             help="Payment method value to filter by.",
         )
         parser.add_argument(
+            "--format", dest="format", default="csv", choices=_FORMATS,
+            help="Export format: csv (default) or json.",
+        )
+        parser.add_argument(
             "--output", default=None,
-            help="Path to write the CSV to (default: stdout).",
+            help="Path to write the export to (default: stdout).",
         )
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist as exc:
@@ -134,10 +150,17 @@ class Command(BaseCommand):
                 f"{start.isoformat()}."
             )
         try:
-            text = export_payments_csv(
-                salon, start, end, sale=sale,
-                status=options.get("status"),
-                method=options.get("method"))
+            if fmt == "json":
+                rows = export_payments(
+                    salon, start, end, sale=sale,
+                    status=options.get("status"),
+                    method=options.get("method"))
+                text = json.dumps(rows, indent=2) + "\n"
+            else:
+                text = export_payments_csv(
+                    salon, start, end, sale=sale,
+                    status=options.get("status"),
+                    method=options.get("method"))
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options["output"]:
