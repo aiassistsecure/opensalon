@@ -39,7 +39,9 @@ not exported as separate columns — they repeat fields above
 (``total_sale_count`` is the sum of the three exported counts).
 
 Money is rendered as a string to two decimal places, never
-passed through a float.
+passed through a float. A plain dict row
+(:func:`export_returning_revenue_row`) backs the CSV, so the
+two formats can never disagree.
 """
 import csv
 import io
@@ -53,9 +55,13 @@ __all__ = [
     "RETURNING_EXPORT_FIELDNAMES",
     "EXPORT_FIELDNAMES",
     "export_returning_revenue_csv",
+    "export_returning_revenue_row",
     "export_returning_csv",
+    "export_returning_row",
     "returning_revenue_csv",
+    "returning_revenue_row",
     "returning_csv",
+    "returning_row",
 ]
 
 #: Column order of the CSV export.
@@ -82,33 +88,15 @@ def _money(value):
     return str(Decimal(value).quantize(_CENTS))
 
 
-def export_returning_revenue_csv(salon, start, end, **kwargs):
-    """Return ``salon``'s new-vs-returning revenue as a CSV string.
+def export_returning_revenue_row(salon, start, end, **kwargs):
+    """Return ``salon``'s new-vs-returning revenue as a single dict row.
 
-    Args:
-        salon: ``saloncore.Salon`` instance to scope to, passed
-            through to
-            :func:`insights.returning.new_vs_returning_revenue`.
-        start: inclusive window start, as accepted by that service.
-        end: inclusive window end, as accepted by that service.
-        **kwargs: forwarded to that service.
-
-    Returns:
-        A CSV string whose header row is
-        :data:`RETURNING_FIELDNAMES` and whose single data row
-        matches the returning-revenue service's result exactly.
-        A window with no qualifying sales — or a reversed
-        window — exports as that single zero row, exactly as
-        the service returns it. Lines end with ``"\\n"``.
-        Records nothing.
+    Args mirror :func:`export_returning_revenue_csv` exactly;
+    the underlying service's result values are rendered
+    unchanged (money as a string to two decimal places).
     """
     result = new_vs_returning_revenue(salon, start, end, **kwargs)
-    buffer = io.StringIO()
-    writer = csv.DictWriter(
-        buffer, fieldnames=RETURNING_FIELDNAMES, lineterminator="\n"
-    )
-    writer.writeheader()
-    writer.writerow({
+    return {
         "start_date": result.start_date.isoformat(),
         "end_date": result.end_date.isoformat(),
         "returning_revenue": _money(result.returning_revenue),
@@ -118,11 +106,32 @@ def export_returning_revenue_csv(salon, start, end, **kwargs):
         "returning_sale_count": result.returning_sale_count,
         "new_sale_count": result.new_sale_count,
         "unattributed_sale_count": result.unattributed_sale_count,
-    })
+    }
+
+
+def export_returning_revenue_csv(salon, start, end, **kwargs):
+    """Return ``salon``'s new-vs-returning revenue as a CSV string.
+
+    Built from :func:`export_returning_revenue_row` with the
+    same arguments, so the CSV and dict exports always agree.
+    A window with no qualifying sales — or a reversed window
+    — exports as that single zero row. Lines end with
+    ``"\\n"``. Records nothing.
+    """
+    buffer = io.StringIO()
+    writer = csv.DictWriter(
+        buffer, fieldnames=RETURNING_FIELDNAMES, lineterminator="\n"
+    )
+    writer.writeheader()
+    writer.writerow(export_returning_revenue_row(
+        salon, start, end, **kwargs))
     return buffer.getvalue()
 
 
 #: Aliases, mirroring the naming convenience in sibling services.
 export_returning_csv = export_returning_revenue_csv
+export_returning_row = export_returning_revenue_row
 returning_revenue_csv = export_returning_revenue_csv
+returning_revenue_row = export_returning_revenue_row
 returning_csv = export_returning_revenue_csv
+returning_row = export_returning_revenue_row
