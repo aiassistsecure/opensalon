@@ -4,14 +4,15 @@ Usage:
     python manage.py export_history --salon-id ID
         [--client-id ID] [--now ISO-DATETIME] [--limit N]
         [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD]
-        [--status STATUS] [--staff-id ID] [--output PATH]
+        [--status STATUS] [--staff-id ID] [--service-id ID]
+        [--output PATH]
 
 Thin wrapper around the existing
 :func:`onlinebooking.export_history.export_history_csv`
 service: this command delegates verbatim to
 ``export_history_csv(salon, client, now=now, limit=limit,
 start_date=start_date, end_date=end_date, status=status,
-staff_member=staff_member)``
+staff_member=staff_member, service=service)``
 and adds no export logic of its own, so the command output and
 the service output can never disagree -- one source of truth.
 ``--status`` is the optional exact stored booking status to
@@ -21,6 +22,10 @@ filter by (the spelling the bookings ledger's staff filter
 uses); it is resolved to its ``StaffMember`` and passed to
 the service as its ``staff_member`` filter, and an unknown
 id raises ``CommandError``; omitted, no staff filter applies.
+``--service-id`` is the optional id of the service to
+filter by; it is resolved to its ``Service`` and passed to
+the service as its ``service`` filter, and an unknown
+id raises ``CommandError``; omitted, no service filter applies.
 ``--start-date`` / ``--end-date`` are the optional inclusive
 local-date window on booking ``start``, spelled as the other
 Family XI ledger commands spell them (``--date-from`` /
@@ -53,7 +58,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 from clients.models import Client
 from onlinebooking.export_history import export_history_csv
-from saloncore.models import Salon
+from saloncore.models import Salon, Service
 from team.models import StaffMember
 
 
@@ -150,6 +155,10 @@ class Command(BaseCommand):
             help="Id of the staff member to filter by (default: "
                  "no staff filter, as the service defines it).")
         parser.add_argument(
+            "--service-id", dest="service_id", default=None, type=int,
+            help="Id of the service to filter by (default: "
+                 "no service filter, as the service defines it).")
+        parser.add_argument(
             "--output", default=None,
             help="Path of the CSV file to write (default: stdout).")
 
@@ -180,6 +189,18 @@ class Command(BaseCommand):
                 raise CommandError(
                     f"No staff member with id {staff_pk}.") from None
 
+        service = None
+        service_value = options.get("service_id")
+        if service_value is None:
+            service_value = options.get("service")
+        if service_value is not None:
+            service_pk = getattr(service_value, "pk", service_value)
+            try:
+                service = Service.objects.get(pk=service_pk)
+            except (Service.DoesNotExist, TypeError, ValueError):
+                raise CommandError(
+                    f"No service with id {service_pk}.") from None
+
         now = _parse_now(options.get("now"), salon)
         start_date = _coerce_date(options.get("start_date"), "start-date")
         end_date = _coerce_date(options.get("end_date"), "end-date")
@@ -188,7 +209,8 @@ class Command(BaseCommand):
             text = export_history_csv(
                 salon, client, now=now, limit=options.get("limit"),
                 start_date=start_date, end_date=end_date,
-                status=options.get("status"), staff_member=staff_member)
+                status=options.get("status"), staff_member=staff_member,
+                service=service)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
 
