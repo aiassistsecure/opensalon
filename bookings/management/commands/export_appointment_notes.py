@@ -1,37 +1,49 @@
-"""Export a salon's appointment-only notes verbatim as CSV.
+"""Export a salon's appointment-only notes verbatim as CSV or JSON.
 
 Usage:
     python manage.py export_appointment_notes --salon-id ID
         [--appointment-id ID]
         [--date-from YYYY-MM-DD] [--date-to YYYY-MM-DD]
-        [--output PATH]
+        [--format json|csv] [--output PATH]
 
 Thin wrapper around
 ``bookings.note_export.export_appointment_notes_csv`` -- that
 service is the one source of truth for the appointment-note
 export shape; this command only resolves the salon, parses the
 dates, delegates verbatim, and routes the CSV it returns to the
-``--output`` file when given or to stdout otherwise. It never
-reimplements serialization or querying. Only appointment-only
-notes are exported; persistent client record notes live in the
-clients app and never appear. With no dates, every appointment
-note for the salon is exported. With ``--appointment-id``, only
-that appointment's notes are exported: the appointment is
-resolved in the salon (via both its client and its staff
-member, the bookings salon-scoping convention), an unknown or
-out-of-salon id is a ``CommandError``, and the date window
-still applies on top of the filter.
+``--output`` file when given or to stdout otherwise. For
+``--format csv`` (the default) that CSV output is exactly as
+before, byte-identical; for ``--format json`` the same
+arguments are passed to the dict service
+``bookings.note_export.export_appointment_notes`` (beside its
+CSV twin) and its rows are serialised as JSON, so the two
+formats can never disagree. It never reimplements serialization
+or querying. Only appointment-only notes are exported;
+persistent client record notes live in the clients app and
+never appear. With no dates, every appointment note for the
+salon is exported. With ``--appointment-id``, only that
+appointment's notes are exported: the appointment is resolved
+in the salon (via both its client and its staff member, the
+bookings salon-scoping convention), an unknown or out-of-salon
+id is a ``CommandError``, and the date window still applies on
+top of the filter.
 
 Backend only: no views, templates, or UI. No provider concepts.
 """
 import argparse
 import datetime
+import json
 
 from django.core.management.base import BaseCommand, CommandError
 
 from bookings.models import Appointment
-from bookings.note_export import export_appointment_notes_csv
+from bookings.note_export import (
+    export_appointment_notes,
+    export_appointment_notes_csv,
+)
 from saloncore.models import Salon
+
+_FORMATS = ("json", "csv")
 
 
 def _parse_date(value):
@@ -55,7 +67,10 @@ def _coerce_date(value, label):
 
 
 class Command(BaseCommand):
-    help = "Export a salon's appointment-only notes verbatim as CSV."
+    help = (
+        "Export a salon's appointment-only notes verbatim "
+        "as CSV (default) or JSON."
+    )
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -80,11 +95,19 @@ class Command(BaseCommand):
                  "(default: the service's own default).",
         )
         parser.add_argument(
+            "--format", dest="format", default="csv", choices=_FORMATS,
+            help="Export format: csv (default) or json.",
+        )
+        parser.add_argument(
             "--output", default=None,
-            help="Path of the CSV file to write (default: stdout).",
+            help="Path to write the export to (default: stdout).",
         )
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist:
@@ -107,8 +130,13 @@ class Command(BaseCommand):
                     f"in salon {salon.pk}."
                 ) from None
         try:
-            text = export_appointment_notes_csv(
-                salon, date_from, date_to, appointment=appointment)
+            if fmt == "json":
+                rows = export_appointment_notes(
+                    salon, date_from, date_to, appointment=appointment)
+                text = json.dumps(rows, indent=2) + "\n"
+            else:
+                text = export_appointment_notes_csv(
+                    salon, date_from, date_to, appointment=appointment)
         except Exception as exc:
             raise CommandError(
                 f"Appointment notes export failed: {exc}") from exc
