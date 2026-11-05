@@ -5,11 +5,14 @@ service never creates, edits, or deletes a sale.
 
 Founding rule (Exit Principle): anything a salon can enter, it can
 fully export. This module exports a salon's last-7-days revenue
-split as a CSV string built ON TOP of :mod:`insights.services` —
-the definition of the split (completed sales only, salon scoping,
-sale day judged in the salon's timezone, window of the 7 calendar
-days ending on ``today``) is that service's alone and is reused
-verbatim via
+split as a plain, JSON-serializable list of dicts
+(:func:`export_split`) and as a CSV string
+(:func:`export_split_csv`) built from that same list, so the two
+formats can never disagree — one source of truth. Both are built
+ON TOP of :mod:`insights.services` — the definition of the split
+(completed sales only, salon scoping, sale day judged in the
+salon's timezone, window of the 7 calendar days ending on
+``today``) is that service's alone and is reused verbatim via
 :func:`insights.services.last_7_days_revenue_split`; this module
 never reimplements that math or re-queries sales.
 
@@ -41,6 +44,8 @@ __all__ = [
     "SPLIT_FIELDNAMES",
     "SPLIT_EXPORT_FIELDNAMES",
     "EXPORT_FIELDNAMES",
+    "export_split",
+    "export_revenue_split",
     "export_split_csv",
     "export_revenue_split_csv",
     "split_csv",
@@ -68,8 +73,8 @@ def _money(value):
     return str(Decimal(value).quantize(_CENTS))
 
 
-def export_split_csv(salon, *, today=None, **kwargs):
-    """Return ``salon``'s last-7-days revenue split as a CSV string.
+def export_split(salon, *, today=None, **kwargs):
+    """Return ``salon``'s last-7-days revenue split as dict rows.
 
     Args:
         salon: ``saloncore.Salon`` instance to scope to, passed
@@ -79,32 +84,47 @@ def export_split_csv(salon, *, today=None, **kwargs):
         **kwargs: forwarded to that service.
 
     Returns:
-        A CSV string whose header row is :data:`SPLIT_FIELDNAMES`
-        and whose single data row matches the revenue-split
-        service's result exactly. A salon with no qualifying
-        sales (the service's zeroed split) exports as the header
-        row alone. Lines end with ``"\\n"``.
+        A list with at most one dict, with exactly
+        :data:`SPLIT_FIELDNAMES` keys, matching the revenue-split
+        service's result exactly (dates as ISO strings, money as
+        strings to two decimal places). A salon with no qualifying
+        sales (the service's zeroed split) returns an empty list.
     """
     result = last_7_days_revenue_split(salon, today=today, **kwargs)
+    if result.total == Decimal("0.00"):
+        return []
+    return [{
+        "start_date": result.start_date.isoformat(),
+        "end_date": result.end_date.isoformat(),
+        "days": result.days,
+        "service": _money(result.service),
+        "retail": _money(result.retail),
+        "series": _money(result.series),
+        "total": _money(result.total),
+    }]
+
+
+def export_split_csv(salon, *, today=None, **kwargs):
+    """Return ``salon``'s last-7-days revenue split as a CSV string.
+
+    The header row is :data:`SPLIT_FIELDNAMES` and every data
+    row comes from :func:`export_split` with the same arguments,
+    so the CSV and list exports always agree. A salon with no
+    qualifying sales exports as the header row alone. Lines end
+    with ``"\\n"``.
+    """
     buffer = io.StringIO()
     writer = csv.DictWriter(
         buffer, fieldnames=SPLIT_FIELDNAMES, lineterminator="\n"
     )
     writer.writeheader()
-    if result.total != Decimal("0.00"):
-        writer.writerow({
-            "start_date": result.start_date.isoformat(),
-            "end_date": result.end_date.isoformat(),
-            "days": result.days,
-            "service": _money(result.service),
-            "retail": _money(result.retail),
-            "series": _money(result.series),
-            "total": _money(result.total),
-        })
+    for record in export_split(salon, today=today, **kwargs):
+        writer.writerow(record)
     return buffer.getvalue()
 
 
 #: Aliases, mirroring the naming convenience in sibling services.
+export_revenue_split = export_split
 export_revenue_split_csv = export_split_csv
 split_csv = export_split_csv
 revenue_split_csv = export_split_csv

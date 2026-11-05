@@ -10,6 +10,7 @@ from checkout.models import Sale, SaleItem
 from insights.services import last_7_days_revenue_split
 from insights.split_export import (
     SPLIT_FIELDNAMES,
+    export_split,
     export_split_csv,
     split_csv,
 )
@@ -124,6 +125,23 @@ class SplitExportCsvTests(TestCase):
             list(csv.reader(io.StringIO(text))), [SPLIT_FIELDNAMES]
         )
         self.assertEqual(self._rows(), [])
+
+    def test_dict_rows_match_csv_rows(self):
+        sale = self._sale()
+        self._item(sale, SaleItem.Kind.SERVICE, "85.00")
+        self._item(sale, SaleItem.Kind.SERIES, "150.00")
+        rows = export_split(self.salon, today=TODAY)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(list(rows[0]), SPLIT_FIELDNAMES)
+        self.assertEqual(rows[0]["days"], 7)
+        self.assertEqual(rows[0]["service"], "85.00")
+        self.assertEqual(rows[0]["total"], "235.00")
+        csv_rows = self._rows()
+        self.assertEqual(
+            [{k: str(v) for k, v in rows[0].items()}], csv_rows)
+
+    def test_dict_empty_is_empty_list(self):
+        self.assertEqual(export_split(self.salon, today=TODAY), [])
 
     def test_alias(self):
         self._item(self._sale(), SaleItem.Kind.SERVICE, "10.00")
