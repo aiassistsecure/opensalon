@@ -215,6 +215,51 @@ class ExportHistoryCommandTests(TestCase):
         self.assertEqual(
             out, export_history_csv(self.salon, None, now=NOW, status=None))
 
+    def test_staff_string_arg_matches_service(self):
+        bob = StaffMember.objects.create(
+            salon=self.salon, display_name="Bob")
+        bobs = self._appt(at(-1, 11), staff=bob)
+        out = io.StringIO()
+        call_command(
+            "export_history", "--salon-id", str(self.salon.pk),
+            "--now", NOW.isoformat(), "--staff-id", str(bob.pk),
+            stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_history_csv(
+                self.salon, None, now=NOW, staff_member=bob))
+        self.assertEqual(self.exported_ids(out.getvalue()), [bobs.pk])
+
+    def test_staff_kwarg_matches_service(self):
+        bob = StaffMember.objects.create(
+            salon=self.salon, display_name="Bob")
+        bobs = self._appt(at(-1, 11), client=self.client, staff=bob)
+        out = self.run_export(client_id=self.client.pk, staff_id=bob.pk)
+        self.assertEqual(
+            out, export_history_csv(
+                self.salon, self.client, now=NOW, staff_member=bob))
+        self.assertEqual(self.exported_ids(out), [bobs.pk])
+
+    def test_staff_composes_with_status_window_and_limit(self):
+        bob = StaffMember.objects.create(
+            salon=self.salon, display_name="Bob")
+        self._appt(at(-1, 11), staff=bob, status="cancelled")
+        completed = self._appt(at(-2, 11), staff=bob, status="completed")
+        out = self.run_export(
+            staff_id=bob.pk, status="completed", limit=1,
+            start_date=datetime.date(2026, 10, 31),
+            end_date=datetime.date(2026, 10, 31))
+        self.assertEqual(self.exported_ids(out), [completed.pk])
+
+    def test_no_staff_is_previous_output(self):
+        out = self.run_export()
+        self.assertEqual(
+            out, export_history_csv(
+                self.salon, None, now=NOW, staff_member=None))
+
+    def test_unknown_staff_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            self.run_export(staff_id=self.staff.pk + 999)
+
     def test_bad_start_date_raises(self):
         with self.assertRaises((CommandError, SystemExit)):
             call_command(

@@ -71,6 +71,14 @@ exactly the previous output, byte-identical. It composes with
 ``client``, the date window, and ``limit`` (status and window
 apply before ``limit``), in both the per-client and salon-wide
 scopes.
+
+Staff filter: ``staff_member`` is an optional staff member
+(a ``team.StaffMember`` instance or its pk) matched on the
+row's staff member. It defaults ``None``, which is exactly
+the previous output, byte-identical. It composes with
+``client``, the date window, ``status``, and ``limit``
+(staff, status, and window apply before ``limit``), in both
+the per-client and salon-wide scopes.
 """
 import csv
 import datetime
@@ -164,10 +172,22 @@ def _in_window(start, salon, start_date, end_date):
     return True
 
 
+def _staff_pk(staff_member):
+    """Reduce a StaffMember instance (or a raw pk) to its pk."""
+    pk = getattr(staff_member, "pk", staff_member)
+    try:
+        return int(pk)
+    except (TypeError, ValueError):
+        return pk
+
+
 def _online_rows(salon, client, now, limit, start_date=None, end_date=None,
-                 status=None):
+                 status=None, staff_member=None):
     rows = past_bookings(salon, client, now=now, limit=limit)
     rows = [r for r in rows if r.appointment.origin == Appointment.Origin.ONLINE]
+    if staff_member is not None:
+        staff_pk = _staff_pk(staff_member)
+        rows = [r for r in rows if r.appointment.staff_member_id == staff_pk]
     if status is not None:
         rows = [r for r in rows if r.appointment.status == status]
     if start_date is not None or end_date is not None:
@@ -179,7 +199,8 @@ def _online_rows(salon, client, now, limit, start_date=None, end_date=None,
 
 
 def export_history(salon, client=None, now=None, limit=None,
-                   start_date=None, end_date=None, status=None):
+                   start_date=None, end_date=None, status=None,
+                   staff_member=None):
     """Return past online bookings as dict rows.
 
     Args:
@@ -203,6 +224,10 @@ def export_history(salon, client=None, now=None, limit=None,
         status: optional exact stored booking ``status`` to
             filter by; default ``None`` = no status filter, the
             previous output verbatim. Applies before ``limit``.
+        staff_member: optional ``team.StaffMember`` instance
+            (or its pk) to filter by the row's staff member;
+            default ``None`` = no staff filter, the previous
+            output verbatim. Applies before ``limit``.
 
     Returns:
         A list of dicts with exactly :data:`EXPORT_FIELDNAMES`
@@ -214,11 +239,13 @@ def export_history(salon, client=None, now=None, limit=None,
     if limit is not None and limit <= 0:
         return []
     filtered = (
-        start_date is not None or end_date is not None or status is not None)
+        start_date is not None or end_date is not None or status is not None
+        or staff_member is not None)
     if client is not None:
         rows = _online_rows(
             salon, client, now, None if filtered else limit,
-            start_date=start_date, end_date=end_date, status=status)
+            start_date=start_date, end_date=end_date, status=status,
+            staff_member=staff_member)
         if filtered and limit is not None:
             rows = rows[:limit]
     else:
@@ -226,7 +253,8 @@ def export_history(salon, client=None, now=None, limit=None,
         for salon_client in Client.objects.filter(salon=salon).order_by("id"):
             rows.extend(_online_rows(
                 salon, salon_client, now, None,
-                start_date=start_date, end_date=end_date, status=status))
+                start_date=start_date, end_date=end_date, status=status,
+                staff_member=staff_member))
         rows.sort(key=lambda r: (r.start, r.appointment.pk), reverse=True)
         if limit is not None:
             rows = rows[:limit]
@@ -234,15 +262,16 @@ def export_history(salon, client=None, now=None, limit=None,
 
 
 def export_history_csv(salon, client=None, now=None, limit=None,
-                       start_date=None, end_date=None, status=None, **kwargs):
+                       start_date=None, end_date=None, status=None,
+                       staff_member=None, **kwargs):
     """Return the history export as a CSV string.
 
     Header is :data:`EXPORT_FIELDNAMES`; every data row comes
     from :func:`export_history` with the same arguments, so the
     CSV and list exports always agree. Empty exports as the
     header row alone. Lines end with ``"\\n"``. ``client``,
-    ``now``, ``limit``, ``start_date``, ``end_date``, and
-    ``status`` may also be passed as keywords.
+    ``now``, ``limit``, ``start_date``, ``end_date``, ``status``,
+    and ``staff_member`` may also be passed as keywords.
     """
     if "client" in kwargs:
         client = kwargs.pop("client")
@@ -256,6 +285,8 @@ def export_history_csv(salon, client=None, now=None, limit=None,
         end_date = kwargs.pop("end_date")
     if "status" in kwargs:
         status = kwargs.pop("status")
+    if "staff_member" in kwargs:
+        staff_member = kwargs.pop("staff_member")
     if kwargs:
         raise TypeError(f"unexpected arguments: {', '.join(sorted(kwargs))}")
     buffer = io.StringIO()
@@ -264,7 +295,8 @@ def export_history_csv(salon, client=None, now=None, limit=None,
     writer.writeheader()
     for record in export_history(
             salon, client, now=now, limit=limit,
-            start_date=start_date, end_date=end_date, status=status):
+            start_date=start_date, end_date=end_date, status=status,
+            staff_member=staff_member):
         writer.writerow(record)
     return buffer.getvalue()
 

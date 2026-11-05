@@ -4,17 +4,23 @@ Usage:
     python manage.py export_history --salon-id ID
         [--client-id ID] [--now ISO-DATETIME] [--limit N]
         [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD]
-        [--status STATUS] [--output PATH]
+        [--status STATUS] [--staff-id ID] [--output PATH]
 
 Thin wrapper around the existing
 :func:`onlinebooking.export_history.export_history_csv`
 service: this command delegates verbatim to
 ``export_history_csv(salon, client, now=now, limit=limit,
-start_date=start_date, end_date=end_date, status=status)``
+start_date=start_date, end_date=end_date, status=status,
+staff_member=staff_member)``
 and adds no export logic of its own, so the command output and
 the service output can never disagree -- one source of truth.
 ``--status`` is the optional exact stored booking status to
 filter by; omitted, no status filter applies.
+``--staff-id`` is the optional id of the staff member to
+filter by (the spelling the bookings ledger's staff filter
+uses); it is resolved to its ``StaffMember`` and passed to
+the service as its ``staff_member`` filter, and an unknown
+id raises ``CommandError``; omitted, no staff filter applies.
 ``--start-date`` / ``--end-date`` are the optional inclusive
 local-date window on booking ``start``, spelled as the other
 Family XI ledger commands spell them (``--date-from`` /
@@ -48,6 +54,7 @@ from django.core.management.base import BaseCommand, CommandError
 from clients.models import Client
 from onlinebooking.export_history import export_history_csv
 from saloncore.models import Salon
+from team.models import StaffMember
 
 
 def _tz_for(salon):
@@ -139,6 +146,10 @@ class Command(BaseCommand):
             help="Booking status value to filter by (default: "
                  "no status filter, as the service defines it).")
         parser.add_argument(
+            "--staff-id", dest="staff_id", default=None, type=int,
+            help="Id of the staff member to filter by (default: "
+                 "no staff filter, as the service defines it).")
+        parser.add_argument(
             "--output", default=None,
             help="Path of the CSV file to write (default: stdout).")
 
@@ -157,6 +168,18 @@ class Command(BaseCommand):
                 raise CommandError(
                     f"No client with id {options['client_id']}.") from None
 
+        staff_member = None
+        staff_value = options.get("staff_id")
+        if staff_value is None:
+            staff_value = options.get("staff_member")
+        if staff_value is not None:
+            staff_pk = getattr(staff_value, "pk", staff_value)
+            try:
+                staff_member = StaffMember.objects.get(pk=staff_pk)
+            except (StaffMember.DoesNotExist, TypeError, ValueError):
+                raise CommandError(
+                    f"No staff member with id {staff_pk}.") from None
+
         now = _parse_now(options.get("now"), salon)
         start_date = _coerce_date(options.get("start_date"), "start-date")
         end_date = _coerce_date(options.get("end_date"), "end-date")
@@ -165,7 +188,7 @@ class Command(BaseCommand):
             text = export_history_csv(
                 salon, client, now=now, limit=options.get("limit"),
                 start_date=start_date, end_date=end_date,
-                status=options.get("status"))
+                status=options.get("status"), staff_member=staff_member)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
 

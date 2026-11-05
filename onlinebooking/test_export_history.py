@@ -298,3 +298,100 @@ class ExportHistoryStatusTests(TestCase):
         self.assertEqual(
             text, export_history_csv(
                 self.salon, self.client, now=NOW, status="cancelled"))
+
+
+class ExportHistoryStaffTests(TestCase):
+    """The optional staff_member filter on the row's staff member."""
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example", timezone="UTC")
+        self.staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Alice")
+        self.staff2 = StaffMember.objects.create(
+            salon=self.salon, display_name="Bob")
+        self.client = Client.objects.create(
+            salon=self.salon, first_name="Test", last_name="Example")
+        self.other = Client.objects.create(
+            salon=self.salon, first_name="Other", last_name="Person")
+        cat = ServiceCategory.objects.create(salon=self.salon, name="Hair")
+        self.service = Service.objects.create(
+            category=cat, name="Haircut", service_minutes=60)
+        self.alice_new = self._appt(at(-1, 9))
+        self.bob = self._appt(at(-2, 9), staff_member=self.staff2)
+        self.alice_old = self._appt(
+            at(-3, 9), status="cancelled")
+        self.other_bob = self._appt(
+            at(-1, 10), client=self.other, staff_member=self.staff2)
+
+    def _appt(self, start, client=None, staff_member=None, status="booked"):
+        return Appointment.objects.create(
+            client=client or self.client,
+            staff_member=staff_member or self.staff,
+            service=self.service, start=start,
+            end=start + datetime.timedelta(hours=1),
+            status=status, origin="online")
+
+    def _ids(self, **kw):
+        return [r["id"] for r in export_history(
+            self.salon, self.client, now=NOW, **kw)]
+
+    def test_no_staff_is_previous_output(self):
+        self.assertEqual(
+            self._ids(),
+            [self.alice_new.pk, self.bob.pk, self.alice_old.pk])
+        self.assertEqual(
+            export_history_csv(self.salon, self.client, now=NOW),
+            export_history_csv(
+                self.salon, self.client, now=NOW, staff_member=None))
+
+    def test_staff_filters_exactly(self):
+        self.assertEqual(
+            self._ids(staff_member=self.staff),
+            [self.alice_new.pk, self.alice_old.pk])
+        self.assertEqual(
+            self._ids(staff_member=self.staff2), [self.bob.pk])
+
+    def test_staff_accepts_pk(self):
+        self.assertEqual(
+            self._ids(staff_member=self.staff2.pk), [self.bob.pk])
+
+    def test_staff_composes_with_client_and_salon_wide(self):
+        rows = export_history(
+            self.salon, self.other, now=NOW, staff_member=self.staff2)
+        self.assertEqual([r["id"] for r in rows], [self.other_bob.pk])
+        rows = export_history(self.salon, now=NOW, staff_member=self.staff2)
+        self.assertEqual(
+            [r["id"] for r in rows], [self.other_bob.pk, self.bob.pk])
+
+    def test_staff_composes_with_status_and_window(self):
+        self.assertEqual(
+            self._ids(staff_member=self.staff, status="cancelled"),
+            [self.alice_old.pk])
+        day = datetime.date(2026, 11, 1)
+        self.assertEqual(
+            self._ids(staff_member=self.staff2,
+                      start_date=day, end_date=day), [])
+        self.assertEqual(
+            self._ids(staff_member=self.staff2,
+                      start_date=datetime.date(2026, 10, 31),
+                      end_date=datetime.date(2026, 10, 31)),
+            [self.bob.pk])
+
+    def test_staff_applies_before_limit(self):
+        self.assertEqual(
+            self._ids(staff_member=self.staff2, limit=1), [self.bob.pk])
+
+    def test_staff_with_no_bookings_is_empty(self):
+        idle = StaffMember.objects.create(
+            salon=self.salon, display_name="Idle")
+        self.assertEqual(self._ids(staff_member=idle), [])
+        self.assertEqual(
+            export_history_csv(
+                self.salon, self.client, now=NOW, staff_member=idle),
+            ",".join(EXPORT_FIELDNAMES) + "\n")
+
+    def test_csv_twin_matches_staff_rows(self):
+        text = export_history_csv(
+            self.salon, self.client, now=NOW, staff_member=self.staff2)
+        parsed = list(csv.DictReader(io.StringIO(text)))
+        self.assertEqual([int(r["id"]) for r in parsed], [self.bob.pk])
