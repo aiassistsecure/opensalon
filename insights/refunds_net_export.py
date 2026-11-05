@@ -10,7 +10,9 @@ gross, refunds, or net. One row for the window.
 Columns: ``start_date``, ``end_date``, ``days``,
 ``gross_revenue``, ``refund_total``, ``net_revenue``, and
 ``refund_count``. Money renders to two decimal places, never
-via a float.
+via a float. A plain dict row
+(:func:`export_refunds_net_row`) backs the CSV, so the two
+formats can never disagree.
 """
 import csv
 import io
@@ -23,6 +25,7 @@ __all__ = [
     "REFUNDS_NET_EXPORT_FIELDNAMES",
     "EXPORT_FIELDNAMES",
     "export_refunds_net_csv",
+    "export_refunds_net_row",
     "export_net_revenue_csv",
     "refunds_net_csv",
 ]
@@ -46,19 +49,14 @@ def _money(value):
     return str(Decimal(value).quantize(_CENTS))
 
 
-def export_refunds_net_csv(salon, start_date=None, end_date=None, **kwargs):
-    """Return ``salon``'s refunds/net revenue as a CSV string.
+def export_refunds_net_row(salon, start_date=None, end_date=None, **kwargs):
+    """Return ``salon``'s refunds/net revenue as a single dict row.
 
     Args mirror :func:`insights.refunds_net.refunds_net_revenue`
     exactly; its result's values are rendered unchanged.
     """
     result = refunds_net_revenue(salon, start_date, end_date, **kwargs)
-    buffer = io.StringIO()
-    writer = csv.DictWriter(
-        buffer, fieldnames=REFUNDS_NET_FIELDNAMES, lineterminator="\n"
-    )
-    writer.writeheader()
-    writer.writerow({
+    return {
         "start_date": result.start_date.isoformat(),
         "end_date": result.end_date.isoformat(),
         "days": result.days,
@@ -66,7 +64,22 @@ def export_refunds_net_csv(salon, start_date=None, end_date=None, **kwargs):
         "refund_total": _money(result.refunds),
         "net_revenue": _money(result.net),
         "refund_count": result.refund_count,
-    })
+    }
+
+
+def export_refunds_net_csv(salon, start_date=None, end_date=None, **kwargs):
+    """Return ``salon``'s refunds/net revenue as a CSV string.
+
+    Built from :func:`export_refunds_net_row` with the same
+    arguments, so the CSV and dict exports always agree.
+    """
+    buffer = io.StringIO()
+    writer = csv.DictWriter(
+        buffer, fieldnames=REFUNDS_NET_FIELDNAMES, lineterminator="\n"
+    )
+    writer.writeheader()
+    writer.writerow(export_refunds_net_row(
+        salon, start_date, end_date, **kwargs))
     return buffer.getvalue()
 
 
