@@ -15,7 +15,9 @@ this module never recomputes retention, re-queries appointments,
 or invents fields.
 
 The service returns a single :class:`insights.retention.Retention`
-for the window, so the export is exactly one data row.
+for the window, so the export is exactly one data row. A plain
+dict row (:func:`export_retention_row`) backs the CSV, so the
+two formats can never disagree.
 
 Columns are only fields the service's result actually carries:
 
@@ -38,8 +40,10 @@ __all__ = [
     "RETENTION_EXPORT_FIELDNAMES",
     "EXPORT_FIELDNAMES",
     "export_retention_csv",
+    "export_retention_row",
     "retention_csv",
 ]
+
 
 #: Column order of the CSV export.
 RETENTION_FIELDNAMES = [
@@ -56,33 +60,16 @@ RETENTION_EXPORT_FIELDNAMES = RETENTION_FIELDNAMES
 EXPORT_FIELDNAMES = RETENTION_FIELDNAMES
 
 
-def export_retention_csv(salon, start=None, end=None, **kwargs):
-    """Return ``salon``'s repeat-visit retention as a CSV string.
+def export_retention_row(salon, start=None, end=None, **kwargs):
+    """Return ``salon``'s repeat-visit retention as a single dict row.
 
-    Args:
-        salon: ``saloncore.Salon`` instance to scope to, passed
-            through to
-            :func:`insights.retention.repeat_visit_retention`.
-        start: inclusive window start, as accepted by that service.
-        end: inclusive window end, as accepted by that service.
-        **kwargs: forwarded to that service (including its
-            ``start_date`` / ``end_date`` and ``since`` / ``until``
-            keyword aliases).
-
-    Returns:
-        A CSV string whose header row is
-        :data:`RETENTION_FIELDNAMES` and whose single data row
-        matches the retention service's result exactly. A window
-        with no visits exports as that single zero row, exactly
-        as the service returns it. Lines end with ``"\\n"``.
+    Args mirror :func:`insights.retention.repeat_visit_retention`
+    exactly (including its ``start_date`` / ``end_date`` and
+    ``since`` / ``until`` keyword aliases); its result's values
+    are rendered unchanged.
     """
     result = repeat_visit_retention(salon, start, end, **kwargs)
-    buffer = io.StringIO()
-    writer = csv.DictWriter(
-        buffer, fieldnames=RETENTION_FIELDNAMES, lineterminator="\n"
-    )
-    writer.writeheader()
-    writer.writerow({
+    return {
         "start_date": result.start_date.isoformat(),
         "end_date": result.end_date.isoformat(),
         "active_clients": result.active_clients,
@@ -92,7 +79,28 @@ def export_retention_csv(salon, start=None, end=None, **kwargs):
         "average_visits_per_active_client": (
             result.average_visits_per_active_client
         ),
-    })
+    }
+
+
+def export_retention_csv(salon, start=None, end=None, **kwargs):
+    """Return ``salon``'s repeat-visit retention as a CSV string.
+
+    Built from :func:`export_retention_row` with the same
+    arguments, so the CSV and dict exports always agree.
+
+    Returns:
+        A CSV string whose header row is
+        :data:`RETENTION_FIELDNAMES` and whose single data row
+        matches the retention service's result exactly. A window
+        with no visits exports as that single zero row, exactly
+        as the service returns it. Lines end with ``"\\n"``.
+    """
+    buffer = io.StringIO()
+    writer = csv.DictWriter(
+        buffer, fieldnames=RETENTION_FIELDNAMES, lineterminator="\n"
+    )
+    writer.writeheader()
+    writer.writerow(export_retention_row(salon, start, end, **kwargs))
     return buffer.getvalue()
 
 
