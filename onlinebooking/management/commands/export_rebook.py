@@ -1,15 +1,19 @@
-"""Export one salon's rebookable appointments as CSV.
+"""Export one salon's rebookable appointments as CSV or JSON.
 
 Usage:
     python manage.py export_rebook --salon-id ID
-        [--client-id ID] [--output PATH]
+        [--client-id ID] [--format json|csv] [--output PATH]
 
 Thin wrapper around the existing
-:func:`onlinebooking.rebook_export.export_rebook_csv`
-service: this command delegates verbatim to
-``export_rebook_csv(salon, client)``
-and adds no export logic of its own, so the command output and
-the service output can never disagree -- one source of truth.
+:mod:`onlinebooking.rebook_export` services: for
+``--format csv`` (the default) this command delegates verbatim
+to ``export_rebook_csv(salon, client)``; for ``--format json``
+the same arguments are passed to the dict service
+``export_rebook`` (beside its CSV twin) and its rows are
+serialised as JSON. The command adds no export logic of its
+own, so the command output and the service output can never
+disagree -- one source of truth, and the CSV output is
+exactly as before, byte-identical.
 
 The client argument is optional and defaults to ``None``
 exactly as the service defines it: no ``--client-id`` means
@@ -19,20 +23,24 @@ the service defines it -- never another salon's bookings,
 and no error that confirms the client exists elsewhere.
 
 Output goes to stdout unless ``--output`` names a file.
-Invalid input -- an unknown salon or an unknown client --
-raises ``CommandError``, as do service errors and
-unwritable output.
+Invalid input -- an unknown salon, an unknown client, or an
+unknown format -- raises ``CommandError``, as do service
+errors and unwritable output.
 Backend only -- no views, templates, or UI. Read-only.
 """
+import json
+
 from django.core.management.base import BaseCommand, CommandError
 
 from clients.models import Client
-from onlinebooking.rebook_export import export_rebook_csv
+from onlinebooking.rebook_export import export_rebook, export_rebook_csv
 from saloncore.models import Salon
+
+_FORMATS = ("json", "csv")
 
 
 class Command(BaseCommand):
-    help = "Export one salon's rebookable appointments as CSV."
+    help = "Export one salon's rebookable appointments as CSV or JSON."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -44,10 +52,17 @@ class Command(BaseCommand):
             help="Id of the client to export for (default: "
                  "salon-wide, as the service defines it).")
         parser.add_argument(
+            "--format", dest="format", default="csv", choices=_FORMATS,
+            help="Export format: csv (default) or json.")
+        parser.add_argument(
             "--output", default=None,
-            help="Path of the CSV file to write (default: stdout).")
+            help="Path of the export file to write (default: stdout).")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist:
@@ -63,7 +78,11 @@ class Command(BaseCommand):
                     f"No client with id {options['client_id']}.") from None
 
         try:
-            text = export_rebook_csv(salon, client)
+            if fmt == "json":
+                rows = export_rebook(salon, client)
+                text = json.dumps(rows, indent=2) + "\n"
+            else:
+                text = export_rebook_csv(salon, client)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
 
