@@ -10,6 +10,7 @@ records -- unit logic only.
 """
 import datetime
 import io
+import json
 import os
 import tempfile
 
@@ -18,7 +19,10 @@ from django.test import TestCase
 
 from bookings.models import Appointment
 from clients.models import Client
-from onlinebooking.cancellations_export import export_cancellations_csv
+from onlinebooking.cancellations_export import (
+    export_cancellations,
+    export_cancellations_csv,
+)
 from saloncore.models import Salon, Service, ServiceCategory
 from team.models import StaffMember
 
@@ -116,3 +120,73 @@ class ExportCancellationsCommandTests(TestCase):
     def test_reversed_range_raises_command_error(self):
         with self.assertRaises(CommandError):
             self.run_export(date_from=D3, date_to=D1)
+
+    def test_default_format_is_csv_byte_identical(self):
+        out = self.run_export(date_from=D1, date_to=D3)
+        self.assertEqual(
+            out, export_cancellations_csv(self.salon, D1, D3))
+
+    def test_explicit_csv_matches_service(self):
+        out = self.run_export(date_from=D1, date_to=D3, format="csv")
+        self.assertEqual(
+            out, export_cancellations_csv(self.salon, D1, D3))
+        out = io.StringIO()
+        call_command(
+            "export_cancellations", "--salon-id", str(self.salon.pk),
+            "--date-from", D1.isoformat(), "--date-to", D3.isoformat(),
+            "--format", "csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_cancellations_csv(self.salon, D1, D3))
+
+    def test_json_parses_and_equals_dict_service_rows(self):
+        out = self.run_export(date_from=D1, date_to=D3, format="json")
+        self.assertEqual(
+            json.loads(out), export_cancellations(self.salon, D1, D3))
+        self.assertIn("Alice", out)
+        out = io.StringIO()
+        call_command(
+            "export_cancellations", "--salon-id", str(self.salon.pk),
+            "--date-from", D1.isoformat(), "--date-to", D3.isoformat(),
+            "--format", "json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_cancellations(self.salon, D1, D3))
+
+    def test_json_without_range_matches_dict_service(self):
+        out = self.run_export(format="json")
+        self.assertEqual(
+            json.loads(out),
+            export_cancellations(self.salon, None, None))
+
+    def test_json_filters_compose_with_alias_args(self):
+        out = io.StringIO()
+        call_command(
+            "export_cancellations", "--salon-id", str(self.salon.pk),
+            "--start-date", D2.isoformat(), "--end-date", D3.isoformat(),
+            "--format", "json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_cancellations(self.salon, D2, D3))
+        self.assertNotEqual(
+            json.loads(out.getvalue()),
+            export_cancellations(self.salon, D1, D3))
+
+    def test_json_output_file_matches_dict_service(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "cancellations.json")
+            out = self.run_export(
+                date_from=D1, date_to=D3, format="json", output=path)
+            self.assertEqual(out, "")
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(
+                    json.load(fh),
+                    export_cancellations(self.salon, D1, D3))
+
+    def test_unknown_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            self.run_export(format="xml")
+        with self.assertRaises((CommandError, SystemExit)):
+            call_command(
+                "export_cancellations", "--salon-id", str(self.salon.pk),
+                "--format", "xml", stdout=io.StringIO())
