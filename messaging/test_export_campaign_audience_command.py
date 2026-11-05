@@ -1,5 +1,6 @@
 """export_campaign_audience command: wrapper over the export twin."""
 import io
+import json
 import os
 import tempfile
 
@@ -8,6 +9,7 @@ from django.test import TestCase
 
 from clients.models import Client
 from messaging.campaign_audience_export import (
+    export_campaign_audience,
     export_campaign_audience_csv,
 )
 from messaging.models import Campaign
@@ -91,3 +93,99 @@ class ExportCampaignAudienceCommandTests(TestCase):
                      salon_id=self.salon.pk, stdout=io.StringIO())
         self.assertEqual(CampaignSend.objects.count(), 0)
         self.assertEqual(Campaign.objects.count(), 1)
+
+
+class ExportCampaignAudienceFormatCommandTests(TestCase):
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon",
+                                          timezone="UTC")
+        self.other = Salon.objects.create(name="Other Salon",
+                                          timezone="UTC")
+        self.campaign = Campaign.objects.create(
+            salon=self.salon, name="Spring Offer",
+            channel="sms", body="Hello body")
+        Client.objects.create(
+            salon=self.salon, first_name="In", last_name="Audience",
+            email="in@example.com", phone="555-0100", sms_opt_in=True)
+        Client.objects.create(
+            salon=self.salon, first_name="Out", last_name="Audience",
+            email="out@example.com", phone="555-0101")
+
+    def test_default_format_is_csv_byte_identical(self):
+        out = io.StringIO()
+        call_command("export_campaign_audience",
+                     campaign_id=self.campaign.pk,
+                     salon_id=self.salon.pk, stdout=out)
+        self.assertEqual(out.getvalue(),
+                         export_campaign_audience_csv(self.campaign))
+
+    def test_explicit_csv_matches_service(self):
+        out = io.StringIO()
+        call_command("export_campaign_audience",
+                     campaign_id=self.campaign.pk,
+                     salon_id=self.salon.pk, format="csv", stdout=out)
+        self.assertEqual(out.getvalue(),
+                         export_campaign_audience_csv(self.campaign))
+        out = io.StringIO()
+        call_command("export_campaign_audience",
+                     "--campaign-id", str(self.campaign.pk),
+                     "--salon-id", str(self.salon.pk),
+                     "--format", "csv", stdout=out)
+        self.assertEqual(out.getvalue(),
+                         export_campaign_audience_csv(self.campaign))
+
+    def test_json_parses_and_equals_dict_service_rows(self):
+        out = io.StringIO()
+        call_command("export_campaign_audience",
+                     campaign_id=self.campaign.pk,
+                     salon_id=self.salon.pk, format="json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()),
+                         export_campaign_audience(self.campaign))
+        self.assertIn("in@example.com", out.getvalue())
+        self.assertNotIn("out@example.com", out.getvalue())
+
+    def test_json_composes_with_campaign_and_salon_ids(self):
+        out = io.StringIO()
+        call_command("export_campaign_audience",
+                     "--campaign-id", str(self.campaign.pk),
+                     "--salon-id", str(self.salon.pk),
+                     "--format", "json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()),
+                         export_campaign_audience(self.campaign))
+
+    def test_json_empty_audience(self):
+        empty = Campaign.objects.create(
+            salon=self.other, name="Empty", channel="sms", body="Hi")
+        out = io.StringIO()
+        call_command("export_campaign_audience",
+                     campaign_id=empty.pk, salon_id=self.other.pk,
+                     format="json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()), [])
+        self.assertEqual(json.loads(out.getvalue()),
+                         export_campaign_audience(empty))
+
+    def test_json_output_file_matches_dict_service(self):
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "audience.json")
+            call_command("export_campaign_audience",
+                         campaign_id=self.campaign.pk,
+                         salon_id=self.salon.pk, format="json",
+                         output=path, stdout=out)
+            with open(path, encoding="utf-8", newline="") as fh:
+                written = fh.read()
+        self.assertEqual(json.loads(written),
+                         export_campaign_audience(self.campaign))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_unknown_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command("export_campaign_audience",
+                         campaign_id=self.campaign.pk,
+                         salon_id=self.salon.pk, format="xml",
+                         stdout=io.StringIO())
+        with self.assertRaises((CommandError, SystemExit)):
+            call_command("export_campaign_audience",
+                         "--campaign-id", str(self.campaign.pk),
+                         "--salon-id", str(self.salon.pk),
+                         "--format", "xml", stdout=io.StringIO())
