@@ -1,19 +1,27 @@
-"""Export one salon's shift overrides as CSV.
+"""Export one salon's shift overrides as CSV or JSON.
 
 Usage:
     python manage.py export_shift_overrides --salon-id ID
         [--staff-member-id ID]
         [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD]
         [--is-off-only | --is-on-only]
+        [--format json|csv]
         [--output PATH]
 
 Thin wrapper around the existing
-:func:`team.shift_override_export.export_shift_overrides_csv`
-service: the salon is resolved by id and passed to the service
-verbatim -- its CSV text is written unchanged, to ``--output``
-when given and to stdout otherwise. This command adds no
-export logic of its own, so command and service output can
-never disagree -- one source of truth.
+:mod:`team.shift_override_export` service: the salon is
+resolved by id and passed to the service verbatim. For
+``--format csv`` (the default) it delegates verbatim to
+:func:`team.shift_override_export.export_shift_overrides_csv`,
+so CSV output is byte-identical to before; for
+``--format json`` it serialises the SAME dict rows from
+:func:`team.shift_override_export.export_shift_overrides` as
+JSON via ``DjangoJSONEncoder``, so the two formats can never
+disagree -- one source of truth. The text is written to
+``--output`` when given and to stdout otherwise. An unknown
+``--format`` raises ``CommandError`` (argparse ``choices``
+reject it on the CLI; the explicit check covers
+``call_command`` kwargs).
 
 With ``--staff-member-id`` the export is narrowed to that one
 staff member's shift overrides: the staff member is resolved
@@ -46,12 +54,19 @@ views, templates, or UI. Read-only.
 """
 import argparse
 import datetime
+import json
 
 from django.core.management.base import BaseCommand, CommandError
+from django.core.serializers.json import DjangoJSONEncoder
 
 from saloncore.models import Salon
 from team.models import StaffMember
-from team.shift_override_export import export_shift_overrides_csv
+from team.shift_override_export import (
+    export_shift_overrides,
+    export_shift_overrides_csv,
+)
+
+_FORMATS = ("json", "csv")
 
 
 def _parse_date(value):
@@ -77,7 +92,7 @@ def _coerce_date(value, label):
 
 
 class Command(BaseCommand):
-    help = "Export one salon's shift overrides as CSV."
+    help = "Export one salon's shift overrides as CSV (default) or JSON."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -107,10 +122,17 @@ class Command(BaseCommand):
             "--is-on-only", action="store_true",
             help="Only placed-shift overrides (not is_off).")
         parser.add_argument(
+            "--format", dest="format", default="csv", choices=_FORMATS,
+            help="Export format: csv (default) or json.")
+        parser.add_argument(
             "--output", default=None,
-            help="Path of the CSV file to write (default: stdout).")
+            help="Path of the export file to write (default: stdout).")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         if options.get("is_off_only") and options.get("is_on_only"):
             raise CommandError(
                 "--is-off-only and --is-on-only conflict.")
@@ -139,10 +161,18 @@ class Command(BaseCommand):
             options.get("start_date"), "start-date")
         end_date = _coerce_date(options.get("end_date"), "end-date")
         try:
-            text = export_shift_overrides_csv(
-                salon, staff_member=staff_member,
-                start_date=start_date, end_date=end_date,
-                is_off=is_off)
+            if fmt == "json":
+                rows = export_shift_overrides(
+                    salon, staff_member=staff_member,
+                    start_date=start_date, end_date=end_date,
+                    is_off=is_off)
+                text = json.dumps(
+                    rows, indent=2, cls=DjangoJSONEncoder) + "\n"
+            else:
+                text = export_shift_overrides_csv(
+                    salon, staff_member=staff_member,
+                    start_date=start_date, end_date=end_date,
+                    is_off=is_off)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
 
