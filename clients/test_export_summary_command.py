@@ -13,6 +13,7 @@ the global name resolution (checkout owns the same global name).
 """
 import datetime
 import io
+import json
 import tempfile
 
 from django.core.management import CommandError, call_command, load_command_class
@@ -20,7 +21,10 @@ from django.test import TestCase
 
 from bookings.models import Appointment
 from clients.models import Client
-from clients.summary_export import export_client_summaries_csv
+from clients.summary_export import (
+    export_client_summaries,
+    export_client_summaries_csv,
+)
 from saloncore.models import Salon, Service, ServiceCategory
 from team.models import StaffMember
 
@@ -140,3 +144,104 @@ class ExportSummaryCommandTests(TestCase):
             call_command(
                 _cmd(), salon_id=self.salon.id, now=NOW,
                 output="/nonexistent-dir/out.csv", stdout=io.StringIO())
+
+    def test_default_format_is_csv_byte_identical(self):
+        self._client("Dana", "Due", with_visit=True)
+        out = io.StringIO()
+        call_command(_cmd(), salon_id=self.salon.id, now=NOW, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_client_summaries_csv(self.salon, now=NOW))
+
+    def test_explicit_csv_format_matches_service(self):
+        self._client("Dana", "Due", with_visit=True)
+        out = io.StringIO()
+        call_command(
+            _cmd(), salon_id=self.salon.id, now=NOW,
+            format="csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_client_summaries_csv(self.salon, now=NOW))
+
+    def test_json_output_parses_and_equals_dict_service_rows(self):
+        self._client("Dana", "Due", with_visit=True)
+        self._client("Mina", "Mine")
+        out = io.StringIO()
+        call_command(
+            _cmd(), salon_id=self.salon.id, now=NOW,
+            format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_client_summaries(self.salon, now=NOW))
+
+    def test_json_flag_matches_dict_service(self):
+        self._client("Dana", "Due", with_visit=True)
+        out = io.StringIO()
+        call_command(
+            _cmd(), "--salon-id", str(self.salon.id),
+            "--now", "2026-11-02T12:00:00+00:00",
+            "--format", "json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_client_summaries(self.salon, now=NOW))
+        self.assertIn("Dana", out.getvalue())
+
+    def test_json_empty_book_exports_empty_list(self):
+        out = io.StringIO()
+        call_command(
+            _cmd(), salon_id=self.salon.id, now=NOW,
+            format="json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()), [])
+
+    def test_json_output_file_matches_dict_service(self):
+        self._client("Dana", "Due", with_visit=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8"
+        ) as fh:
+            path = fh.name
+        out = io.StringIO()
+        call_command(
+            _cmd(), salon_id=self.salon.id, now=NOW,
+            format="json", output=path, stdout=out)
+        with open(path, encoding="utf-8", newline="") as exported:
+            data = exported.read()
+        self.assertEqual(
+            json.loads(data),
+            export_client_summaries(self.salon, now=NOW))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_json_salon_scoping_excludes_other_salons(self):
+        self._client("Mina", "Mine")
+        self._client("Theo", "Theirs", salon=self.other_salon)
+        out = io.StringIO()
+        call_command(
+            _cmd(), salon_id=self.salon.id, now=NOW,
+            format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_client_summaries(self.salon, now=NOW))
+        self.assertIn("Mina", out.getvalue())
+        self.assertNotIn("Theo", out.getvalue())
+
+    def test_json_now_string_composes(self):
+        self._client("Dana", "Due", with_visit=True)
+        out = io.StringIO()
+        call_command(
+            _cmd(), salon_id=self.salon.id,
+            now="2026-11-02T12:00:00+00:00",
+            format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_client_summaries(self.salon, now=NOW))
+
+    def test_invalid_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                _cmd(), salon_id=self.salon.id, now=NOW,
+                format="xml", stdout=io.StringIO())
+
+    def test_invalid_format_via_cli_is_rejected(self):
+        with self.assertRaises((CommandError, SystemExit)):
+            call_command(
+                _cmd(), "--salon-id", str(self.salon.id),
+                "--format", "xml", stdout=io.StringIO())
