@@ -11,13 +11,17 @@ Fixtures are tiny synthetic records -- unit logic only.
 """
 import datetime
 import io
+import json
 import os
 import tempfile
 
 from django.core.management import CommandError, call_command
 from django.test import TestCase
 
-from bookings.availability_export import export_available_slots_csv
+from bookings.availability_export import (
+    export_available_slots,
+    export_available_slots_csv,
+)
 from bookings.models import Appointment
 from clients.models import Client
 from saloncore.models import Salon, Service, ServiceCategory
@@ -164,3 +168,118 @@ class ExportAvailableSlotsCommandTests(TestCase):
                 "export_available_slots",
                 "--salon-id", str(self.salon.pk),
                 "--date", "not-a-date", stdout=io.StringIO())
+
+
+class ExportAvailableSlotsFormatCommandTests(TestCase):
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon", timezone="UTC")
+        self.staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Stylist One")
+        category = ServiceCategory.objects.create(
+            salon=self.salon, name="Hair")
+        self.service = Service.objects.create(
+            category=category, name="Haircut", service_minutes=45)
+        RosterPattern.objects.create(
+            staff_member=self.staff, weekday=0,
+            start_time=datetime.time(9, 0),
+            end_time=datetime.time(17, 0))
+
+    def test_default_format_is_csv_byte_identical(self):
+        out = io.StringIO()
+        call_command(
+            "export_available_slots", salon_id=self.salon.pk,
+            date=DAY, stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_available_slots_csv(self.salon, DAY))
+
+    def test_explicit_csv_matches_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_available_slots", salon_id=self.salon.pk,
+            date=DAY, format="csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_available_slots_csv(self.salon, DAY))
+        out = io.StringIO()
+        call_command(
+            "export_available_slots", "--salon-id", str(self.salon.pk),
+            "--date", DAY.isoformat(), "--format", "csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_available_slots_csv(self.salon, DAY))
+
+    def test_json_parses_and_equals_dict_service_rows(self):
+        out = io.StringIO()
+        call_command(
+            "export_available_slots", salon_id=self.salon.pk,
+            date=DAY, format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_available_slots(self.salon, DAY))
+        out = io.StringIO()
+        call_command(
+            "export_available_slots", "--salon-id", str(self.salon.pk),
+            "--date", DAY.isoformat(), "--format", "json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_available_slots(self.salon, DAY))
+
+    def test_json_empty_day(self):
+        empty = DAY + datetime.timedelta(days=1)
+        out = io.StringIO()
+        call_command(
+            "export_available_slots", salon_id=self.salon.pk,
+            date=empty, format="json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()), [])
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_available_slots(self.salon, empty))
+
+    def test_json_filters_compose(self):
+        long_service = Service.objects.create(
+            category=self.service.category, name="Long",
+            service_minutes=300)
+        out = io.StringIO()
+        call_command(
+            "export_available_slots", salon_id=self.salon.pk,
+            date=DAY, service_id=long_service.pk, format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_available_slots(self.salon, DAY, service=long_service))
+        offline = StaffMember.objects.create(
+            salon=self.salon, display_name="Offline",
+            online_bookable=False)
+        RosterPattern.objects.create(
+            staff_member=offline, weekday=0,
+            start_time=datetime.time(9, 0),
+            end_time=datetime.time(17, 0))
+        out = io.StringIO()
+        call_command(
+            "export_available_slots", "--salon-id", str(self.salon.pk),
+            "--date", DAY.isoformat(), "--online-only",
+            "--format", "json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_available_slots(self.salon, DAY, online_only=True))
+
+    def test_json_output_file_matches_dict_service(self):
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "available_slots.json")
+            call_command(
+                "export_available_slots", salon_id=self.salon.pk,
+                date=DAY, format="json", output=path, stdout=out)
+            with open(path, encoding="utf-8", newline="") as fh:
+                written = fh.read()
+        self.assertEqual(
+            json.loads(written), export_available_slots(self.salon, DAY))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_unknown_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_available_slots", salon_id=self.salon.pk,
+                date=DAY, format="xml", stdout=io.StringIO())
+        with self.assertRaises((CommandError, SystemExit)):
+            call_command(
+                "export_available_slots", "--salon-id", str(self.salon.pk),
+                "--date", DAY.isoformat(), "--format", "xml",
+                stdout=io.StringIO())
