@@ -1,11 +1,13 @@
 """Tests for the catalog export_stocktake_sheet management command.
 
 The command is a thin wrapper around
-``catalog.stocktake_sheet_export.export_stocktake_sheet_csv``:
-these tests pin that its stdout and file output match that
-service verbatim, that it scopes to the requested salon, and
-that unknown salons and unwritable output fail cleanly as
-``CommandError``.
+``catalog.stocktake_sheet_export``: these tests pin that its
+CSV stdout and file output match
+``export_stocktake_sheet_csv`` verbatim (byte-identical by
+default and explicitly), that its JSON output parses to the
+dict rows from ``export_stocktake_sheet``, that it scopes to
+the requested salon, and that unknown formats, unknown salons
+and unwritable output fail cleanly as ``CommandError``.
 
 These tests load the catalog command class explicitly via
 ``load_command_class("catalog", "export_stocktake_sheet")`` and
@@ -13,6 +15,7 @@ pass that instance to ``call_command`` -- pinning this app's
 command, not the global name resolution.
 """
 import io
+import json
 import os
 import tempfile
 from decimal import Decimal
@@ -23,6 +26,7 @@ from django.test import TestCase
 from catalog.models import Product, StockMovement
 from catalog.stocktake_sheet_export import (
     STOCKTAKE_SHEET_FIELDNAMES,
+    export_stocktake_sheet,
     export_stocktake_sheet_csv,
 )
 from saloncore.models import Salon
@@ -105,6 +109,64 @@ class ExportStocktakeSheetCommandTests(TestCase):
                 text = fh.read()
         self.assertEqual(text, export_stocktake_sheet_csv(self.salon))
         self.assertEqual(out.getvalue(), "")
+
+    def test_default_format_is_csv_byte_identical(self):
+        out = io.StringIO()
+        call_command(_cmd(), salon_id=self.salon.pk, stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_stocktake_sheet_csv(self.salon))
+
+    def test_explicit_csv_format_matches_service(self):
+        out = io.StringIO()
+        call_command(_cmd(), salon_id=self.salon.pk,
+                     format="csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_stocktake_sheet_csv(self.salon))
+
+    def test_json_parses_and_equals_dict_service_rows(self):
+        out = io.StringIO()
+        call_command(_cmd(), salon_id=self.salon.pk,
+                     format="json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()),
+                         export_stocktake_sheet(self.salon))
+
+    def test_json_via_cli_flag(self):
+        out = io.StringIO()
+        call_command(_cmd(), "--salon-id", str(self.salon.pk),
+                     "--format", "json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()),
+                         export_stocktake_sheet(self.salon))
+
+    def test_json_composes_with_salon_id(self):
+        out = io.StringIO()
+        call_command(_cmd(), salon_id=self.other.pk,
+                     format="json", stdout=out)
+        rows = json.loads(out.getvalue())
+        self.assertEqual(rows, export_stocktake_sheet(self.other))
+        self.assertEqual([r["product_name"] for r in rows], ["Foreign"])
+
+    def test_json_empty_salon_is_empty_list(self):
+        empty = Salon.objects.create(name="Empty Salon")
+        out = io.StringIO()
+        call_command(_cmd(), salon_id=empty.pk,
+                     format="json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()), [])
+
+    def test_json_output_file_parses_and_equals_service(self):
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "stocktake_sheet.json")
+            call_command(_cmd(), salon_id=self.salon.pk,
+                         format="json", output=path, stdout=out)
+            with open(path, encoding="utf-8") as fh:
+                rows = json.load(fh)
+        self.assertEqual(rows, export_stocktake_sheet(self.salon))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_unknown_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(_cmd(), salon_id=self.salon.pk,
+                         format="xml", stdout=io.StringIO())
 
     def test_unknown_salon_raises_command_error(self):
         with self.assertRaises(CommandError):
