@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import tempfile
 from decimal import Decimal
@@ -7,7 +8,11 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase
 
-from catalog.export import EXPORT_FIELDNAMES, export_products_csv
+from catalog.export import (
+    EXPORT_FIELDNAMES,
+    export_products,
+    export_products_csv,
+)
 from catalog.models import Product, StockMovement
 from saloncore.models import Salon
 
@@ -156,3 +161,77 @@ class ExportProductsProductTypeCommandTests(TestCase):
                 text = fh.read()
         self.assertEqual(text, export_products_csv(
             self.salon, product_type="retail"))
+
+
+class ExportProductsFormatCommandTests(TestCase):
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon")
+        Product.objects.create(
+            salon=self.salon, name="Retail Shampoo", sku="RS-001",
+            price=Decimal("10.50"), product_type="retail")
+        Product.objects.create(
+            salon=self.salon, name="Backbar Shampoo", sku="BB-002",
+            price=Decimal("10.50"), product_type="backbar")
+        Product.objects.create(
+            salon=self.salon, name="Retired Retail", sku="RR-003",
+            price=Decimal("6.00"), active=False, product_type="retail")
+
+    def test_default_format_is_csv_byte_identical(self):
+        out = io.StringIO()
+        call_command("export_products", salon_id=self.salon.pk, stdout=out)
+        self.assertEqual(out.getvalue(), export_products_csv(self.salon))
+
+    def test_explicit_csv_format_matches_service(self):
+        out = io.StringIO()
+        call_command("export_products", salon_id=self.salon.pk,
+                     format="csv", stdout=out)
+        self.assertEqual(out.getvalue(), export_products_csv(self.salon))
+
+    def test_json_parses_and_equals_dict_service_rows(self):
+        out = io.StringIO()
+        call_command("export_products", salon_id=self.salon.pk,
+                     format="json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()),
+                         export_products(self.salon))
+
+    def test_json_via_cli_flag(self):
+        out = io.StringIO()
+        call_command("export_products", "--salon-id", str(self.salon.pk),
+                     "--format", "json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()),
+                         export_products(self.salon))
+
+    def test_json_composes_with_product_type(self):
+        out = io.StringIO()
+        call_command("export_products", salon_id=self.salon.pk,
+                     format="json", product_type="retail", stdout=out)
+        rows = json.loads(out.getvalue())
+        self.assertEqual(rows, export_products(
+            self.salon, product_type="retail"))
+        self.assertEqual([r["name"] for r in rows], ["Retail Shampoo"])
+
+    def test_json_composes_with_product_type_and_include_inactive(self):
+        out = io.StringIO()
+        call_command("export_products", "--salon-id", str(self.salon.pk),
+                     "--format", "json", "--product-type", "retail",
+                     "--include-inactive", stdout=out)
+        rows = json.loads(out.getvalue())
+        self.assertEqual(rows, export_products(
+            self.salon, include_inactive=True, product_type="retail"))
+        self.assertEqual([r["name"] for r in rows],
+                         ["Retail Shampoo", "Retired Retail"])
+
+    def test_json_output_file_parses_and_equals_service(self):
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "products.json")
+            call_command("export_products", salon_id=self.salon.pk,
+                         format="json", output=path, stdout=out)
+            with open(path, encoding="utf-8") as fh:
+                rows = json.load(fh)
+        self.assertEqual(rows, export_products(self.salon))
+
+    def test_unknown_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command("export_products", salon_id=self.salon.pk,
+                         format="xml", stdout=io.StringIO())
