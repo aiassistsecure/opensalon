@@ -10,6 +10,7 @@ unit logic only.
 """
 import datetime
 import io
+import json
 import os
 import tempfile
 from decimal import Decimal
@@ -19,7 +20,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from checkout.models import Payment, Refund, Sale
-from checkout.refund_export import export_refunds_csv
+from checkout.refund_export import export_refunds, export_refunds_csv
 from saloncore.models import Salon
 
 DAY = datetime.date(2026, 10, 3)
@@ -246,3 +247,118 @@ class ExportRefundsCommandTests(TestCase):
             call_command(
                 "export_refunds", salon_id=self.salon.pk,
                 start_date=NEXT, end_date=DAY, stdout=io.StringIO())
+
+
+class ExportRefundsCommandFormatTests(TestCase):
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon", timezone="UTC")
+
+    def _refund(self, day=DAY, tender=Payment.Method.CASH):
+        sale = Sale.objects.create(
+            salon=self.salon, status=Sale.Status.COMPLETED,
+            completed_at=_stamp(day))
+        refund = Refund.objects.create(
+            sale=sale, amount=Decimal("20.00"), reason="Changed mind",
+            tender=tender)
+        Refund.objects.filter(pk=refund.pk).update(created_at=_stamp(day))
+        refund.refresh_from_db()
+        return refund
+
+    def test_default_is_csv_byte_identical(self):
+        self._refund()
+        default_out = io.StringIO()
+        call_command(
+            "export_refunds", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, stdout=default_out)
+        csv_out = io.StringIO()
+        call_command(
+            "export_refunds", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, format="csv", stdout=csv_out)
+        self.assertEqual(default_out.getvalue(), csv_out.getvalue())
+        self.assertEqual(
+            default_out.getvalue(),
+            export_refunds_csv(self.salon, DAY, DAY))
+
+    def test_explicit_csv_via_cli_matches_service(self):
+        self._refund()
+        out = io.StringIO()
+        call_command(
+            "export_refunds", "--salon-id", str(self.salon.pk),
+            "--start-date", DAY.isoformat(), "--end-date", DAY.isoformat(),
+            "--format", "csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_refunds_csv(self.salon, DAY, DAY))
+
+    def test_json_parses_and_equals_dict_service_rows(self):
+        self._refund()
+        out = io.StringIO()
+        call_command(
+            "export_refunds", salon_id=self.salon.pk,
+            start_date=DAY, end_date=NEXT, format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_refunds(self.salon, DAY, NEXT))
+
+    def test_json_via_cli_matches_dict_service(self):
+        self._refund()
+        out = io.StringIO()
+        call_command(
+            "export_refunds", "--salon-id", str(self.salon.pk),
+            "--start-date", DAY.isoformat(), "--end-date", NEXT.isoformat(),
+            "--format", "json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_refunds(self.salon, DAY, NEXT))
+
+    def test_json_composes_with_sale_id_and_tender(self):
+        first = self._refund(tender=Payment.Method.CASH)
+        self._refund(tender=Payment.Method.EXTERNAL)
+        out = io.StringIO()
+        call_command(
+            "export_refunds", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, sale_id=first.sale_id,
+            tender="cash", format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_refunds(
+                self.salon, DAY, DAY, sale=first.sale, tender="cash"))
+        self.assertEqual(len(json.loads(out.getvalue())), 1)
+
+    def test_json_single_day_when_end_date_omitted(self):
+        self._refund()
+        out = io.StringIO()
+        call_command(
+            "export_refunds", salon_id=self.salon.pk,
+            start_date=DAY, format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_refunds(self.salon, DAY, None))
+
+    def test_json_output_file_parses_and_equals_dict_service(self):
+        self._refund()
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "refunds.json")
+            call_command(
+                "export_refunds", salon_id=self.salon.pk,
+                start_date=DAY, end_date=NEXT, format="json",
+                output=path, stdout=out)
+            with open(path, encoding="utf-8") as fh:
+                written = fh.read()
+        self.assertEqual(
+            json.loads(written), export_refunds(self.salon, DAY, NEXT))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_unknown_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_refunds", salon_id=self.salon.pk,
+                start_date=DAY, end_date=DAY, format="xml",
+                stdout=io.StringIO())
+
+    def test_unknown_format_via_cli_is_rejected(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_refunds", "--salon-id", str(self.salon.pk),
+                "--start-date", DAY.isoformat(), "--end-date", DAY.isoformat(),
+                "--format", "xml", stdout=io.StringIO())
