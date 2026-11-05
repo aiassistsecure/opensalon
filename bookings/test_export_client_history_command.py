@@ -9,6 +9,7 @@ unit logic only.
 """
 import datetime
 import io
+import json
 import os
 import tempfile
 from decimal import Decimal
@@ -18,6 +19,7 @@ from django.test import TestCase
 
 from bookings.client_history_export import (
     CLIENT_HISTORY_EXPORT_FIELDNAMES,
+    export_client_history,
     export_client_history_csv,
 )
 from bookings.models import Appointment
@@ -440,3 +442,123 @@ class ExportClientHistoryServiceCommandTests(TestCase):
         self.assertEqual(
             out.getvalue(),
             export_client_history_csv(self.salon, self.client, service=None))
+
+
+class ExportClientHistoryFormatCommandTests(TestCase):
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon", timezone="UTC")
+        self.level = StaffLevel.objects.create(salon=self.salon, name="Level 6")
+        self.staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Stylist One",
+            staff_level=self.level)
+        self.client = Client.objects.create(
+            salon=self.salon, first_name="Test", last_name="Example")
+        cat = ServiceCategory.objects.create(salon=self.salon, name="Hair")
+        self.service = Service.objects.create(
+            category=cat, name="Haircut", service_minutes=45)
+        self.service2 = Service.objects.create(
+            category=cat, name="Colour", service_minutes=60)
+        ServicePrice.objects.create(
+            service=self.service, staff_level=self.level,
+            amount=Decimal("85.00"))
+        self.past = Appointment.objects.create(
+            client=self.client, staff_member=self.staff,
+            service=self.service, start=at(-1, 9),
+            end=at(-1, 9) + datetime.timedelta(minutes=45),
+            status=Appointment.Status.COMPLETED)
+        self.future = Appointment.objects.create(
+            client=self.client, staff_member=self.staff,
+            service=self.service2, start=at(3, 9),
+            end=at(3, 9) + datetime.timedelta(minutes=45))
+
+    def test_default_format_is_csv_byte_identical(self):
+        out = io.StringIO()
+        call_command(
+            "export_client_history", salon_id=self.salon.pk,
+            client_id=self.client.pk, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_client_history_csv(self.salon, self.client))
+
+    def test_explicit_csv_matches_service(self):
+        for kwargs in ({"format": "csv"},):
+            out = io.StringIO()
+            call_command(
+                "export_client_history", salon_id=self.salon.pk,
+                client_id=self.client.pk, stdout=out, **kwargs)
+            self.assertEqual(
+                out.getvalue(),
+                export_client_history_csv(self.salon, self.client))
+        out = io.StringIO()
+        call_command(
+            "export_client_history", "--salon-id", str(self.salon.pk),
+            "--client-id", str(self.client.pk),
+            "--format", "csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_client_history_csv(self.salon, self.client))
+
+    def test_json_parses_and_equals_dict_service_rows(self):
+        out = io.StringIO()
+        call_command(
+            "export_client_history", salon_id=self.salon.pk,
+            client_id=self.client.pk, format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_client_history(self.salon, self.client))
+        out = io.StringIO()
+        call_command(
+            "export_client_history", "--salon-id", str(self.salon.pk),
+            "--client-id", str(self.client.pk),
+            "--format", "json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_client_history(self.salon, self.client))
+
+    def test_json_filters_compose(self):
+        out = io.StringIO()
+        call_command(
+            "export_client_history", salon_id=self.salon.pk,
+            client_id=self.client.pk, format="json", status="completed",
+            stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_client_history(
+                self.salon, self.client, status="completed"))
+        out = io.StringIO()
+        call_command(
+            "export_client_history", "--salon-id", str(self.salon.pk),
+            "--client-id", str(self.client.pk), "--format", "json",
+            "--service-id", str(self.service.pk),
+            "--start-date", "2026-11-01", "--end-date", "2026-11-01",
+            stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_client_history(
+                self.salon, self.client, service=self.service,
+                start_date=datetime.date(2026, 11, 1),
+                end_date=datetime.date(2026, 11, 1)))
+        self.assertEqual(
+            [row["id"] for row in json.loads(out.getvalue())],
+            [self.past.pk])
+        out = io.StringIO()
+        call_command(
+            "export_client_history", salon_id=self.salon.pk,
+            client_id=self.client.pk, format="json",
+            upcoming_only=True, now=NOW, stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_client_history(
+                self.salon, self.client, upcoming_only=True, now=NOW))
+
+    def test_unknown_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_client_history", salon_id=self.salon.pk,
+                client_id=self.client.pk, format="xml",
+                stdout=io.StringIO())
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_client_history", "--salon-id", str(self.salon.pk),
+                "--client-id", str(self.client.pk),
+                "--format", "xml", stdout=io.StringIO())
