@@ -1,14 +1,20 @@
-"""Export a salon's full price book as CSV.
+"""Export a salon's full price book as CSV or JSON.
 
 Usage:
     python manage.py export_price_book --salon-id ID
-        [--service-id ID] [--category-id ID] [--output PATH]
+        [--service-id ID] [--category-id ID]
+        [--format json|csv] [--output PATH]
 
-Thin wrapper around :func:`saloncore.price_book_export.export_price_book_csv`
--- that service is the one source of truth for the price book
-export; this command only resolves the salon, delegates to it
-verbatim, and writes the CSV it returns (to ``--output`` when
-given, otherwise to stdout). Backend only; read-only.
+Thin wrapper around :mod:`saloncore.price_book_export` -- that
+service is the one source of truth for the price book export;
+this command only resolves the salon, delegates to it verbatim,
+and writes what it returns (to ``--output`` when given,
+otherwise to stdout). For ``--format csv`` (the default) it
+writes :func:`saloncore.price_book_export.export_price_book_csv`'s
+CSV string, exactly as before; for ``--format json`` it
+serialises the SAME dict rows from
+:func:`saloncore.price_book_export.export_price_book` as JSON.
+Backend only; read-only.
 
 With ``--service-id`` the export is narrowed to that one
 service's rows: the service is resolved by id within the
@@ -27,16 +33,24 @@ service as its optional ``category`` argument. Without
 ``--category-id`` the command exports the whole salon, exactly
 as before. ``--category-id`` composes with ``--service-id``
 (AND): a service outside the category exports as the header
-row alone.
+row alone (CSV) or an empty list (JSON). Both filters compose
+with ``--format`` exactly as they do for CSV.
 """
+import json
+
 from django.core.management.base import BaseCommand, CommandError
 
 from saloncore.models import Salon, Service, ServiceCategory
-from saloncore.price_book_export import export_price_book_csv
+from saloncore.price_book_export import (
+    export_price_book,
+    export_price_book_csv,
+)
+
+_FORMATS = ("json", "csv")
 
 
 class Command(BaseCommand):
-    help = "Export a salon's full price book as CSV."
+    help = "Export a salon's full price book as CSV (default) or JSON."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -54,11 +68,19 @@ class Command(BaseCommand):
                  "book rows to export (default: all categories).",
         )
         parser.add_argument(
+            "--format", dest="format", default="csv", choices=_FORMATS,
+            help="Export format: csv (default) or json.",
+        )
+        parser.add_argument(
             "--output", default=None,
-            help="Path of the CSV file to write (default: stdout).",
+            help="Path of the export file to write (default: stdout).",
         )
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist:
@@ -85,15 +107,20 @@ class Command(BaseCommand):
                     f"No category with id {options['category_id']} "
                     f"for salon {options['salon_id']}."
                 ) from None
-        csv_text = export_price_book_csv(
-            salon, service=service, category=category)
+        if fmt == "json":
+            rows = export_price_book(
+                salon, service=service, category=category)
+            text = json.dumps(rows, indent=2) + "\n"
+        else:
+            text = export_price_book_csv(
+                salon, service=service, category=category)
         if options["output"]:
             try:
                 with open(options["output"], "w", encoding="utf-8", newline="") as fh:
-                    fh.write(csv_text)
+                    fh.write(text)
             except OSError as exc:
                 raise CommandError(
                     f"Cannot write export file {options['output']}: {exc}"
                 ) from exc
         else:
-            self.stdout.write(csv_text, ending="")
+            self.stdout.write(text, ending="")
