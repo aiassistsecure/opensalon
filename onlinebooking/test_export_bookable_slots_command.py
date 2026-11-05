@@ -16,13 +16,17 @@ command regardless of any global command-name collision.
 """
 import datetime
 import io
+import json
 import os
 import tempfile
 
 from django.core.management import CommandError, call_command, load_command_class
 from django.test import TestCase
 
-from onlinebooking.bookable_slots_export import export_bookable_slots_csv
+from onlinebooking.bookable_slots_export import (
+    export_bookable_slots,
+    export_bookable_slots_csv,
+)
 from saloncore.models import Salon, Service, ServiceCategory
 from team.models import RosterPattern, StaffMember
 
@@ -105,3 +109,65 @@ class ExportBookableSlotsCommandTests(TestCase):
             path = os.path.join(tmp, "missing-dir", "bookable_slots.csv")
             with self.assertRaises(CommandError):
                 self.run_export(output=path)
+
+    def test_default_format_is_csv_byte_identical(self):
+        out = self.run_export()
+        self.assertEqual(
+            out, export_bookable_slots_csv(
+                self.salon, self.service, MONDAY))
+
+    def test_explicit_csv_matches_service(self):
+        out = self.run_export(format="csv")
+        self.assertEqual(
+            out, export_bookable_slots_csv(
+                self.salon, self.service, MONDAY))
+        out = io.StringIO()
+        call_command(
+            _cmd(), "--salon-id", str(self.salon.pk),
+            "--service-id", str(self.service.pk),
+            "--date", MONDAY.isoformat(), "--format", "csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_bookable_slots_csv(
+                self.salon, self.service, MONDAY))
+
+    def test_json_parses_and_equals_dict_service_rows(self):
+        out = self.run_export(format="json")
+        self.assertEqual(
+            json.loads(out), export_bookable_slots(
+                self.salon, self.service, MONDAY))
+        self.assertIn("Online Stylist", out)
+        out = io.StringIO()
+        call_command(
+            _cmd(), "--salon-id", str(self.salon.pk),
+            "--service-id", str(self.service.pk),
+            "--date", MONDAY.isoformat(), "--format", "json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()), export_bookable_slots(
+                self.salon, self.service, MONDAY))
+
+    def test_json_for_empty_day_matches_dict_service(self):
+        tuesday = MONDAY + datetime.timedelta(days=1)
+        out = self.run_export(date=tuesday, format="json")
+        self.assertEqual(
+            json.loads(out), export_bookable_slots(
+                self.salon, self.service, tuesday))
+
+    def test_json_output_file_matches_dict_service(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "bookable_slots.json")
+            out = self.run_export(format="json", output=path)
+            self.assertEqual(out, "")
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(
+                    json.load(fh), export_bookable_slots(
+                        self.salon, self.service, MONDAY))
+
+    def test_unknown_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            self.run_export(format="xml")
+        with self.assertRaises((CommandError, SystemExit)):
+            call_command(
+                _cmd(), "--salon-id", str(self.salon.pk),
+                "--service-id", str(self.service.pk),
+                "--date", MONDAY.isoformat(),
+                "--format", "xml", stdout=io.StringIO())
