@@ -1,31 +1,47 @@
-"""Export a salon's inactive clients as CSV.
+"""Export a salon's inactive clients as CSV or JSON.
 
 Usage:
     python manage.py export_inactive --salon-id ID
         [--days N] [--now ISO-DATETIME] [--threshold-days N]
-        [--output PATH]
+        [--format json|csv] [--output PATH]
 
-Thin wrapper around ``clients.inactive_export.export_inactive_csv`` --
-that service is the one source of truth for the inactive export
-shape; this command only resolves the salon, delegates verbatim,
-and routes the CSV it returns to the ``--output`` file when given
-or to stdout otherwise. It never reimplements serialization or
-querying. ``--days``, ``--now`` and ``--threshold-days`` are
+Thin wrapper around ``clients.inactive_export.export_inactive_csv``
+and its dict twin ``clients.inactive_export.export_inactive_clients``
+-- those services are the one source of truth for the inactive
+export shape; this command only resolves the salon, delegates
+verbatim, and routes the text it returns to the ``--output``
+file when given or to stdout otherwise. For ``--format csv``
+(the default) the CSV text is written unchanged, exactly as
+before; for ``--format json`` the same arguments are passed to
+the dict service and its rows are serialised as JSON, so the
+two formats can never disagree. It never reimplements querying.
+``--days``, ``--now`` and ``--threshold-days`` are
 passed through to the service unchanged, with the service's own
 defaults when omitted (``--days`` defaults to
 :data:`clients.inactive.DEFAULT_INACTIVE_DAYS`, exactly as
 before this command exposed the arguments).
 
+Invalid input -- an unknown salon, an unknown ``--format``, or
+a service error -- raises ``CommandError``, as does an
+unwritable ``--output`` path.
+
 Backend only: no views, templates, or UI. No provider concepts.
 """
 import argparse
 import datetime
+import json
 
 from django.core.management.base import BaseCommand, CommandError
+from django.core.serializers.json import DjangoJSONEncoder
 
 from clients.inactive import DEFAULT_INACTIVE_DAYS
-from clients.inactive_export import export_inactive_csv
+from clients.inactive_export import (
+    export_inactive_clients,
+    export_inactive_csv,
+)
 from saloncore.models import Salon
+
+_FORMATS = ("json", "csv")
 
 
 def _parse_datetime(value):
@@ -59,7 +75,7 @@ def _coerce_now(value):
 
 
 class Command(BaseCommand):
-    help = "Export a salon's inactive clients as CSV."
+    help = "Export a salon's inactive clients as CSV or JSON."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -84,11 +100,19 @@ class Command(BaseCommand):
                  "precedence over --days, exactly as in the service.",
         )
         parser.add_argument(
+            "--format", dest="format", default="csv", choices=_FORMATS,
+            help="Export format: csv (default) or json.",
+        )
+        parser.add_argument(
             "--output", default=None,
-            help="Path of the CSV file to write (default: stdout).",
+            help="Path of the export file to write (default: stdout).",
         )
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist:
@@ -102,10 +126,18 @@ class Command(BaseCommand):
             days = DEFAULT_INACTIVE_DAYS
 
         try:
-            text = export_inactive_csv(
-                salon, days=days, now=now,
-                threshold_days=options.get("threshold_days"),
-            )
+            if fmt == "json":
+                rows = export_inactive_clients(
+                    salon, days=days, now=now,
+                    threshold_days=options.get("threshold_days"),
+                )
+                text = json.dumps(
+                    rows, indent=2, cls=DjangoJSONEncoder) + "\n"
+            else:
+                text = export_inactive_csv(
+                    salon, days=days, now=now,
+                    threshold_days=options.get("threshold_days"),
+                )
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
 

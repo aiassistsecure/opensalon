@@ -1,21 +1,29 @@
 """Tests for the export_inactive management command.
 
 Synthetic fixtures only — no real salon/client data. The command is
-a thin wrapper around ``clients.inactive_export.export_inactive_csv``;
+a thin wrapper around ``clients.inactive_export.export_inactive_csv``
+and its dict twin ``export_inactive_clients``;
 these tests verify stdout/file output matches that service verbatim
 and that salon scoping and invalid input handling apply. Clients
 with no appointments are inactive (never visited), so fixtures need
 no appointments to appear in the export.
 """
+import csv
 import datetime
 import io
+import json
+import os
 import tempfile
 
 from django.core.management import CommandError, call_command
+from django.core.serializers.json import DjangoJSONEncoder
 from django.test import TestCase
 
 from bookings.models import Appointment
-from clients.inactive_export import export_inactive_csv
+from clients.inactive_export import (
+    export_inactive_clients,
+    export_inactive_csv,
+)
 from clients.models import Client
 from saloncore.models import Salon, Service, ServiceCategory
 from team.models import StaffMember
@@ -161,3 +169,92 @@ class ExportInactiveCommandTests(TestCase):
                 "export_inactive", salon_id=self.salon.id,
                 output="/nonexistent-dir/out.csv", stdout=io.StringIO(),
             )
+
+    def test_default_and_explicit_csv_byte_identical(self):
+        self._client(self.salon, "Amy", "Smith")
+        self._client(self.salon, "Bob", "Adams")
+        expected = export_inactive_csv(self.salon)
+        for kwargs in ({}, {"format": "csv"}):
+            out = io.StringIO()
+            call_command(
+                "export_inactive", salon_id=self.salon.id,
+                stdout=out, **kwargs)
+            self.assertEqual(out.getvalue(), expected)
+
+    def test_json_stdout_equals_dict_rows(self):
+        self._visited_client("Tessa", "Threshold", 120)
+        self._client(self.salon, "Amy", "Smith")
+        out = io.StringIO()
+        call_command(
+            "export_inactive", salon_id=self.salon.id, now=NOW,
+            format="json", stdout=out)
+        rows = export_inactive_clients(self.salon, now=NOW)
+        self.assertEqual(json.loads(out.getvalue()), rows)
+        self.assertEqual(
+            out.getvalue(),
+            json.dumps(rows, indent=2, cls=DjangoJSONEncoder) + "\n")
+
+    def test_json_and_csv_rows_agree(self):
+        self._visited_client("Tessa", "Threshold", 120)
+        self._client(self.salon, "Amy", "Smith")
+        csv_out = io.StringIO()
+        call_command(
+            "export_inactive", salon_id=self.salon.id, now=NOW,
+            format="csv", stdout=csv_out)
+        json_out = io.StringIO()
+        call_command(
+            "export_inactive", salon_id=self.salon.id, now=NOW,
+            format="json", stdout=json_out)
+        csv_rows = list(csv.DictReader(io.StringIO(csv_out.getvalue())))
+        json_rows = json.loads(json_out.getvalue())
+        self.assertEqual(len(csv_rows), len(json_rows))
+        for csv_row, json_row in zip(csv_rows, json_rows):
+            self.assertEqual(list(csv_row), list(json_row))
+            for key, value in json_row.items():
+                self.assertEqual(
+                    csv_row[key], "" if value is None else str(value))
+
+    def test_json_via_cli_flags(self):
+        self._client(self.salon, "Amy", "Smith")
+        out = io.StringIO()
+        call_command(
+            "export_inactive", "--salon-id", str(self.salon.id),
+            "--format", "json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_inactive_clients(self.salon))
+
+    def test_json_output_file(self):
+        self._client(self.salon, "Amy", "Smith")
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "inactive.json")
+            call_command(
+                "export_inactive", salon_id=self.salon.id,
+                format="json", output=path, stdout=out)
+            with open(path, encoding="utf-8", newline="") as fh:
+                written = fh.read()
+        self.assertEqual(
+            json.loads(written), export_inactive_clients(self.salon))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_json_composes_with_days_and_now(self):
+        self._visited_client("Tessa", "Threshold", 30)
+        out = io.StringIO()
+        call_command(
+            "export_inactive", salon_id=self.salon.id, days=14,
+            now=NOW, format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_inactive_clients(self.salon, days=14, now=NOW))
+        self.assertIn("Tessa", out.getvalue())
+
+    def test_unknown_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_inactive", salon_id=self.salon.id,
+                format="xml", stdout=io.StringIO())
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_inactive", "--salon-id", str(self.salon.id),
+                "--format", "xml", stdout=io.StringIO())
