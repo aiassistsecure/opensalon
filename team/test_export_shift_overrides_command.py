@@ -1,14 +1,20 @@
 """Tests for export_shift_overrides: stdout/file == service."""
 import datetime
 import io
+import json
+import os
 import tempfile
 
 from django.core.management import CommandError, call_command
+from django.core.serializers.json import DjangoJSONEncoder
 from django.test import TestCase
 
 from saloncore.models import Salon
 from team.models import ShiftOverride, StaffMember
-from team.shift_override_export import export_shift_overrides_csv
+from team.shift_override_export import (
+    export_shift_overrides,
+    export_shift_overrides_csv,
+)
 
 
 class ExportShiftOverridesCommandTests(TestCase):
@@ -278,6 +284,102 @@ class ExportShiftOverridesCommandTests(TestCase):
         self.assertIn("Dana", out.getvalue())
         self.assertNotIn("Eve", out.getvalue())
         self.assertNotIn("2026-10-31", out.getvalue())
+
+    def test_default_and_explicit_csv_match_service(self):
+        want = export_shift_overrides_csv(self.salon)
+        out = io.StringIO()
+        call_command("export_shift_overrides",
+                     salon_id=self.salon.id, stdout=out)
+        self.assertEqual(out.getvalue(), want)
+        out = io.StringIO()
+        call_command("export_shift_overrides",
+                     salon_id=self.salon.id, format="csv", stdout=out)
+        self.assertEqual(out.getvalue(), want)
+        out = io.StringIO()
+        call_command("export_shift_overrides",
+                     "--salon-id", str(self.salon.id),
+                     "--format", "csv", stdout=out)
+        self.assertEqual(out.getvalue(), want)
+
+    def test_json_output_parses_and_equals_dict_service_rows(self):
+        rows = export_shift_overrides(self.salon)
+        out = io.StringIO()
+        call_command("export_shift_overrides",
+                     salon_id=self.salon.id, format="json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()), rows)
+        self.assertEqual(
+            out.getvalue(),
+            json.dumps(rows, indent=2, cls=DjangoJSONEncoder) + "\n")
+        self.assertIsInstance(json.loads(out.getvalue())[0]["id"], int)
+        self.assertEqual(json.loads(out.getvalue())[0]["date"],
+                         "2026-10-31")
+
+    def test_json_flag_matches_dict_service(self):
+        out = io.StringIO()
+        call_command("export_shift_overrides",
+                     "--salon-id", str(self.salon.id),
+                     "--format", "json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()),
+                         export_shift_overrides(self.salon))
+
+    def test_json_composes_with_filters(self):
+        eve = StaffMember.objects.create(
+            salon=self.salon, display_name="Eve")
+        ShiftOverride.objects.create(
+            staff_member=eve, date=datetime.date(2026, 11, 7),
+            is_off=True)
+        self._off()
+        cases = [
+            ({"staff_member_id": self.staff.id},
+             {"staff_member": self.staff}),
+            ({"start_date": datetime.date(2026, 11, 1),
+              "end_date": datetime.date(2026, 11, 30)},
+             {"start_date": datetime.date(2026, 11, 1),
+              "end_date": datetime.date(2026, 11, 30)}),
+            ({"is_off_only": True}, {"is_off": True}),
+            ({"is_on_only": True}, {"is_off": False}),
+            ({"staff_member_id": self.staff.id, "is_off_only": True},
+             {"staff_member": self.staff, "is_off": True}),
+        ]
+        for cmd_kw, svc_kw in cases:
+            out = io.StringIO()
+            call_command("export_shift_overrides",
+                         salon_id=self.salon.id, format="json",
+                         stdout=out, **cmd_kw)
+            self.assertEqual(
+                json.loads(out.getvalue()),
+                export_shift_overrides(self.salon, **svc_kw))
+
+    def test_json_empty_salon_is_empty_list(self):
+        empty = Salon.objects.create(name="Empty JSON", timezone="UTC")
+        out = io.StringIO()
+        call_command("export_shift_overrides",
+                     salon_id=empty.id, format="json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()), [])
+        self.assertEqual(out.getvalue(), "[]\n")
+
+    def test_json_output_file_matches_dict_service(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "overrides.json")
+            out = io.StringIO()
+            call_command("export_shift_overrides",
+                         salon_id=self.salon.id, format="json",
+                         output=path, stdout=out)
+            with open(path, encoding="utf-8") as fh:
+                written = fh.read()
+        self.assertEqual(json.loads(written),
+                         export_shift_overrides(self.salon))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_invalid_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command("export_shift_overrides",
+                         salon_id=self.salon.id, format="xml",
+                         stdout=io.StringIO())
+        with self.assertRaises(CommandError):
+            call_command("export_shift_overrides",
+                         "--salon-id", str(self.salon.id),
+                         "--format", "xml", stdout=io.StringIO())
 
     def test_unknown_salon_required_id_and_unwritable(self):
         with self.assertRaises(CommandError):
