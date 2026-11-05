@@ -1,18 +1,24 @@
-"""Export one client's reminder-send history detail as CSV.
+"""Export one client's reminder-send history detail as CSV or JSON.
 
 Usage:
     python manage.py export_client_history_detail --salon-id ID
         --client-id ID [--limit N] [--start-date YYYY-MM-DD]
         [--end-date YYYY-MM-DD] [--channel CHANNEL]
-        [--output PATH]
+        [--format json|csv] [--output PATH]
 
 Thin wrapper around the existing
 :func:`messaging.history_export.export_client_history_csv`
-service: the salon and client are resolved by id (mirroring
+service and its dict twin
+:func:`messaging.history_export.export_client_history`:
+the salon and client are resolved by id (mirroring
 the bookings ``export_client_history`` command's resolution),
 and the client is passed to the service verbatim as
-``export_client_history_csv(client, limit=...)`` -- its CSV
-text is written unchanged, to ``--output`` when given and to
+``export_client_history_csv(client, limit=...)`` -- for
+``--format csv`` (the default) its CSV text is written
+unchanged, exactly as before; for ``--format json`` the same
+arguments are passed to the dict service and its rows are
+serialised as JSON, so the two formats can never disagree.
+Output is written to ``--output`` when given and to
 stdout otherwise. The optional ``--start-date`` /
 ``--end-date`` (spelled as ``export_message_history``
 spells them) are parsed to ``datetime.date`` objects and
@@ -40,19 +46,26 @@ export different shapes and neither delegates to the other.
 Hence the ``_detail`` suffix, following this app's
 ``export_send_totals_detail`` precedent.
 
-Invalid input -- an unknown salon, an unknown client, or a
-service error -- raises ``CommandError``, as does an
-unwritable ``--output`` path. Read-only. Core stays
-provider-agnostic -- no provider SDK, field, or name appears
-here.
+Invalid input -- an unknown salon, an unknown client, an
+unknown ``--format``, or a service error -- raises
+``CommandError``, as does an unwritable ``--output`` path.
+Read-only. Core stays provider-agnostic -- no provider SDK,
+field, or name appears here.
 """
 import datetime
+import json
 
 from django.core.management.base import BaseCommand, CommandError
+from django.core.serializers.json import DjangoJSONEncoder
 
 from clients.models import Client
-from messaging.history_export import export_client_history_csv
+from messaging.history_export import (
+    export_client_history,
+    export_client_history_csv,
+)
 from saloncore.models import Salon
+
+_FORMATS = ("json", "csv")
 
 
 def _resolve(model, value, label):
@@ -106,7 +119,8 @@ def _first(options, *keys):
 
 
 class Command(BaseCommand):
-    help = "Export one client's reminder-send history detail as CSV."
+    help = ("Export one client's reminder-send history detail "
+            "as CSV or JSON.")
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -137,11 +151,19 @@ class Command(BaseCommand):
                  "(default: all channels).",
         )
         parser.add_argument(
+            "--format", dest="format", default="csv", choices=_FORMATS,
+            help="Export format: csv (default) or json.",
+        )
+        parser.add_argument(
             "--output", default=None,
-            help="Path to write the CSV to (default: stdout).",
+            help="Path to write the export to (default: stdout).",
         )
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         salon = _resolve(
             Salon, _first(options, "salon_id", "salon"), "salon")
         if salon is None:
@@ -156,9 +178,16 @@ class Command(BaseCommand):
         end = _parse_date(
             _first(options, "end_date", "end"), "end date")
         try:
-            text = export_client_history_csv(
-                client, limit=limit, start=start, end=end,
-                channel=options.get("channel"))
+            if fmt == "json":
+                rows = export_client_history(
+                    client, limit=limit, start=start, end=end,
+                    channel=options.get("channel"))
+                text = json.dumps(
+                    rows, indent=2, cls=DjangoJSONEncoder) + "\n"
+            else:
+                text = export_client_history_csv(
+                    client, limit=limit, start=start, end=end,
+                    channel=options.get("channel"))
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options.get("output"):
