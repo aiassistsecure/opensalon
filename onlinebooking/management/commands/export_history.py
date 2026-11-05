@@ -1,11 +1,11 @@
-"""Export one salon's online booking history as CSV.
+"""Export one salon's online booking history as CSV or JSON.
 
 Usage:
     python manage.py export_history --salon-id ID
         [--client-id ID] [--now ISO-DATETIME] [--limit N]
         [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD]
         [--status STATUS] [--staff-id ID] [--service-id ID]
-        [--output PATH]
+        [--format json|csv] [--output PATH]
 
 Thin wrapper around the existing
 :func:`onlinebooking.export_history.export_history_csv`
@@ -15,6 +15,12 @@ start_date=start_date, end_date=end_date, status=status,
 staff_member=staff_member, service=service)``
 and adds no export logic of its own, so the command output and
 the service output can never disagree -- one source of truth.
+For ``--format csv`` (the default) that CSV output is exactly
+as before, byte-identical; for ``--format json`` the same
+arguments are passed to the dict service
+:func:`onlinebooking.export_history.export_history` (beside
+its CSV twin) and its rows are serialised as JSON, so the two
+formats can never disagree.
 ``--status`` is the optional exact stored booking status to
 filter by; omitted, no status filter applies.
 ``--staff-id`` is the optional id of the staff member to
@@ -52,14 +58,17 @@ Backend only -- no views, templates, or UI. Read-only.
 """
 import argparse
 import datetime
+import json
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.core.management.base import BaseCommand, CommandError
 
 from clients.models import Client
-from onlinebooking.export_history import export_history_csv
+from onlinebooking.export_history import export_history, export_history_csv
 from saloncore.models import Salon, Service
 from team.models import StaffMember
+
+_FORMATS = ("json", "csv")
 
 
 def _tz_for(salon):
@@ -118,7 +127,7 @@ def _coerce_date(value, label):
 
 
 class Command(BaseCommand):
-    help = "Export one salon's online booking history as CSV."
+    help = "Export one salon's online booking history as CSV or JSON."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -159,10 +168,17 @@ class Command(BaseCommand):
             help="Id of the service to filter by (default: "
                  "no service filter, as the service defines it).")
         parser.add_argument(
+            "--format", dest="format", default="csv", choices=_FORMATS,
+            help="Export format: csv (default) or json.")
+        parser.add_argument(
             "--output", default=None,
-            help="Path of the CSV file to write (default: stdout).")
+            help="Path of the export file to write (default: stdout).")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist:
@@ -205,12 +221,17 @@ class Command(BaseCommand):
         start_date = _coerce_date(options.get("start_date"), "start-date")
         end_date = _coerce_date(options.get("end_date"), "end-date")
 
+        service_kwargs = dict(
+            now=now, limit=options.get("limit"),
+            start_date=start_date, end_date=end_date,
+            status=options.get("status"), staff_member=staff_member,
+            service=service)
         try:
-            text = export_history_csv(
-                salon, client, now=now, limit=options.get("limit"),
-                start_date=start_date, end_date=end_date,
-                status=options.get("status"), staff_member=staff_member,
-                service=service)
+            if fmt == "json":
+                rows = export_history(salon, client, **service_kwargs)
+                text = json.dumps(rows, indent=2) + "\n"
+            else:
+                text = export_history_csv(salon, client, **service_kwargs)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
 
