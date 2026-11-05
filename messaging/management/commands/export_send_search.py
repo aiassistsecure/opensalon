@@ -1,32 +1,37 @@
-"""Export one salon's reminder-send search results as CSV.
+"""Export one salon's reminder-send search results as CSV or JSON.
 
 Usage:
     python manage.py export_send_search --salon-id ID
         [--term TEXT] [--channel CHANNEL] [--status STATUS]
-        [--start YYYY-MM-DD] [--end YYYY-MM-DD] [--output PATH]
+        [--start YYYY-MM-DD] [--end YYYY-MM-DD]
+        [--format json|csv] [--output PATH]
 
-Thin wrapper around the existing
+Thin wrapper around
 :func:`messaging.send_search_export.export_search_sends_csv`
-service: the salon is resolved by id, the optional dates are
-parsed to ``datetime.date`` objects, and every filter is
-passed to the service verbatim -- its CSV text is written
-unchanged, to ``--output`` when given and to stdout otherwise.
-This command adds no export logic of its own, so command and
-service output can never disagree -- one source of truth.
-
-Invalid input -- an unknown salon or a service error (e.g. a
-reversed range) -- raises ``CommandError``, as does an
-unwritable ``--output`` path. Read-only. Core stays
-provider-agnostic -- no provider SDK, field, or name appears
-here.
+and :func:`messaging.send_search_export.export_search_sends`:
+the salon is resolved by id, dates are parsed to ``date``
+objects, and every filter is passed verbatim. For ``--format csv``
+(the default) the CSV is written unchanged to ``--output`` or
+stdout; for ``--format json`` the same dict rows are serialised
+as JSON via ``DjangoJSONEncoder``, so the two formats can never
+disagree -- one source of truth. Unknown salon, unknown format,
+a service error (e.g. a reversed range), or an unwritable output
+raises ``CommandError``. Read-only; no provider SDK or name here.
 """
 import argparse
 import datetime
+import json
 
 from django.core.management.base import BaseCommand, CommandError
+from django.core.serializers.json import DjangoJSONEncoder
 
-from messaging.send_search_export import export_search_sends_csv
+from messaging.send_search_export import (
+    export_search_sends,
+    export_search_sends_csv,
+)
 from saloncore.models import Salon
+
+_FORMATS = ("json", "csv")
 
 
 def _parse_date(value):
@@ -59,7 +64,7 @@ def _first(options, *keys):
 
 
 class Command(BaseCommand):
-    help = "Export one salon's reminder-send search results as CSV."
+    help = "Export one salon's reminder-send search results as CSV or JSON."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -119,11 +124,20 @@ class Command(BaseCommand):
             default=None, help="Alias for --end.",
         )
         parser.add_argument(
+            "--format", dest="format", default="csv",
+            choices=_FORMATS,
+            help="Export format: csv (default) or json.",
+        )
+        parser.add_argument(
             "--output", default=None,
-            help="Path to write the CSV to (default: stdout).",
+            help="Path to write the export to (default: stdout).",
         )
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist as exc:
@@ -137,10 +151,18 @@ class Command(BaseCommand):
         end = _coerce_date(
             _first(options, "end", "end_date", "date_to"), "end")
         try:
-            text = export_search_sends_csv(
-                salon, term, channel=options.get("channel"),
-                status=options.get("status"), start=start, end=end,
-            )
+            if fmt == "json":
+                rows = export_search_sends(
+                    salon, term, channel=options.get("channel"),
+                    status=options.get("status"), start=start, end=end,
+                )
+                text = json.dumps(
+                    rows, indent=2, cls=DjangoJSONEncoder) + "\n"
+            else:
+                text = export_search_sends_csv(
+                    salon, term, channel=options.get("channel"),
+                    status=options.get("status"), start=start, end=end,
+                )
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options.get("output"):
