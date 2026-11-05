@@ -1,8 +1,9 @@
-"""Export one salon's bookable slots for one service on one day as CSV.
+"""Export one salon's bookable slots for one service on one day as CSV or JSON.
 
 Usage:
     python manage.py export_bookable_slots --salon-id ID
-        --service-id ID --date YYYY-MM-DD [--output PATH]
+        --service-id ID --date YYYY-MM-DD [--format json|csv]
+        [--output PATH]
 
 Thin wrapper around the existing
 :func:`onlinebooking.bookable_slots_export.export_bookable_slots_csv`
@@ -10,6 +11,12 @@ service: this command delegates verbatim to
 ``export_bookable_slots_csv(salon, service, day)``
 and adds no export logic of its own, so the command output and
 the service output can never disagree -- one source of truth.
+For ``--format csv`` (the default) that CSV output is exactly
+as before, byte-identical; for ``--format json`` the same
+arguments are passed to the dict service
+:func:`onlinebooking.bookable_slots_export.export_bookable_slots`
+(beside its CSV twin) and its rows are serialised as JSON, so
+the two formats can never disagree.
 
 The salon is resolved by ``--salon-id`` and the service by
 ``--service-id``; an unknown id for either raises
@@ -18,18 +25,24 @@ service unchanged (a ``datetime.date`` from the CLI parser, or
 the object a programmatic caller supplied).
 
 Output goes to stdout unless ``--output`` names a file.
-Invalid input -- an unknown salon, an unknown service, or an
-unparseable ``--date`` -- raises ``CommandError``, as do
-service errors and unwritable output.
+Invalid input -- an unknown salon, an unknown service, an
+unparseable ``--date``, or an unknown format -- raises
+``CommandError``, as do service errors and unwritable output.
 Backend only -- no views, templates, or UI. Read-only.
 """
 import argparse
 import datetime
+import json
 
 from django.core.management.base import BaseCommand, CommandError
 
-from onlinebooking.bookable_slots_export import export_bookable_slots_csv
+from onlinebooking.bookable_slots_export import (
+    export_bookable_slots,
+    export_bookable_slots_csv,
+)
 from saloncore.models import Salon, Service
+
+_FORMATS = ("json", "csv")
 
 
 def _parse_date(value):
@@ -53,7 +66,7 @@ def _coerce_date(value):
 
 
 class Command(BaseCommand):
-    help = "Export one salon's bookable slots for a service as CSV."
+    help = "Export one salon's bookable slots for a service as CSV or JSON."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -66,10 +79,17 @@ class Command(BaseCommand):
             "--date", dest="date", type=_parse_date, required=True,
             help="Day to export, YYYY-MM-DD.")
         parser.add_argument(
+            "--format", dest="format", default="csv", choices=_FORMATS,
+            help="Export format: csv (default) or json.")
+        parser.add_argument(
             "--output", default=None,
-            help="Path of the CSV file to write (default: stdout).")
+            help="Path of the export file to write (default: stdout).")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist:
@@ -87,7 +107,11 @@ class Command(BaseCommand):
             raise CommandError("A --date is required.")
 
         try:
-            text = export_bookable_slots_csv(salon, service, day)
+            if fmt == "json":
+                rows = export_bookable_slots(salon, service, day)
+                text = json.dumps(rows, indent=2) + "\n"
+            else:
+                text = export_bookable_slots_csv(salon, service, day)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
 
