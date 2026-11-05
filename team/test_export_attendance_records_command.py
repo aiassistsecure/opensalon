@@ -1,13 +1,18 @@
 """Tests for export_attendance_records: stdout/file == service."""
 import datetime
 import io
+import json
+import os
 import tempfile
 
 from django.core.management import CommandError, call_command
 from django.test import TestCase
 
 from saloncore.models import Salon
-from team.attendance_record_export import export_attendance_records_csv
+from team.attendance_record_export import (
+    export_attendance_records,
+    export_attendance_records_csv,
+)
 from team.models import AttendanceRecord, StaffMember
 
 UTC = datetime.timezone.utc
@@ -240,3 +245,120 @@ class ExportAttendanceRecordsCommandTests(TestCase):
                          salon_id=self.salon.id,
                          output="/nonexistent-dir/out.csv",
                          stdout=io.StringIO())
+
+    def test_default_format_is_csv_byte_identical(self):
+        out = io.StringIO()
+        call_command("export_attendance_records",
+                     salon_id=self.salon.id, stdout=out)
+        self.assertEqual(out.getvalue(),
+                         export_attendance_records_csv(self.salon))
+
+    def test_explicit_csv_format_matches_service(self):
+        out = io.StringIO()
+        call_command("export_attendance_records",
+                     salon_id=self.salon.id, format="csv", stdout=out)
+        self.assertEqual(out.getvalue(),
+                         export_attendance_records_csv(self.salon))
+
+    def test_csv_flag_matches_service(self):
+        out = io.StringIO()
+        call_command("export_attendance_records",
+                     "--salon-id", str(self.salon.id),
+                     "--format", "csv", stdout=out)
+        self.assertEqual(out.getvalue(),
+                         export_attendance_records_csv(self.salon))
+
+    def test_json_output_parses_and_equals_dict_service_rows(self):
+        out = io.StringIO()
+        call_command("export_attendance_records",
+                     salon_id=self.salon.id, format="json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()),
+                         export_attendance_records(self.salon))
+        self.assertIn("Dana", out.getvalue())
+        self.assertIn("check_in", out.getvalue())
+        self.assertIn("front desk", out.getvalue())
+
+    def test_json_flag_matches_dict_service(self):
+        out = io.StringIO()
+        call_command("export_attendance_records",
+                     "--salon-id", str(self.salon.id),
+                     "--format", "json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()),
+                         export_attendance_records(self.salon))
+
+    def test_json_empty_salon_is_empty_list(self):
+        empty = Salon.objects.create(name="Empty JSON", timezone="UTC")
+        out = io.StringIO()
+        call_command("export_attendance_records",
+                     salon_id=empty.id, format="json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()), [])
+        self.assertEqual(json.loads(out.getvalue()),
+                         export_attendance_records(empty))
+
+    def test_json_composes_with_staff_member_id(self):
+        eve = StaffMember.objects.create(
+            salon=self.salon, display_name="Eve")
+        AttendanceRecord.objects.create(
+            staff_member=eve, event_type="check_in",
+            recorded_at=datetime.datetime(
+                2026, 10, 31, 10, 0, tzinfo=UTC), note="eve note")
+        out = io.StringIO()
+        call_command("export_attendance_records",
+                     salon_id=self.salon.id,
+                     staff_member_id=self.staff.id, format="json",
+                     stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_attendance_records(
+                self.salon, staff_member=self.staff))
+        self.assertNotIn("eve note", out.getvalue())
+
+    def test_json_composes_with_event_type_and_window(self):
+        AttendanceRecord.objects.create(
+            staff_member=self.staff, event_type="check_out",
+            recorded_at=datetime.datetime(
+                2026, 10, 31, 17, 0, tzinfo=UTC), note="done")
+        AttendanceRecord.objects.create(
+            staff_member=self.staff, event_type="check_in",
+            recorded_at=datetime.datetime(
+                2026, 11, 5, 9, 0, tzinfo=UTC), note="later")
+        out = io.StringIO()
+        call_command("export_attendance_records",
+                     salon_id=self.salon.id, format="json",
+                     event_type="check_in",
+                     start_date=datetime.date(2026, 10, 31),
+                     end_date=datetime.date(2026, 10, 31), stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_attendance_records(
+                self.salon, event_type="check_in",
+                start=datetime.date(2026, 10, 31),
+                end=datetime.date(2026, 10, 31)))
+        self.assertIn("front desk", out.getvalue())
+        self.assertNotIn("done", out.getvalue())
+        self.assertNotIn("later", out.getvalue())
+
+    def test_json_output_file_matches_dict_service(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "attendance.json")
+            out = io.StringIO()
+            call_command("export_attendance_records",
+                         salon_id=self.salon.id, format="json",
+                         output=path, stdout=out)
+            self.assertEqual(out.getvalue(), "")
+            with open(path, encoding="utf-8", newline="") as fh:
+                self.assertEqual(
+                    json.loads(fh.read()),
+                    export_attendance_records(self.salon))
+
+    def test_invalid_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command("export_attendance_records",
+                         salon_id=self.salon.id, format="xml",
+                         stdout=io.StringIO())
+
+    def test_invalid_format_via_cli_is_rejected(self):
+        with self.assertRaises(CommandError):
+            call_command("export_attendance_records",
+                         "--salon-id", str(self.salon.id),
+                         "--format", "xml", stdout=io.StringIO())

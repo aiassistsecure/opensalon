@@ -1,19 +1,25 @@
-"""Export one salon's attendance records as CSV.
+"""Export one salon's attendance records as CSV or JSON.
 
 Usage:
     python manage.py export_attendance_records --salon-id ID
         [--staff-member-id ID]
         [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD]
         [--event-type EVENT_TYPE]
+        [--format json|csv]
         [--output PATH]
 
 Thin wrapper around the existing
+:mod:`team.attendance_record_export` services: for
+``--format csv`` (the default) it delegates verbatim to
 :func:`team.attendance_record_export.export_attendance_records_csv`
-service: the salon is resolved by id and passed to the service
-verbatim -- its CSV text is written unchanged, to ``--output``
-when given and to stdout otherwise. This command adds no
-export logic of its own, so command and service output can
-never disagree -- one source of truth.
+-- the salon is resolved by id and passed to the service
+verbatim, and its CSV text is written unchanged, to
+``--output`` when given and to stdout otherwise. For
+``--format json`` it serialises the SAME dict rows from
+:func:`team.attendance_record_export.export_attendance_records`
+with the same arguments, so the two formats can never
+disagree -- one source of truth. This command adds no
+export logic of its own.
 
 With ``--staff-member-id`` the export is narrowed to that one
 staff member's attendance records: the staff member is resolved
@@ -43,17 +49,28 @@ the command exports every event type, exactly as before.
 It composes with ``--staff-member-id`` and the date window
 (all AND).
 
+Every filter composes with both formats. An unknown
+``--format`` raises ``CommandError`` (argparse ``choices``
+reject it on the CLI; the explicit check covers
+``call_command`` kwargs).
+
 An unknown salon, an unparseable date, or a reversed range
 raises ``CommandError``. Backend only -- no views,
 templates, or UI. Read-only.
 """
 import datetime
+import json
 
 from django.core.management.base import BaseCommand, CommandError
 
 from saloncore.models import Salon
-from team.attendance_record_export import export_attendance_records_csv
+from team.attendance_record_export import (
+    export_attendance_records,
+    export_attendance_records_csv,
+)
 from team.models import StaffMember
+
+_FORMATS = ("json", "csv")
 
 
 def _parse_date(value, label):
@@ -72,7 +89,7 @@ def _parse_date(value, label):
 
 
 class Command(BaseCommand):
-    help = "Export one salon's attendance records as CSV."
+    help = "Export one salon's attendance records as CSV (default) or JSON."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -96,10 +113,17 @@ class Command(BaseCommand):
             help="Event type value to filter by (default: "
                  "all event types).")
         parser.add_argument(
+            "--format", dest="format", default="csv", choices=_FORMATS,
+            help="Export format: csv (default) or json.")
+        parser.add_argument(
             "--output", default=None,
-            help="Path of the CSV file to write (default: stdout).")
+            help="Path of the export file to write (default: stdout).")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist:
@@ -124,9 +148,15 @@ class Command(BaseCommand):
             raise CommandError(
                 "range end must not be before range start")
         try:
-            text = export_attendance_records_csv(
-                salon, staff_member=staff_member, start=start, end=end,
-                event_type=options.get("event_type"))
+            if fmt == "json":
+                rows = export_attendance_records(
+                    salon, staff_member=staff_member, start=start, end=end,
+                    event_type=options.get("event_type"))
+                text = json.dumps(rows, indent=2) + "\n"
+            else:
+                text = export_attendance_records_csv(
+                    salon, staff_member=staff_member, start=start, end=end,
+                    event_type=options.get("event_type"))
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
 
