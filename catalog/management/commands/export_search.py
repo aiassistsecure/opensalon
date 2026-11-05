@@ -1,30 +1,43 @@
-"""Export a salon's product search results as CSV via the search export service.
+"""Export a salon's product search results as CSV or JSON.
 
 Usage:
     python manage.py export_search --salon-id ID [--query TEXT]
-        [--include-inactive] [--output PATH]
+        [--include-inactive] [--format json|csv] [--output PATH]
 
 Backend only — no views, templates, or UI. This command is a thin
-wrapper around
-:func:`catalog.search_export.export_search_products_csv`: it
-resolves the salon by id, delegates to that service verbatim
-(with the same ``query`` and ``include_inactive``), and writes
-the returned CSV to ``--output`` when given, otherwise to
-stdout. It adds no fields, filtering, or formatting of its own,
-so the command output and the service output can never
-disagree — one source of truth.
+wrapper around :mod:`catalog.search_export`: it resolves the
+salon by id and delegates to that service verbatim (with the
+same ``query`` and ``include_inactive``). For ``--format csv``
+(the default) it writes
+:func:`catalog.search_export.export_search_products_csv`'s CSV
+string as-is, so the historical CSV output is byte-identical;
+for ``--format json`` it serialises the same dict rows from
+:func:`catalog.search_export.export_search_products` as JSON
+via ``DjangoJSONEncoder``, so the two formats can never
+disagree — one source of truth. Output goes to ``--output``
+when given, otherwise to stdout. It adds no fields, filtering,
+or formatting of its own. Unknown format raises
+``CommandError``.
 
 Founding rule (Exit Principle): anything a salon can enter, it
 can fully export.
 """
-from django.core.management.base import BaseCommand, CommandError
+import json
 
-from catalog.search_export import export_search_products_csv
+from django.core.management.base import BaseCommand, CommandError
+from django.core.serializers.json import DjangoJSONEncoder
+
+from catalog.search_export import (
+    export_search_products,
+    export_search_products_csv,
+)
 from saloncore.models import Salon
+
+_FORMATS = ("json", "csv")
 
 
 class Command(BaseCommand):
-    help = "Export a salon's product search results as CSV."
+    help = "Export a salon's product search results as CSV or JSON."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -42,20 +55,36 @@ class Command(BaseCommand):
             help="Include inactive products (default: excluded).",
         )
         parser.add_argument(
+            "--format", dest="format", default="csv",
+            choices=_FORMATS,
+            help="Export format: csv (default) or json.",
+        )
+        parser.add_argument(
             "--output", default=None,
-            help="Path of the CSV file to write (default: stdout).",
+            help="Path of the export file to write (default: stdout).",
         )
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist as exc:
             raise CommandError(
                 f"No salon with id {options['salon_id']}.") from exc
         try:
-            text = export_search_products_csv(
-                salon, options["query"],
-                include_inactive=options["include_inactive"])
+            if fmt == "json":
+                rows = export_search_products(
+                    salon, options["query"],
+                    include_inactive=options["include_inactive"])
+                text = json.dumps(
+                    rows, indent=2, cls=DjangoJSONEncoder) + "\n"
+            else:
+                text = export_search_products_csv(
+                    salon, options["query"],
+                    include_inactive=options["include_inactive"])
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options["output"]:
