@@ -2,18 +2,26 @@
 
 Synthetic fixtures only -- no real salon/client data. The command
 is a thin wrapper around
-``clients.search_export.export_search_results_csv``; these tests
-verify stdout/file output matches that service verbatim and that
-salon scoping, query passthrough, and invalid input handling apply.
+``clients.search_export.export_search_results_csv`` (CSV, the
+default) and ``clients.search_export.export_search_results``
+(JSON); these tests verify stdout/file output matches those
+services verbatim and that salon scoping, query passthrough,
+format selection, and invalid input handling apply.
 """
 import io
+import json
+import os
 import tempfile
 
 from django.core.management import CommandError, call_command
+from django.core.serializers.json import DjangoJSONEncoder
 from django.test import TestCase
 
 from clients.models import Client
-from clients.search_export import export_search_results_csv
+from clients.search_export import (
+    export_search_results,
+    export_search_results_csv,
+)
 from saloncore.models import Salon
 
 
@@ -96,6 +104,96 @@ class ExportClientSearchCommandTests(TestCase):
     def test_salon_id_is_required(self):
         with self.assertRaises(CommandError):
             call_command("export_client_search", stdout=io.StringIO())
+
+    def test_default_and_explicit_csv_match_service(self):
+        want = export_search_results_csv(self.salon)
+        out = io.StringIO()
+        call_command(
+            "export_client_search", salon_id=self.salon.id, stdout=out
+        )
+        self.assertEqual(out.getvalue(), want)
+        out = io.StringIO()
+        call_command(
+            "export_client_search", salon_id=self.salon.id,
+            format="csv", stdout=out,
+        )
+        self.assertEqual(out.getvalue(), want)
+        out = io.StringIO()
+        call_command(
+            "export_client_search", "--salon-id", str(self.salon.id),
+            "--format", "csv", stdout=out,
+        )
+        self.assertEqual(out.getvalue(), want)
+
+    def test_json_output_parses_and_equals_dict_service_rows(self):
+        rows = export_search_results(self.salon)
+        out = io.StringIO()
+        call_command(
+            "export_client_search", salon_id=self.salon.id,
+            format="json", stdout=out,
+        )
+        self.assertEqual(json.loads(out.getvalue()), rows)
+        self.assertEqual(
+            out.getvalue(),
+            json.dumps(rows, indent=2, cls=DjangoJSONEncoder) + "\n")
+        parsed = json.loads(out.getvalue())
+        self.assertIsInstance(parsed[0]["client_id"], int)
+
+    def test_json_flag_matches_dict_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_client_search", "--salon-id", str(self.salon.id),
+            "--format", "json", stdout=out,
+        )
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_search_results(self.salon))
+
+    def test_json_composes_with_query_and_salon(self):
+        rows = export_search_results(self.salon, query="smith")
+        out = io.StringIO()
+        call_command(
+            "export_client_search", salon_id=self.salon.id,
+            query="smith", format="json", stdout=out,
+        )
+        self.assertEqual(json.loads(out.getvalue()), rows)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["first_name"], "Amy")
+
+    def test_json_no_match_is_empty_list(self):
+        out = io.StringIO()
+        call_command(
+            "export_client_search", salon_id=self.salon.id,
+            query="no-such-text", format="json", stdout=out,
+        )
+        self.assertEqual(json.loads(out.getvalue()), [])
+
+    def test_json_output_file_matches_dict_service(self):
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "client_search.json")
+            call_command(
+                "export_client_search", salon_id=self.salon.id,
+                query="smith", format="json", output=path, stdout=out,
+            )
+            with open(path, encoding="utf-8") as fh:
+                written = fh.read()
+        self.assertEqual(
+            json.loads(written),
+            export_search_results(self.salon, query="smith"))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_invalid_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_client_search", salon_id=self.salon.id,
+                format="xml", stdout=io.StringIO(),
+            )
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_client_search", "--salon-id", str(self.salon.id),
+                "--format", "xml", stdout=io.StringIO(),
+            )
 
     def test_unwritable_output_raises(self):
         with self.assertRaises(CommandError):
