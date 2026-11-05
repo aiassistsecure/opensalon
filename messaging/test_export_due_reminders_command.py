@@ -9,6 +9,7 @@ plain dates mean whole days in the salon timezone (UTC here).
 """
 import datetime
 import io
+import json
 import os
 import tempfile
 from datetime import timedelta
@@ -19,7 +20,10 @@ from django.test import TestCase
 
 from bookings.models import Appointment
 from clients.models import Client
-from messaging.due_export import export_due_reminders_csv
+from messaging.due_export import (
+    export_due_reminders,
+    export_due_reminders_csv,
+)
 from saloncore.models import Salon, Service, ServiceCategory
 from team.models import StaffMember
 
@@ -155,3 +159,102 @@ class ExportDueRemindersCommandTests(TestCase):
             call_command(
                 "export_due_reminders", salon_id=self.salon.pk,
                 start_date=END, end_date=START, stdout=io.StringIO())
+
+    def test_default_format_is_csv_byte_identical(self):
+        out = io.StringIO()
+        call_command(
+            "export_due_reminders", salon_id=self.salon.pk,
+            start_date=START, end_date=END, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_due_reminders_csv(self.salon, START, END))
+
+    def test_explicit_csv_matches_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_due_reminders", salon_id=self.salon.pk,
+            start_date=START, end_date=END, format="csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_due_reminders_csv(self.salon, START, END))
+        out = io.StringIO()
+        call_command(
+            "export_due_reminders",
+            "--salon-id", str(self.salon.pk),
+            "--start-date", DAY.isoformat(),
+            "--end-date", DAY.isoformat(),
+            "--format", "csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_due_reminders_csv(self.salon, START, END))
+
+    def test_json_parses_and_equals_dict_service_rows(self):
+        out = io.StringIO()
+        call_command(
+            "export_due_reminders", salon_id=self.salon.pk,
+            start_date=START, end_date=END, format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_due_reminders(self.salon, START, END))
+        self.assertEqual(
+            out.getvalue(),
+            json.dumps(
+                export_due_reminders(self.salon, START, END),
+                indent=2) + "\n")
+
+    def test_json_via_cli_flags(self):
+        out = io.StringIO()
+        call_command(
+            "export_due_reminders",
+            "--salon-id", str(self.salon.pk),
+            "--start-date", DAY.isoformat(),
+            "--end-date", DAY.isoformat(),
+            "--format", "json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_due_reminders(self.salon, START, END))
+
+    def test_json_composes_with_channel_and_window(self):
+        out = io.StringIO()
+        call_command(
+            "export_due_reminders", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, format="json",
+            channel="sms", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_due_reminders(
+                self.salon, START, END, channel="sms"))
+        self.assertEqual(
+            [row["channel"] for row in json.loads(out.getvalue())],
+            ["sms"])
+
+    def test_json_output_file_matches_dict_service(self):
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "due_reminders.json")
+            call_command(
+                "export_due_reminders", salon_id=self.salon.pk,
+                start_date=DAY, end_date=DAY, format="json",
+                output=path, stdout=out)
+            with open(path, encoding="utf-8") as fh:
+                written = fh.read()
+        self.assertEqual(
+            json.loads(written),
+            export_due_reminders(self.salon, START, END))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_invalid_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_due_reminders", salon_id=self.salon.pk,
+                start_date=DAY, end_date=DAY, format="xml",
+                stdout=io.StringIO())
+
+    def test_invalid_format_via_cli_is_rejected(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_due_reminders",
+                "--salon-id", str(self.salon.pk),
+                "--start-date", DAY.isoformat(),
+                "--end-date", DAY.isoformat(),
+                "--format", "xml", stdout=io.StringIO())

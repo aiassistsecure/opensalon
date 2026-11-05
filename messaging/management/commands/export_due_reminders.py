@@ -1,19 +1,24 @@
-"""Export a salon's due reminders as CSV.
+"""Export a salon's due reminders as CSV or JSON.
 
 Usage:
     python manage.py export_due_reminders --salon-id ID
         --start-date YYYY-MM-DD --end-date YYYY-MM-DD
-        [--channel CHANNEL] [--output PATH]
+        [--channel CHANNEL] [--format json|csv] [--output PATH]
 
-Thin wrapper around the existing
-:func:`messaging.due_export.export_due_reminders_csv` service:
+Thin wrapper around
+:func:`messaging.due_export.export_due_reminders_csv` and
+its dict twin
+:func:`messaging.due_export.export_due_reminders`:
 the salon is resolved by id and both bounds are passed to the
-service as ``(salon, start, end)`` -- its CSV text is written
-unchanged, to ``--output`` when given and to stdout otherwise.
-This command adds no export logic of its own, so command and
-service output can never disagree -- one source of truth. In
-particular the service's per-channel opt-in behaviour carries
-through exactly; this command never re-checks opt-ins.
+service as ``(salon, start, end)`` -- for ``--format csv``
+(the default) its CSV text is written unchanged, exactly as
+before; for ``--format json`` the same dict rows are
+serialised as JSON. Output goes to ``--output`` when given
+and to stdout otherwise. This command adds no export logic
+of its own, so command and service output can never
+disagree -- one source of truth. In particular the service's
+per-channel opt-in behaviour carries through exactly; this
+command never re-checks opt-ins.
 
 The service's window bounds are datetimes, inclusive at both
 ends. ``datetime`` bounds (passed programmatically or as an
@@ -22,18 +27,24 @@ whole local days in the salon's timezone, inclusive at both
 ends: a start date becomes the start of that day and an end
 date the end of that day in that timezone.
 
-Invalid input -- an unknown salon, an unparseable date, or a
-reversed range -- raises ``CommandError``. Read-only. Core
-stays provider-agnostic -- no provider SDK, field, or name
-appears here.
+Invalid input -- an unknown salon, an unparseable date, a
+reversed range, or an unknown ``--format`` -- raises
+``CommandError``. Read-only. Core stays provider-agnostic --
+no provider SDK, field, or name appears here.
 """
 import datetime
+import json
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.core.management.base import BaseCommand, CommandError
 
-from messaging.due_export import export_due_reminders_csv
+from messaging.due_export import (
+    export_due_reminders,
+    export_due_reminders_csv,
+)
 from saloncore.models import Salon
+
+_FORMATS = ("json", "csv")
 
 
 def _tz_for(salon):
@@ -72,7 +83,7 @@ def _parse_bound(value, label, salon, is_end):
 
 
 class Command(BaseCommand):
-    help = "Export a salon's due reminders as CSV."
+    help = "Export a salon's due reminders as CSV or JSON."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -92,11 +103,19 @@ class Command(BaseCommand):
             help="Reminder channel value to filter by.",
         )
         parser.add_argument(
+            "--format", dest="format", default="csv", choices=_FORMATS,
+            help="Export format: csv (default) or json.",
+        )
+        parser.add_argument(
             "--output", default=None,
-            help="Path to write the CSV to (default: stdout).",
+            help="Path to write the export to (default: stdout).",
         )
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist as exc:
@@ -113,8 +132,13 @@ class Command(BaseCommand):
                 f"date {options['start_date']!r}."
             )
         try:
-            text = export_due_reminders_csv(
-                salon, start, end, channel=options.get("channel"))
+            if fmt == "json":
+                rows = export_due_reminders(
+                    salon, start, end, channel=options.get("channel"))
+                text = json.dumps(rows, indent=2) + "\n"
+            else:
+                text = export_due_reminders_csv(
+                    salon, start, end, channel=options.get("channel"))
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options["output"]:
