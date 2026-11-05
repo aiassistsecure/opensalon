@@ -3,8 +3,10 @@ Synthetic fixtures; current 2026-10-08..14, prior 10-01..07."""
 import csv
 import datetime
 import io
+import json
 import os
 import shutil
+import tempfile
 from decimal import Decimal
 
 from django.core.management import CommandError, call_command
@@ -187,3 +189,44 @@ class PriorCashupDetailTests(TestCase):
         for kwargs in cases:
             with self.assertRaises(CommandError):
                 call_command("export_prior_cashup_detail", stdout=io.StringIO(), **kwargs)
+
+    def test_command_default_format_is_csv(self):
+        out = io.StringIO()
+        call_command("export_prior_cashup_detail", salon_id=self.salon.pk,
+                     start_date=START, end_date=END, stdout=out)
+        self.assertEqual(out.getvalue(),
+                         export_prior_cashup_detail_csv(self.salon, START, END))
+
+    def test_command_explicit_csv_matches_service(self):
+        out = io.StringIO()
+        call_command("export_prior_cashup_detail", salon_id=self.salon.pk,
+                     start_date=START, end_date=END, format="csv", stdout=out)
+        self.assertEqual(out.getvalue(),
+                         export_prior_cashup_detail_csv(self.salon, START, END))
+
+    def test_command_json_matches_service_rows(self):
+        out = io.StringIO()
+        call_command("export_prior_cashup_detail", salon_id=self.salon.pk,
+                     start_date=START, end_date=END, format="json", stdout=out)
+        rows = export_prior_cashup_detail(self.salon, START, END)
+        self.assertEqual(json.loads(out.getvalue()), rows)
+        self.assertEqual(out.getvalue(), json.dumps(rows, indent=2) + "\n")
+
+    def test_command_json_file_matches_service_rows(self):
+        tmp = tempfile.mkdtemp(prefix="tmp_prior_cashup_detail_json_test")
+        try:
+            path = os.path.join(tmp, "prior.json")
+            call_command("export_prior_cashup_detail", salon_id=self.salon.pk,
+                         start_date=START.isoformat(), end_date=END.isoformat(),
+                         format="json", output=path, stdout=io.StringIO())
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh),
+                                 export_prior_cashup_detail(self.salon, START, END))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_command_unknown_format_raises(self):
+        with self.assertRaises(CommandError):
+            call_command("export_prior_cashup_detail", salon_id=self.salon.pk,
+                         start_date=START, end_date=END, format="xml",
+                         stdout=io.StringIO())
