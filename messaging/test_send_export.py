@@ -194,6 +194,51 @@ class RecordExportTests(SendExportBase):
         self.assertEqual(export_sends(
             self.salon, DAY2, DAY3, appointment=appointment), [])
 
+    def test_channel_filter_filters_to_one_channel(self):
+        email = self._own("email", _at(DAY1, 9))
+        sms = self._own("sms", _at(DAY1, 10))
+        self._own("email", _at(DAY2, 9))
+        rows = export_sends(self.salon, DAY1, DAY3, channel="sms")
+        self.assertEqual([r["id"] for r in rows], [sms.pk])
+        self.assertTrue(all(r["channel"] == "sms" for r in rows))
+        rows = export_sends(self.salon, DAY1, DAY3, channel="email")
+        self.assertEqual(len(rows), 2)
+        self.assertNotIn(sms.pk, [r["id"] for r in rows])
+        self.assertIn(email.pk, [r["id"] for r in rows])
+        parsed = _rows(export_sends_csv(
+            self.salon, DAY1, DAY3, channel="sms"))
+        self.assertEqual([int(r["id"]) for r in parsed], [sms.pk])
+
+    def test_channel_filter_default_is_byte_identical(self):
+        self._own("email", _at(DAY1, 9))
+        self._own("sms", _at(DAY2, 9))
+        self.assertEqual(
+            export_sends(self.salon, DAY1, DAY3),
+            export_sends(self.salon, DAY1, DAY3, channel=None))
+        self.assertEqual(
+            export_sends_csv(self.salon, DAY1, DAY3),
+            export_sends_csv(self.salon, DAY1, DAY3, channel=None))
+
+    def test_channel_filter_composes_with_appointment_and_window(self):
+        first = self._own("email", _at(DAY1, 9))
+        appointment = Appointment.objects.get(pk=first.appointment_id)
+        self._send_for(appointment, "sms", _at(DAY1, 10))
+        self._send_for(appointment, "email", _at(DAY3, 9))
+        self._own("email", _at(DAY1, 11))
+        rows = export_sends(
+            self.salon, DAY1, DAY1, appointment=appointment,
+            channel="email")
+        self.assertEqual([r["id"] for r in rows], [first.pk])
+
+    def test_channel_filter_unknown_channel_is_empty(self):
+        self._own("email", _at(DAY1, 9))
+        header = ",".join(RECORD_FIELDNAMES) + "\n"
+        self.assertEqual(
+            export_sends(self.salon, DAY1, DAY3, channel="pigeon"), [])
+        self.assertEqual(
+            export_sends_csv(self.salon, DAY1, DAY3, channel="pigeon"),
+            header)
+
     def test_read_only_no_mutation(self):
         row = self._own("email", _at(DAY1, 9))
         before = ReminderSend.objects.count()
