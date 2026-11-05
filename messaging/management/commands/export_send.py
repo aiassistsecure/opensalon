@@ -3,7 +3,8 @@
 Usage:
     python manage.py export_send --salon-id ID
         --date-from YYYY-MM-DD [--date-to YYYY-MM-DD]
-        [--appointment-id ID] [--channel CHANNEL] [--output PATH]
+        [--appointment-id ID] [--channel CHANNEL]
+        [--status STATUS] [--output PATH]
 
 Thin wrapper around the existing
 :func:`messaging.send_export.export_sends_csv`
@@ -33,6 +34,17 @@ Without ``--channel`` the command exports every channel,
 exactly as before. Read-only: it filters the ledger, it
 sends nothing.
 
+With ``--status`` the export is narrowed to sends with that
+one stored status: the value is validated against
+``ReminderSend.Status`` and passed to the service as its
+optional ``status`` argument, composing with the date
+window, ``--appointment-id``, and ``--channel``. Without
+``--status`` the command exports every status, exactly as
+before. An unknown / invalid status raises ``CommandError``
+(the same invalid-input handling this command applies to
+its other validated arguments), rather than exporting.
+Read-only: it filters the ledger, it sends nothing.
+
 Invalid input -- an unknown salon or a service error -- raises
 ``CommandError``, as does an unwritable ``--output`` path.
 Read-only. Core stays provider-agnostic -- no provider SDK,
@@ -44,6 +56,7 @@ import datetime
 from django.core.management.base import BaseCommand, CommandError
 
 from bookings.models import Appointment
+from messaging.models import ReminderSend
 from messaging.send_export import export_sends_csv
 from saloncore.models import Salon
 
@@ -122,6 +135,11 @@ class Command(BaseCommand):
                  "(default: all channels).",
         )
         parser.add_argument(
+            "--status", dest="status", default=None,
+            help="Reminder send status value to filter by "
+                 "(default: all statuses).",
+        )
+        parser.add_argument(
             "--output", default=None,
             help="Path to write the CSV to (default: stdout).",
         )
@@ -148,10 +166,16 @@ class Command(BaseCommand):
                     f"No appointment with id {options['appointment_id']} "
                     f"for salon {salon.pk}."
                 ) from exc
+        status = options.get("status")
+        if status is not None and status not in ReminderSend.Status.values:
+            raise CommandError(
+                f"Unknown status {status!r}; expected one of: "
+                + ", ".join(ReminderSend.Status.values) + "."
+            )
         try:
             text = export_sends_csv(
                 salon, date_from, date_to, appointment=appointment,
-                channel=options.get("channel"),
+                channel=options.get("channel"), status=status,
             )
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc

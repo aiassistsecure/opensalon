@@ -249,6 +249,67 @@ class ExportSendCommandTests(TestCase):
         # That appointment's only send is on email: header only.
         self.assertEqual(out.getvalue().count("\n"), 1)
 
+    def test_status_filters_to_matching_status(self):
+        out = io.StringIO()
+        call_command(
+            "export_send", salon_id=self.salon.pk,
+            date_from=DAY1, date_to=DAY3, status="sent", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_sends_csv(self.salon, DAY1, DAY3, status="sent"))
+        # Both own-salon sends are stored as sent (header + 2 rows).
+        self.assertEqual(out.getvalue().count("\n"), 3)
+
+    def test_status_with_cli_args(self):
+        out = io.StringIO()
+        call_command(
+            "export_send", "--salon-id", str(self.salon.pk),
+            "--date-from", DAY1.isoformat(),
+            "--date-to", DAY3.isoformat(),
+            "--status", "sent", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_sends_csv(self.salon, DAY1, DAY3, status="sent"))
+
+    def test_no_status_is_all_statuses_default(self):
+        out = io.StringIO()
+        call_command(
+            "export_send", salon_id=self.salon.pk,
+            date_from=DAY1, date_to=DAY3, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_sends_csv(self.salon, DAY1, DAY3, status=None))
+
+    def test_status_composes_with_appointment_id_and_channel(self):
+        target = ReminderSend.objects.filter(
+            client__salon=self.salon, channel="email").order_by(
+                "id").first()
+        out = io.StringIO()
+        call_command(
+            "export_send", salon_id=self.salon.pk,
+            date_from=DAY1, date_to=DAY3,
+            appointment_id=target.appointment_id, channel="email",
+            status="sent", stdout=out)
+        appointment = Appointment.objects.get(pk=target.appointment_id)
+        self.assertEqual(
+            out.getvalue(),
+            export_sends_csv(
+                self.salon, DAY1, DAY3, appointment=appointment,
+                channel="email", status="sent"))
+        self.assertEqual(out.getvalue().count("\n"), 2)
+
+    def test_unknown_status_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_send", salon_id=self.salon.pk,
+                date_from=DAY1, date_to=DAY3, status="pigeon",
+                stdout=io.StringIO())
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_send", "--salon-id", str(self.salon.pk),
+                "--date-from", DAY1.isoformat(),
+                "--status", "failed", stdout=io.StringIO())
+
     def test_unknown_salon_raises_command_error(self):
         with self.assertRaises(CommandError):
             call_command(

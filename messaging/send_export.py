@@ -54,6 +54,16 @@ output is unchanged. With a channel, only sends whose stored
 the date window and the per-appointment filter (window AND
 appointment AND channel). Read-only: it filters the ledger,
 it sends nothing.
+
+Status filter: the record export functions also accept an
+optional ``status`` (default ``None``). With ``None`` the
+output is unchanged. With a status, only sends whose stored
+``status`` matches it exactly are included (an unknown
+status matches nothing, exactly as the channel filter
+behaves); it composes with the date window, the
+per-appointment filter, and the channel filter (window AND
+appointment AND channel AND status). Read-only: it filters
+the ledger, it sends nothing.
 """
 import csv
 import datetime
@@ -168,7 +178,7 @@ def send_export_row(send):
 
 
 def export_sends(salon, date_from, date_to=None, appointment=None,
-                 channel=None):
+                 channel=None, status=None):
     """Return ``salon``'s ``ReminderSend`` rows in a date range.
 
     Scoped by ``client__salon`` (the totals service's scoping),
@@ -187,6 +197,12 @@ def export_sends(salon, date_from, date_to=None, appointment=None,
     sends whose stored ``channel`` matches it exactly are
     included; it composes with the date window and the
     ``appointment`` filter.
+
+    ``status`` is optional: the default ``None`` applies no
+    status filter, unchanged. When a status is given, only
+    sends whose stored ``status`` matches it exactly are
+    included; it composes with the date window, the
+    ``appointment`` filter, and the ``channel`` filter.
     """
     bounds = _range(salon, date_from, date_to)
     if bounds is None:
@@ -209,11 +225,13 @@ def export_sends(salon, date_from, date_to=None, appointment=None,
         sends = sends.filter(appointment=appointment)
     if channel is not None:
         sends = sends.filter(channel=str(channel))
+    if status is not None:
+        sends = sends.filter(status=str(status))
     return [send_export_row(send) for send in sends]
 
 
 def export_sends_csv(salon, date_from, date_to=None, appointment=None,
-                     channel=None):
+                     channel=None, status=None):
     """Return :func:`export_sends` for the range as a CSV string.
 
     ``appointment`` is optional and passed through to
@@ -224,6 +242,10 @@ def export_sends_csv(salon, date_from, date_to=None, appointment=None,
     ``channel`` is likewise optional and passed through: the
     default ``None`` is unchanged; a given channel exports
     only sends on that channel.
+
+    ``status`` is likewise optional and passed through: the
+    default ``None`` is unchanged; a given status exports
+    only sends with that stored status.
     """
     buffer = io.StringIO()
     writer = csv.DictWriter(
@@ -232,7 +254,7 @@ def export_sends_csv(salon, date_from, date_to=None, appointment=None,
     writer.writeheader()
     for record in export_sends(
             salon, date_from, date_to, appointment=appointment,
-            channel=channel):
+            channel=channel, status=status):
         writer.writerow(record)
     return buffer.getvalue()
 
