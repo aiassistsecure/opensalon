@@ -1,19 +1,28 @@
-"""Export a salon's prior-period campaign send totals as CSV.
+"""Export a salon's prior-period campaign send totals as CSV or JSON.
 
-Thin wrapper around ``export_prior_campaign_send_totals_csv``:
-salon resolved by id, dates passed verbatim, CSV written
-unchanged to ``--output`` or stdout. Both dates required;
-unknown salon, bad/missing date, or service error raises
-``CommandError``. Read-only, provider-agnostic.
+Thin wrapper around ``export_prior_campaign_send_totals_csv``
+and its dict twin ``export_prior_campaign_send_totals``:
+salon resolved by id, dates passed verbatim; for ``--format
+csv`` (the default) its CSV text is written unchanged to
+``--output`` or stdout, exactly as before; for ``--format
+json`` the same dict rows are serialised as JSON. Both dates
+required; unknown salon, unknown ``--format``, bad/missing
+date, or service error raises ``CommandError``. Read-only,
+provider-agnostic.
 """
 import datetime
+import json
 
 from django.core.management.base import BaseCommand, CommandError
+from django.core.serializers.json import DjangoJSONEncoder
 
 from messaging.prior_campaign_send_totals_export import (
+    export_prior_campaign_send_totals,
     export_prior_campaign_send_totals_csv,
 )
 from saloncore.models import Salon
+
+_FORMATS = ("json", "csv")
 
 
 def _parse_date(value, label):
@@ -31,7 +40,8 @@ def _parse_date(value, label):
 
 
 class Command(BaseCommand):
-    help = "Export a salon's prior-period campaign send totals as CSV."
+    help = ("Export a salon's prior-period campaign send totals "
+            "as CSV or JSON.")
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -46,10 +56,17 @@ class Command(BaseCommand):
             default=None,
             help="Last day of the current window, YYYY-MM-DD (inclusive).")
         parser.add_argument(
+            "--format", dest="format", default="csv", choices=_FORMATS,
+            help="Export format: csv (default) or json.")
+        parser.add_argument(
             "--output", default=None,
-            help="Path to write the CSV to (default: stdout).")
+            help="Path to write the export to (default: stdout).")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist as exc:
@@ -60,8 +77,14 @@ class Command(BaseCommand):
         if start_date is None or end_date is None:
             raise CommandError("Both --start-date and --end-date are required.")
         try:
-            text = export_prior_campaign_send_totals_csv(
-                salon, start_date, end_date)
+            if fmt == "json":
+                rows = export_prior_campaign_send_totals(
+                    salon, start_date, end_date)
+                text = json.dumps(
+                    rows, indent=2, cls=DjangoJSONEncoder) + "\n"
+            else:
+                text = export_prior_campaign_send_totals_csv(
+                    salon, start_date, end_date)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options["output"]:
