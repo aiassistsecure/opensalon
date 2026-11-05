@@ -1,24 +1,38 @@
-"""Export a salon's tender-mix report as CSV.
+"""Export a salon's tender-mix report as CSV or JSON.
 
 Usage:
     python manage.py export_tender_mix --salon-id ID
-        --start-date YYYY-MM-DD --end-date YYYY-MM-DD [--output PATH]
+        --start-date YYYY-MM-DD --end-date YYYY-MM-DD
+        [--format json|csv] [--output PATH]
 
 Thin wrapper around
-:func:`checkout.tender_mix_export.export_tender_mix_csv`:
+:func:`checkout.tender_mix_export.export_tender_mix_csv` and
+:func:`checkout.tender_mix_export.export_tender_mix`:
 salon resolved by id, dates parsed to ``datetime.date``, both
-passed verbatim -- CSV written unchanged to ``--output`` or stdout.
-No export logic of its own (one source of truth). Unknown salon,
-unparseable date, or service error raises ``CommandError``.
+passed verbatim. For ``--format csv`` (the default) the CSV is
+written unchanged to ``--output`` or stdout; for
+``--format json`` the same dict rows from
+:func:`checkout.tender_mix_export.export_tender_mix` are
+serialised as JSON via ``DjangoJSONEncoder``, so the two
+formats can never disagree -- one source of truth. No export
+logic of its own. Unknown salon, unparseable date, unknown
+format, or service error raises ``CommandError``.
 Dates are whole local days in the salon's timezone, inclusive.
 Read-only.
 """
 import datetime
+import json
 
 from django.core.management.base import BaseCommand, CommandError
+from django.core.serializers.json import DjangoJSONEncoder
 
-from checkout.tender_mix_export import export_tender_mix_csv
+from checkout.tender_mix_export import (
+    export_tender_mix,
+    export_tender_mix_csv,
+)
 from saloncore.models import Salon
+
+_FORMATS = ("json", "csv")
 
 
 def _parse_date(value, label):
@@ -37,7 +51,7 @@ def _parse_date(value, label):
 
 
 class Command(BaseCommand):
-    help = "Export a salon's tender-mix report as CSV."
+    help = "Export a salon's tender-mix report as CSV or JSON."
 
     def add_arguments(self, parser):
         parser.add_argument("--salon-id", type=int, required=True,
@@ -48,10 +62,18 @@ class Command(BaseCommand):
         parser.add_argument("--end-date", "--end", "--date-to",
                             dest="end_date", default=None,
                             help="Last day, YYYY-MM-DD (inclusive).")
+        parser.add_argument("--format", dest="format", default="csv",
+                            choices=_FORMATS,
+                            help="Export format: csv (default) or json.")
         parser.add_argument("--output", default=None,
-                            help="Path to write the CSV to (default: stdout).")
+                            help="Path to write the export to "
+                                 "(default: stdout).")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist as exc:
@@ -65,7 +87,12 @@ class Command(BaseCommand):
                 "Both --start-date and --end-date are required."
             )
         try:
-            text = export_tender_mix_csv(salon, start_date, end_date)
+            if fmt == "json":
+                rows = export_tender_mix(salon, start_date, end_date)
+                text = json.dumps(
+                    rows, indent=2, cls=DjangoJSONEncoder) + "\n"
+            else:
+                text = export_tender_mix_csv(salon, start_date, end_date)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options["output"]:

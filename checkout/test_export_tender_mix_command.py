@@ -10,16 +10,22 @@ Fixtures are tiny synthetic records -- unit logic only.
 """
 import datetime
 import io
+import json
 import os
 import tempfile
 from decimal import Decimal
+from unittest import mock
 
 from django.core.management import CommandError, call_command
+from django.core.serializers.json import DjangoJSONEncoder
 from django.test import TestCase
 from django.utils import timezone
 
 from checkout.models import Payment, Sale
-from checkout.tender_mix_export import export_tender_mix_csv
+from checkout.tender_mix_export import (
+    export_tender_mix,
+    export_tender_mix_csv,
+)
 from saloncore.models import Salon
 
 DAY = datetime.date(2026, 10, 3)
@@ -100,6 +106,103 @@ class ExportTenderMixCommandTests(TestCase):
         self.assertEqual(
             written, export_tender_mix_csv(self.salon, DAY, NEXT))
         self.assertEqual(out.getvalue(), "")
+
+    def test_default_is_csv_byte_identical(self):
+        default_out = io.StringIO()
+        call_command(
+            "export_tender_mix", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, stdout=default_out)
+        csv_out = io.StringIO()
+        call_command(
+            "export_tender_mix", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, format="csv", stdout=csv_out)
+        self.assertEqual(default_out.getvalue(), csv_out.getvalue())
+        self.assertEqual(
+            default_out.getvalue(),
+            export_tender_mix_csv(self.salon, DAY, DAY))
+
+    def test_explicit_csv_via_cli_matches_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_tender_mix", "--salon-id", str(self.salon.pk),
+            "--start-date", DAY.isoformat(), "--end-date", DAY.isoformat(),
+            "--format", "csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_tender_mix_csv(self.salon, DAY, DAY))
+
+    def test_json_parses_and_equals_dict_service_rows(self):
+        out = io.StringIO()
+        call_command(
+            "export_tender_mix", salon_id=self.salon.pk,
+            start_date=DAY, end_date=DAY, format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_tender_mix(self.salon, DAY, DAY))
+        self.assertEqual(
+            out.getvalue(),
+            json.dumps(
+                export_tender_mix(self.salon, DAY, DAY),
+                indent=2, cls=DjangoJSONEncoder) + "\n")
+
+    def test_json_via_cli_with_date_aliases_matches_dict_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_tender_mix", "--salon-id", str(self.salon.pk),
+            "--start", DAY.isoformat(), "--date-to", NEXT.isoformat(),
+            "--format", "json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_tender_mix(self.salon, DAY, NEXT))
+
+    def test_json_delegates_to_dict_service_verbatim(self):
+        with mock.patch(
+            "checkout.management.commands.export_tender_mix"
+            ".export_tender_mix",
+            wraps=export_tender_mix,
+        ) as spy:
+            call_command(
+                "export_tender_mix", salon_id=self.salon.pk,
+                start_date=DAY, end_date=DAY, format="json",
+                stdout=io.StringIO())
+        spy.assert_called_once_with(self.salon, DAY, DAY)
+
+    def test_json_output_file_parses_and_equals_dict_service(self):
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "tender_mix.json")
+            call_command(
+                "export_tender_mix", salon_id=self.salon.pk,
+                start_date=DAY, end_date=DAY, format="json",
+                output=path, stdout=out)
+            with open(path, encoding="utf-8") as fh:
+                written = fh.read()
+        self.assertEqual(
+            json.loads(written),
+            export_tender_mix(self.salon, DAY, DAY))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_json_service_error_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_tender_mix", salon_id=self.salon.pk,
+                start_date=NEXT, end_date=DAY, format="json",
+                stdout=io.StringIO())
+
+    def test_unknown_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_tender_mix", salon_id=self.salon.pk,
+                start_date=DAY, end_date=DAY, format="xml",
+                stdout=io.StringIO())
+
+    def test_unknown_format_via_cli_is_rejected(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_tender_mix", "--salon-id", str(self.salon.pk),
+                "--start-date", DAY.isoformat(),
+                "--end-date", DAY.isoformat(),
+                "--format", "xml", stdout=io.StringIO())
 
     def test_unknown_salon_raises_command_error(self):
         with self.assertRaises(CommandError):
