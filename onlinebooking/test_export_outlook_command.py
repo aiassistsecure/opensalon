@@ -9,13 +9,14 @@ tiny synthetic records -- unit logic only.
 """
 import datetime
 import io
+import json
 import os
 import tempfile
 
 from django.core.management import CommandError, call_command
 from django.test import TestCase
 
-from onlinebooking.outlook_export import export_outlook_csv
+from onlinebooking.outlook_export import export_outlook, export_outlook_csv
 from saloncore.models import Salon
 from team.models import RosterPattern, StaffMember
 
@@ -77,6 +78,76 @@ class ExportOutlookCommandTests(TestCase):
         for bad in (0, -30):
             with self.assertRaises(ValueError):
                 self.run_export(duration_minutes=bad)
+
+    def test_default_format_is_csv_byte_identical(self):
+        out = self.run_export()
+        self.assertEqual(
+            out, export_outlook_csv(
+                self.salon, 60, days=1, start_date=MONDAY))
+
+    def test_explicit_csv_matches_service(self):
+        out = self.run_export(format="csv")
+        self.assertEqual(
+            out, export_outlook_csv(
+                self.salon, 60, days=1, start_date=MONDAY))
+        out = io.StringIO()
+        call_command(
+            "export_outlook", "--salon-id", str(self.salon.pk),
+            "--duration-minutes", "60", "--days", "1",
+            "--start-date", MONDAY.isoformat(), "--format", "csv",
+            stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_outlook_csv(self.salon, 60, days=1, start_date=MONDAY))
+
+    def test_json_parses_and_equals_dict_service_rows(self):
+        out = self.run_export(format="json")
+        self.assertEqual(
+            json.loads(out),
+            export_outlook(self.salon, 60, days=1, start_date=MONDAY))
+        self.assertEqual(
+            [r["staff_name"] for r in json.loads(out)], ["Online Stylist"])
+        out = io.StringIO()
+        call_command(
+            "export_outlook", "--salon-id", str(self.salon.pk),
+            "--duration-minutes", "60", "--days", "1",
+            "--start-date", MONDAY.isoformat(), "--format", "json",
+            stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_outlook(self.salon, 60, days=1, start_date=MONDAY))
+
+    def test_json_filters_compose(self):
+        out = self.run_export(
+            format="json", duration_minutes=30, step_minutes=30)
+        self.assertEqual(
+            json.loads(out),
+            export_outlook(
+                self.salon, 30, days=1, start_date=MONDAY,
+                step_minutes=30))
+        self.assertNotEqual(
+            json.loads(out),
+            export_outlook(self.salon, 60, days=1, start_date=MONDAY))
+
+    def test_json_output_file_matches_dict_service(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "outlook.json")
+            out = self.run_export(format="json", output=path)
+            self.assertEqual(out, "")
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(
+                    json.load(fh),
+                    export_outlook(
+                        self.salon, 60, days=1, start_date=MONDAY))
+
+    def test_unknown_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            self.run_export(format="xml")
+        with self.assertRaises((CommandError, SystemExit)):
+            call_command(
+                "export_outlook", "--salon-id", str(self.salon.pk),
+                "--duration-minutes", "60", "--format", "xml",
+                stdout=io.StringIO())
 
     def test_duration_and_step_forward_to_service(self):
         out = self.run_export(duration_minutes=30, step_minutes=30)
