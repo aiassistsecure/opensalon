@@ -16,15 +16,18 @@ command by name.
 """
 import datetime
 import io
+import json
 import os
 import tempfile
 
 from django.core.management import CommandError, call_command, load_command_class
+from django.core.serializers.json import DjangoJSONEncoder
 from django.test import TestCase
 
 from saloncore.models import Salon
 from team.availability_export import (
     export_availability_csv,
+    export_roster_availability,
     export_roster_availability_csv,
     export_salon_roster_csv,
 )
@@ -126,6 +129,81 @@ class ExportRosterAvailabilityCommandTests(TestCase):
                 self.assertEqual(
                     fh.read(),
                     export_roster_availability_csv(self.staff, MONDAY))
+
+    def test_default_format_is_csv_byte_identical(self):
+        out = self.run_export()
+        self.assertEqual(
+            out, export_roster_availability_csv(self.staff, MONDAY))
+
+    def test_explicit_csv_format_matches_service(self):
+        out = self.run_export(format="csv")
+        self.assertEqual(
+            out, export_roster_availability_csv(self.staff, MONDAY))
+
+    def test_csv_flag_matches_service(self):
+        out = io.StringIO()
+        call_command(
+            _cmd(), "--salon-id", str(self.salon.pk),
+            "--staff-member-id", str(self.staff.pk),
+            "--date", MONDAY.isoformat(), "--format", "csv",
+            stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_roster_availability_csv(self.staff, MONDAY))
+
+    def test_json_output_parses_and_equals_dict_service_rows(self):
+        out = self.run_export(format="json")
+        rows = export_roster_availability(self.staff, MONDAY)
+        self.assertEqual(json.loads(out), rows)
+        self.assertEqual(
+            out, json.dumps(rows, indent=2, cls=DjangoJSONEncoder) + "\n")
+        self.assertIn("Stylist One", out)
+        self.assertNotIn("Stylist Two", out)
+
+    def test_json_flag_matches_dict_service(self):
+        out = io.StringIO()
+        call_command(
+            _cmd(), "--salon-id", str(self.salon.pk),
+            "--staff-member-id", str(self.staff.pk),
+            "--date", MONDAY.isoformat(), "--format", "json",
+            stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_roster_availability(self.staff, MONDAY))
+
+    def test_json_composes_with_date_and_member(self):
+        out = self.run_export(
+            staff_member_id=self.other_staff.pk, date=TUESDAY,
+            format="json")
+        self.assertEqual(
+            json.loads(out),
+            export_roster_availability(self.other_staff, TUESDAY))
+        self.assertIn("Stylist Two", out)
+
+    def test_json_output_file_matches_dict_service(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "roster_availability.json")
+            out = self.run_export(format="json", output=path)
+            self.assertEqual(out, "")
+            with open(path, encoding="utf-8", newline="") as fh:
+                written = fh.read()
+            rows = export_roster_availability(self.staff, MONDAY)
+            self.assertEqual(json.loads(written), rows)
+            self.assertEqual(
+                written,
+                json.dumps(rows, indent=2, cls=DjangoJSONEncoder) + "\n")
+
+    def test_invalid_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            self.run_export(format="xml")
+
+    def test_invalid_format_via_cli_is_rejected(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                _cmd(), "--salon-id", str(self.salon.pk),
+                "--staff-member-id", str(self.staff.pk),
+                "--date", MONDAY.isoformat(), "--format", "xml",
+                stdout=io.StringIO())
 
     def test_unknown_salon_id_is_command_error(self):
         with self.assertRaises(CommandError):
