@@ -8,6 +8,7 @@ a foreign or missing product, and an unwritable output.
 """
 import csv
 import io
+import json
 import os
 import tempfile
 from datetime import date, datetime
@@ -20,6 +21,7 @@ from django.utils import timezone
 
 from catalog.history_export import (
     HISTORY_FIELDNAMES,
+    export_stock_history,
     export_stock_history_csv,
 )
 from catalog.models import Product, StockMovement
@@ -280,3 +282,137 @@ class ExportStockHistoryWindowCommandTests(TestCase):
             call_command("export_stock_history", salon_id=self.salon.pk,
                          product_id=self.shampoo.pk,
                          start_date="not-a-date", stdout=io.StringIO())
+
+
+class ExportStockHistoryFormatCommandTests(TestCase):
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon")
+        self.day1 = date(2026, 1, 5)
+        self.day2 = date(2026, 1, 6)
+        self.day3 = date(2026, 1, 7)
+        self.shampoo = Product.objects.create(
+            salon=self.salon, name="Shampoo", sku="SH-001",
+            barcode="012345678905", price=Decimal("10.00"))
+        self.move_on(self.shampoo, 10, self.day1)
+        self.move_on(self.shampoo, -3, self.day2,
+                     kind=StockMovement.Kind.SALE)
+        self.move_on(self.shampoo, -2, self.day3,
+                     kind=StockMovement.Kind.ADJUSTMENT)
+        self.unused = Product.objects.create(
+            salon=self.salon, name="Unused", sku="UN-009",
+            barcode="000111222333", price=Decimal("5.00"))
+
+    def move_on(self, product, delta, on, kind=StockMovement.Kind.RECEIVE):
+        movement = StockMovement.objects.create(
+            product=product, kind=kind, quantity_delta=delta)
+        moment = timezone.make_aware(
+            datetime(on.year, on.month, on.day, 12, 0))
+        StockMovement.objects.filter(pk=movement.pk).update(
+            created_at=moment)
+        return movement
+
+    def test_default_format_is_csv_byte_identical(self):
+        out = io.StringIO()
+        call_command("export_stock_history", salon_id=self.salon.pk,
+                     product_id=self.shampoo.pk, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_stock_history_csv(self.salon, self.shampoo.pk))
+
+    def test_explicit_csv_format_kwargs_matches_service(self):
+        out = io.StringIO()
+        call_command("export_stock_history", salon_id=self.salon.pk,
+                     product_id=self.shampoo.pk, format="csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_stock_history_csv(self.salon, self.shampoo.pk))
+
+    def test_explicit_csv_format_via_cli_flag(self):
+        out = io.StringIO()
+        call_command(
+            "export_stock_history", "--salon-id", str(self.salon.pk),
+            "--product-id", str(self.shampoo.pk),
+            "--format", "csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            export_stock_history_csv(self.salon, self.shampoo.pk))
+
+    def test_json_parses_and_equals_dict_service_rows(self):
+        out = io.StringIO()
+        call_command("export_stock_history", salon_id=self.salon.pk,
+                     product_id=self.shampoo.pk, format="json", stdout=out)
+        rows = export_stock_history(self.salon, self.shampoo.pk)
+        self.assertEqual(json.loads(out.getvalue()), rows)
+        self.assertEqual(
+            out.getvalue(), json.dumps(rows, indent=2) + "\n")
+
+    def test_json_via_cli_flag(self):
+        out = io.StringIO()
+        call_command(
+            "export_stock_history", "--salon-id", str(self.salon.pk),
+            "--product-id", str(self.shampoo.pk),
+            "--format", "json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_stock_history(self.salon, self.shampoo.pk))
+
+    def test_json_empty_product_is_empty_list(self):
+        out = io.StringIO()
+        call_command("export_stock_history", salon_id=self.salon.pk,
+                     product_id=self.unused.pk, format="json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()), [])
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_stock_history(self.salon, self.unused.pk))
+
+    def test_json_composes_with_kind_filter(self):
+        out = io.StringIO()
+        call_command("export_stock_history", salon_id=self.salon.pk,
+                     product_id=self.shampoo.pk, format="json",
+                     kind="sale", stdout=out)
+        rows = json.loads(out.getvalue())
+        self.assertEqual(rows, export_stock_history(
+            self.salon, self.shampoo.pk, kind="sale"))
+        self.assertEqual([r["kind"] for r in rows], ["sale"])
+        self.assertEqual([r["quantity_delta"] for r in rows], [-3])
+
+    def test_json_composes_with_window_and_kind_via_cli(self):
+        out = io.StringIO()
+        call_command(
+            "export_stock_history", "--salon-id", str(self.salon.pk),
+            "--product-id", str(self.shampoo.pk),
+            "--start-date", self.day2.isoformat(),
+            "--end-date", self.day3.isoformat(),
+            "--kind", "adjustment", "--format", "json", stdout=out)
+        rows = json.loads(out.getvalue())
+        self.assertEqual(rows, export_stock_history(
+            self.salon, self.shampoo.pk, start=self.day2, end=self.day3,
+            kind="adjustment"))
+        self.assertEqual([r["quantity_delta"] for r in rows], [-2])
+
+    def test_json_output_file_parses_and_equals_service(self):
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "stock_history.json")
+            call_command("export_stock_history", salon_id=self.salon.pk,
+                         product_id=self.shampoo.pk, format="json",
+                         output=path, stdout=out)
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+        rows = export_stock_history(self.salon, self.shampoo.pk)
+        self.assertEqual(json.loads(text), rows)
+        self.assertEqual(text, json.dumps(rows, indent=2) + "\n")
+        self.assertEqual(out.getvalue(), "")
+
+    def test_unknown_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command("export_stock_history", salon_id=self.salon.pk,
+                         product_id=self.shampoo.pk, format="xml",
+                         stdout=io.StringIO())
+
+    def test_unknown_format_via_cli_is_rejected(self):
+        with self.assertRaises((CommandError, SystemExit)):
+            call_command(
+                "export_stock_history", "--salon-id", str(self.salon.pk),
+                "--product-id", str(self.shampoo.pk),
+                "--format", "xml", stdout=io.StringIO())

@@ -1,20 +1,25 @@
-"""Export one product's stock history as CSV via the history export service.
+"""Export one product's stock history as CSV or JSON via the service.
 
 Usage:
     python manage.py export_stock_history --salon-id ID
         [--product-id PRODUCT_ID]
         [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD]
         [--kind KIND]
-        [--output PATH]
+        [--format json|csv] [--output PATH]
 
 Backend only — no views, templates, or UI. This command is a thin
-wrapper around
-:func:`catalog.history_export.export_stock_history_csv`:
+wrapper around :mod:`catalog.history_export`:
 it resolves the salon by id, delegates to that service verbatim
 (with the same optional ``product``, the same optional
 ``start`` / ``end`` window, and the same optional ``kind``
-filter), and writes the returned CSV
-to ``--output`` when given, otherwise to stdout. It adds no fields,
+filter), and writes the result
+to ``--output`` when given, otherwise to stdout. For
+``--format csv`` (the default) it writes
+:func:`catalog.history_export.export_stock_history_csv`'s CSV
+string as-is, so the historical CSV output is byte-identical; for
+``--format json`` it serializes the dict rows from
+:func:`catalog.history_export.export_stock_history` — the same
+rows the CSV is built from — as JSON. It adds no fields,
 filtering, or export logic of its own, so the command output and
 the service output can never disagree — one source of truth.
 
@@ -40,11 +45,17 @@ fully export.
 """
 import argparse
 import datetime
+import json
 
 from django.core.management.base import BaseCommand, CommandError
 
-from catalog.history_export import export_stock_history_csv
+from catalog.history_export import (
+    export_stock_history,
+    export_stock_history_csv,
+)
 from saloncore.models import Salon
+
+_FORMATS = ("json", "csv")
 
 
 def _parse_date(value):
@@ -57,7 +68,7 @@ def _parse_date(value):
 
 
 class Command(BaseCommand):
-    help = "Export one product's stock history as CSV."
+    help = "Export one product's stock history as CSV or JSON."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -89,11 +100,19 @@ class Command(BaseCommand):
                  "all kinds).",
         )
         parser.add_argument(
+            "--format", dest="format", default="csv", choices=_FORMATS,
+            help="Export format: csv (default) or json.",
+        )
+        parser.add_argument(
             "--output", default=None,
-            help="Path of the CSV file to write (default: stdout).",
+            help="Path of the export file to write (default: stdout).",
         )
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist as exc:
@@ -110,9 +129,15 @@ class Command(BaseCommand):
         if end is None:
             end = options.get("end")
         try:
-            text = export_stock_history_csv(
-                salon, product, start=start, end=end,
-                kind=options.get("kind"))
+            if fmt == "json":
+                records = export_stock_history(
+                    salon, product, start=start, end=end,
+                    kind=options.get("kind"))
+                text = json.dumps(records, indent=2) + "\n"
+            else:
+                text = export_stock_history_csv(
+                    salon, product, start=start, end=end,
+                    kind=options.get("kind"))
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options["output"]:
