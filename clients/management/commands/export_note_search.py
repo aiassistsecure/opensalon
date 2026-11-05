@@ -1,28 +1,41 @@
-"""Export a salon's client record-note search results as CSV.
+"""Export a salon's client record-note search results as CSV or JSON.
 
 Usage:
     python manage.py export_note_search --salon-id ID
-        [--query TEXT] [--output PATH]
+        [--query TEXT] [--format json|csv] [--output PATH]
 
-Thin wrapper around
-``clients.note_search_export.export_note_search_results_csv`` --
-that service is the one source of truth for the note-search export
-shape; this command only resolves the salon, delegates verbatim,
-and routes the CSV it returns to the ``--output`` file when given
-or to stdout otherwise. It never reimplements serialization or
-querying. Only persistent client record notes are exported;
-appointment-only notes live in the bookings app and never appear.
+Thin wrapper around ``clients.note_search_export`` -- that service
+is the one source of truth for the note-search export shape; this
+command only resolves the salon, delegates verbatim, and routes
+the result to the ``--output`` file when given or to stdout
+otherwise. For ``--format csv`` (the default) it writes
+:func:`clients.note_search_export.export_note_search_results_csv`'s
+CSV string, exactly as before; for ``--format json`` it serialises
+the SAME dict rows from
+:func:`clients.note_search_export.export_note_search_results` as
+JSON via ``DjangoJSONEncoder``, so the two formats can never
+disagree. It never reimplements serialization or querying. Only
+persistent client record notes are exported; appointment-only
+notes live in the bookings app and never appear.
 
 Backend only: no views, templates, or UI. No provider concepts.
 """
-from django.core.management.base import BaseCommand, CommandError
+import json
 
-from clients.note_search_export import export_note_search_results_csv
+from django.core.management.base import BaseCommand, CommandError
+from django.core.serializers.json import DjangoJSONEncoder
+
+from clients.note_search_export import (
+    export_note_search_results,
+    export_note_search_results_csv,
+)
 from saloncore.models import Salon
+
+_FORMATS = ("json", "csv")
 
 
 class Command(BaseCommand):
-    help = "Export a salon's client record-note search results as CSV."
+    help = "Export a salon's client record-note search results as CSV (default) or JSON."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -35,11 +48,19 @@ class Command(BaseCommand):
                  "(default: all record notes).",
         )
         parser.add_argument(
+            "--format", dest="format", default="csv", choices=_FORMATS,
+            help="Export format: csv (default) or json.",
+        )
+        parser.add_argument(
             "--output", default=None,
-            help="Path of the CSV file to write (default: stdout).",
+            help="Path of the export file to write (default: stdout).",
         )
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist:
@@ -48,9 +69,15 @@ class Command(BaseCommand):
             ) from None
 
         try:
-            text = export_note_search_results_csv(
-                salon, query=options.get("query")
-            )
+            if fmt == "json":
+                rows = export_note_search_results(
+                    salon, query=options.get("query"))
+                text = json.dumps(
+                    rows, indent=2, cls=DjangoJSONEncoder) + "\n"
+            else:
+                text = export_note_search_results_csv(
+                    salon, query=options.get("query")
+                )
         except Exception as exc:
             raise CommandError(
                 f"Note search export failed: {exc}"
