@@ -1,24 +1,29 @@
 """Tests for the export_variance management command.
 
 The command is a thin wrapper around
-``catalog.variance_export.export_stocktake_variance_csv``; these
-tests check delegation (stdout/file match the service output
-verbatim, as CSV), salon scoping, and clean failure for an unknown
-salon, a foreign counted product, and an unwritable output.
+``catalog.variance_export``; these tests check delegation
+(stdout/file match the service output verbatim, as CSV by
+default and as JSON via the dict-row service), salon scoping,
+and clean failure for an unknown format, an unknown salon, a
+foreign counted product, and an unwritable output.
 """
 import csv
 import io
+import json
 import os
 import tempfile
 from decimal import Decimal
+from unittest import mock
 
 from django.core.management import call_command
 from django.core.management.base import CommandError
+from django.core.serializers.json import DjangoJSONEncoder
 from django.test import TestCase
 
 from catalog.models import Product, StockMovement
 from catalog.variance_export import (
     VARIANCE_FIELDNAMES,
+    export_stocktake_variance,
     export_stocktake_variance_csv,
 )
 from saloncore.models import Salon
@@ -103,6 +108,99 @@ class ExportVarianceCommandTests(TestCase):
         with self.assertRaises(CommandError):
             call_command("export_variance", salon_id=999999,
                          stdout=io.StringIO())
+
+    def test_default_is_csv_byte_identical(self):
+        default_out = io.StringIO()
+        call_command("export_variance", salon_id=self.salon.pk,
+                     counts=self.counts, stdout=default_out)
+        csv_out = io.StringIO()
+        call_command("export_variance", salon_id=self.salon.pk,
+                     counts=self.counts, format="csv", stdout=csv_out)
+        self.assertEqual(default_out.getvalue(), csv_out.getvalue())
+        self.assertEqual(
+            default_out.getvalue(),
+            self.expected_text(self.salon, self.counts))
+
+    def test_explicit_csv_via_cli_matches_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_variance", "--salon-id", str(self.salon.pk),
+            "--count", f"{self.shampoo.pk}=6",
+            "--count", f"{self.serum.pk}=5", "--format", "csv",
+            stdout=out)
+        self.assertEqual(
+            out.getvalue(), self.expected_text(self.salon, self.counts))
+
+    def test_json_parses_and_equals_dict_service_rows(self):
+        out = io.StringIO()
+        call_command("export_variance", salon_id=self.salon.pk,
+                     counts=self.counts, format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_stocktake_variance(self.salon, self.counts))
+        self.assertEqual(
+            out.getvalue(),
+            json.dumps(
+                export_stocktake_variance(self.salon, self.counts),
+                indent=2, cls=DjangoJSONEncoder) + "\n")
+        self.assertNotIn("Foreign", out.getvalue())
+
+    def test_json_via_cli_matches_dict_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_variance", "--salon-id", str(self.salon.pk),
+            "--count", f"{self.shampoo.pk}=6",
+            "--count", f"{self.serum.pk}=5", "--format", "json",
+            stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_stocktake_variance(self.salon, self.counts))
+
+    def test_json_no_counts_is_empty_list(self):
+        out = io.StringIO()
+        call_command("export_variance", salon_id=self.salon.pk,
+                     format="json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()), [])
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_stocktake_variance(self.salon, {}))
+
+    def test_json_delegates_to_dict_service_verbatim(self):
+        with mock.patch(
+            "catalog.management.commands.export_variance"
+            ".export_stocktake_variance",
+            wraps=export_stocktake_variance,
+        ) as spy:
+            call_command("export_variance", salon_id=self.salon.pk,
+                         counts=self.counts, format="json",
+                         stdout=io.StringIO())
+        spy.assert_called_once_with(self.salon, self.counts)
+
+    def test_json_output_file_parses_and_equals_dict_service(self):
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "variance.json")
+            call_command("export_variance", salon_id=self.salon.pk,
+                         counts=self.counts, format="json", output=path,
+                         stdout=out)
+            with open(path, encoding="utf-8") as fh:
+                written = fh.read()
+        self.assertEqual(
+            json.loads(written),
+            export_stocktake_variance(self.salon, self.counts))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_unknown_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command("export_variance", salon_id=self.salon.pk,
+                         counts=self.counts, format="xml",
+                         stdout=io.StringIO())
+
+    def test_unknown_format_via_cli_is_rejected(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_variance", "--salon-id", str(self.salon.pk),
+                "--format", "xml", stdout=io.StringIO())
 
     def test_unwritable_output_raises_command_error(self):
         with tempfile.TemporaryDirectory() as tmp:
