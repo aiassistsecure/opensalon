@@ -6,8 +6,10 @@ import os
 import tempfile
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from unittest import mock
 
 from django.core.management import CommandError, call_command
+from django.core.serializers.json import DjangoJSONEncoder
 from django.test import TestCase
 from django.utils import timezone
 
@@ -190,3 +192,100 @@ class PriorMovementSummaryTests(TestCase):
             with self.assertRaises(CommandError):
                 call_command("export_prior_movement_summary",
                              stdout=io.StringIO(), **kwargs)
+
+    def test_command_default_is_csv_byte_identical(self):
+        self.seed()
+        default_out, csv_out = io.StringIO(), io.StringIO()
+        call_command("export_prior_movement_summary", salon_id=self.salon.pk,
+                     start_date=DAY, end_date=DAY, stdout=default_out)
+        call_command("export_prior_movement_summary", salon_id=self.salon.pk,
+                     start_date=DAY, end_date=DAY, format="csv",
+                     stdout=csv_out)
+        expected = export_prior_movement_summary_csv(DAY, DAY, salon=self.salon)
+        self.assertEqual(default_out.getvalue(), csv_out.getvalue())
+        self.assertEqual(default_out.getvalue(), expected)
+
+    def test_command_explicit_csv_via_cli_matches_service(self):
+        self.seed()
+        out = io.StringIO()
+        call_command("export_prior_movement_summary",
+                     "--salon-id", str(self.salon.pk),
+                     "--start-date", "2026-10-03", "--end-date", "2026-10-03",
+                     "--format", "csv", stdout=out)
+        self.assertEqual(out.getvalue(),
+                         export_prior_movement_summary_csv(
+                             DAY, DAY, salon=self.salon))
+
+    def test_command_json_parses_and_equals_dict_service_rows(self):
+        self.seed()
+        out = io.StringIO()
+        call_command("export_prior_movement_summary", salon_id=self.salon.pk,
+                     start_date=DAY, end_date=DAY, format="json", stdout=out)
+        rows = export_prior_movement_summary(DAY, DAY, salon=self.salon)
+        self.assertEqual(json.loads(out.getvalue()),
+                         json.loads(json.dumps(rows, cls=DjangoJSONEncoder)))
+        self.assertEqual(out.getvalue(), json.dumps(
+            rows, indent=2, cls=DjangoJSONEncoder) + "\n")
+
+    def test_command_json_via_cli_matches_dict_service(self):
+        self.seed()
+        out = io.StringIO()
+        call_command("export_prior_movement_summary",
+                     "--salon-id", str(self.salon.pk),
+                     "--start-date", "2026-10-03", "--end-date", "2026-10-03",
+                     "--format", "json", stdout=out)
+        rows = export_prior_movement_summary(DAY, DAY, salon=self.salon)
+        self.assertEqual(json.loads(out.getvalue()),
+                         json.loads(json.dumps(rows, cls=DjangoJSONEncoder)))
+
+    def test_command_json_delegates_to_dict_service_verbatim(self):
+        self.seed()
+        with mock.patch(
+            "catalog.management.commands.export_prior_movement_summary"
+            ".export_prior_movement_summary",
+            wraps=export_prior_movement_summary,
+        ) as spy:
+            call_command("export_prior_movement_summary",
+                         salon_id=self.salon.pk, start_date=DAY, end_date=DAY,
+                         format="json", stdout=io.StringIO())
+        spy.assert_called_once_with(DAY, DAY, salon=self.salon)
+
+    def test_command_json_output_file_matches_dict_service(self):
+        self.seed()
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "out.json")
+            call_command("export_prior_movement_summary",
+                         salon_id=self.salon.pk, start_date=DAY, end_date=DAY,
+                         format="json", output=path, stdout=out)
+            with open(path, encoding="utf-8") as fh:
+                written = fh.read()
+        rows = export_prior_movement_summary(DAY, DAY, salon=self.salon)
+        self.assertEqual(json.loads(written),
+                         json.loads(json.dumps(rows, cls=DjangoJSONEncoder)))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_command_unknown_format_raises_command_error(self):
+        self.seed()
+        with self.assertRaises(CommandError):
+            call_command("export_prior_movement_summary",
+                         salon_id=self.salon.pk, start_date=DAY, end_date=DAY,
+                         format="xml", stdout=io.StringIO())
+
+    def test_command_unknown_format_via_cli_is_rejected(self):
+        with self.assertRaises(CommandError):
+            call_command("export_prior_movement_summary",
+                         "--salon-id", str(self.salon.pk),
+                         "--start-date", "2026-10-03",
+                         "--end-date", "2026-10-03", "--format", "xml",
+                         stdout=io.StringIO())
+
+    def test_command_json_unwritable_output_raises_command_error(self):
+        self.seed()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "missing-dir", "out.json")
+            with self.assertRaises(CommandError):
+                call_command("export_prior_movement_summary",
+                             salon_id=self.salon.pk, start_date=DAY,
+                             end_date=DAY, format="json", output=path,
+                             stdout=io.StringIO())
