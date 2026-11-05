@@ -6,6 +6,7 @@ tests check delegation (stdout/file match the service output
 verbatim), clean failure for an unknown salon, and date filtering.
 """
 import io
+import json
 import os
 import tempfile
 from datetime import timedelta
@@ -23,7 +24,10 @@ from saloncore.models import (
     ServicePrice,
     StaffLevel,
 )
-from saloncore.price_change_export import export_price_changes_csv
+from saloncore.price_change_export import (
+    export_price_changes,
+    export_price_changes_csv,
+)
 
 
 class ExportPriceChangesCommandTests(TestCase):
@@ -145,3 +149,105 @@ class ExportPriceChangesCommandTests(TestCase):
             out.getvalue(),
             export_price_changes_csv(self.salon, start=after))
         self.assertNotIn("Annual increase", out.getvalue())
+
+    def test_default_format_is_csv_byte_identical(self):
+        out = io.StringIO()
+        call_command(
+            "export_price_changes", salon_id=self.salon.pk, stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_price_changes_csv(self.salon))
+
+    def test_explicit_csv_format_matches_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_price_changes", salon_id=self.salon.pk,
+            format="csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_price_changes_csv(self.salon))
+
+    def test_csv_flag_matches_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_price_changes", "--salon-id", str(self.salon.pk),
+            "--format", "csv", stdout=out)
+        self.assertEqual(
+            out.getvalue(), export_price_changes_csv(self.salon))
+
+    def test_json_output_parses_and_equals_dict_service_rows(self):
+        out = io.StringIO()
+        call_command(
+            "export_price_changes", salon_id=self.salon.pk,
+            format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()), export_price_changes(self.salon))
+
+    def test_json_flag_matches_dict_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_price_changes", "--salon-id", str(self.salon.pk),
+            "--format", "json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()), export_price_changes(self.salon))
+        self.assertIn("Annual increase", out.getvalue())
+
+    def test_json_filters_compose(self):
+        other_service = Service.objects.create(
+            category=self.category, name="Haircut",
+            service_minutes=30)
+        other_price = ServicePrice.objects.create(
+            service=other_service, staff_level=self.level,
+            amount=Decimal("50.00"))
+        PriceChange.objects.create(
+            service_price=other_price, old_amount=Decimal("50.00"),
+            new_amount=Decimal("55.00"), note="Other service")
+        out = io.StringIO()
+        call_command(
+            "export_price_changes", salon_id=self.salon.pk,
+            service_id=self.service.pk, format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_price_changes(self.salon, service=self.service))
+        out = io.StringIO()
+        call_command(
+            "export_price_changes", salon_id=self.salon.pk,
+            start_date=self.today, end_date=self.today,
+            format="json", stdout=out)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            export_price_changes(
+                self.salon, start=self.today, end=self.today))
+        self.assertIn("Annual increase", out.getvalue())
+        after = self.today + timedelta(days=1)
+        out = io.StringIO()
+        call_command(
+            "export_price_changes", salon_id=self.salon.pk,
+            start_date=after, format="json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()), [])
+
+    def test_json_output_option_writes_file(self):
+        fd, path = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        try:
+            out = io.StringIO()
+            call_command(
+                "export_price_changes", salon_id=self.salon.pk,
+                format="json", output=path, stdout=out)
+            with open(path, encoding="utf-8", newline="") as fh:
+                written = fh.read()
+            self.assertEqual(
+                json.loads(written), export_price_changes(self.salon))
+            self.assertEqual(out.getvalue(), "")
+        finally:
+            os.unlink(path)
+
+    def test_invalid_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_price_changes", salon_id=self.salon.pk,
+                format="xml", stdout=io.StringIO())
+
+    def test_invalid_format_via_cli_is_rejected(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "export_price_changes", "--salon-id", str(self.salon.pk),
+                "--format", "xml", stdout=io.StringIO())
