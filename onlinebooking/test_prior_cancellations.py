@@ -1,6 +1,7 @@
 import csv
 import datetime
 import io
+import json
 import os
 import tempfile
 from decimal import Decimal
@@ -215,3 +216,46 @@ class PriorCancellationsExportTests(TestCase):
                         "end_date": START}):
             with self.assertRaises(CommandError):
                 call_command("export_prior_cancellations", **kwargs)
+
+    def test_command_default_and_explicit_csv_byte_identical(self):
+        for kwargs in ({}, {"format": "csv"}):
+            out = io.StringIO()
+            call_command("export_prior_cancellations",
+                         salon_id=self.salon.pk, start_date=START,
+                         end_date=END, stdout=out, **kwargs)
+            self.assertEqual(out.getvalue(),
+                             export_prior_cancellations_csv(
+                                 self.salon, START, END))
+
+    def test_command_json_parses_and_equals_dict_rows(self):
+        out = io.StringIO()
+        call_command("export_prior_cancellations",
+                     "--salon-id", str(self.salon.pk),
+                     "--start-date", START.isoformat(),
+                     "--end-date", END.isoformat(),
+                     "--format", "json", stdout=out)
+        rows = export_prior_cancellations(self.salon, START, END)
+        self.assertEqual(json.loads(out.getvalue()), rows)
+        self.assertEqual(out.getvalue(), json.dumps(rows, indent=2) + "\n")
+
+    def test_command_json_output_file_matches_dict_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "prior.json")
+            call_command("export_prior_cancellations",
+                         salon_id=self.salon.pk, start_date=START,
+                         end_date=END, format="json", output=path)
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh), export_prior_cancellations(
+                    self.salon, START, END))
+
+    def test_command_unknown_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command("export_prior_cancellations",
+                         salon_id=self.salon.pk, start_date=START,
+                         end_date=END, format="xml")
+        with self.assertRaises((CommandError, SystemExit)):
+            call_command("export_prior_cancellations",
+                         "--salon-id", str(self.salon.pk),
+                         "--start-date", START.isoformat(),
+                         "--end-date", END.isoformat(),
+                         "--format", "xml", stdout=io.StringIO())
