@@ -177,6 +177,55 @@ class EmbeddedNoLibpqConnectTests(SimpleTestCase):
         self._assert_no_connection(listener)
 
 
+class EmbeddedCommitFlushTests(SimpleTestCase):
+    """R2 (#789 follow-up): commit() must surface flush failures.
+
+    The old commit() swallowed every flush exception, so a failed
+    durability flush looked like a successful commit. These tests
+    run without the native wheel: core_for is replaced with a fake
+    core whose flush() is rigged to fail (or succeed).
+    """
+
+    def _connection(self):
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        return EmbeddedConnection("probe_db", _settings(root, "probe_db"))
+
+    def test_commit_flush_failure_surfaces(self):
+        import psycopg
+
+        failing = mock.Mock()
+        failing.flush.side_effect = RuntimeError("flush failed: store gone")
+        connection = self._connection()
+        with mock.patch.object(embedded, "core_for", return_value=failing):
+            with self.assertRaises(psycopg.OperationalError) as ctx:
+                connection.commit()
+        self.assertIn("flush failed: store gone", str(ctx.exception))
+        self.assertIsInstance(ctx.exception.__cause__, RuntimeError)
+        failing.flush.assert_called_once_with()
+
+    def test_commit_flush_other_errors_propagate_unchanged(self):
+        failing = mock.Mock()
+        failing.flush.side_effect = OSError("disk error")
+        connection = self._connection()
+        with mock.patch.object(embedded, "core_for", return_value=failing):
+            with self.assertRaises(OSError):
+                connection.commit()
+
+    def test_commit_success_calls_flush_once(self):
+        ok = mock.Mock()
+        connection = self._connection()
+        with mock.patch.object(embedded, "core_for", return_value=ok):
+            connection.commit()
+        ok.flush.assert_called_once_with()
+
+    def test_rollback_remains_noop(self):
+        connection = self._connection()
+        with mock.patch.object(embedded, "core_for") as core_for_mock:
+            connection.rollback()
+        core_for_mock.assert_not_called()
+
+
 class EmbeddedStatementShapeTests(SimpleTestCase):
     def test_verb_skips_comments(self):
         self.assertEqual(
