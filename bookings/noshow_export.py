@@ -1,11 +1,14 @@
-"""No-show appointments CSV export service.
+"""No-show appointments CSV/JSON export service.
 
 Backend only — no views, templates, or UI. Read-only: this
 service never creates, edits, or deletes an appointment.
 
 Founding rule (Exit Principle): anything a salon can enter, it can
 fully export. This module exports a salon's no-show appointments
-as a CSV string built ON TOP of :mod:`bookings.noshow` — the
+as a list of dict rows (:func:`export_noshow`) and as a CSV string
+(:func:`export_noshow_csv`) built from that same list, so the two
+formats can never disagree. The export is built ON TOP of
+:mod:`bookings.noshow` — the
 definition of a no-show (past, non-cancelled denominator; the
 numerator set; salon scoping via both client and staff member;
 most-recent-first ordering) is that service's alone and is reused
@@ -38,6 +41,8 @@ from bookings.noshow import noshow_appointments
 
 __all__ = [
     "NOSHOW_EXPORT_FIELDNAMES",
+    "export_noshow",
+    "export_noshow_rows",
     "export_noshow_csv",
     "noshow_csv",
 ]
@@ -58,6 +63,30 @@ NOSHOW_EXPORT_FIELDNAMES = [
 ]
 
 
+def export_noshow(salon, date_from, date_to=None, *, now=None):
+    """Return ``salon``'s no-show appointments as a list of dicts.
+
+    Accepts exactly the parameters of
+    :func:`bookings.noshow.noshow_appointments`, passed through
+    unchanged: ``salon``, the inclusive local-date range
+    ``date_from`` / ``date_to``, and the keyword-only ``now``
+    reference instant for "past".
+
+    Every row mirrors a CSV row exactly: keys are
+    :data:`NOSHOW_EXPORT_FIELDNAMES` in order, and a ``None``
+    value from the service (e.g. ``service_id`` for snapshot-only
+    appointments, or an unset ``start`` / ``end``) renders as
+    ``""`` -- exactly as the CSV writer rendered it historically.
+    Rows follow the no-show service's ordering exactly. An empty
+    result exports as an empty list. Records nothing.
+    """
+    rows = noshow_appointments(salon, date_from, date_to, now=now)
+    return [{
+        name: ("" if row[name] is None else row[name])
+        for name in NOSHOW_EXPORT_FIELDNAMES
+    } for row in rows]
+
+
 def export_noshow_csv(salon, date_from, date_to=None, *, now=None):
     """Return ``salon``'s no-show appointments as a CSV string.
 
@@ -65,7 +94,9 @@ def export_noshow_csv(salon, date_from, date_to=None, *, now=None):
     :func:`bookings.noshow.noshow_appointments`, passed through
     unchanged: ``salon``, the inclusive local-date range
     ``date_from`` / ``date_to``, and the keyword-only ``now``
-    reference instant for "past".
+    reference instant for "past". Built from
+    :func:`export_noshow` with the same arguments, so the CSV
+    and dict exports always agree.
 
     Returns:
         A CSV string whose header row is
@@ -74,19 +105,16 @@ def export_noshow_csv(salon, date_from, date_to=None, *, now=None):
         result exports as the header row alone. Lines end with
         ``"\\n"``.
     """
-    rows = noshow_appointments(salon, date_from, date_to, now=now)
     buffer = io.StringIO()
     writer = csv.DictWriter(
         buffer, fieldnames=NOSHOW_EXPORT_FIELDNAMES, lineterminator="\n"
     )
     writer.writeheader()
-    for row in rows:
-        writer.writerow({
-            name: ("" if row[name] is None else row[name])
-            for name in NOSHOW_EXPORT_FIELDNAMES
-        })
+    for row in export_noshow(salon, date_from, date_to, now=now):
+        writer.writerow(row)
     return buffer.getvalue()
 
 
-#: Alias, mirroring the naming convenience in sibling services.
+#: Aliases, mirroring the naming convenience in sibling services.
+export_noshow_rows = export_noshow
 noshow_csv = export_noshow_csv
