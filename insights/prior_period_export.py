@@ -1,4 +1,4 @@
-"""Prior-period revenue-split comparison CSV export service.
+"""Prior-period revenue-split comparison CSV/JSON export service.
 
 Backend only — no views, templates, or UI. Read-only.
 
@@ -13,6 +13,9 @@ Columns: ``component``, the current and prior window bounds,
 Money and percentages render to two decimal places, never via a
 float; a ``None`` percent change (zero prior component — see
 :mod:`insights.prior_period`) renders as an empty string.
+
+A plain list of dict rows (:func:`export_prior_period`)
+backs the CSV, so the two formats can never disagree.
 """
 import csv
 import io
@@ -24,6 +27,7 @@ __all__ = [
     "PRIOR_PERIOD_FIELDNAMES",
     "PRIOR_PERIOD_EXPORT_FIELDNAMES",
     "EXPORT_FIELDNAMES",
+    "export_prior_period",
     "export_prior_period_csv",
     "export_prior_period_revenue_split_csv",
     "prior_period_csv",
@@ -55,23 +59,23 @@ def _pct(value):
     return "" if value is None else str(Decimal(value).quantize(_CENTS))
 
 
-def export_prior_period_csv(salon, start_date=None, end_date=None, **kwargs):
-    """Return ``salon``'s prior-period comparison as a CSV string.
+def export_prior_period(salon, start_date=None, end_date=None, **kwargs):
+    """Return ``salon``'s prior-period comparison as dicts.
 
-    Args mirror :func:`insights.prior_period.prior_period_revenue_split`
+    Every row mirrors a CSV cell exactly: keys are
+    :data:`PRIOR_PERIOD_FIELDNAMES` in order, dates are ISO
+    strings, and money/percentages are strings rendered to two
+    places (``""`` where the CSV renders empty). Args mirror
+    :func:`insights.prior_period.prior_period_revenue_split`
     exactly; its result's values are rendered unchanged.
     """
     result = prior_period_revenue_split(
         salon, start_date, end_date, **kwargs
     )
-    buffer = io.StringIO()
-    writer = csv.DictWriter(
-        buffer, fieldnames=PRIOR_PERIOD_FIELDNAMES, lineterminator="\n"
-    )
-    writer.writeheader()
+    rows = []
     for name in _COMPONENTS:
         comp = getattr(result, name)
-        writer.writerow({
+        rows.append({
             "component": name,
             "current_start_date": result.current.start_date.isoformat(),
             "current_end_date": result.current.end_date.isoformat(),
@@ -82,6 +86,24 @@ def export_prior_period_csv(salon, start_date=None, end_date=None, **kwargs):
             "delta": _money(comp.delta),
             "percent_change": _pct(comp.percent_change),
         })
+    return rows
+
+
+def export_prior_period_csv(salon, start_date=None, end_date=None, **kwargs):
+    """Return ``salon``'s prior-period comparison as a CSV string.
+
+    Args mirror :func:`insights.prior_period.prior_period_revenue_split`
+    exactly; its result's values are rendered unchanged. Built
+    from :func:`export_prior_period` with the same arguments,
+    so the CSV and dict exports always agree.
+    """
+    buffer = io.StringIO()
+    writer = csv.DictWriter(
+        buffer, fieldnames=PRIOR_PERIOD_FIELDNAMES, lineterminator="\n"
+    )
+    writer.writeheader()
+    for row in export_prior_period(salon, start_date, end_date, **kwargs):
+        writer.writerow(row)
     return buffer.getvalue()
 
 
