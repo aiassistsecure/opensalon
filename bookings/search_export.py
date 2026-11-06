@@ -1,14 +1,17 @@
-"""Appointment search CSV export service.
+"""Appointment search CSV/JSON export service.
 
 Backend only — no views, templates, or UI. Read-only: this
 service never creates, edits, or deletes an appointment.
 
 Founding rule (Exit Principle): anything a salon can enter, it can
 fully export. This module exports the results of an appointment
-search as a CSV string built ON TOP of :mod:`bookings.search` —
-the definition of a search result (salon scoping via both client
-and staff member, name/date/staff/status filtering, ordering) is
-that service's alone and is reused verbatim via
+search as a list of dict rows (:func:`export_search_appointments`)
+and as a CSV string (:func:`export_search_csv`) built from that
+same list, so the two formats can never disagree. The export is
+built ON TOP of :mod:`bookings.search` — the definition of a
+search result (salon scoping via both client and staff member,
+name/date/staff/status filtering, ordering) is that service's
+alone and is reused verbatim via
 :func:`bookings.search.search_appointments`; this module never
 reimplements its filtering, re-queries appointments, or
 re-orders rows. Ordering is exactly the service's ordering:
@@ -38,6 +41,9 @@ from bookings.search import search_appointments
 
 __all__ = [
     "SEARCH_EXPORT_FIELDNAMES",
+    "export_search",
+    "export_search_appointments",
+    "export_search_rows",
     "export_search_csv",
     "search_csv",
 ]
@@ -55,6 +61,43 @@ SEARCH_EXPORT_FIELDNAMES = [
 ]
 
 
+def export_search_appointments(
+    salon, query=None, date_from=None, date_to=None,
+    staff_member=None, status=None,
+):
+    """Return search results for ``salon`` as a list of dicts.
+
+    Accepts exactly the parameters of
+    :func:`bookings.search.search_appointments`, passed through
+    unchanged: ``salon`` plus the optional ``query``,
+    ``date_from``, ``date_to``, ``staff_member``, and ``status``
+    filters.
+
+    Every row mirrors a CSV row exactly: keys are
+    :data:`SEARCH_EXPORT_FIELDNAMES` in order, ``id`` is the
+    appointment's pk, and ``start`` / ``end`` are ISO-8601
+    strings (``""`` when unset). Rows follow the search
+    service's ordering exactly. An empty search exports as an
+    empty list. Records nothing.
+    """
+    appointments = search_appointments(
+        salon, query=query, date_from=date_from, date_to=date_to,
+        staff_member=staff_member, status=status,
+    )
+    return [{
+        "id": appt.pk,
+        "client": str(appt.client),
+        "staff": appt.staff_member.display_name,
+        "service_name": (
+            appt.service.name if appt.service else appt.service_name
+        ),
+        "start": appt.start.isoformat() if appt.start else "",
+        "end": appt.end.isoformat() if appt.end else "",
+        "status": appt.status,
+        "origin": appt.origin,
+    } for appt in appointments]
+
+
 def export_search_csv(
     salon, query=None, date_from=None, date_to=None,
     staff_member=None, status=None,
@@ -63,9 +106,9 @@ def export_search_csv(
 
     Accepts exactly the parameters of
     :func:`bookings.search.search_appointments`, passed through
-    unchanged: ``salon`` plus the optional ``query``,
-    ``date_from``, ``date_to``, ``staff_member``, and ``status``
-    filters.
+    unchanged. Built from :func:`export_search_appointments`
+    with the same arguments, so the CSV and dict exports always
+    agree.
 
     Returns:
         A CSV string whose header row is
@@ -74,30 +117,20 @@ def export_search_csv(
         search exports as the header row alone. Lines end with
         ``"\\n"``.
     """
-    appointments = search_appointments(
-        salon, query=query, date_from=date_from, date_to=date_to,
-        staff_member=staff_member, status=status,
-    )
     buffer = io.StringIO()
     writer = csv.DictWriter(
         buffer, fieldnames=SEARCH_EXPORT_FIELDNAMES, lineterminator="\n"
     )
     writer.writeheader()
-    for appt in appointments:
-        writer.writerow({
-            "id": appt.pk,
-            "client": str(appt.client),
-            "staff": appt.staff_member.display_name,
-            "service_name": (
-                appt.service.name if appt.service else appt.service_name
-            ),
-            "start": appt.start.isoformat() if appt.start else "",
-            "end": appt.end.isoformat() if appt.end else "",
-            "status": appt.status,
-            "origin": appt.origin,
-        })
+    for row in export_search_appointments(
+        salon, query=query, date_from=date_from, date_to=date_to,
+        staff_member=staff_member, status=status,
+    ):
+        writer.writerow(row)
     return buffer.getvalue()
 
 
-#: Alias, mirroring the naming convenience in sibling services.
+#: Aliases, mirroring the naming convenience in sibling services.
+export_search = export_search_appointments
+export_search_rows = export_search_appointments
 search_csv = export_search_csv
