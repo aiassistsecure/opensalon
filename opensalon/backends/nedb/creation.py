@@ -125,9 +125,22 @@ class DatabaseCreation(PostgresDatabaseCreation):
         except (ValueError, UnicodeDecodeError):
             return {}
 
+    # -- embedded mode: same primitives, in-process ------------------
+
+    def _embedded(self):
+        from . import embedded
+
+        return embedded.embedded_enabled(self.connection.settings_dict)
+
     # -- database primitives over HTTP (DYOR section 4 surface) -------
 
     def database_exists(self, name):
+        if self._embedded():
+            from . import embedded
+
+            return embedded.database_exists(
+                name, self.connection.settings_dict
+            )
         payload = self._http_request("GET", "/v1/databases")
         entries = payload.get("databases", []) if isinstance(payload, dict) else []
         names = {
@@ -138,6 +151,14 @@ class DatabaseCreation(PostgresDatabaseCreation):
 
     def create_database(self, name):
         """POST /v1/databases. Returns True if this call created it."""
+        if self._embedded():
+            from . import embedded
+
+            existed = embedded.database_exists(
+                name, self.connection.settings_dict
+            )
+            embedded.core_for(name, self.connection.settings_dict)
+            return not existed
         try:
             self._http_request("POST", "/v1/databases", {"name": name})
         except NedbHttpError as exc:
@@ -161,6 +182,13 @@ class DatabaseCreation(PostgresDatabaseCreation):
         the append-only provenance clock is never rewound, which is
         DYOR section 1 behaviour, not leftover data.
         """
+        if self._embedded():
+            from . import embedded
+
+            self.connection.close()
+            return embedded.purge_database(
+                name, self.connection.settings_dict
+            )
         self.connection.close()
         try:
             self._http_request(
@@ -189,6 +217,18 @@ class DatabaseCreation(PostgresDatabaseCreation):
         tables = sorted({table for table in tables if table})
         if not tables:
             return 0
+        if self._embedded():
+            from . import embedded
+
+            core = embedded.core_for(name, self.connection.settings_dict)
+            for table in tables:
+                core.put(
+                    table,
+                    self.MATERIALIZED_SENTINEL_ID,
+                    json.dumps({"id": 0}),
+                )
+                core.delete(table, self.MATERIALIZED_SENTINEL_ID)
+            return len(tables)
         ops = []
         for table in tables:
             ops.append(
