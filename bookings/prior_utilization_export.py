@@ -1,13 +1,16 @@
-"""CSV export of the prior-period utilization comparison.
+"""CSV + dict export of the prior-period utilization comparison.
 
 Backend only — no views, templates, or UI. Read-only. Founding
 rule (Exit Principle): anything a salon can enter, it can fully
 export. Built ON TOP of :mod:`bookings.prior_utilization` —
 figures verbatim, never recomputed. First data row is the salon
 total (staff fields empty), then one row per staff member in
-``by_staff`` order. Utilization fractions render to four
-places; percent changes to two places; ``None`` renders empty.
-Lines end ``"\\n"``.
+``by_staff`` order. The CSV is built from the dict rows
+(:func:`export_prior_utilization_rows`): keys are
+:data:`PRIOR_UTILIZATION_EXPORT_FIELDNAMES` in order, counts are
+ints, utilization fractions render to four places as strings,
+percent changes to two places as strings, ``None`` renders as
+``""`` (exactly as in the CSV). Lines end ``"\\n"``.
 """
 import csv
 import io
@@ -18,6 +21,9 @@ __all__ = [
     "PRIOR_UTILIZATION_EXPORT_FIELDNAMES", "PRIOR_UTILIZATION_FIELDNAMES",
     "EXPORT_FIELDNAMES", "export_prior_utilization_csv",
     "prior_utilization_csv", "export_prior_period_utilization_csv",
+    "export_prior_utilization_rows", "prior_utilization_rows",
+    "export_prior_utilization", "export_prior_utilization_dict",
+    "prior_utilization_dict",
 ]
 
 PRIOR_UTILIZATION_EXPORT_FIELDNAMES = [
@@ -44,26 +50,27 @@ def _util(value):
     return "" if value is None else f"{value:.4f}"
 
 
-def export_prior_utilization_csv(salon, date_from=None, date_to=None, *,
-                                 start_date=None, end_date=None, **kwargs):
-    """Return the prior-period utilization comparison as CSV.
+def export_prior_utilization_rows(salon, date_from=None, date_to=None, *,
+                                  start_date=None, end_date=None, **kwargs):
+    """Return the prior-period utilization comparison as dict rows.
 
     Accepts exactly the parameters of
     :func:`bookings.prior_utilization.prior_utilization_report`,
     passed through unchanged (a reversed window raises
-    ``ValueError`` from that service).
+    ``ValueError`` from that service). The dicts mirror the CSV
+    rows exactly: keys are
+    :data:`PRIOR_UTILIZATION_EXPORT_FIELDNAMES` in order, with
+    the CSV rendering applied (utilization fractions as
+    four-place strings, percentages as two-place strings,
+    ``None`` as ``""``). First row is the salon total, then one
+    row per staff member in ``by_staff`` order.
     """
     r = prior_utilization_report(
         salon, date_from, date_to, start_date=start_date,
         end_date=end_date, **kwargs)
-    buffer = io.StringIO()
-    writer = csv.DictWriter(
-        buffer, fieldnames=PRIOR_UTILIZATION_EXPORT_FIELDNAMES,
-        lineterminator="\n")
-    writer.writeheader()
 
     def _row(staff_id, staff_name, count, booked, rostered, util):
-        writer.writerow({
+        return {
             "salon_id": r.salon.pk if r.salon is not None else "",
             "current_start_date": r.start_date.isoformat() if r.start_date else "",
             "current_end_date": r.end_date.isoformat() if r.end_date else "",
@@ -86,15 +93,39 @@ def export_prior_utilization_csv(salon, date_from=None, date_to=None, *,
             "prior_utilization": _util(util.prior),
             "utilization_delta": _util(util.delta),
             "utilization_percent_change": _pct(util.percent_change),
-        })
+        }
 
-    _row("", "", r.appointment_count, r.booked_minutes,
-         r.rostered_minutes, r.utilization)
+    rows = [_row("", "", r.appointment_count, r.booked_minutes,
+                 r.rostered_minutes, r.utilization)]
     for s in r.by_staff:
-        _row(s.staff_member_id, s.staff_name, s.appointment_count,
-             s.booked_minutes, s.rostered_minutes, s.utilization)
+        rows.append(_row(s.staff_member_id, s.staff_name, s.appointment_count,
+                         s.booked_minutes, s.rostered_minutes, s.utilization))
+    return rows
+
+
+def export_prior_utilization_csv(salon, date_from=None, date_to=None, *,
+                                 start_date=None, end_date=None, **kwargs):
+    """Return the prior-period utilization comparison as CSV.
+
+    Built from :func:`export_prior_utilization_rows` with the same
+    arguments, so the CSV and dict exports always agree and the
+    historical CSV output is byte-identical.
+    """
+    buffer = io.StringIO()
+    writer = csv.DictWriter(
+        buffer, fieldnames=PRIOR_UTILIZATION_EXPORT_FIELDNAMES,
+        lineterminator="\n")
+    writer.writeheader()
+    for row in export_prior_utilization_rows(
+            salon, date_from, date_to, start_date=start_date,
+            end_date=end_date, **kwargs):
+        writer.writerow(row)
     return buffer.getvalue()
 
 
 prior_utilization_csv = export_prior_utilization_csv
 export_prior_period_utilization_csv = export_prior_utilization_csv
+prior_utilization_rows = export_prior_utilization_rows
+export_prior_utilization = export_prior_utilization_rows
+export_prior_utilization_dict = export_prior_utilization_rows
+prior_utilization_dict = export_prior_utilization_rows
