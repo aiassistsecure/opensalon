@@ -1,24 +1,37 @@
-"""Export one salon's no-show / late-cancel rate summary as CSV.
+"""Export one salon's no-show / late-cancel rate summary as CSV or JSON.
 
 Usage:
     python manage.py export_noshow_rate --salon-id ID
         --date-from YYYY-MM-DD [--date-to YYYY-MM-DD]
-        [--output PATH]
+        [--format json|csv] [--output PATH]
 
-Thin wrapper around
-:func:`bookings.noshow_rate_export.export_noshow_rate_csv`:
+Thin wrapper around :mod:`bookings.noshow_rate_export`:
 the salon is resolved by id, dates are parsed, and both are
-passed to the service verbatim — its CSV text is written
-unchanged, to ``--output`` when given and to stdout otherwise.
-Backend only; read-only.
+passed to the service verbatim. For ``--format csv`` (the
+default) it writes
+:func:`bookings.noshow_rate_export.export_noshow_rate_csv`'s
+CSV text, exactly as before, byte-identical; for
+``--format json`` it serialises the SAME single dict row from
+:func:`bookings.noshow_rate_export.export_noshow_rate_row`
+as a one-element JSON list via ``DjangoJSONEncoder``, so the
+two formats can never disagree. Output is written unchanged,
+to ``--output`` when given and to stdout otherwise. An
+unknown format raises ``CommandError``. Backend only; read-only.
 """
 import argparse
 import datetime
+import json
 
 from django.core.management.base import BaseCommand, CommandError
+from django.core.serializers.json import DjangoJSONEncoder
 
-from bookings.noshow_rate_export import export_noshow_rate_csv
+from bookings.noshow_rate_export import (
+    export_noshow_rate_csv,
+    export_noshow_rate_row,
+)
 from saloncore.models import Salon
+
+_FORMATS = ("json", "csv")
 
 
 def _parse_date(value):
@@ -30,7 +43,7 @@ def _parse_date(value):
 
 
 class Command(BaseCommand):
-    help = "Export one salon's no-show / late-cancel rate summary as CSV."
+    help = "Export one salon's no-show / late-cancel rate summary as CSV (default) or JSON."
 
     def add_arguments(self, parser):
         parser.add_argument("--salon-id", type=int, required=True,
@@ -41,10 +54,17 @@ class Command(BaseCommand):
         parser.add_argument("--date-to", "--to-date", "--end-date",
                             dest="date_to", type=_parse_date, default=None,
                             help="Inclusive last day, YYYY-MM-DD.")
+        parser.add_argument("--format", dest="format", default="csv",
+                            choices=_FORMATS,
+                            help="Export format: csv (default) or json.")
         parser.add_argument("--output", default=None,
-                            help="Path to write the CSV to (default: stdout).")
+                            help="Path to write the export to (default: stdout).")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist as exc:
@@ -53,8 +73,14 @@ class Command(BaseCommand):
         if options.get("date_from") is None:
             raise CommandError("A --date-from is required.")
         try:
-            text = export_noshow_rate_csv(
-                salon, options["date_from"], options.get("date_to"))
+            if fmt == "json":
+                row = export_noshow_rate_row(
+                    salon, options["date_from"], options.get("date_to"))
+                text = json.dumps(
+                    [row], indent=2, cls=DjangoJSONEncoder) + "\n"
+            else:
+                text = export_noshow_rate_csv(
+                    salon, options["date_from"], options.get("date_to"))
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options.get("output"):
