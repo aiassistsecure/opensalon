@@ -576,10 +576,19 @@ class EmbeddedConnection:
         return EmbeddedCursor(self)
 
     def commit(self):
+        # Flush is the durability point of the CAS/autocommit
+        # contract: a failed flush means the writes are not
+        # persisted, so the failure must surface to the caller
+        # instead of being silently swallowed. Engine failures
+        # arrive as RuntimeError (same as in EmbeddedCursor._run)
+        # and are reported as OperationalError; anything else
+        # propagates unchanged.
+        import psycopg
+
         try:
             core_for(self.db_name, self.settings_dict).flush()
-        except Exception:
-            pass
+        except RuntimeError as exc:
+            raise psycopg.OperationalError(str(exc)) from exc
 
     def rollback(self):
         # Append-only store: there is no transaction to roll back.
