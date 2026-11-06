@@ -1,4 +1,4 @@
-"""Per-client value CSV export service.
+"""Per-client value CSV/JSON export service.
 
 Backend only — no views, templates, or UI. Read-only: this
 service never creates, edits, or deletes a sale or client.
@@ -29,6 +29,9 @@ The service's unattributed bucket (sales with no client, or a
 client from another salon) is not a client row, so it does not
 appear here — exactly as it does not appear in the service's
 ``rows``.
+
+A plain list of dict rows (:func:`export_client_value`) backs
+the CSV, so the two formats can never disagree.
 """
 import csv
 import io
@@ -38,6 +41,7 @@ from insights.client_value import client_value
 
 __all__ = [
     "CLIENT_VALUE_FIELDNAMES",
+    "export_client_value",
     "export_client_value_csv",
     "client_value_csv",
 ]
@@ -58,6 +62,29 @@ def _money(value):
     return str(Decimal(value).quantize(_CENTS))
 
 
+def export_client_value(salon, start, end, **kwargs):
+    """Return ``salon``'s per-client value report as dict rows.
+
+    Every row mirrors a CSV row exactly: keys are
+    :data:`CLIENT_VALUE_FIELDNAMES` in order, ``client_id`` and
+    ``salon_id`` are the pks carried / scoped, ``total`` is a
+    string to two decimal places, and ``sale_count`` is an int.
+    Rows come verbatim from
+    :func:`insights.client_value.client_value` for the same
+    salon and window, in that service's order. An empty window
+    exports as an empty list. Records nothing.
+    """
+    result = client_value(salon, start, end, **kwargs)
+    salon_id = salon.pk if salon is not None else None
+    return [{
+        "client_id": row.client_id,
+        "client_name": row.display_name,
+        "salon_id": salon_id,
+        "total": _money(row.total),
+        "sale_count": row.sale_count,
+    } for row in result.rows]
+
+
 def export_client_value_csv(salon, start, end, **kwargs):
     """Return ``salon``'s per-client value report as a CSV string.
 
@@ -72,24 +99,18 @@ def export_client_value_csv(salon, start, end, **kwargs):
         A CSV string whose header row is
         :data:`CLIENT_VALUE_FIELDNAMES` and whose data rows follow
         the client-value service's ordering exactly, with values
-        matching that service's rows. An empty window exports as
-        the header row alone. Lines end with ``"\\n"``.
+        matching that service's rows. Built from
+        :func:`export_client_value` with the same arguments, so
+        the CSV and dict exports always agree. An empty window
+        exports as the header row alone. Lines end with ``"\\n"``.
     """
-    result = client_value(salon, start, end, **kwargs)
-    salon_id = salon.pk if salon is not None else None
     buffer = io.StringIO()
     writer = csv.DictWriter(
         buffer, fieldnames=CLIENT_VALUE_FIELDNAMES, lineterminator="\n"
     )
     writer.writeheader()
-    for row in result.rows:
-        writer.writerow({
-            "client_id": row.client_id,
-            "client_name": row.display_name,
-            "salon_id": salon_id,
-            "total": _money(row.total),
-            "sale_count": row.sale_count,
-        })
+    for row in export_client_value(salon, start, end, **kwargs):
+        writer.writerow(row)
     return buffer.getvalue()
 
 

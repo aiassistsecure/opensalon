@@ -1,29 +1,43 @@
-"""Export a salon's per-client value report as CSV.
+"""Export a salon's per-client value report as CSV or JSON.
 
 Usage:
     python manage.py export_client_value --salon-id ID
-        --start-date YYYY-MM-DD --end-date YYYY-MM-DD [--output PATH]
+        --start-date YYYY-MM-DD --end-date YYYY-MM-DD
+        [--format csv|json] [--output PATH]
 
-Thin wrapper around the existing
-:func:`insights.client_value_export.export_client_value_csv`
-service: the salon is resolved by id, the dates are parsed to
+Thin wrapper around :mod:`insights.client_value_export`: the
+salon is resolved by id, the dates are parsed to
 ``datetime.date`` objects, and both are passed to the service
-verbatim — its CSV text is written unchanged, to ``--output``
-when given and to stdout otherwise. This command adds no export
-logic of its own, so command and service output can never
-disagree — one source of truth.
+verbatim. For ``--format csv`` (the default) it writes
+:func:`insights.client_value_export.export_client_value_csv`'s
+CSV string as-is, so the historical CSV output is
+byte-identical; for ``--format json`` it serialises the same
+dict rows from
+:func:`insights.client_value_export.export_client_value` —
+the same rows the CSV is built from — as JSON via
+``DjangoJSONEncoder``. Output is written unchanged to
+``--output`` when given and to stdout otherwise. This command
+adds no export logic of its own, so command and service output
+can never disagree — one source of truth.
 
-An unknown salon, an unparseable date, or a service error raises
-``CommandError``. Dates mean whole local days in the salon's
-timezone, inclusive at both ends, exactly as the service defines
-them. Read-only.
+An unknown salon, an unparseable date, a service error, or an
+unknown format raises ``CommandError``. Dates mean whole local
+days in the salon's timezone, inclusive at both ends, exactly
+as the service defines them. Read-only.
 """
 import datetime
+import json
 
 from django.core.management.base import BaseCommand, CommandError
+from django.core.serializers.json import DjangoJSONEncoder
 
-from insights.client_value_export import export_client_value_csv
+from insights.client_value_export import (
+    export_client_value,
+    export_client_value_csv,
+)
 from saloncore.models import Salon
+
+_FORMATS = ("csv", "json")
 
 
 def _parse_date(value, label):
@@ -42,7 +56,7 @@ def _parse_date(value, label):
 
 
 class Command(BaseCommand):
-    help = "Export a salon's per-client value report as CSV."
+    help = "Export a salon's per-client value report as CSV or JSON."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -61,11 +75,20 @@ class Command(BaseCommand):
             help="Last day of the range, YYYY-MM-DD (inclusive).",
         )
         parser.add_argument(
+            "--format", dest="format", default="csv", choices=_FORMATS,
+            help="Export format: csv (default) or json.",
+        )
+        parser.add_argument(
             "--output", default=None,
-            help="Path to write the CSV to (default: stdout).",
+            help="Path to write the export to (default: stdout).",
         )
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "csv"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'csv' or 'json'."
+            )
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist as exc:
@@ -79,9 +102,14 @@ class Command(BaseCommand):
                 "Both --start-date and --end-date are required."
             )
         try:
-            text = export_client_value_csv(
-                salon, start_date, end_date
-            )
+            if fmt == "json":
+                text = json.dumps(
+                    export_client_value(salon, start_date, end_date),
+                    indent=2, cls=DjangoJSONEncoder) + "\n"
+            else:
+                text = export_client_value_csv(
+                    salon, start_date, end_date
+                )
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if options["output"]:
