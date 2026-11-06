@@ -1,4 +1,4 @@
-"""Per-service revenue CSV export service.
+"""Per-service revenue CSV/JSON export service.
 
 Backend only — no views, templates, or UI. Read-only.
 
@@ -12,6 +12,9 @@ rows carry; ``service_id`` and duration fields are empty for
 snapshot-only rows, and ``revenue_per_hour`` is empty when the
 row's is ``None``. Money renders to two decimal places, never
 through a float.
+
+A plain list of dict rows (:func:`export_service_revenue`) backs
+the CSV, so the two formats can never disagree.
 """
 import csv
 import io
@@ -23,7 +26,10 @@ __all__ = [
     "SERVICE_REVENUE_FIELDNAMES",
     "SERVICE_REVENUE_EXPORT_FIELDNAMES",
     "EXPORT_FIELDNAMES",
+    "export_service_revenue",
+    "export_service_revenue_rows",
     "export_service_revenue_csv",
+    "service_revenue_rows",
     "service_revenue_csv",
 ]
 
@@ -53,38 +59,58 @@ def _int_or_empty(value):
     return "" if value is None else value
 
 
+def export_service_revenue(salon, start, end, **kwargs):
+    """Return ``salon``'s per-service revenue report as dict rows.
+
+    Args are passed through to
+    :func:`insights.service_revenue.revenue_by_service`. Every
+    row mirrors a CSV cell exactly: keys are
+    :data:`SERVICE_REVENUE_FIELDNAMES` in order, ``service_id``
+    and duration fields are the int value or ``""`` for
+    snapshot-only / unknown rows, counts are ints, and money is
+    a string rendered to two places (``revenue_per_hour`` is
+    ``""`` when the row's is ``None``). An empty window exports
+    as an empty list.
+    """
+    rows = revenue_by_service(salon, start, end, **kwargs)
+    return [{
+        "service_id": _int_or_empty(row.service_id),
+        "service_name": row.service_name,
+        "revenue": _money(row.revenue),
+        "quantity": row.quantity,
+        "line_count": row.line_count,
+        "sale_count": row.sale_count,
+        "duration_minutes": _int_or_empty(row.duration_minutes),
+        "total_duration_minutes": _int_or_empty(
+            row.total_duration_minutes),
+        "revenue_per_hour": (
+            "" if row.revenue_per_hour is None
+            else _money(row.revenue_per_hour)
+        ),
+    } for row in rows]
+
+
 def export_service_revenue_csv(salon, start, end, **kwargs):
     """Return ``salon``'s per-service revenue report as CSV text.
 
     Args are passed through to
     :func:`insights.service_revenue.revenue_by_service`. An empty
     window exports as the header row alone. Lines end ``"\\n"``.
+    Built from :func:`export_service_revenue` with the same
+    arguments, so the CSV and dict exports always agree.
     """
-    rows = revenue_by_service(salon, start, end, **kwargs)
     buffer = io.StringIO()
     writer = csv.DictWriter(
         buffer, fieldnames=SERVICE_REVENUE_FIELDNAMES,
         lineterminator="\n",
     )
     writer.writeheader()
-    for row in rows:
-        writer.writerow({
-            "service_id": _int_or_empty(row.service_id),
-            "service_name": row.service_name,
-            "revenue": _money(row.revenue),
-            "quantity": row.quantity,
-            "line_count": row.line_count,
-            "sale_count": row.sale_count,
-            "duration_minutes": _int_or_empty(row.duration_minutes),
-            "total_duration_minutes": _int_or_empty(
-                row.total_duration_minutes),
-            "revenue_per_hour": (
-                "" if row.revenue_per_hour is None
-                else _money(row.revenue_per_hour)
-            ),
-        })
+    for row in export_service_revenue(salon, start, end, **kwargs):
+        writer.writerow(row)
     return buffer.getvalue()
 
 
-#: Alias, mirroring the naming convenience in sibling services.
+#: Aliases, mirroring the naming convenience in sibling services.
+export_service_revenue_rows = export_service_revenue
+service_revenue_rows = export_service_revenue
 service_revenue_csv = export_service_revenue_csv
