@@ -1,4 +1,4 @@
-"""Prior-period refunds/net comparison CSV export service.
+"""Prior-period refunds/net comparison CSV/JSON export service.
 
 Backend only — no views, templates, or UI. Read-only.
 
@@ -15,6 +15,9 @@ Money and percentages render to two decimal places, never via
 a float; refund counts render as integers; a ``None`` percent
 change (zero prior figure — see
 :mod:`insights.prior_refunds_net`) renders as an empty string.
+
+A plain list of dict rows (:func:`export_prior_refunds_net`)
+backs the CSV, so the two formats can never disagree.
 """
 import csv
 import io
@@ -26,6 +29,7 @@ __all__ = [
     "PRIOR_REFUNDS_NET_FIELDNAMES",
     "PRIOR_REFUNDS_NET_EXPORT_FIELDNAMES",
     "EXPORT_FIELDNAMES",
+    "export_prior_refunds_net",
     "export_prior_refunds_net_csv",
     "export_prior_refunds_net_comparison_csv",
     "prior_refunds_net_csv",
@@ -62,11 +66,16 @@ def _count(value):
     return str(int(Decimal(value)))
 
 
-def export_prior_refunds_net_csv(salon, start_date=None, end_date=None,
-                                 **kwargs):
-    """Return ``salon``'s prior-period refunds/net comparison as CSV.
+def export_prior_refunds_net(salon, start_date=None, end_date=None,
+                             **kwargs):
+    """Return ``salon``'s prior-period refunds/net comparison as dicts.
 
-    Args mirror :func:`insights.prior_refunds_net.prior_refunds_net`
+    Every row mirrors a CSV cell exactly: keys are
+    :data:`PRIOR_REFUNDS_NET_FIELDNAMES` in order, dates are ISO
+    strings, and money/percentages are strings rendered to two
+    places (``""`` where the CSV renders empty); refund counts
+    are integer strings. Args mirror
+    :func:`insights.prior_refunds_net.prior_refunds_net`
     exactly; its result's values are rendered unchanged.
     """
     result = prior_refunds_net(salon, start_date, end_date, **kwargs)
@@ -74,15 +83,10 @@ def export_prior_refunds_net_csv(salon, start_date=None, end_date=None,
     def fmt(name, value):
         return _count(value) if name in _COUNTS else _money(value)
 
-    buffer = io.StringIO()
-    writer = csv.DictWriter(
-        buffer, fieldnames=PRIOR_REFUNDS_NET_FIELDNAMES,
-        lineterminator="\n"
-    )
-    writer.writeheader()
+    rows = []
     for name in _METRICS:
         comp = getattr(result, name)
-        writer.writerow({
+        rows.append({
             "metric": name,
             "current_start_date": result.current.start_date.isoformat(),
             "current_end_date": result.current.end_date.isoformat(),
@@ -93,6 +97,27 @@ def export_prior_refunds_net_csv(salon, start_date=None, end_date=None,
             "delta": fmt(name, comp.delta),
             "percent_change": _pct(comp.percent_change),
         })
+    return rows
+
+
+def export_prior_refunds_net_csv(salon, start_date=None, end_date=None,
+                                 **kwargs):
+    """Return ``salon``'s prior-period refunds/net comparison as CSV.
+
+    Args mirror :func:`insights.prior_refunds_net.prior_refunds_net`
+    exactly; its result's values are rendered unchanged. Built
+    from :func:`export_prior_refunds_net` with the same arguments,
+    so the CSV and dict exports always agree.
+    """
+    buffer = io.StringIO()
+    writer = csv.DictWriter(
+        buffer, fieldnames=PRIOR_REFUNDS_NET_FIELDNAMES,
+        lineterminator="\n"
+    )
+    writer.writeheader()
+    for row in export_prior_refunds_net(salon, start_date, end_date,
+                                        **kwargs):
+        writer.writerow(row)
     return buffer.getvalue()
 
 
