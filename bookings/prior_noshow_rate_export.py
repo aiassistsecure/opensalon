@@ -1,11 +1,15 @@
-"""CSV export of the prior-period no-show / late-cancel comparison.
+"""CSV + dict export of the prior-period no-show comparison.
 
 Backend only — no views, templates, or UI. Read-only. Founding
 rule (Exit Principle): anything a salon can enter, it can fully
 export. Built ON TOP of :mod:`bookings.prior_noshow_rate` —
 figures verbatim, never recounted. One summary row for the salon.
-Rates / percent changes render to two places, never via a float;
-``None`` renders empty. Lines ``\\n``.
+The CSV is built from the one dict row
+(:func:`export_prior_noshow_rate_row`): keys are
+:data:`PRIOR_NOSHOW_RATE_EXPORT_FIELDNAMES` in order, counts are
+ints, rates / percent changes render to two places as strings,
+never via a float; ``None`` renders as ``""`` (exactly as in the
+CSV). Lines ``\\n``.
 """
 import csv
 import io
@@ -16,6 +20,10 @@ __all__ = [
     "PRIOR_NOSHOW_RATE_EXPORT_FIELDNAMES", "PRIOR_NOSHOW_RATE_FIELDNAMES",
     "EXPORT_FIELDNAMES", "export_prior_noshow_rate_csv",
     "prior_noshow_rate_csv", "export_prior_period_noshow_rate_csv",
+    "export_prior_noshow_rate_row", "prior_noshow_rate_row",
+    "export_prior_noshow_rate_rows", "prior_noshow_rate_rows",
+    "export_prior_noshow_rate", "export_prior_noshow_rate_dict",
+    "prior_noshow_rate_dict",
 ]
 
 PRIOR_NOSHOW_RATE_EXPORT_FIELDNAMES = [
@@ -44,23 +52,22 @@ def _pct(value):
     return "" if value is None else f"{value:.2f}"
 
 
-def export_prior_noshow_rate_csv(salon, date_from=None, date_to=None, *,
+def export_prior_noshow_rate_row(salon, date_from=None, date_to=None, *,
                                  start_date=None, end_date=None, **kwargs):
-    """Return the prior-period no-show comparison as CSV.
+    """Return the prior-period no-show comparison as one dict row.
 
     Accepts exactly the parameters of
     :func:`bookings.prior_noshow_rate.prior_noshow_rate_report`,
     passed through unchanged (a reversed window raises
-    ``ValueError`` from that service).
+    ``ValueError`` from that service). The dict mirrors the CSV
+    row exactly: keys are
+    :data:`PRIOR_NOSHOW_RATE_EXPORT_FIELDNAMES` in order, with
+    the CSV rendering applied (percentages as two-place strings,
+    ``None`` as ``""``).
     """
     r = prior_noshow_rate_report(
         salon, date_from, date_to, start_date=start_date,
         end_date=end_date, **kwargs)
-    buffer = io.StringIO()
-    writer = csv.DictWriter(
-        buffer, fieldnames=PRIOR_NOSHOW_RATE_EXPORT_FIELDNAMES,
-        lineterminator="\n")
-    writer.writeheader()
 
     def _m(metric, prefix):
         return {f"current_{prefix}": metric.current, f"prior_{prefix}": metric.prior,
@@ -87,9 +94,40 @@ def export_prior_noshow_rate_csv(salon, date_from=None, date_to=None, *,
         row.update(_m(metric, prefix))
     row.update(_r(r.no_show_rate_percent, "no_show_rate_percent", "no_show_rate"))
     row.update(_r(r.late_cancel_rate_percent, "late_cancel_rate_percent", "late_cancel_rate"))
-    writer.writerow(row)
+    return row
+
+
+def export_prior_noshow_rate_rows(salon, date_from=None, date_to=None, *,
+                                  start_date=None, end_date=None, **kwargs):
+    """Return the comparison as a list holding the one dict row."""
+    return [export_prior_noshow_rate_row(
+        salon, date_from, date_to, start_date=start_date,
+        end_date=end_date, **kwargs)]
+
+
+def export_prior_noshow_rate_csv(salon, date_from=None, date_to=None, *,
+                                 start_date=None, end_date=None, **kwargs):
+    """Return the prior-period no-show comparison as CSV.
+
+    Built from :func:`export_prior_noshow_rate_row` with the same
+    arguments, so the CSV and dict exports always agree and the
+    historical CSV output is byte-identical.
+    """
+    buffer = io.StringIO()
+    writer = csv.DictWriter(
+        buffer, fieldnames=PRIOR_NOSHOW_RATE_EXPORT_FIELDNAMES,
+        lineterminator="\n")
+    writer.writeheader()
+    writer.writerow(export_prior_noshow_rate_row(
+        salon, date_from, date_to, start_date=start_date,
+        end_date=end_date, **kwargs))
     return buffer.getvalue()
 
 
 prior_noshow_rate_csv = export_prior_noshow_rate_csv
 export_prior_period_noshow_rate_csv = export_prior_noshow_rate_csv
+prior_noshow_rate_row = export_prior_noshow_rate_row
+prior_noshow_rate_rows = export_prior_noshow_rate_rows
+export_prior_noshow_rate = export_prior_noshow_rate_rows
+export_prior_noshow_rate_dict = export_prior_noshow_rate_rows
+prior_noshow_rate_dict = export_prior_noshow_rate_rows
