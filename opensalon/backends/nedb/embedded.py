@@ -395,29 +395,42 @@ class _EmbeddedAdaptersMap:
         return self._map.register_dumper(cls, dumper)
 
 
+class _OfflineContext:
+    """The AdaptContext an embedded connection presents as itself.
+
+    psycopg dumpers derive their quoting from ``context.connection``:
+    with a truthy connection they call ``Escaping(connection.pgconn)``,
+    which type-checks a real libpq PGconn in C -- the one thing
+    embedded mode must never create (R1) -- and ``conn_encoding()``
+    reads ``pgconn._encoding`` off it. This proxy is falsy, so both
+    take psycopg's documented offline path instead (utf-8, single-
+    quote doubling, ``E''`` when a backslash is present -- exactly
+    the escaping this module's own ``_literal()`` already assumes),
+    while every other attribute delegates to the real
+    :class:`EmbeddedConnection`, so ``db_name`` / ``settings_dict`` /
+    ``adapters`` / ``cursor()`` etc. behave exactly as before.
+    """
+
+    def __init__(self, connection):
+        self._wrapped = connection
+
+    def __bool__(self):
+        return False
+
+    @property
+    def connection(self):
+        return self
+
+    @property
+    def adapters(self):
+        return self._wrapped.adapters
+
+    def __getattr__(self, name):
+        return getattr(self._wrapped, name)
+
+
 def _adapters_map():
     return _EmbeddedAdaptersMap()
-
-
-def _pgconn():
-    """A real libpq PGconn for psycopg's quoting machinery only.
-
-    ``psycopg.sql.quote`` (used by the schema editor while composing
-    constraint SQL the NEDB editor then discards) escapes through the
-    context's pgconn and type-checks it in C. A PGconn opened against
-    the configured port never serves a query in embedded mode; it
-    only needs to exist, with its default encoding, for
-    PQescapeLiteral.
-    """
-    from psycopg.pq import PGconn
-
-    host = os.environ.get("POSTGRES_HOST", "127.0.0.1")
-    port = os.environ.get("POSTGRES_PORT", "5432")
-    conninfo = "host=%s port=%s dbname=opensalon connect_timeout=1" % (
-        host,
-        port,
-    )
-    return PGconn.connect(conninfo.encode())
 
 
 class _ExecutedQuery:
@@ -431,7 +444,11 @@ class EmbeddedCursor:
     """A psycopg-shaped cursor whose wire is NedbCore.nesql."""
 
     def __init__(self, connection):
-        self.connection = connection
+        # The AdaptContext view of the connection (R1): attribute
+        # access delegates to the real EmbeddedConnection, but as a
+        # context it is offline, so quoting via a cursor never
+        # reaches for a libpq PGconn either.
+        self.connection = connection.connection
         self.adapters = _adapters_map()
         self._query = _ExecutedQuery()
         self.arraysize = 1
@@ -539,12 +556,21 @@ class EmbeddedConnection:
         self.closed = False
         self.info = _ConnectionInfo()
         self.adapters = _adapters_map()
-        self.pgconn = _pgconn()
+        # No libpq connect here (R1): there is no PGconn at all, so
+        # constructing an embedded connection opens no socket and
+        # ignores POSTGRES_HOST/POSTGRES_PORT entirely. psycopg
+        # consumers reach the pgconn only through the offline
+        # context below, which reports pgconn as None -- psycopg's
+        # supported no-connection shape for quoting/encoding.
+        self.pgconn = None
+        self._offline_context = _OfflineContext(self)
 
     @property
     def connection(self):
-        # psycopg's AdaptContext: a connection's .connection is itself.
-        return self
+        # psycopg's AdaptContext: a connection's .connection is
+        # itself -- here, the offline context (R1, see its docstring),
+        # so sql.quote()/dumpers never reach for a libpq PGconn.
+        return self._offline_context
 
     def cursor(self, name=None, **kwargs):
         return EmbeddedCursor(self)

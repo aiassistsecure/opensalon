@@ -89,6 +89,94 @@ class EmbeddedSelectionTests(SimpleTestCase):
         self.assertIsInstance(connection, EmbeddedConnection)
 
 
+class EmbeddedNoLibpqConnectTests(SimpleTestCase):
+    """R1: embedded setup (and quoting) must open no socket at all.
+
+    The old EmbeddedConnection unconditionally called a real libpq
+    PGconn.connect() to POSTGRES_HOST:POSTGRES_PORT, contradicting
+    the "holding no socket at all" contract. These tests pin the
+    fix: construction and psycopg.sql.quote (the schema editor's
+    quote_value path, the pgconn's only consumer) must work with
+    every libpq/socket connect entry point rigged to fail.
+    """
+
+    def _tcp_listener(self):
+        """A live listener on the port the old _pgconn() would dial.
+
+        PGconn is a C type whose methods cannot be mock-patched, so
+        the pin is behavioural: point POSTGRES_HOST/POSTGRES_PORT
+        (the only inputs the old code read) at a real listening
+        socket and assert nothing ever connects to it.
+        """
+        import socket
+
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(5)
+        listener.setblocking(False)
+        self.addCleanup(listener.close)
+        return listener
+
+    def _assert_no_connection(self, listener):
+        import select
+
+        ready, _, _ = select.select([listener], [], [], 0.2)
+        if ready:
+            conn, _ = listener.accept()
+            conn.close()
+            self.fail("embedded mode opened a TCP connection")
+
+    def _no_connect_patches(self):
+        boom = AssertionError("embedded mode attempted a libpq/socket connect")
+        return [
+            mock.patch("psycopg.connect", side_effect=boom),
+            mock.patch("socket.create_connection", side_effect=boom),
+        ]
+
+    def test_connection_setup_makes_no_libpq_connect(self):
+        from psycopg.pq import PGconn
+
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        listener = self._tcp_listener()
+        port = str(listener.getsockname()[1])
+        patches = self._no_connect_patches()
+        for patcher in patches:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        env = {"POSTGRES_HOST": "127.0.0.1", "POSTGRES_PORT": port}
+        with mock.patch.dict(os.environ, env):
+            connection = EmbeddedConnection(
+                "probe_db", _settings(root, "probe_db")
+            )
+            self.assertNotIsInstance(connection.pgconn, PGconn)
+            # Cursor construction (adapters map) must stay socket-free too.
+            self.assertIsNotNone(connection.cursor())
+        self._assert_no_connection(listener)
+
+    def test_quoting_works_without_libpq_connect(self):
+        from psycopg import sql
+
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        listener = self._tcp_listener()
+        port = str(listener.getsockname()[1])
+        patches = self._no_connect_patches()
+        for patcher in patches:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        env = {"POSTGRES_HOST": "127.0.0.1", "POSTGRES_PORT": port}
+        with mock.patch.dict(os.environ, env):
+            connection = EmbeddedConnection(
+                "probe_db", _settings(root, "probe_db")
+            )
+            self.assertEqual(sql.quote("a'b", connection), "'a''b'")
+            self.assertEqual(sql.quote("plain", connection), "'plain'")
+            self.assertEqual(sql.quote(123, connection), "123")
+            self.assertEqual(sql.quote(None, connection), "NULL")
+        self._assert_no_connection(listener)
+
+
 class EmbeddedStatementShapeTests(SimpleTestCase):
     def test_verb_skips_comments(self):
         self.assertEqual(
