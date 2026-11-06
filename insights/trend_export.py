@@ -1,4 +1,4 @@
-"""Daily revenue trend CSV export service.
+"""Daily revenue trend CSV/JSON export service.
 
 Backend only — no views, templates, or UI. Read-only: this
 service never creates, edits, or deletes a sale.
@@ -26,6 +26,9 @@ Columns are only fields the service's rows actually carry:
 
 Money is rendered as a string to two decimal places, never
 passed through a float.
+
+A plain list of dict rows (:func:`export_trend`) backs the CSV,
+so the two formats can never disagree.
 """
 import csv
 import io
@@ -37,8 +40,12 @@ __all__ = [
     "TREND_FIELDNAMES",
     "TREND_EXPORT_FIELDNAMES",
     "EXPORT_FIELDNAMES",
+    "export_trend",
+    "export_trend_rows",
     "export_trend_csv",
+    "export_revenue_trend",
     "export_revenue_trend_csv",
+    "trend_rows",
     "trend_csv",
     "revenue_trend_csv",
 ]
@@ -63,49 +70,55 @@ def _money(value):
     return str(Decimal(value).quantize(_CENTS))
 
 
+def export_trend(salon, days=14, end_date=None, **kwargs):
+    """Return ``salon``'s daily revenue trend as dict rows.
+
+    Args are passed through to
+    :func:`insights.trend.daily_revenue_trend`. Every row
+    mirrors a CSV cell exactly: keys are
+    :data:`TREND_FIELDNAMES` in order, ``date`` is an ISO
+    string, and money is a string rendered to two places.
+    A window with no days (``days <= 0``) exports as an
+    empty list; days with no sales export as zero rows,
+    exactly as the service returns them.
+    """
+    rows = daily_revenue_trend(salon, days, end_date=end_date, **kwargs)
+    return [{
+        "date": row.date.isoformat(),
+        "service": _money(row.service),
+        "retail": _money(row.retail),
+        "series": _money(row.series),
+        "total": _money(row.total),
+        "moving_average_7d": _money(row.moving_average_7d),
+    } for row in rows]
+
+
 def export_trend_csv(salon, days=14, end_date=None, **kwargs):
     """Return ``salon``'s daily revenue trend as a CSV string.
 
-    Args:
-        salon: ``saloncore.Salon`` instance to scope to, passed
-            through to
-            :func:`insights.trend.daily_revenue_trend`.
-        days: number of calendar days in the window, as accepted
-            by that service.
-        end_date: inclusive window end, as accepted by that
-            service.
-        **kwargs: forwarded to that service (including its
-            ``today`` keyword alias for ``end_date``).
-
-    Returns:
-        A CSV string whose header row is
-        :data:`TREND_FIELDNAMES` and whose data rows follow
-        the trend service's ordering exactly (oldest first),
-        with values matching that service's rows. A window
-        with no days (``days <= 0``) exports as the header
-        row alone; days with no sales export as zero rows,
-        exactly as the service returns them. Lines end with
-        ``"\\n"``.
+    Args are passed through to
+    :func:`insights.trend.daily_revenue_trend`. A CSV string
+    whose header row is :data:`TREND_FIELDNAMES` and whose
+    data rows follow the trend service's ordering exactly
+    (oldest first). A window with no days (``days <= 0``)
+    exports as the header row alone. Lines end with
+    ``"\\n"``. Built from :func:`export_trend` with the
+    same arguments, so the CSV and dict exports always agree.
     """
-    rows = daily_revenue_trend(salon, days, end_date=end_date, **kwargs)
     buffer = io.StringIO()
     writer = csv.DictWriter(
         buffer, fieldnames=TREND_FIELDNAMES, lineterminator="\n"
     )
     writer.writeheader()
-    for row in rows:
-        writer.writerow({
-            "date": row.date.isoformat(),
-            "service": _money(row.service),
-            "retail": _money(row.retail),
-            "series": _money(row.series),
-            "total": _money(row.total),
-            "moving_average_7d": _money(row.moving_average_7d),
-        })
+    for row in export_trend(salon, days=days, end_date=end_date, **kwargs):
+        writer.writerow(row)
     return buffer.getvalue()
 
 
 #: Aliases, mirroring the naming convenience in sibling services.
+export_trend_rows = export_trend
+trend_rows = export_trend
+export_revenue_trend = export_trend
 export_revenue_trend_csv = export_trend_csv
 trend_csv = export_trend_csv
 revenue_trend_csv = export_trend_csv
