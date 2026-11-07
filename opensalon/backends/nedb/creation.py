@@ -27,6 +27,17 @@ work at the execution/semantics layer only (implication 1):
   call (probe: nedb-relation-probe-2026-10-31.md). ``reset_database``
   re-materializes the declared catalog after every recreate, and
   the schema editor materializes each CREATE TABLE it validates.
+* Post-recreate quiescence (N-M19b): after a drop + recreate on the
+  same append-only chain, NEDB's SQL evaluator intermittently
+  double-emitted a just-written row through a select_related JOIN
+  (same pk twice; cycles 89-91, ~1 in 10 clean changelist runs).
+  ``reset_database`` therefore does not return until the daemon's
+  tip (``GET /v1/databases/:name/tip``, DYOR section 4) reports a
+  seq/head unchanged across two polls 250 ms apart, bounded at
+  ~5 s, so test data writes and reads never land in the catch-up
+  window. Quiescence is best-effort: a daemon that never settles
+  (or whose tip cannot be read) times out and the reset proceeds
+  -- the recreate itself already succeeded.
 
 The HTTP endpoint is resolved, in order, from the connection's
 ``OPTIONS`` (``nedbd_url`` / ``nedbd_http_port`` / ``nedbd_token``),
@@ -38,6 +49,7 @@ derived from the pgwire ``HOST`` with the spike's HTTP port 17070.
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -255,17 +267,59 @@ class DatabaseCreation(PostgresDatabaseCreation):
 
         return self.materialize_collections(name, declared_catalog())
 
+    # -- post-recreate quiescence (N-M19b) ----------------------------
+    QUIESCE_POLL_INTERVAL_SECONDS = 0.25
+    QUIESCE_TIMEOUT_SECONDS = 5.0
+
+    def database_tip(self, name):
+        """GET /v1/databases/:name/tip as a (seq, head) snapshot."""
+        payload = self._http_request(
+            "GET",
+            "/v1/databases/%s/tip" % urllib.parse.quote(name, safe=""),
+        )
+        if not isinstance(payload, dict):
+            return (None, None)
+        return (payload.get("seq"), payload.get("head"))
+
+    def _tip_snapshot(self, name):
+        # An unreadable tip is never "stable": each failure is a
+        # fresh sentinel, unequal to every other snapshot.
+        try:
+            return self.database_tip(name)
+        except NedbHttpError:
+            return object()
+
+    def wait_until_quiescent(self, name):
+        """Poll the tip until seq/head hold across two polls.
+
+        Polls are QUIESCE_POLL_INTERVAL_SECONDS apart and the wait
+        is bounded by QUIESCE_TIMEOUT_SECONDS. Returns True when
+        the tip settled, False on timeout; never raises, so a
+        daemon that never settles cannot fail a completed reset.
+        """
+        deadline = time.monotonic() + self.QUIESCE_TIMEOUT_SECONDS
+        previous = self._tip_snapshot(name)
+        while time.monotonic() < deadline:
+            time.sleep(self.QUIESCE_POLL_INTERVAL_SECONDS)
+            current = self._tip_snapshot(name)
+            if current == previous:
+                return True
+            previous = current
+        return False
+
     def reset_database(self, name):
         """Flush by drop + recreate over HTTP -- never TRUNCATE (9.5).
 
         The recreate is followed by catalog materialization (N-M8c):
         a fresh database otherwise has no relations at all for
         never-written tables, which NEDB's write path and JOIN
-        resolution refuse by name.
+        resolution refuse by name. The reset returns only once the
+        recreated database is quiescent (N-M19b, see module docs).
         """
         self.drop_database(name)
         self.create_database(name)
         self.materialize_catalog(name)
+        self.wait_until_quiescent(name)
         return name
 
     # The flush/teardown primitive under its Django-facing name.
