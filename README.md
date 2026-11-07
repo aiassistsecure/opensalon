@@ -93,6 +93,24 @@ docker compose up
 Then open http://localhost:8000/health/ — a healthy install answers
 `{"status": "ok"}`.
 
+## Production serving (without Docker)
+
+Django's `runserver` is a development tool. To serve a real install
+(e.g. a single Windows pilot box) use Waitress — a production WSGI
+server that runs as one process with multiple threads, which the
+embedded NEDB store requires — with WhiteNoise serving static files:
+
+```bash
+# set the usual env first (database, secrets); for embedded NEDB also:
+#   OPENSALON_NEDB_EMBEDDED=1
+#   NEDB_DATA_DIR=<store root>
+pip install -r requirements.txt
+python manage.py collectstatic
+waitress-serve --host 127.0.0.1 --port 8000 opensalon.wsgi:application
+```
+
+Then open http://127.0.0.1:8000/health/ as above.
+
 ## Stack
 
 - Python / Django, server-rendered templates, vanilla JavaScript —
