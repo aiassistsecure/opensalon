@@ -1,4 +1,5 @@
 import io
+import json
 from unittest import mock
 
 from django.core.management import call_command
@@ -147,6 +148,106 @@ class AddStaffMemberCommandTests(TestCase):
             with self.assertRaises(CommandError):
                 self.run_cmd(salon_id=self.salon.pk, **kwargs)
         self.assertEqual(StaffMember.objects.count(), 1)
+
+    def test_default_text_output_unchanged(self):
+        text = self.run_cmd(
+            salon_id=self.salon.pk, display_name="Dana")
+        (m,) = StaffMember.objects.all()
+        self.assertEqual(
+            text,
+            f"Created staff member {m.pk}: staff member 'Dana' "
+            f"in salon {self.salon.pk}: staff_level_id=None "
+            f"online_bookable=True email='' pin_set=False "
+            f"active=True.\n")
+
+    def test_default_text_dry_run_output_unchanged(self):
+        text = self.run_cmd(
+            salon_id=self.salon.pk, display_name="Dana",
+            dry_run=True)
+        self.assertEqual(StaffMember.objects.count(), 0)
+        self.assertEqual(
+            text,
+            f"Dry run: would create staff member 'Dana' "
+            f"in salon {self.salon.pk}: staff_level_id=None "
+            f"online_bookable=True email='' pin_set=False "
+            f"active=True -- no staff member written.\n")
+
+    def test_format_json_creates_and_reports_fields(self):
+        out = io.StringIO()
+        call_command(
+            "add_staff_member", "--salon-id", str(self.salon.pk),
+            "--display-name", "Dana Davalos",
+            "--staff-level-id", str(self.level.pk),
+            "--email", "dana@example.com", "--pin", "1234",
+            "--no-online-bookable", "--inactive",
+            "--format", "json", stdout=out)
+        text = out.getvalue()
+        (m,) = StaffMember.objects.all()
+        payload = json.loads(text)
+        self.assertEqual(payload, {
+            "staff_member_id": m.pk,
+            "salon_id": self.salon.pk,
+            "display_name": "Dana Davalos",
+            "staff_level_id": self.level.pk,
+            "online_bookable": False,
+            "email": "dana@example.com",
+            "pin_set": True,
+            "active": False,
+            "dry_run": False})
+        self.assertEqual(text.strip().count("\n"), 0)
+        self.assertNotIn("Created staff member", text)
+        self.assertNotIn("1234", text)
+
+    def test_format_json_via_call_command_kwargs(self):
+        text = self.run_cmd(
+            salon_id=self.salon.pk, display_name="Dana",
+            format="json")
+        (m,) = StaffMember.objects.all()
+        payload = json.loads(text)
+        self.assertEqual(payload["display_name"], "Dana")
+        self.assertEqual(payload["staff_member_id"], m.pk)
+        self.assertFalse(payload["dry_run"])
+        self.assertFalse(payload["pin_set"])
+
+    def test_dry_run_format_json_reports_and_writes_nothing(self):
+        with mock.patch(
+                "team.management.commands.add_staff_member"
+                ".add_staff_member") as writer:
+            out = io.StringIO()
+            call_command(
+                "add_staff_member", "--salon-id",
+                str(self.salon.pk), "--display-name", "Dana",
+                "--staff-level-id", str(self.level.pk),
+                "--email", "dana@example.com", "--pin", "1234",
+                "--dry-run", "--format", "json", stdout=out)
+        writer.assert_not_called()
+        self.assertEqual(StaffMember.objects.count(), 0)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload, {
+            "staff_member_id": None,
+            "salon_id": self.salon.pk,
+            "display_name": "Dana",
+            "staff_level_id": self.level.pk,
+            "online_bookable": True,
+            "email": "dana@example.com",
+            "pin_set": True,
+            "active": True,
+            "dry_run": True})
+        self.assertNotIn("1234", out.getvalue())
+
+    def test_format_json_errors_still_command_error(self):
+        with self.assertRaises(CommandError):
+            self.run_cmd(
+                salon_id=999999, display_name="X", format="json")
+        with self.assertRaises(CommandError):
+            self.run_cmd(
+                salon_id=self.salon.pk, display_name="X",
+                pin="12", format="json")
+        with self.assertRaises(CommandError):
+            self.run_cmd(
+                salon_id=self.salon.pk, display_name="X",
+                format="bogus")
+        self.assertEqual(StaffMember.objects.count(), 0)
 
     def test_blank_name_and_bad_pin_raise(self):
         for kwargs in ({"display_name": "  "},
