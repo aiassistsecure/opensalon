@@ -4,7 +4,7 @@ Usage:
     python manage.py add_salon --name TEXT [--timezone ZONE]
         [--currency CODE] [--tagline TEXT] [--logo-url URL]
         [--primary-color #RRGGBB] [--accent-color #RRGGBB]
-        [--dry-run]
+        [--dry-run] [--format text|json]
 
 There is NO salon argument: this command creates the salon
 (the tenant root every other command's ``--salon-id`` names).
@@ -24,6 +24,8 @@ A service ``ValueError`` (blank/over-long name, unknown
 timezone, bad currency, invalid branding) is surfaced here
 as ``CommandError``.
 """
+import json
+
 from django.core.management.base import BaseCommand, CommandError
 
 from saloncore.add_salon import add_salon, validate_add_salon
@@ -58,6 +60,10 @@ class Command(BaseCommand):
             "--dry-run", action="store_true",
             help="Preview the salon that would be created "
                  "without writing anything.")
+        parser.add_argument(
+            "--format", dest="format", default="text",
+            choices=["text", "json"],
+            help="Output format (default: text).")
 
     def handle(self, *args, **options):
         kwargs = dict(
@@ -75,6 +81,18 @@ class Command(BaseCommand):
                 cleaned = validate_add_salon(**kwargs)
             except (TypeError, ValueError) as exc:
                 raise CommandError(str(exc)) from exc
+            if options.get("format") == "json":
+                self.stdout.write(json.dumps(dict(
+                    id=None,
+                    name=cleaned["name"],
+                    timezone=cleaned["timezone"],
+                    currency=cleaned["currency"],
+                    tagline=cleaned["tagline"],
+                    logo_url=cleaned["logo_url"],
+                    primary_color=cleaned["primary_color"],
+                    accent_color=cleaned["accent_color"],
+                    dry_run=True)))
+                return
             self.stdout.write(
                 f"Dry run: would create salon {cleaned['name']!r}: "
                 f"timezone={cleaned['timezone']} "
@@ -89,6 +107,18 @@ class Command(BaseCommand):
             salon = add_salon(**kwargs)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
+        if options.get("format") == "json":
+            self.stdout.write(json.dumps(dict(
+                id=salon.pk,
+                name=salon.name,
+                timezone=salon.timezone,
+                currency=salon.currency,
+                tagline=salon.tagline,
+                logo_url=salon.logo_url,
+                primary_color=salon.primary_color,
+                accent_color=salon.accent_color,
+                dry_run=False)))
+            return
         self.stdout.write(
             f"Created salon {salon.pk}: {salon.name!r} "
             f"timezone={salon.timezone} currency={salon.currency} "
