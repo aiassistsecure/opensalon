@@ -11,6 +11,7 @@ contact), sends nothing, writes no CampaignSend rows, and
 leaves the campaign a draft. Output is counts only.
 """
 import io
+import json
 from unittest import mock
 
 from django.core import mail
@@ -150,6 +151,79 @@ class SendCampaignCommandTests(TestCase):
         self.assertEqual(CampaignSend.objects.count(), 1)
         campaign.refresh_from_db()
         self.assertEqual(campaign.status, Campaign.Status.SENT)
+
+    def test_explicit_text_format_matches_default(self):
+        self._client(sms_opt_in=True)
+        self._client(sms_opt_in=True, phone="")
+        campaign = self._campaign()
+        text = self._run(campaign.pk, "--format", "text")
+        self.assertEqual(
+            text,
+            f"Campaign {campaign.pk} (sms): 1 sent, 1 skipped "
+            f"(1 skipped missing contact, 0 skipped send failed).\n")
+        campaign.refresh_from_db()
+        self.assertEqual(campaign.status, Campaign.Status.SENT)
+
+    def test_dry_run_explicit_text_format_matches_default(self):
+        self._client(sms_opt_in=True)
+        self._client(sms_opt_in=True, phone="")
+        self._client(sms_opt_in=False)
+        campaign = self._campaign()
+        text = self._run(campaign.pk, "--dry-run", "--format", "text")
+        self.assertEqual(
+            text,
+            f"Dry run: Campaign {campaign.pk} (sms): 1 would send, "
+            f"1 skipped by opt-in, 1 skipped missing contact.\n")
+        self.assertEqual(CampaignSend.objects.count(), 0)
+
+    def test_json_output_parses_and_carries_facts(self):
+        reachable = self._client(sms_opt_in=True)
+        self._client(sms_opt_in=True, phone="")
+        self._client(sms_opt_in=False)
+        campaign = self._campaign(body="Sale this week")
+        text = self._run(campaign.pk, "--format", "json")
+        self.assertNotIn("sent,", text)
+        self.assertEqual(len(text.strip().splitlines()), 1)
+        self.assertEqual(json.loads(text), {
+            "id": campaign.pk, "channel": "sms", "sent": 1,
+            "skipped": 1, "skipped_missing_contact": 1,
+            "skipped_send_failed": 0, "dry_run": False})
+        self.assertEqual(
+            self.adapter.calls, [(reachable.phone, "Sale this week")])
+        self.assertEqual(CampaignSend.objects.count(), 1)
+        campaign.refresh_from_db()
+        self.assertEqual(campaign.status, Campaign.Status.SENT)
+
+    def test_dry_run_json_reports_dry_run_and_sends_nothing(self):
+        self._client(sms_opt_in=True)
+        self._client(sms_opt_in=True, phone="")
+        self._client(sms_opt_in=False)
+        campaign = self._campaign()
+        text = self._run(campaign.pk, "--dry-run", "--format", "json")
+        self.assertNotIn("Dry run", text)
+        self.assertEqual(json.loads(text), {
+            "id": campaign.pk, "channel": "sms", "would_send": 1,
+            "skipped_by_opt_in": 1, "skipped_missing_contact": 1,
+            "dry_run": True})
+        self.assertEqual(self.adapter.calls, [])
+        self.assertEqual(CampaignSend.objects.count(), 0)
+        campaign.refresh_from_db()
+        self.assertEqual(campaign.status, Campaign.Status.DRAFT)
+
+    def test_json_errors_still_command_error(self):
+        with self.assertRaises(CommandError):
+            self._run(999999, "--format", "json")
+        self._client(sms_opt_in=True)
+        campaign = self._campaign()
+        self._run(campaign.pk)
+        with self.assertRaises(CommandError):
+            self._run(campaign.pk, "--format", "json")
+        out = io.StringIO()
+        with self.assertRaises(CommandError):
+            call_command(
+                "send_campaign", campaign_id=campaign.pk,
+                format="bogus", stdout=out)
+        self.assertEqual(CampaignSend.objects.count(), 1)
 
     def test_unknown_campaign_id_raises_command_error(self):
         with self.assertRaises(CommandError):

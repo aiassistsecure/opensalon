@@ -2,7 +2,13 @@
 
 Usage:
     python manage.py send_campaign --campaign-id ID
-        [--now ISO-8601-DATETIME] [--dry-run]
+        [--now ISO-8601-DATETIME] [--dry-run] [--format text|json]
+
+With ``--format json`` the command prints exactly one JSON
+object to stdout carrying the same facts as the text output
+(campaign id, channel, the send or dry-run counts, and
+``dry_run``); no prose lines are printed in json mode. The
+default ``--format text`` output is unchanged.
 
 Thin wrapper around
 :func:`messaging.campaign_send.send_campaign`: the campaign
@@ -42,6 +48,7 @@ appears here.
 """
 import argparse
 import datetime
+import json
 
 from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand, CommandError
@@ -131,8 +138,16 @@ class Command(BaseCommand):
         parser.add_argument(
             "--dry-run", action="store_true",
             help="Preview only: print counts, send nothing.")
+        parser.add_argument(
+            "--format", dest="format", default="text",
+            choices=["text", "json"],
+            help="Output format: text (default) or json.")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "text"
+        if fmt not in ("text", "json"):
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'text' or 'json'.")
         try:
             campaign = Campaign.objects.get(pk=options["campaign_id"])
         except Campaign.DoesNotExist:
@@ -146,6 +161,15 @@ class Command(BaseCommand):
         if options["dry_run"]:
             would_send, skipped_opt_in, skipped_missing = (
                 _preview_counts(campaign))
+            if fmt == "json":
+                self.stdout.write(json.dumps(dict(
+                    id=campaign.pk,
+                    channel=campaign.channel,
+                    would_send=would_send,
+                    skipped_by_opt_in=skipped_opt_in,
+                    skipped_missing_contact=skipped_missing,
+                    dry_run=True)))
+                return
             self.stdout.write(
                 f"Dry run: Campaign {campaign.pk} ({campaign.channel}): "
                 f"{would_send} would send, "
@@ -156,6 +180,16 @@ class Command(BaseCommand):
             summary = send_campaign(campaign, now=now)
         except ValidationError as exc:
             raise CommandError(str(exc)) from exc
+        if fmt == "json":
+            self.stdout.write(json.dumps(dict(
+                id=summary.campaign_id,
+                channel=summary.channel,
+                sent=summary.sent,
+                skipped=summary.skipped,
+                skipped_missing_contact=summary.skipped_missing_contact,
+                skipped_send_failed=summary.skipped_send_failed,
+                dry_run=False)))
+            return
         self.stdout.write(
             f"Campaign {summary.campaign_id} ({summary.channel}): "
             f"{summary.sent} sent, {summary.skipped} skipped "
