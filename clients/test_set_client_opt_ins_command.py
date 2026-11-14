@@ -7,6 +7,7 @@ previews without writing, and salon scoping / invalid input
 handling apply. Output is checked for ids and flag values only.
 """
 import io
+import json
 
 from django.core.management import CommandError, call_command
 from django.test import TestCase
@@ -128,6 +129,95 @@ class SetClientOptInsCommandTests(TestCase):
                 salon_id=self.salon.id, client_id=999999,
                 sms_opt_in="true",
             )
+
+    def test_format_text_is_default(self):
+        text = self._run(
+            salon_id=self.salon.id, client_id=self.client.id,
+            sms_opt_in="true",
+        )
+        self.assertIn("set_client_opt_ins:", text)
+        self.assertIn("sms_opt_in: False -> True", text)
+        with self.assertRaises(ValueError):
+            json.loads(text)
+
+    def test_format_json_real_run(self):
+        text = self._run(
+            salon_id=self.salon.id, client_id=self.client.id,
+            sms_opt_in="true", email_opt_in="true", format="json",
+        )
+        payload = json.loads(text)
+        self.assertEqual(payload, {
+            "client_id": self.client.id, "salon_id": self.salon.id,
+            "changed": True,
+            "changes": [
+                {"field": "sms_opt_in", "old_value": False,
+                 "new_value": True},
+                {"field": "email_opt_in", "old_value": False,
+                 "new_value": True}],
+            "sms_opt_in": True, "email_opt_in": True,
+            "dry_run": False})
+        self.assertEqual(text.strip().count("\n"), 0)
+        self.assertNotIn("amy@example.com", text)
+        self.assertNotIn("Amy", text)
+        fresh = self.fresh()
+        self.assertTrue(fresh.sms_opt_in)
+        self.assertTrue(fresh.email_opt_in)
+
+    def test_format_json_no_change(self):
+        text = self._run(
+            salon_id=self.salon.id, client_id=self.client.id,
+            sms_opt_in="false", format="json",
+        )
+        payload = json.loads(text)
+        self.assertEqual(payload, {
+            "client_id": self.client.id, "salon_id": self.salon.id,
+            "changed": False, "changes": [],
+            "sms_opt_in": False, "email_opt_in": False,
+            "dry_run": False})
+
+    def test_format_json_dry_run_writes_nothing(self):
+        text = self._run(
+            salon_id=self.salon.id, client_id=self.client.id,
+            sms_opt_in="true", email_opt_in="true",
+            dry_run=True, format="json",
+        )
+        payload = json.loads(text)
+        self.assertEqual(payload, {
+            "client_id": self.client.id, "salon_id": self.salon.id,
+            "changed": True,
+            "changes": [
+                {"field": "sms_opt_in", "old_value": False,
+                 "new_value": True},
+                {"field": "email_opt_in", "old_value": False,
+                 "new_value": True}],
+            "sms_opt_in": True, "email_opt_in": True,
+            "dry_run": True})
+        self.assertEqual(text.strip().count("\n"), 0)
+        fresh = self.fresh()
+        self.assertFalse(fresh.sms_opt_in)
+        self.assertFalse(fresh.email_opt_in)
+
+    def test_format_json_dry_run_no_change(self):
+        text = self._run(
+            salon_id=self.salon.id, client_id=self.client.id,
+            sms_opt_in="false", dry_run=True, format="json",
+        )
+        payload = json.loads(text)
+        self.assertFalse(payload["changed"])
+        self.assertEqual(payload["changes"], [])
+        self.assertTrue(payload["dry_run"])
+        self.assertFalse(payload["sms_opt_in"])
+
+    def test_format_json_errors_still_command_error(self):
+        with self.assertRaises(CommandError):
+            self._run(
+                salon_id=999999, client_id=self.client.id,
+                sms_opt_in="true", format="json")
+        with self.assertRaises(CommandError):
+            self._run(
+                salon_id=self.salon.id, client_id=self.client.id,
+                format="json")
+        self.assertFalse(self.fresh().sms_opt_in)
 
     def test_cross_salon_client_raises_and_unchanged(self):
         other_client = Client.objects.create(

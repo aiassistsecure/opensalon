@@ -3,7 +3,15 @@
 Usage:
     python manage.py set_client_opt_ins --salon-id ID --client-id ID
         [--sms-opt-in true|false] [--email-opt-in true|false]
-        [--dry-run]
+        [--dry-run] [--format text|json]
+
+With ``--format json`` the command prints exactly one JSON
+object to stdout carrying the same facts as the text output
+(client and salon ids, the opt-in flags, the changed flags
+with old/new values, and ``dry_run``); no prose lines are
+printed in json mode. The default ``--format text`` output
+is unchanged. Json carries ids and opt-in flags only -- never
+names, email or phone, exactly like the text output.
 
 Thin wrapper around ``clients.optins.update_client_opt_ins`` --
 that service is the one source of truth for consent changes;
@@ -28,6 +36,8 @@ names or contact details are printed.
 
 Backend only: no views, templates, or UI. No provider concepts.
 """
+import json
+
 from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand, CommandError
 
@@ -78,8 +88,16 @@ class Command(BaseCommand):
             help="Preview only: print the flag changes that would "
                  "apply and write nothing.",
         )
+        parser.add_argument(
+            "--format", dest="format", default="text",
+            choices=["text", "json"],
+            help="Output format: text (default) or json.")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "text"
+        if fmt not in ("text", "json"):
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'text' or 'json'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist:
@@ -113,6 +131,23 @@ class Command(BaseCommand):
                 if requested[field] is not None
                 and requested[field] != getattr(client, field)
             ]
+            if fmt == "json":
+                would_be = {
+                    field: (requested[field]
+                            if requested[field] is not None
+                            else getattr(client, field))
+                    for field in _FIELDS
+                }
+                self.stdout.write(json.dumps(dict(
+                    client_id=client.pk, salon_id=salon.pk,
+                    changed=bool(changes),
+                    changes=[
+                        dict(field=field, old_value=old, new_value=new)
+                        for field, old, new in changes],
+                    sms_opt_in=would_be["sms_opt_in"],
+                    email_opt_in=would_be["email_opt_in"],
+                    dry_run=True)))
+                return
             if not changes:
                 self.stdout.write(
                     f"set_client_opt_ins dry-run: client_id={client.pk} "
@@ -130,6 +165,19 @@ class Command(BaseCommand):
             result = update_client_opt_ins(salon, client, **requested)
         except ValidationError as exc:
             raise CommandError(str(exc)) from exc
+        if fmt == "json":
+            self.stdout.write(json.dumps(dict(
+                client_id=client.pk, salon_id=salon.pk,
+                changed=result.changed,
+                changes=[
+                    dict(field=change.field,
+                         old_value=change.old_value,
+                         new_value=change.new_value)
+                    for change in result.changes],
+                sms_opt_in=result.sms_opt_in,
+                email_opt_in=result.email_opt_in,
+                dry_run=False)))
+            return
         if not result.changed:
             self.stdout.write(
                 f"set_client_opt_ins: client_id={client.pk} "
