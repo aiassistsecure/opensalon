@@ -10,6 +10,7 @@ records -- unit logic only.
 """
 import datetime
 import io
+import json
 
 from django.core.management import CommandError, call_command
 from django.test import TestCase
@@ -169,3 +170,66 @@ class TransitionStatusCommandTests(TestCase):
             call_command(
                 "transition_status", appointment_id=999999,
                 status="confirmed", stdout=io.StringIO())
+
+    def test_format_text_is_default_and_exact(self):
+        out = io.StringIO()
+        call_command(
+            "transition_status", appointment_id=self.appointment.pk,
+            status="confirmed", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            f"Appointment {self.appointment.pk}: "
+            f"booked -> confirmed.\n")
+
+    def test_format_json_transitions_and_reports_fields(self):
+        out = io.StringIO()
+        call_command(
+            "transition_status", "--appointment-id",
+            str(self.appointment.pk), "--status", "confirmed",
+            "--format", "json", stdout=out)
+        self.assertEqual(self._status(), Appointment.Status.CONFIRMED)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload, {
+            "appointment_id": self.appointment.pk,
+            "old_status": "booked",
+            "new_status": "confirmed",
+            "dry_run": False,
+        })
+
+    def test_format_json_via_call_command_kwargs(self):
+        out = io.StringIO()
+        call_command(
+            "transition_status", appointment_id=self.appointment.pk,
+            status="cancelled", format="json", stdout=out)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["new_status"], "cancelled")
+        self.assertEqual(payload["dry_run"], False)
+        self.assertEqual(self._status(), Appointment.Status.CANCELLED)
+
+    def test_dry_run_format_json_reports_and_writes_nothing(self):
+        out = io.StringIO()
+        call_command(
+            "transition_status", appointment_id=self.appointment.pk,
+            status="confirmed", dry_run=True, format="json", stdout=out)
+        self.assertEqual(self._status(), Appointment.Status.BOOKED)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload, {
+            "appointment_id": self.appointment.pk,
+            "old_status": "booked",
+            "new_status": "confirmed",
+            "dry_run": True,
+        })
+
+    def test_format_json_errors_still_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "transition_status", appointment_id=self.appointment.pk,
+                status="completed", format="json", stdout=io.StringIO())
+        self.assertEqual(self._status(), Appointment.Status.BOOKED)
+
+    def test_invalid_format_is_command_error_and_unchanged(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "transition_status", appointment_id=self.appointment.pk,
+                status="confirmed", format="yaml", stdout=io.StringIO())
+        self.assertEqual(self._status(), Appointment.Status.BOOKED)
