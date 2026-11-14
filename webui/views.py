@@ -4051,7 +4051,7 @@ def _insights_report(salon, start, end):
     from checkout.cashup_history import cashup_history
     from checkout.models import Payment, Sale
     from checkout.refund_report import refund_totals
-    from checkout.summary import daily_sales_summary
+    from checkout.summary import daily_sales_summaries
     from checkout.tender_totals import tender_totals
     from insights.services import busiest_days, future_appointments_value
     from insights.staff_revenue import revenue_by_staff
@@ -4061,9 +4061,8 @@ def _insights_report(salon, start, end):
     tz = _tz(salon)
     refunds = refund_totals(salon, start, end)
     ledger = []
-    day = start
-    while day <= end:
-        summary = daily_sales_summary(salon, day)
+    for summary in daily_sales_summaries(salon, start, end):
+        day = summary.day
         refunded = refunds.by_day.get(day)
         refund_amount = refunded.total if refunded else Decimal("0")
         ledger.append(
@@ -4077,7 +4076,6 @@ def _insights_report(salon, start, end):
                 "net": summary.gross_total - refund_amount,
             }
         )
-        day += datetime.timedelta(days=1)
     totals = {
         "count": sum(r["count"] for r in ledger),
         "service": sum((r["service"] for r in ledger), Decimal("0")),
