@@ -1,4 +1,5 @@
 import io
+import json
 
 from django.core.management import call_command
 from django.core.management.base import CommandError
@@ -112,6 +113,72 @@ class UpdateServiceCommandTests(TestCase):
             self.run_cmd(salon_id=999999, name="X")
         with self.assertRaises(CommandError):
             self.run_cmd(service_id=999999, name="X")
+
+    def test_explicit_text_format_matches_default(self):
+        text = self.run_cmd(name="Balayage", format="text")
+        self.assertEqual(
+            text,
+            f"Updated service {self.service.pk}: 'Balayage' "
+            f"in salon {self.salon.pk}: category={self.category.pk} "
+            "service_minutes=60 processing_minutes=30 "
+            "finishing_minutes=15 active=True.\n")
+        self.assertEqual(self.stored().name, "Balayage")
+
+    def test_json_output_parses_and_carries_facts(self):
+        text = self.run_cmd(
+            category_id=self.cuts.pk, name="Balayage",
+            service_minutes=90, format="json")
+        stored = self.stored()
+        self.assertEqual(
+            (stored.category, stored.name, stored.service_minutes),
+            (self.cuts, "Balayage", 90))
+        self.assertNotIn("Updated service", text)
+        self.assertEqual(len(text.strip().splitlines()), 1)
+        self.assertEqual(json.loads(text), {
+            "id": self.service.pk, "name": "Balayage",
+            "salon_id": self.salon.pk,
+            "category_id": self.cuts.pk,
+            "service_minutes": 90, "processing_minutes": 30,
+            "finishing_minutes": 15, "active": True,
+            "dry_run": False})
+
+    def test_json_via_cli_flag(self):
+        out = io.StringIO()
+        call_command(
+            "update_service", "--salon-id", str(self.salon.pk),
+            "--service-id", str(self.service.pk),
+            "--inactive", "--format", "json", stdout=out)
+        row = json.loads(out.getvalue())
+        self.assertEqual(
+            (row["id"], row["salon_id"], row["active"],
+             row["dry_run"]),
+            (self.service.pk, self.salon.pk, False, False))
+        self.assertFalse(self.stored().active)
+
+    def test_dry_run_json_reports_dry_run_and_writes_nothing(self):
+        text = self.run_cmd(
+            name="Balayage", service_minutes=90,
+            category_name="Cuts", dry_run=True, format="json")
+        stored = self.stored()
+        self.assertEqual(
+            (stored.name, stored.service_minutes, stored.category),
+            ("Full Color", 60, self.category))
+        self.assertNotIn("Dry run", text)
+        self.assertEqual(json.loads(text), {
+            "id": self.service.pk, "salon_id": self.salon.pk,
+            "category_id": self.cuts.pk, "category_name": "Cuts",
+            "name": "Balayage", "service_minutes": 90,
+            "dry_run": True})
+
+    def test_json_errors_still_command_error(self):
+        for kwargs in ({"name": "  "}, {"service_minutes": 0}, {}):
+            with self.assertRaises(CommandError):
+                self.run_cmd(format="json", **kwargs)
+        with self.assertRaises(CommandError):
+            self.run_cmd(salon_id=999999, name="X", format="json")
+        with self.assertRaises(CommandError):
+            self.run_cmd(name="X", dry_run=True, format="bogus")
+        self.assertEqual(self.stored().name, "Full Color")
 
     def test_blank_name_and_bad_minutes_raise(self):
         for kwargs in ({"name": "  "}, {"service_minutes": -1},
