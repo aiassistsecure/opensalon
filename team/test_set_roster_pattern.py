@@ -10,6 +10,7 @@ Fixtures are tiny synthetic records -- unit logic only.
 """
 import datetime
 import io
+import json
 
 from django.core.exceptions import ValidationError
 from django.core.management import CommandError, call_command
@@ -193,3 +194,65 @@ class SetRosterPatternCommandTests(TestCase):
             _run(staff_member_id=self.member.pk,
                  start="10:00", end="14:00")
         self.assertEqual(RosterPattern.objects.count(), 0)
+
+    def test_command_text_output_unchanged(self):
+        out = _run(staff_member_id=self.member.pk, weekday=0,
+                   start="10:00", end="14:00")
+        pat = RosterPattern.objects.get()
+        self.assertEqual(
+            out.strip(),
+            f"Set RosterPattern staff_member={self.member} "
+            f"staff_member_id={self.member.pk} weekday=0 "
+            f"weekday_name=Monday start_time=10:00:00 "
+            f"end_time=14:00:00 active=True.")
+        self.assertEqual(pat.weekday, 0)
+
+    def test_command_json_success(self):
+        out = _run(staff_member_id=self.member.pk, weekday=0,
+                   start="10:00", end="14:00", format="json")
+        data = json.loads(out)
+        pat = RosterPattern.objects.get()
+        self.assertEqual(data, {
+            "pattern_id": pat.pk,
+            "staff_member_id": self.member.pk,
+            "weekday": 0,
+            "weekday_name": "Monday",
+            "start_time": "10:00:00",
+            "end_time": "14:00:00",
+            "active": True,
+            "dry_run": False,
+        })
+        self.assertEqual(self.hours(), [("10:00", "14:00")])
+        self.assertEqual(len(out.strip().splitlines()), 1)
+
+    def test_command_json_inactive(self):
+        out = _run(staff_member_id=self.member.pk, weekday=0,
+                   start="10:00", end="14:00", inactive=True,
+                   format="json")
+        data = json.loads(out)
+        self.assertFalse(data["active"])
+        self.assertFalse(data["dry_run"])
+        self.assertEqual(self.hours(), [])
+
+    def test_command_json_dry_run(self):
+        RosterPattern.objects.create(
+            staff_member=self.member, weekday=0,
+            start_time=T9, end_time=T17)
+        out = _run(staff_member_id=self.member.pk, weekday=0,
+                   start="10:00", end="14:00", dry_run=True,
+                   format="json")
+        data = json.loads(out)
+        self.assertEqual(data, {
+            "pattern_id": None,
+            "staff_member_id": self.member.pk,
+            "weekday": 0,
+            "weekday_name": "Monday",
+            "start_time": "10:00:00",
+            "end_time": "14:00:00",
+            "active": True,
+            "existing_count": 1,
+            "dry_run": True,
+        })
+        self.assertEqual(RosterPattern.objects.count(), 1)
+        self.assertEqual(self.hours(), [("09:00", "17:00")])
+        self.assertEqual(len(out.strip().splitlines()), 1)
