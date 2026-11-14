@@ -8,6 +8,7 @@ synthetic records -- unit logic only.
 """
 import datetime
 import io
+import json
 from decimal import Decimal
 
 from django.core.management import CommandError, call_command
@@ -104,6 +105,69 @@ class RunCashupCommandTests(TestCase):
                 since=self.since, until=self.until,
                 stdout=io.StringIO())
         self.assertEqual(Cashup.objects.count(), 0)
+
+    def test_default_text_output_unchanged(self):
+        out = io.StringIO()
+        call_command(
+            "run_cashup", salon_id=self.salon.pk,
+            since=self.since, until=self.until, note="midday",
+            stdout=out)
+        cashup = Cashup.objects.get()
+        self.assertEqual(out.getvalue(), (
+            f"Cashup #{cashup.pk} for salon {self.salon.pk} "
+            f"({self.salon}): {self.since.isoformat()} to "
+            f"{self.until.isoformat()}\n"
+            "Tender totals: cash: 85.00\n"
+            "Total: 85.00\n"
+            "Note: midday\n"
+        ))
+
+    def test_format_json_real_run(self):
+        out = io.StringIO()
+        call_command(
+            "run_cashup", "--salon-id", str(self.salon.pk),
+            "--since", self.since.isoformat(),
+            "--until", self.until.isoformat(),
+            "--note", "midday", "--format", "json", stdout=out)
+        self.assertEqual(Cashup.objects.count(), 1)
+        cashup = Cashup.objects.get()
+        text = out.getvalue()
+        self.assertEqual(len(text.strip().splitlines()), 1)
+        self.assertNotIn("Cashup #", text)
+        payload = json.loads(text)
+        self.assertEqual(payload["cashup_id"], cashup.pk)
+        self.assertEqual(payload["salon_id"], self.salon.pk)
+        self.assertEqual(payload["period_start"], self.since.isoformat())
+        self.assertEqual(payload["period_end"], self.until.isoformat())
+        self.assertEqual(payload["business_date"],
+                         self.since.date().isoformat())
+        self.assertEqual(payload["tender_totals"], {"cash": "85.00"})
+        self.assertEqual(payload["total"], "85.00")
+        self.assertIsInstance(payload["total"], str)
+        self.assertEqual(payload["note"], "midday")
+        self.assertIs(payload["dry_run"], False)
+
+    def test_format_json_dry_run_creates_nothing(self):
+        out = io.StringIO()
+        call_command(
+            "run_cashup", salon_id=self.salon.pk,
+            since=self.since, until=self.until, note="midday",
+            dry_run=True, format="json", stdout=out)
+        self.assertEqual(Cashup.objects.count(), 0)
+        text = out.getvalue()
+        self.assertEqual(len(text.strip().splitlines()), 1)
+        self.assertNotIn("Dry run", text)
+        payload = json.loads(text)
+        self.assertIsNone(payload["cashup_id"])
+        self.assertEqual(payload["salon_id"], self.salon.pk)
+        self.assertEqual(payload["period_start"], self.since.isoformat())
+        self.assertEqual(payload["period_end"], self.until.isoformat())
+        self.assertEqual(payload["tender_totals"], {"cash": "85.00"})
+        self.assertEqual(payload["total"], "85.00")
+        self.assertEqual(payload["detail"]["gross"], "85.00")
+        self.assertEqual(payload["detail"]["net"], "85.00")
+        self.assertEqual(payload["note"], "midday")
+        self.assertIs(payload["dry_run"], True)
 
     def test_bad_datetime_raises_command_error(self):
         with self.assertRaises(CommandError):

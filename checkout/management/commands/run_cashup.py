@@ -3,7 +3,12 @@
 Usage:
     python manage.py run_cashup --salon-id ID
         --since ISO-DATETIME --until ISO-DATETIME
-        [--note TEXT] [--dry-run]
+        [--note TEXT] [--dry-run] [--format text|json]
+
+With ``--format json`` the command prints exactly one JSON
+object to stdout carrying the same facts as the default text
+output (money as strings, never floats); the default ``text``
+output is unchanged.
 
 With ``--dry-run`` nothing is created: the command prints the
 tender totals a real run over the same period WOULD record --
@@ -28,6 +33,7 @@ provider-agnostic -- no payment-provider SDK, field, or name
 appears here.
 """
 import datetime
+import json
 from decimal import Decimal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -88,6 +94,11 @@ class Command(BaseCommand):
                  "over this period would record and create no "
                  "Cashup.",
         )
+        parser.add_argument(
+            "--format", dest="format", choices=["text", "json"],
+            default="text",
+            help="Output format: text (default) or json.",
+        )
 
     def handle(self, *args, **options):
         try:
@@ -108,6 +119,29 @@ class Command(BaseCommand):
             except (TypeError, ValueError) as exc:
                 raise CommandError(str(exc)) from exc
             total = sum(totals.values(), Decimal("0.00"))
+            if options.get("format") == "json":
+                self.stdout.write(json.dumps({
+                    "cashup_id": None,
+                    "salon_id": salon.pk,
+                    "salon": str(salon),
+                    "period_start": since.isoformat(),
+                    "period_end": until.isoformat(),
+                    "business_date": since.date().isoformat(),
+                    "tender_totals": {
+                        method: str(amount)
+                        for method, amount in sorted(totals.items())
+                    },
+                    "total": str(total),
+                    "detail": {
+                        "gross": str(detail.gross),
+                        "refunds": str(detail.refunds),
+                        "voids": str(detail.voids),
+                        "net": str(detail.net),
+                    },
+                    "note": options["note"] or "",
+                    "dry_run": True,
+                }))
+                return
             self.stdout.write(
                 f"Dry run: no cashup created for salon {salon.pk} "
                 f"({salon}): {since.isoformat()} to {until.isoformat()}"
@@ -134,6 +168,24 @@ class Command(BaseCommand):
                 salon, since, until, note=options["note"] or "")
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
+        if options.get("format") == "json":
+            self.stdout.write(json.dumps({
+                "cashup_id": cashup.pk,
+                "salon_id": salon.pk,
+                "salon": str(salon),
+                "period_start": cashup.period_start.isoformat(),
+                "period_end": cashup.period_end.isoformat(),
+                "business_date": cashup.period_start.date().isoformat(),
+                "tender_totals": {
+                    method: str(amount)
+                    for method, amount in sorted(
+                        cashup.tender_totals.items())
+                },
+                "total": str(cashup.total),
+                "note": cashup.note or "",
+                "dry_run": False,
+            }))
+            return
         self.stdout.write(
             f"Cashup #{cashup.pk} for salon {salon.pk} ({salon}): "
             f"{cashup.period_start.isoformat()} to "
