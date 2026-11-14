@@ -3,10 +3,21 @@
 Usage:
     python manage.py set_shift_override --staff-member-id ID
         --date YYYY-MM-DD --start HH:MM --end HH:MM [--dry-run]
+        [--format text|json]
     python manage.py set_shift_override --staff-member-id ID
         --date YYYY-MM-DD --off [--dry-run]
     python manage.py set_shift_override --staff-member-id ID
         --date YYYY-MM-DD --clear [--dry-run]
+
+With ``--format json`` the command prints exactly one JSON
+object to stdout carrying the same facts as the text output
+(override id -- null on ``--dry-run`` and on ``--clear``,
+staff member id, date, ``is_off``, start, end, and
+``dry_run``; on ``--clear`` a ``cleared`` flag says whether
+an override was removed, and on a ``--clear --dry-run`` an
+``override_exists`` flag says whether one would be); no
+prose lines are printed in json mode. The default
+``--format text`` output is unchanged.
 
 Thin wrapper around :mod:`team.shift_overrides`: the staff
 member is resolved by id and the date/times are parsed, then
@@ -33,6 +44,7 @@ is written. Backend only -- no views, templates, or UI.
 """
 import argparse
 import datetime
+import json
 
 from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand, CommandError
@@ -122,8 +134,16 @@ class Command(BaseCommand):
                  "print the override that would apply (or, "
                  "with --clear, that would be removed), and "
                  "write nothing.")
+        parser.add_argument(
+            "--format", dest="format", default="text",
+            choices=["text", "json"],
+            help="Output format: text (default) or json.")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "text"
+        if fmt not in ("text", "json"):
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'text' or 'json'.")
         try:
             member = StaffMember.objects.get(
                 pk=options.get("staff_member_id"))
@@ -150,6 +170,15 @@ class Command(BaseCommand):
             if dry_run:
                 removed = ShiftOverride.objects.filter(
                     staff_member=member, date=day).exists()
+                if fmt == "json":
+                    self.stdout.write(json.dumps(dict(
+                        override_id=None,
+                        staff_member_id=member.pk,
+                        date=day.isoformat(),
+                        is_off=None, start_time=None, end_time=None,
+                        cleared=False, override_exists=removed,
+                        dry_run=True)))
+                    return
                 self.stdout.write(
                     f"Dry run: would clear ShiftOverride "
                     f"staff_member_id={member.pk} date={day} "
@@ -157,6 +186,14 @@ class Command(BaseCommand):
                     f"-- no override cleared.")
                 return
             removed = clear_shift_override(member, day)
+            if fmt == "json":
+                self.stdout.write(json.dumps(dict(
+                    override_id=None,
+                    staff_member_id=member.pk,
+                    date=day.isoformat(),
+                    is_off=None, start_time=None, end_time=None,
+                    cleared=removed, dry_run=False)))
+                return
             self.stdout.write(
                 f"Cleared shift override for {member} on {day}."
                 if removed else
@@ -173,6 +210,18 @@ class Command(BaseCommand):
                 raise CommandError(
                     "; ".join(exc.messages)) from exc
             preview = _describe(member, v_day, v_off, v_start, v_end)
+            if fmt == "json":
+                self.stdout.write(json.dumps(dict(
+                    override_id=None,
+                    staff_member_id=member.pk,
+                    date=v_day.isoformat(),
+                    is_off=v_off,
+                    start_time=(v_start.isoformat()
+                                if v_start is not None else None),
+                    end_time=(v_end.isoformat()
+                              if v_end is not None else None),
+                    dry_run=True)))
+                return
             self.stdout.write(
                 f"Dry run: would set {preview} "
                 f"-- no override written.")
@@ -183,6 +232,20 @@ class Command(BaseCommand):
                 is_off=is_off)
         except ValidationError as exc:
             raise CommandError("; ".join(exc.messages)) from exc
+        if fmt == "json":
+            self.stdout.write(json.dumps(dict(
+                override_id=override.pk,
+                staff_member_id=member.pk,
+                date=override.date.isoformat(),
+                is_off=override.is_off,
+                start_time=(override.start_time.isoformat()
+                            if override.start_time is not None
+                            else None),
+                end_time=(override.end_time.isoformat()
+                          if override.end_time is not None
+                          else None),
+                dry_run=False)))
+            return
         self.stdout.write(
             "Set " + _describe(
                 member, override.date, override.is_off,
