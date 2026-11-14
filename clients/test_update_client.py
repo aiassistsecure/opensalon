@@ -152,3 +152,128 @@ class UpdateClientTests(TestCase):
             with self.assertRaises(ValueError):
                 validate_update_client(self.salon, self.client, **kwargs)
         self.assertEqual(self.fresh().email, "amy@example.com")
+
+
+# --- management command --format tests (appended) ---
+import io
+import json
+
+from django.core.management import CommandError, call_command
+
+
+class UpdateClientCommandFormatTests(TestCase):
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon")
+        self.client = make(
+            self.salon, email="amy@example.com", phone="555-0101")
+
+    def fresh(self):
+        return Client.objects.get(pk=self.client.pk)
+
+    def _run(self, **kwargs):
+        out = io.StringIO()
+        call_command("update_client", stdout=out, **kwargs)
+        return out.getvalue()
+
+    def test_text_default_byte_identical(self):
+        text = self._run(
+            salon_id=self.salon.id, client_id=self.client.id,
+            first_name="Bea", active=False)
+        self.assertEqual(text, (
+            f"update_client: client_id={self.client.pk} "
+            f"salon_id={self.salon.pk} set first_name\n"
+            f"update_client: client_id={self.client.pk} "
+            f"salon_id={self.salon.pk} set active: True -> False\n"))
+
+    def test_text_default_no_change_byte_identical(self):
+        text = self._run(
+            salon_id=self.salon.id, client_id=self.client.id,
+            first_name="Amy")
+        self.assertEqual(text, (
+            f"update_client: client_id={self.client.pk} "
+            f"salon_id={self.salon.pk} no changes active=True\n"))
+
+    def test_text_default_dry_run_byte_identical(self):
+        text = self._run(
+            salon_id=self.salon.id, client_id=self.client.id,
+            first_name="Bea", active=False, dry_run=True)
+        self.assertEqual(text, (
+            f"update_client dry-run: client_id={self.client.pk} "
+            f"salon_id={self.salon.pk} would set first_name\n"
+            f"update_client dry-run: client_id={self.client.pk} "
+            f"salon_id={self.salon.pk} would set active: -> False\n"))
+        self.assertEqual(
+            (self.fresh().first_name, self.fresh().active),
+            ("Amy", True))
+
+    def test_format_json_real_run(self):
+        out = io.StringIO()
+        call_command(
+            "update_client", "--salon-id", str(self.salon.id),
+            "--client-id", str(self.client.id), "--first-name", "Bea",
+            "--inactive", "--format", "json", stdout=out)
+        text = out.getvalue()
+        self.assertEqual(text.strip().count("\n"), 0)
+        self.assertNotIn("update_client:", text)
+        self.assertNotIn("Bea", text)
+        payload = json.loads(text)
+        self.assertEqual(payload, {
+            "client_id": self.client.pk, "salon_id": self.salon.pk,
+            "changed": True,
+            "changed_fields": ["first_name", "active"],
+            "changes": [{"field": "first_name"},
+                        {"field": "active", "old_value": True,
+                         "new_value": False}],
+            "dry_run": False})
+        self.assertEqual(
+            (self.fresh().first_name, self.fresh().active),
+            ("Bea", False))
+
+    def test_format_json_via_kwargs_no_change(self):
+        text = self._run(
+            salon_id=self.salon.id, client_id=self.client.id,
+            first_name="Amy", format="json")
+        payload = json.loads(text)
+        self.assertEqual(payload, {
+            "client_id": self.client.pk, "salon_id": self.salon.pk,
+            "changed": False, "changed_fields": [], "changes": [],
+            "active": True, "dry_run": False})
+
+    def test_format_json_dry_run_writes_nothing(self):
+        text = self._run(
+            salon_id=self.salon.id, client_id=self.client.id,
+            first_name="Bea", active=False, dry_run=True,
+            format="json")
+        self.assertEqual(text.strip().count("\n"), 0)
+        payload = json.loads(text)
+        self.assertEqual(payload, {
+            "client_id": self.client.pk, "salon_id": self.salon.pk,
+            "changed": True,
+            "changed_fields": ["first_name", "active"],
+            "changes": [{"field": "first_name"},
+                        {"field": "active", "new_value": False}],
+            "dry_run": True})
+        self.assertEqual(
+            (self.fresh().first_name, self.fresh().active),
+            ("Amy", True))
+
+    def test_format_json_dry_run_no_change(self):
+        text = self._run(
+            salon_id=self.salon.id, client_id=self.client.id,
+            first_name="Amy", dry_run=True, format="json")
+        payload = json.loads(text)
+        self.assertEqual(payload, {
+            "client_id": self.client.pk, "salon_id": self.salon.pk,
+            "changed": False, "changed_fields": [], "changes": [],
+            "dry_run": True})
+
+    def test_format_json_errors_still_command_error(self):
+        with self.assertRaises(CommandError):
+            self._run(
+                salon_id=999999, client_id=self.client.id,
+                first_name="Bea", format="json")
+        with self.assertRaises(CommandError):
+            self._run(
+                salon_id=self.salon.id, client_id=self.client.id,
+                email="not-an-email", format="json")
+        self.assertEqual(self.fresh().first_name, "Amy")
