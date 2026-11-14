@@ -1,4 +1,5 @@
 import io
+import json
 
 from django.core.management import call_command
 from django.core.management.base import CommandError
@@ -97,4 +98,111 @@ class AddServiceCommandTests(TestCase):
             with self.assertRaises(CommandError):
                 self.run_cmd(salon_id=self.salon.pk,
                              category_id=self.category.pk, **kwargs)
+        self.assertEqual(Service.objects.count(), 0)
+
+
+class AddServiceCommandFormatTests(TestCase):
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon")
+        self.category = ServiceCategory.objects.create(
+            salon=self.salon, name="Color")
+
+    def run_cmd(self, **kwargs):
+        out = io.StringIO()
+        call_command("add_service", stdout=out, **kwargs)
+        return out.getvalue()
+
+    def test_default_text_output_unchanged(self):
+        text = self.run_cmd(
+            salon_id=self.salon.pk, category_id=self.category.pk,
+            name="Full Color", service_minutes=60,
+            processing_minutes=30, finishing_minutes=15)
+        (s,) = Service.objects.all()
+        self.assertEqual(
+            text,
+            f"Created service {s.pk}: 'Full Color' "
+            f"in salon {self.salon.pk}: category={self.category.pk} "
+            "service_minutes=60 processing_minutes=30 "
+            "finishing_minutes=15 active=True.\n")
+
+    def test_default_text_dry_run_output_unchanged(self):
+        text = self.run_cmd(
+            salon_id=self.salon.pk, category_id=self.category.pk,
+            name="Full Color", service_minutes=60,
+            processing_minutes=30, dry_run=True)
+        self.assertEqual(
+            text,
+            "Dry run: would create service 'Full Color' "
+            f"in salon {self.salon.pk}: category={self.category.pk} "
+            "('Color') service_minutes=60 processing_minutes=30 "
+            "finishing_minutes=0 active=True "
+            "-- no service written.\n")
+        self.assertEqual(Service.objects.count(), 0)
+
+    def test_explicit_text_format_matches_default(self):
+        text = self.run_cmd(
+            salon_id=self.salon.pk, category_id=self.category.pk,
+            name="Full Color", service_minutes=60, format="text")
+        (s,) = Service.objects.all()
+        self.assertEqual(
+            text,
+            f"Created service {s.pk}: 'Full Color' "
+            f"in salon {self.salon.pk}: category={self.category.pk} "
+            "service_minutes=60 processing_minutes=0 "
+            "finishing_minutes=0 active=True.\n")
+
+    def test_json_output_parses_and_carries_facts(self):
+        text = self.run_cmd(
+            salon_id=self.salon.pk, category_id=self.category.pk,
+            name="Full Color", service_minutes=60,
+            processing_minutes=30, finishing_minutes=15,
+            format="json")
+        (s,) = Service.objects.all()
+        self.assertNotIn("Created service", text)
+        self.assertEqual(json.loads(text), {
+            "id": s.pk, "name": "Full Color",
+            "salon_id": self.salon.pk,
+            "category_id": self.category.pk,
+            "category_name": "Color",
+            "service_minutes": 60, "processing_minutes": 30,
+            "finishing_minutes": 15, "active": True,
+            "dry_run": False})
+
+    def test_json_via_cli_flag(self):
+        out = io.StringIO()
+        call_command(
+            "add_service", "--salon-id", str(self.salon.pk),
+            "--category-id", str(self.category.pk),
+            "--name", "Full Color", "--service-minutes", "60",
+            "--format", "json", stdout=out)
+        row = json.loads(out.getvalue())
+        (s,) = Service.objects.all()
+        self.assertEqual(
+            (row["id"], row["name"], row["salon_id"],
+             row["category_id"], row["dry_run"]),
+            (s.pk, "Full Color", self.salon.pk,
+             self.category.pk, False))
+
+    def test_dry_run_json_reports_dry_run_and_writes_nothing(self):
+        text = self.run_cmd(
+            salon_id=self.salon.pk, category_name="Color",
+            name="Full Color", service_minutes=60,
+            processing_minutes=30, dry_run=True, format="json")
+        self.assertEqual(Service.objects.count(), 0)
+        self.assertNotIn("Dry run", text)
+        self.assertEqual(json.loads(text), {
+            "id": None, "name": "Full Color",
+            "salon_id": self.salon.pk,
+            "category_id": self.category.pk,
+            "category_name": "Color",
+            "service_minutes": 60, "processing_minutes": 30,
+            "finishing_minutes": 0, "active": True,
+            "dry_run": True})
+
+    def test_json_invalid_writes_nothing_and_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            self.run_cmd(
+                salon_id=self.salon.pk,
+                category_id=self.category.pk, name="Cut",
+                service_minutes=0, format="json")
         self.assertEqual(Service.objects.count(), 0)
