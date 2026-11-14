@@ -2,7 +2,14 @@
 
 Usage:
     python manage.py send_due_reminders [--hours 24]
-        [--now ISO-8601-DATETIME] [--dry-run]
+        [--now ISO-8601-DATETIME] [--dry-run] [--format text|json]
+
+With ``--format json`` the command prints exactly one JSON
+object to stdout carrying the same facts as the text output
+(total and per-channel sent / would-send and skipped counts,
+the dry-run skipped-by-opt-in total, and ``dry_run``); no
+prose lines are printed in json mode. The default
+``--format text`` output is unchanged.
 
 Thin wrapper around the existing combined service
 :func:`messaging.dispatch.send_due_reminders`: sends email
@@ -29,6 +36,7 @@ here.
 """
 import argparse
 import datetime
+import json
 from datetime import timedelta
 
 from django.core.management.base import BaseCommand, CommandError
@@ -96,8 +104,16 @@ class Command(BaseCommand):
             "--dry-run", action="store_true",
             help="Preview only: count would-send/skipped, send nothing.",
         )
+        parser.add_argument(
+            "--format", dest="format", default="text",
+            choices=["text", "json"],
+            help="Output format: text (default) or json.")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "text"
+        if fmt not in ("text", "json"):
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'text' or 'json'.")
         hours = options["hours"]
         dry_run = options["dry_run"]
         if hours < 0:
@@ -116,6 +132,17 @@ class Command(BaseCommand):
                 summary.email.skipped_not_opted_in
                 + summary.sms.skipped_not_opted_in
             )
+            if fmt == "json":
+                self.stdout.write(json.dumps(dict(
+                    would_send=summary.sent,
+                    skipped=summary.skipped,
+                    skipped_by_opt_in=opt_in_skipped,
+                    email_would_send=summary.email.sent,
+                    email_skipped=summary.email.skipped,
+                    sms_would_send=summary.sms.sent,
+                    sms_skipped=summary.sms.skipped,
+                    dry_run=True)))
+                return
             self.stdout.write(
                 "Dry run: Reminders: {sent} would send, "
                 "{skipped} skipped ({opt} skipped by opt-in; "
@@ -130,6 +157,16 @@ class Command(BaseCommand):
                     s_skipped=summary.sms.skipped,
                 )
             )
+            return
+        if fmt == "json":
+            self.stdout.write(json.dumps(dict(
+                sent=summary.sent,
+                skipped=summary.skipped,
+                email_sent=summary.email.sent,
+                email_skipped=summary.email.skipped,
+                sms_sent=summary.sms.sent,
+                sms_skipped=summary.sms.skipped,
+                dry_run=False)))
             return
         self.stdout.write(
             "Reminders: {sent} sent, {skipped} skipped "
