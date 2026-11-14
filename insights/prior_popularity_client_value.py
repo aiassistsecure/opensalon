@@ -43,6 +43,7 @@ __all__ = [
     "prior_period_popularity", "prior_period_client_value",
     "compare_popularity", "compare_client_value",
     "PRIOR_POPULARITY_FIELDNAMES", "PRIOR_CLIENT_VALUE_FIELDNAMES",
+    "export_prior_popularity", "export_prior_client_value",
     "export_prior_popularity_csv", "export_prior_client_value_csv",
 ]
 
@@ -303,16 +304,22 @@ def _bounds(result):
     }
 
 
-def export_prior_popularity_csv(salon, start_date=None, end_date=None,
-                                **kwargs):
-    """Return the popularity prior-period comparison as CSV."""
+def export_prior_popularity(salon, start_date=None, end_date=None,
+                            **kwargs):
+    """Return the popularity prior-period comparison as dicts.
+
+    Every row mirrors a CSV row for the same arguments: keys
+    are :data:`PRIOR_POPULARITY_FIELDNAMES` in order, counts
+    are ints, and percentages are strings rendered to two
+    places (``""`` where the CSV renders empty).
+    """
     result = prior_period_popularity(salon, start_date, end_date,
                                      **kwargs)
-    return _write([{
+    return [{
         "service_name": r.service_name, **_bounds(result),
-        "current": _count(r.total.current),
-        "prior": _count(r.total.prior),
-        "delta": _count(r.total.delta),
+        "current": int(Decimal(r.total.current)),
+        "prior": int(Decimal(r.total.prior)),
+        "delta": int(Decimal(r.total.delta)),
         "percent_change": _pct(r.total.percent_change),
         "current_completed_count": r.current_completed_count,
         "prior_completed_count": r.prior_completed_count,
@@ -322,15 +329,33 @@ def export_prior_popularity_csv(salon, start_date=None, end_date=None,
         "prior_cancelled_count": r.prior_cancelled_count,
         "current_no_show_count": r.current_no_show_count,
         "prior_no_show_count": r.prior_no_show_count,
-    } for r in result], PRIOR_POPULARITY_FIELDNAMES)
+    } for r in result]
 
 
-def export_prior_client_value_csv(salon, start_date=None,
-                                  end_date=None, **kwargs):
-    """Return the client-value prior-period comparison as CSV."""
+def export_prior_popularity_csv(salon, start_date=None, end_date=None,
+                                **kwargs):
+    """Return the popularity prior-period comparison as CSV.
+
+    Built from :func:`export_prior_popularity` with the same
+    arguments, so the CSV and dict exports always agree.
+    """
+    return _write(export_prior_popularity(salon, start_date, end_date,
+                                          **kwargs),
+                  PRIOR_POPULARITY_FIELDNAMES)
+
+
+def export_prior_client_value(salon, start_date=None, end_date=None,
+                              **kwargs):
+    """Return the client-value prior-period comparison as dicts.
+
+    Every row mirrors a CSV row for the same arguments: keys
+    are :data:`PRIOR_CLIENT_VALUE_FIELDNAMES` in order, money
+    and percentages are strings rendered to two places
+    (``""`` where the CSV renders empty), counts are ints.
+    """
     result = prior_period_client_value(salon, start_date, end_date,
                                        **kwargs)
-    return _write([{
+    return [{
         "client_name": r.display_name, **_bounds(result),
         "current": _money(r.revenue.current),
         "prior": _money(r.revenue.prior),
@@ -338,4 +363,16 @@ def export_prior_client_value_csv(salon, start_date=None,
         "percent_change": _pct(r.revenue.percent_change),
         "current_sale_count": r.current_sale_count,
         "prior_sale_count": r.prior_sale_count,
-    } for r in result], PRIOR_CLIENT_VALUE_FIELDNAMES)
+    } for r in result]
+
+
+def export_prior_client_value_csv(salon, start_date=None,
+                                  end_date=None, **kwargs):
+    """Return the client-value prior-period comparison as CSV.
+
+    Built from :func:`export_prior_client_value` with the same
+    arguments, so the CSV and dict exports always agree.
+    """
+    return _write(export_prior_client_value(salon, start_date, end_date,
+                                            **kwargs),
+                  PRIOR_CLIENT_VALUE_FIELDNAMES)
