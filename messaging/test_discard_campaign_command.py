@@ -12,6 +12,7 @@ as ``CommandError``. Fixtures are tiny synthetic records --
 unit logic only.
 """
 import io
+import json
 
 from django.core.exceptions import ValidationError
 from django.core.management import CommandError, call_command, get_commands
@@ -134,6 +135,73 @@ class DiscardCampaignTests(TestCase):
             with self.assertRaises(CommandError):
                 self._run(campaign_id=campaign.pk, **extra)
         self.assertTrue(Campaign.objects.filter(pk=campaign.pk).exists())
+        self.assertEqual(CampaignSend.objects.count(), 1)
+
+    def test_explicit_text_format_matches_default(self):
+        self._client(sms_opt_in=True)
+        campaign = self._campaign()
+        campaign_id = campaign.pk
+        text = self._run(campaign_id=campaign_id, format="text")
+        self.assertEqual(Campaign.objects.count(), 0)
+        self.assertEqual(
+            text,
+            f"Discarded draft campaign {campaign_id} (sms): "
+            f"'Spring Offer' audience 1.\n")
+
+    def test_json_output_parses_and_carries_facts(self):
+        self._client(sms_opt_in=True)
+        campaign = self._campaign()
+        campaign_id = campaign.pk
+        text = self._run(campaign_id=campaign_id, format="json")
+        self.assertEqual(Campaign.objects.count(), 0)
+        self.assertNotIn("Discarded draft campaign", text)
+        self.assertEqual(len(text.strip().splitlines()), 1)
+        self.assertEqual(json.loads(text), {
+            "id": campaign_id, "name": "Spring Offer",
+            "channel": "sms", "status": "discarded",
+            "audience": 1, "dry_run": False})
+
+    def test_json_via_cli_flag(self):
+        campaign = self._campaign()
+        campaign_id = campaign.pk
+        out = io.StringIO()
+        call_command(
+            "discard_campaign", "--campaign-id", str(campaign_id),
+            "--format", "json", stdout=out)
+        self.assertEqual(Campaign.objects.count(), 0)
+        row = json.loads(out.getvalue())
+        self.assertEqual(
+            (row["id"], row["status"], row["dry_run"]),
+            (campaign_id, "discarded", False))
+
+    def test_dry_run_json_reports_audience_and_deletes_nothing(self):
+        self._client(sms_opt_in=True)
+        self._client(sms_opt_in=True, email_opt_in=True)
+        self._client(email_opt_in=True)  # not sms audience
+        campaign = self._campaign()
+        text = self._run(
+            "--campaign-id", str(campaign.pk), "--dry-run",
+            "--format", "json")
+        self.assertEqual(Campaign.objects.count(), 1)
+        campaign.refresh_from_db()
+        self.assertEqual(campaign.status, Campaign.Status.DRAFT)
+        self.assertNotIn("Dry run", text)
+        self.assertEqual(len(text.strip().splitlines()), 1)
+        self.assertEqual(json.loads(text), {
+            "id": campaign.pk, "name": "Spring Offer",
+            "channel": "sms", "status": "draft",
+            "audience": 2, "dry_run": True})
+
+    def test_json_errors_still_command_error(self):
+        campaign = self._sent_campaign()
+        with self.assertRaises(CommandError):
+            self._run(campaign_id=campaign.pk, format="json")
+        with self.assertRaises(CommandError):
+            self._run(campaign_id=999999, format="json")
+        draft = self._campaign(name="Draft")
+        with self.assertRaises(CommandError):
+            self._run(campaign_id=draft.pk, format="bogus")
+        self.assertTrue(Campaign.objects.filter(pk=draft.pk).exists())
         self.assertEqual(CampaignSend.objects.count(), 1)
 
     def test_command_unknown_id_is_error(self):
