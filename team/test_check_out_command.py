@@ -8,6 +8,7 @@ records -- unit logic only.
 """
 import datetime
 import io
+import json
 
 from django.core.management import CommandError, call_command
 from django.test import TestCase
@@ -55,6 +56,71 @@ class CheckOutCommandTests(TestCase):
         self.assertEqual(record.recorded_at, OUT_AT)
         self.assertEqual(record.note, "")
         self.assertIn("Stylist One", out.getvalue())
+
+    def test_default_text_output_unchanged(self):
+        out = self.run_cmd(
+            staff_member_id=self.staff.pk, at=OUT_AT.isoformat())
+        self.assertEqual(out, f"Checked out Stylist One at {OUT_AT}.\n")
+
+    def test_default_text_dry_run_output_unchanged(self):
+        out = self.run_cmd(
+            staff_member_id=self.staff.pk, at=OUT_AT.isoformat(),
+            dry_run=True)
+        self.assertEqual(
+            out,
+            "Dry run: would create AttendanceRecord "
+            "staff_member=Stylist One "
+            f"staff_member_id={self.staff.pk} "
+            "event_type=check_out "
+            f"recorded_at={OUT_AT} "
+            "note='' -- no record written.\n")
+        self.assertEqual(
+            AttendanceRecord.objects.filter(
+                event_type=AttendanceRecord.EventType.CHECK_OUT).count(),
+            0)
+
+    def test_format_json_output(self):
+        out = self.run_cmd(
+            staff_member_id=self.staff.pk, at=OUT_AT.isoformat(),
+            note="Done", format="json")
+        self.assertEqual(out.count("\n"), 1)
+        self.assertNotIn("Checked out", out)
+        payload = json.loads(out)
+        record = AttendanceRecord.objects.filter(
+            staff_member=self.staff,
+            event_type=AttendanceRecord.EventType.CHECK_OUT).get()
+        self.assertEqual(payload["attendance_record_id"], record.pk)
+        self.assertEqual(payload["staff_member_id"], self.staff.pk)
+        self.assertEqual(payload["salon_id"], self.salon.pk)
+        self.assertEqual(payload["recorded_at"], OUT_AT.isoformat())
+        self.assertEqual(payload["event_type"], "check_out")
+        self.assertEqual(payload["note"], "Done")
+        self.assertIs(payload["dry_run"], False)
+
+    def test_format_json_dry_run_writes_nothing(self):
+        out = self.run_cmd(
+            staff_member_id=self.staff.pk, at=OUT_AT.isoformat(),
+            dry_run=True, format="json")
+        payload = json.loads(out)
+        self.assertIsNone(payload["attendance_record_id"])
+        self.assertEqual(payload["staff_member_id"], self.staff.pk)
+        self.assertEqual(payload["salon_id"], self.salon.pk)
+        self.assertEqual(payload["recorded_at"], OUT_AT.isoformat())
+        self.assertIs(payload["dry_run"], True)
+        self.assertEqual(
+            AttendanceRecord.objects.filter(
+                event_type=AttendanceRecord.EventType.CHECK_OUT).count(),
+            0)
+        self.assertTrue(self.staff.is_checked_in())
+
+    def test_format_json_unknown_staff_is_command_error(self):
+        with self.assertRaises(CommandError):
+            self.run_cmd(
+                staff_member_id=self.staff.pk + 1000, format="json")
+        self.assertEqual(
+            AttendanceRecord.objects.filter(
+                event_type=AttendanceRecord.EventType.CHECK_OUT).count(),
+            0)
 
     def test_unknown_staff_id_is_command_error(self):
         with self.assertRaises(CommandError):
