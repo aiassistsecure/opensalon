@@ -1,7 +1,27 @@
-"""Export a salon's core data to a single JSON file.
+"""Export a salon's core data to a single JSON or CSV file.
 
 Usage:
-    python manage.py export_salon_data OUTPUT.json [--salon NAME]
+    python manage.py export_salon_data OUTPUT [--salon NAME]
+        [--format json|csv]
+
+``--format json`` (the default) writes the bundle exactly as
+before, byte-identical. ``--format csv`` renders the SAME
+in-memory bundle as CSV: for each top-level section, in bundle
+order, a ``# section: <name>`` header line followed by that
+section's rows as CSV (columns are the row dict keys, in the
+JSON rows' order), sections separated by one blank line. A
+nested dict/list cell value (``payload``, a cashup's
+``tender_totals``, a receipt's ``lines`` / ``tender``) is
+JSON-encoded into its cell, following the
+``bookings.export_appointments`` / price-book CSV precedent,
+so nothing is dropped and the two formats can never disagree
+-- one source of truth. An empty section renders as its
+``# section:`` header line alone (it has no rows to take
+columns from). ``counts`` -- the one top-level value that is
+a flat dict rather than a list of rows -- renders as a
+single-row block whose columns are its keys. The founding
+rule holds in both formats: Payment's ``provider_reference``
+is NEVER exported.
 
 Exit Principle (founding rule): anything a salon can enter, it can
 fully export. This is part 1 of that test — the core records only:
@@ -139,6 +159,8 @@ salon in the database is exported; with it, only that salon's records
 scoped through their salon/category/service chain).
 """
 
+import csv
+import io
 import json
 
 from django.core.management.base import BaseCommand, CommandError
@@ -170,17 +192,62 @@ def _dt(value):
     return value.isoformat() if value is not None else None
 
 
+_FORMATS = ("json", "csv")
+
+
+def _csv_cell(value):
+    if isinstance(value, (dict, list, tuple, set)):
+        return json.dumps(value, sort_keys=isinstance(value, dict))
+    return value
+
+
+def _bundle_to_csv(data):
+    """Render the salon_data bundle dict as CSV text.
+
+    Built from the same in-memory ``data`` the JSON path
+    serialises, section by section in bundle order; see the
+    module docstring for the block shape.
+    """
+    blocks = []
+    for name, section in data.items():
+        rows = [section] if isinstance(section, dict) else section
+        buffer = io.StringIO()
+        buffer.write(f"# section: {name}\n")
+        if rows:
+            fieldnames = []
+            for row in rows:
+                for key in row:
+                    if key not in fieldnames:
+                        fieldnames.append(key)
+            writer = csv.DictWriter(
+                buffer, fieldnames=fieldnames, lineterminator="\n")
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(
+                    {key: _csv_cell(row.get(key)) for key in fieldnames})
+        blocks.append(buffer.getvalue())
+    return "\n".join(blocks)
+
+
 class Command(BaseCommand):
-    help = "Export salon core data (price book, clients, staff, staff services, appointments, products, sales, stock movements, attendance, price changes, refunds, breaks, cashups, receipts, reminder sends, campaigns, campaign sends, staff notifications) to one JSON file."
+    help = "Export salon core data (price book, clients, staff, staff services, appointments, products, sales, stock movements, attendance, price changes, refunds, breaks, cashups, receipts, reminder sends, campaigns, campaign sends, staff notifications) to one JSON or CSV file."
 
     def add_arguments(self, parser):
-        parser.add_argument("output", help="Path of the JSON file to write.")
+        parser.add_argument("output", help="Path of the file to write.")
         parser.add_argument(
             "--salon", default=None,
             help="Only export the salon with this exact name.",
         )
+        parser.add_argument(
+            "--format", dest="format", default="json", choices=_FORMATS,
+            help="Export format: json (default) or csv.",
+        )
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "json"
+        if fmt not in _FORMATS:
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         salons = Salon.objects.all()
         if options["salon"]:
             salons = salons.filter(name=options["salon"])
@@ -587,9 +654,14 @@ class Command(BaseCommand):
         }
 
         try:
-            with open(options["output"], "w", encoding="utf-8") as fh:
-                json.dump(data, fh, indent=2, sort_keys=False)
-                fh.write("\n")
+            if fmt == "csv":
+                with open(options["output"], "w", encoding="utf-8",
+                          newline="") as fh:
+                    fh.write(_bundle_to_csv(data))
+            else:
+                with open(options["output"], "w", encoding="utf-8") as fh:
+                    json.dump(data, fh, indent=2, sort_keys=False)
+                    fh.write("\n")
         except OSError as exc:
             raise CommandError(
                 f"Cannot write export file {options['output']}: {exc}"
