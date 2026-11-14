@@ -2,7 +2,7 @@
 
 Usage:
     python manage.py adjust_stock --salon-id ID --product-id ID
-        --delta N --reason TEXT [--dry-run]
+        --delta N --reason TEXT [--dry-run] [--format text|json]
 
 With ``--dry-run`` nothing is recorded: the command calls the
 service's read-only ``validate_adjust_stock`` helper and prints
@@ -11,6 +11,11 @@ kind, signed delta, and reason — together with the on-hand
 quantity that would result. The writer is never called, so the
 preview is safe on every backend (including NEDB, where a
 rolled-back transaction does not undo writes).
+
+With ``--format json`` the command prints exactly one JSON object
+to stdout carrying the same facts as the text line: the product
+id, the salon id, the product name, the signed delta, the reason,
+the resulting/current stock, and ``dry_run``.
 
 Backend only — no views, templates, or UI. This command is a thin
 wrapper around :func:`catalog.adjust.adjust_stock`: it resolves
@@ -29,6 +34,8 @@ below-zero result raises the service's ``ValueError``, surfaced
 here as ``CommandError``; an unknown salon or a product outside
 that salon is also a ``CommandError``.
 """
+import json
+
 from django.core.management.base import BaseCommand, CommandError
 
 from catalog.adjust import adjust_stock, validate_adjust_stock
@@ -62,6 +69,10 @@ class Command(BaseCommand):
             help="Preview the movement that would be recorded "
                  "without recording anything.",
         )
+        parser.add_argument(
+            "--format", choices=["text", "json"], default="text",
+            help="Output format: text (default) or json.",
+        )
 
     def handle(self, *args, **options):
         try:
@@ -83,6 +94,17 @@ class Command(BaseCommand):
                 new_stock = validate_adjust_stock(product, delta, reason)
             except (TypeError, ValueError) as exc:
                 raise CommandError(str(exc)) from exc
+            if (options.get("format") or "text") == "json":
+                self.stdout.write(json.dumps({
+                    "product_id": product.pk,
+                    "salon_id": salon.pk,
+                    "name": product.name,
+                    "delta": delta,
+                    "reason": reason.strip(),
+                    "current_stock": new_stock,
+                    "dry_run": True,
+                }))
+                return
             self.stdout.write(
                 f"Dry run: would record adjustment movement "
                 f"{delta:+d} x {product.name} (product {product.pk}) "
@@ -93,6 +115,17 @@ class Command(BaseCommand):
             new_stock = adjust_stock(product, delta, reason)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
+        if (options.get("format") or "text") == "json":
+            self.stdout.write(json.dumps({
+                "product_id": product.pk,
+                "salon_id": salon.pk,
+                "name": product.name,
+                "delta": delta,
+                "reason": reason.strip(),
+                "current_stock": new_stock,
+                "dry_run": False,
+            }))
+            return
         self.stdout.write(
             f"Adjusted {delta:+d} x {product.name} "
             f"(product {product.pk}) for {reason.strip()!r}: "
