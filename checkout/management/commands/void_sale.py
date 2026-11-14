@@ -2,7 +2,11 @@
 
 Usage:
     python manage.py void_sale --sale-id ID --reason TEXT
-        [--dry-run]
+        [--dry-run] [--format text|json]
+
+With ``--format json`` the command prints exactly one JSON
+object to stdout carrying the same facts as the default text
+output; the default ``text`` output is unchanged.
 
 With ``--dry-run`` nothing is written: the command calls the
 service's validate-only helper (no write happens at all, so
@@ -20,6 +24,8 @@ of truth and surface here as ``CommandError``. Core stays
 provider-agnostic -- no payment-provider SDK, field, or name
 appears here.
 """
+import json
+
 from django.core.management.base import BaseCommand, CommandError
 
 from checkout.models import Sale
@@ -43,6 +49,11 @@ class Command(BaseCommand):
             help="Preview only: print the void that would be "
                  "recorded and write nothing.",
         )
+        parser.add_argument(
+            "--format", dest="format", choices=["text", "json"],
+            default="text",
+            help="Output format: text (default) or json.",
+        )
 
     def handle(self, *args, **options):
         try:
@@ -56,6 +67,14 @@ class Command(BaseCommand):
                 status = Sale.Status.VOIDED
             except ValueError as exc:
                 raise CommandError(str(exc)) from exc
+            if options.get("format") == "json":
+                self.stdout.write(json.dumps({
+                    "sale_id": sale.pk,
+                    "reason": reason,
+                    "status": str(status),
+                    "dry_run": True,
+                }))
+                return
             self.stdout.write(
                 f"Dry run: would void sale #{sale.pk} (reason: "
                 f"{reason}): sale status would be {status}; "
@@ -65,6 +84,14 @@ class Command(BaseCommand):
             voided = void_sale(sale, options["reason"])
         except ValueError as exc:
             raise CommandError(str(exc)) from exc
+        if options.get("format") == "json":
+            self.stdout.write(json.dumps({
+                "sale_id": voided.pk,
+                "reason": voided.void_reason,
+                "status": str(voided.status),
+                "dry_run": False,
+            }))
+            return
         self.stdout.write(
             f"Voided sale #{voided.pk} (reason: "
             f"{voided.void_reason}): sale status {voided.status}.")
