@@ -4,6 +4,13 @@ Usage:
     python manage.py update_break --break-id ID
         [--starts-at ISO-8601-DATETIME] [--ends-at ISO-8601-DATETIME]
         [--paid | --unpaid] [--salon-id ID] [--dry-run]
+        [--format text|json]
+
+With ``--format json`` the command prints exactly one JSON
+object to stdout carrying the same facts as the text line
+(break id, staff member id, salon id, start, end, paid flag,
+and ``dry_run``); no prose lines are printed in json mode.
+The default ``--format text`` output is unchanged.
 
 At least one of --starts-at / --ends-at / --paid / --unpaid must
 be given; omitted = unchanged. The staff member is NOT
@@ -25,6 +32,7 @@ and surface here as ``CommandError``. Backend only.
 """
 import argparse
 import datetime
+import json
 
 from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand, CommandError
@@ -92,8 +100,16 @@ class Command(BaseCommand):
             help="Preview only: validate with the service's "
                  "validate-only helper, print the merged break "
                  "that would be stored, and write nothing.")
+        parser.add_argument(
+            "--format", dest="format", default="text",
+            choices=["text", "json"],
+            help="Output format: text (default) or json.")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "text"
+        if fmt not in ("text", "json"):
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'text' or 'json'.")
         break_id = options.get("break_id")
         if break_id is None:
             raise CommandError("Provide --break-id.")
@@ -132,6 +148,16 @@ class Command(BaseCommand):
                     break_obj, start=starts_at, end=ends_at, paid=paid)
             except ValidationError as exc:
                 raise CommandError("; ".join(exc.messages)) from exc
+            if fmt == "json":
+                self.stdout.write(json.dumps(dict(
+                    break_id=break_obj.pk,
+                    staff_member_id=break_obj.staff_member_id,
+                    salon_id=break_obj.staff_member.salon_id,
+                    start=start.isoformat(),
+                    end=end.isoformat(),
+                    paid=is_paid,
+                    dry_run=True)))
+                return
             self.stdout.write(
                 f"Dry run: would update break {break_obj.pk} for "
                 f"staff member {break_obj.staff_member_id}: "
@@ -143,6 +169,16 @@ class Command(BaseCommand):
                 break_obj, start=starts_at, end=ends_at, paid=paid)
         except ValidationError as exc:
             raise CommandError("; ".join(exc.messages)) from exc
+        if fmt == "json":
+            self.stdout.write(json.dumps(dict(
+                break_id=updated.pk,
+                staff_member_id=updated.staff_member_id,
+                salon_id=updated.staff_member.salon_id,
+                start=updated.start.isoformat(),
+                end=updated.end.isoformat(),
+                paid=updated.paid,
+                dry_run=False)))
+            return
         self.stdout.write(
             f"Updated break {updated.pk} for staff member "
             f"{updated.staff_member_id}: "
