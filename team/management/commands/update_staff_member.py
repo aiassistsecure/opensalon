@@ -5,7 +5,15 @@ Usage:
         --staff-member-id ID [--display-name TEXT]
         [--staff-level-id ID] [--email ADDRESS] [--pin DIGITS]
         [--online-bookable | --no-online-bookable]
-        [--active | --inactive] [--dry-run]
+        [--active | --inactive] [--dry-run] [--format text|json]
+
+With ``--format json`` the command prints exactly one JSON
+object to stdout carrying the same facts as the text line
+(staff member id, salon id, display name, staff level id,
+online-bookable and active flags, email, ``pin_set`` -- the
+PIN itself is never printed -- and ``dry_run``); no prose
+lines are printed in json mode. The default ``--format
+text`` output is unchanged.
 
 Every field flag is optional; an omitted flag leaves that
 field unchanged, and at least one must be given. With
@@ -27,6 +35,7 @@ level or a service ``ValueError`` surfaces as
 ``CommandError``.
 """
 import argparse
+import json
 
 from django.core.management.base import BaseCommand, CommandError
 
@@ -84,8 +93,16 @@ class Command(BaseCommand):
         parser.add_argument(
             "--dry-run", action="store_true",
             help="Preview the update without writing anything.")
+        parser.add_argument(
+            "--format", dest="format", default="text",
+            choices=["text", "json"],
+            help="Output format: text (default) or json.")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "text"
+        if fmt not in ("text", "json"):
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'text' or 'json'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist as exc:
@@ -136,6 +153,18 @@ class Command(BaseCommand):
                 merged["staff_level_id" if field == "staff_level"
                        else field] = (
                     value.pk if field == "staff_level" else value)
+            if fmt == "json":
+                self.stdout.write(json.dumps(dict(
+                    staff_member_id=member.pk,
+                    salon_id=salon.pk,
+                    display_name=merged["display_name"],
+                    staff_level_id=merged["staff_level_id"],
+                    online_bookable=merged["online_bookable"],
+                    email=merged["email"],
+                    pin_set=bool(merged["pin"]),
+                    active=merged["active"],
+                    dry_run=True)))
+                return
             self.stdout.write(
                 "Dry run: would update " + _describe(
                     salon, member.pk, merged["display_name"],
@@ -148,6 +177,18 @@ class Command(BaseCommand):
             member = update_staff_member(salon, member, **kwargs)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
+        if fmt == "json":
+            self.stdout.write(json.dumps(dict(
+                staff_member_id=member.pk,
+                salon_id=salon.pk,
+                display_name=member.display_name,
+                staff_level_id=member.staff_level_id,
+                online_bookable=member.online_bookable,
+                email=member.email,
+                pin_set=bool(member.pin),
+                active=member.active,
+                dry_run=False)))
+            return
         self.stdout.write(
             f"Updated staff member {member.pk}: " + _describe(
                 salon, member.pk, member.display_name,
