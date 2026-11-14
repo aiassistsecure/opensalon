@@ -3,8 +3,9 @@
 Run with: python manage.py test opensalon.backends.nedb
 These tests pin: no session-setup SQL, no SQL test-database creation,
 the schema editor's catalog-validating no-op DDL handling (N-M3d),
-savepoint no-ops so nested atomic() sends no savepoint SQL (N-M3e), and
-no FOR UPDATE clause from select_for_update() (N-M3i, DYOR 9.7).
+savepoint no-ops so nested atomic() sends no savepoint SQL (N-M3e),
+no FOR UPDATE clause from select_for_update() (N-M3i, DYOR 9.7), and
+post-recreate quiescence in reset_database() (N-M19b).
 """
 
 from unittest import mock
@@ -110,6 +111,9 @@ def _fake_http(existing=()):
             return {"database": {"name": payload["name"]}}
         if method == "POST" and path.endswith("/batch"):
             return {"results": [], "count": len(payload["ops"])}
+        if method == "GET" and path.endswith("/tip"):
+            # N-M19b: a settled tip -- same seq/head on every poll.
+            return {"tip": None, "seq": 7, "head": "stable-head"}
         if method == "DELETE" and path.startswith("/v1/databases/"):
             names.discard(path.rsplit("/", 1)[1])
             return {}
@@ -129,9 +133,12 @@ class TestDatabaseCreationTests(SimpleTestCase):
         self.assertEqual(name, "test_opensalon")
         nodb_cursor.assert_not_called()
         methods = [c[0] for c in calls]
-        # drop, confirm absent, recreate -- in that order, HTTP only.
+        # drop, confirm absent, recreate -- in that order, HTTP only;
+        # N-M19b quiescence tip polls close the reset.
         self.assertEqual(methods[0], "DELETE")
-        self.assertEqual(methods[-1], "POST")
+        self.assertIn("POST", methods)
+        self.assertEqual(methods[-1], "GET")
+        self.assertTrue(calls[-1][1].endswith("/tip"))
         self.assertIn("test_opensalon", names)
 
     def test_create_test_db_keepdb_ensures_without_wiping(self):
@@ -166,10 +173,15 @@ class TestDatabaseCreationTests(SimpleTestCase):
         self.assertEqual(result, "test_opensalon")
         pairs = [(c[0], c[1]) for c in calls]
         self.assertEqual(pairs[0], ("DELETE", "/v1/databases/test_opensalon"))
-        self.assertEqual(pairs[-2], ("POST", "/v1/databases"))
+        self.assertIn(("POST", "/v1/databases"), pairs)
         # N-M8c: the recreate is followed by catalog materialization.
         self.assertEqual(
-            pairs[-1], ("POST", "/v1/databases/test_opensalon/batch")
+            pairs[-3], ("POST", "/v1/databases/test_opensalon/batch")
+        )
+        # N-M19b: quiescence tip polls close the reset (settled fake
+        # tip: exactly two polls, 250 ms apart, same seq/head).
+        self.assertEqual(
+            pairs[-2:], [("GET", "/v1/databases/test_opensalon/tip")] * 2
         )
         self.assertIn("test_opensalon", names)  # recreated empty
 
@@ -299,6 +311,150 @@ class NedbTestDatabaseLifecycleLiveTests(SimpleTestCase):
         finally:
             creation.drop_database(probe)
         self.assertFalse(creation.database_exists(probe))
+
+
+class ResetQuiescenceTests(SimpleTestCase):
+    """N-M19b: reset_database() quiesces on the daemon tip."""
+
+    def _creation_with_tip(self, tip):
+        wrapper = _wrapper()
+        creation = wrapper.creation
+        fake, calls, names = _fake_http(existing={"test_opensalon"})
+
+        def http(method, path, payload=None):
+            if method == "GET" and path.endswith("/tip"):
+                calls.append((method, path, payload))
+                return tip()
+            return fake(method, path, payload)
+
+        return creation, http, calls
+
+    def test_settled_tip_takes_exactly_two_polls(self):
+        creation, http, calls = self._creation_with_tip(
+            lambda: {"tip": None, "seq": 3, "head": "h"}
+        )
+        with mock.patch.object(creation, "_http_request", http), \
+                mock.patch(
+                    "opensalon.backends.nedb.schema.declared_catalog",
+                    return_value=frozenset(),
+                ):
+            self.assertEqual(
+                creation.reset_database("test_opensalon"), "test_opensalon"
+            )
+        tips = [c for c in calls if c[1].endswith("/tip")]
+        self.assertEqual(len(tips), 2)
+
+    def test_reset_waits_for_a_moving_tip_to_settle(self):
+        seqs = iter([1, 2, 2])
+        creation, http, calls = self._creation_with_tip(
+            lambda: {"tip": None, "seq": next(seqs), "head": "h"}
+        )
+        with mock.patch.object(creation, "_http_request", http), \
+                mock.patch(
+                    "opensalon.backends.nedb.creation.time.sleep",
+                    lambda seconds: None,
+                ), \
+                mock.patch(
+                    "opensalon.backends.nedb.schema.declared_catalog",
+                    return_value=frozenset(),
+                ):
+            self.assertTrue(creation.wait_until_quiescent("test_opensalon"))
+
+    def test_quiescence_is_bounded_and_never_raises(self):
+        from opensalon.backends.nedb.creation import NedbHttpError
+
+        counter = {"n": 0}
+
+        def moving():
+            counter["n"] += 1
+            return {"tip": None, "seq": counter["n"], "head": "h"}
+
+        creation, http, calls = self._creation_with_tip(moving)
+        creation.QUIESCE_TIMEOUT_SECONDS = 0.05
+        with mock.patch.object(creation, "_http_request", http), \
+                mock.patch(
+                    "opensalon.backends.nedb.creation.time.sleep",
+                    lambda seconds: None,
+                ):
+            self.assertFalse(creation.wait_until_quiescent("test_opensalon"))
+
+        def broken():
+            raise NedbHttpError("unreachable")
+
+        creation, http, calls = self._creation_with_tip(broken)
+        creation.QUIESCE_TIMEOUT_SECONDS = 0.05
+        with mock.patch.object(creation, "_http_request", http), \
+                mock.patch(
+                    "opensalon.backends.nedb.creation.time.sleep",
+                    lambda seconds: None,
+                ), \
+                mock.patch(
+                    "opensalon.backends.nedb.schema.declared_catalog",
+                    return_value=frozenset(),
+                ):
+            # A tip that cannot be read times out; the completed
+            # reset still returns normally.
+            self.assertEqual(
+                creation.reset_database("test_opensalon"), "test_opensalon"
+            )
+
+
+@unittest.skipUnless(
+    os.environ.get("OPENSALON_NEDB_LIVE_TEST") == "1",
+    "live nedbd reset-quiescence test: set OPENSALON_NEDB_LIVE_TEST=1 "
+    "with nedbd running and the NEDB backend configured",
+)
+class NedbResetQuiescenceLiveTests(SimpleTestCase):
+    """N-M19b regression: no JOIN duplication after a quiesced reset.
+
+    Cycles 89-91: after drop + recreate, a select_related JOIN
+    intermittently emitted the first-inserted client twice (same
+    pk). 25 rounds of reset -> ORM inserts -> the changelist-
+    equivalent JOIN must each return exactly one row per filter.
+    """
+
+    databases = {"default"}
+
+    def test_reset_then_changelist_join_never_duplicates(self):
+        from django.db import connection
+
+        from clients.models import Client
+        from saloncore.models import Salon
+
+        self.assertEqual(connection.display_name, "NEDB (PostgreSQL pgwire)")
+        creation = connection.creation
+        db_name = connection.settings_dict["NAME"]
+        for round_no in range(25):
+            creation.reset_database(db_name)
+            connection.close()
+            salon = Salon.objects.create(
+                name="Quiesce Probe Salon", timezone="UTC"
+            )
+            alice = Client.objects.create(
+                salon=salon, first_name="Alice", last_name="Fakeworth",
+                sms_opt_in=True,
+            )
+            bob = Client.objects.create(
+                salon=salon, first_name="Bob", last_name="Pretend",
+            )
+            joined = Client.objects.select_related("salon").order_by(
+                "last_name", "first_name"
+            )
+            self.assertEqual(
+                [c.pk for c in joined.filter(sms_opt_in=True)],
+                [alice.pk],
+                "round %d: sms filter duplicated a row" % round_no,
+            )
+            self.assertEqual(
+                [c.pk for c in joined.filter(last_name="Fakeworth")],
+                [alice.pk],
+                "round %d: search filter duplicated a row" % round_no,
+            )
+            self.assertEqual(
+                {c.pk for c in joined}, {alice.pk, bob.pk},
+                "round %d: unfiltered JOIN lost or duplicated a row"
+                % round_no,
+            )
 
 
 def _editor(catalog=None, collect_sql=False):
