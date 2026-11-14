@@ -3,6 +3,7 @@
 Usage:
     python manage.py check_in --staff-member-id ID
         [--at ISO-8601-DATETIME] [--note TEXT] [--dry-run]
+        [--format text|json]
 
 With ``--dry-run`` the same validation runs and the
 ``AttendanceRecord`` that would be written is printed, but
@@ -22,6 +23,7 @@ Backend only -- no views, templates, or UI.
 """
 import argparse
 import datetime
+import json
 
 from django.core.management.base import BaseCommand, CommandError
 
@@ -76,6 +78,10 @@ class Command(BaseCommand):
             "--dry-run", action="store_true",
             help="Preview the AttendanceRecord that would be "
                  "written and write nothing.")
+        parser.add_argument(
+            "--format", dest="format", default="text",
+            choices=["text", "json"],
+            help="Output format (default: text).")
 
     def handle(self, *args, **options):
         try:
@@ -86,11 +92,24 @@ class Command(BaseCommand):
                 f"No staff member with id "
                 f"{options['staff_member_id']}.") from None
         recorded_at = _coerce_at(options.get("at"))
+        use_json = options.get("format") == "json"
         if options.get("dry_run"):
             if staff_member.is_checked_in():
                 raise CommandError(
                     f"{staff_member} is already checked in")
             when = recorded_at or timezone.now()
+            if use_json:
+                self.stdout.write(json.dumps({
+                    "attendance_record_id": None,
+                    "staff_member_id": staff_member.pk,
+                    "salon_id": staff_member.salon_id,
+                    "event_type": str(
+                        AttendanceRecord.EventType.CHECK_IN),
+                    "recorded_at": when.isoformat(),
+                    "note": options.get("note") or "",
+                    "dry_run": True,
+                }))
+                return
             self.stdout.write(
                 f"Dry run: would create AttendanceRecord "
                 f"staff_member={staff_member} "
@@ -106,6 +125,17 @@ class Command(BaseCommand):
                 note=options.get("note") or "")
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
+        if use_json:
+            self.stdout.write(json.dumps({
+                "attendance_record_id": record.pk,
+                "staff_member_id": record.staff_member_id,
+                "salon_id": record.staff_member.salon_id,
+                "event_type": str(record.event_type),
+                "recorded_at": record.recorded_at.isoformat(),
+                "note": record.note,
+                "dry_run": False,
+            }))
+            return
         self.stdout.write(
             f"Checked in {record.staff_member} "
             f"at {record.recorded_at}.")
