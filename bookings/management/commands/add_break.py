@@ -3,7 +3,14 @@
 Usage:
     python manage.py add_break --staff-member-id ID
         --starts-at ISO-8601-DATETIME --ends-at ISO-8601-DATETIME
-        [--paid] [--salon-id ID] [--dry-run]
+        [--paid] [--salon-id ID] [--dry-run] [--format text|json]
+
+With ``--format json`` the command prints exactly one JSON
+object to stdout carrying the same facts as the text line
+(created break id -- null on ``--dry-run``, staff member id,
+salon id, start, end, paid flag, and ``dry_run``); no prose
+lines are printed in json mode. The default ``--format text``
+output is unchanged.
 
 With ``--dry-run`` nothing is written: the command calls the
 service's validate-only helper (no write happens at all, so
@@ -26,6 +33,7 @@ Backend only -- no views, templates, or UI.
 """
 import argparse
 import datetime
+import json
 
 from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand, CommandError
@@ -92,8 +100,16 @@ class Command(BaseCommand):
             help="Preview only: validate with the service's "
                  "validate-only helper, print the break that "
                  "would be created, and write nothing.")
+        parser.add_argument(
+            "--format", dest="format", default="text",
+            choices=["text", "json"],
+            help="Output format: text (default) or json.")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "text"
+        if fmt not in ("text", "json"):
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'text' or 'json'.")
         staff_member_id = options.get("staff_member_id")
         if staff_member_id is None:
             raise CommandError("Provide --staff-member-id.")
@@ -135,6 +151,16 @@ class Command(BaseCommand):
             except ValidationError as exc:
                 raise CommandError(
                     "; ".join(exc.messages)) from exc
+            if fmt == "json":
+                self.stdout.write(json.dumps(dict(
+                    break_id=None,
+                    staff_member_id=staff_member.pk,
+                    salon_id=staff_member.salon_id,
+                    start=start.isoformat(),
+                    end=end.isoformat(),
+                    paid=is_paid,
+                    dry_run=True)))
+                return
             self.stdout.write(
                 f"Dry run: would create break for staff member "
                 f"{staff_member.pk} ({staff_member}): "
@@ -146,6 +172,16 @@ class Command(BaseCommand):
                 staff_member, start=starts_at, end=ends_at, paid=paid)
         except ValidationError as exc:
             raise CommandError("; ".join(exc.messages)) from exc
+        if fmt == "json":
+            self.stdout.write(json.dumps(dict(
+                break_id=created.pk,
+                staff_member_id=staff_member.pk,
+                salon_id=staff_member.salon_id,
+                start=created.start.isoformat(),
+                end=created.end.isoformat(),
+                paid=created.paid,
+                dry_run=False)))
+            return
         self.stdout.write(
             f"Added break {created.pk} for staff member "
             f"{staff_member.pk} ({staff_member}): "

@@ -11,6 +11,7 @@ synthetic records -- unit logic only.
 """
 import datetime
 import io
+import json
 
 from django.core.management import CommandError, call_command
 from django.test import TestCase
@@ -139,4 +140,106 @@ class AddBreakCommandTests(TestCase):
                 "add_break", staff_member_id=999999,
                 starts_at=at(12), ends_at=at(12, 30), dry_run=True,
                 stdout=io.StringIO())
+        self.assertEqual(Break.objects.count(), 0)
+
+
+class AddBreakCommandFormatTests(TestCase):
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon", timezone="UTC")
+        self.staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Stylist One")
+
+    def test_default_text_output_unchanged(self):
+        out = io.StringIO()
+        call_command(
+            "add_break", staff_member_id=self.staff.pk,
+            starts_at=at(12), ends_at=at(12, 30), paid=True, stdout=out)
+        (created,) = Break.objects.all()
+        self.assertEqual(
+            out.getvalue(),
+            f"Added break {created.pk} for staff member "
+            f"{self.staff.pk} ({self.staff}): "
+            f"start={at(12).isoformat()} "
+            f"end={at(12, 30).isoformat()} paid=True\n")
+
+    def test_default_text_dry_run_output_unchanged(self):
+        out = io.StringIO()
+        call_command(
+            "add_break", staff_member_id=self.staff.pk,
+            starts_at=at(12), ends_at=at(12, 30), paid=True,
+            dry_run=True, stdout=out)
+        self.assertEqual(Break.objects.count(), 0)
+        self.assertEqual(
+            out.getvalue(),
+            f"Dry run: would create break for staff member "
+            f"{self.staff.pk} ({self.staff}): "
+            f"start={at(12).isoformat()} end={at(12, 30).isoformat()} "
+            f"paid=True -- no break written.\n")
+
+    def test_format_json_creates_break_and_reports_fields(self):
+        out = io.StringIO()
+        call_command(
+            "add_break", "--staff-member-id", str(self.staff.pk),
+            "--starts-at", "2026-11-02T12:00:00+00:00",
+            "--ends-at", "2026-11-02T12:30:00+00:00",
+            "--paid", "--format", "json", stdout=out)
+        text = out.getvalue()
+        (created,) = Break.objects.all()
+        self.assertNotIn("Added break", text)
+        self.assertEqual(json.loads(text), {
+            "break_id": created.pk,
+            "staff_member_id": self.staff.pk,
+            "salon_id": self.salon.pk,
+            "start": at(12).isoformat(),
+            "end": at(12, 30).isoformat(),
+            "paid": True,
+            "dry_run": False})
+
+    def test_format_json_via_call_command_kwargs(self):
+        out = io.StringIO()
+        call_command(
+            "add_break", staff_member_id=self.staff.pk,
+            starts_at=at(13), ends_at=at(14), format="json", stdout=out)
+        payload = json.loads(out.getvalue())
+        (created,) = Break.objects.all()
+        self.assertEqual(payload["break_id"], created.pk)
+        self.assertEqual(payload["paid"], False)
+        self.assertFalse(payload["dry_run"])
+
+    def test_dry_run_format_json_reports_dry_run_and_writes_nothing(self):
+        out = io.StringIO()
+        call_command(
+            "add_break", "--staff-member-id", str(self.staff.pk),
+            "--starts-at", "2026-11-02T12:00:00+00:00",
+            "--ends-at", "2026-11-02T12:30:00+00:00",
+            "--paid", "--dry-run", "--format", "json", stdout=out)
+        self.assertEqual(Break.objects.count(), 0)
+        self.assertEqual(json.loads(out.getvalue()), {
+            "break_id": None,
+            "staff_member_id": self.staff.pk,
+            "salon_id": self.salon.pk,
+            "start": at(12).isoformat(),
+            "end": at(12, 30).isoformat(),
+            "paid": True,
+            "dry_run": True})
+
+    def test_format_json_errors_still_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "add_break", staff_member_id=999999,
+                starts_at=at(12), ends_at=at(12, 30),
+                format="json", stdout=io.StringIO())
+        with self.assertRaises(CommandError):
+            call_command(
+                "add_break", staff_member_id=self.staff.pk,
+                starts_at=at(12), ends_at=at(12),
+                format="json", stdout=io.StringIO())
+        self.assertEqual(Break.objects.count(), 0)
+
+    def test_invalid_format_is_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "add_break", staff_member_id=self.staff.pk,
+                starts_at=at(12), ends_at=at(12, 30),
+                format="xml", stdout=io.StringIO())
         self.assertEqual(Break.objects.count(), 0)
