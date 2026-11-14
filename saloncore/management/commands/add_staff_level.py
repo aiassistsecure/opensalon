@@ -3,6 +3,15 @@
 Usage:
     python manage.py add_staff_level --salon-id ID --name TEXT
         [--sort-order N] [--inactive] [--dry-run]
+        [--format text|json]
+
+With ``--format json`` the command prints exactly one JSON
+object to stdout carrying the same facts as the text output
+(staff level id, name, salon id, sort order, the active flag,
+and ``dry_run``; on ``--dry-run`` the id is ``None`` and only
+the fields that would be created are carried, exactly as the
+text preview shows); no prose lines are printed in json mode.
+The default ``--format text`` output is unchanged.
 
 With ``--dry-run`` nothing is written: the command calls the
 service's read-only ``validate_add_staff_level`` helper and
@@ -18,6 +27,8 @@ service verbatim, and prints a one-line summary.
 An unknown salon or a service ``ValueError`` is surfaced
 here as ``CommandError``.
 """
+import json
+
 from django.core.management.base import BaseCommand, CommandError
 
 from saloncore.add_staff_level import add_staff_level, validate_add_staff_level
@@ -44,8 +55,16 @@ class Command(BaseCommand):
             "--dry-run", action="store_true",
             help="Preview the level that would be created "
                  "without writing anything.")
+        parser.add_argument(
+            "--format", dest="format", default="text",
+            choices=["text", "json"],
+            help="Output format: text (default) or json.")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "text"
+        if fmt not in ("text", "json"):
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'text' or 'json'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist as exc:
@@ -64,6 +83,15 @@ class Command(BaseCommand):
                 cleaned = validate_add_staff_level(salon, **kwargs)
             except (TypeError, ValueError) as exc:
                 raise CommandError(str(exc)) from exc
+            if fmt == "json":
+                self.stdout.write(json.dumps(dict(
+                    id=None,
+                    name=cleaned["name"],
+                    salon_id=salon.pk,
+                    sort_order=cleaned["sort_order"],
+                    active=cleaned["active"],
+                    dry_run=True)))
+                return
             self.stdout.write(
                 f"Dry run: would create staff level "
                 f"{cleaned['name']!r} in salon {salon.pk}: "
@@ -75,6 +103,15 @@ class Command(BaseCommand):
             level = add_staff_level(salon, **kwargs)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
+        if fmt == "json":
+            self.stdout.write(json.dumps(dict(
+                id=level.pk,
+                name=level.name,
+                salon_id=salon.pk,
+                sort_order=level.sort_order,
+                active=level.active,
+                dry_run=False)))
+            return
         self.stdout.write(
             f"Created staff level {level.pk}: {level.name!r} "
             f"in salon {salon.pk}: sort_order={level.sort_order} "
