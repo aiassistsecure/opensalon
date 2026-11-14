@@ -2,7 +2,13 @@
 
 Usage:
     python manage.py repair_staff_levels --staff staff.json
-        [--salon NAME] [--dry-run]
+        [--salon NAME] [--dry-run] [--format text|json]
+
+With ``--format json`` the command prints exactly one JSON
+object to stdout carrying the same facts as the text output
+(salon name, the merged / renamed / unassigned / conflicts
+counts, and ``dry_run``); no prose lines are printed in json
+mode. The default ``--format text`` output is unchanged.
 
 With ``--dry-run`` nothing is written: the same repair plan is
 computed against an in-memory simulation of the levels and
@@ -66,8 +72,15 @@ class Command(BaseCommand):
                                  "conflicts a real run would make, "
                                  "with the same counts, and write "
                                  "nothing.")
+        parser.add_argument("--format", dest="format", default="text",
+                            choices=["text", "json"],
+                            help="Output format: text (default) or json.")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "text"
+        if fmt not in ("text", "json"):
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'text' or 'json'.")
         try:
             with open(options["staff"], encoding="utf-8") as handle:
                 rows = json.load(handle)
@@ -89,6 +102,11 @@ class Command(BaseCommand):
             raise CommandError("no salon found")
 
         dry_run = bool(options.get("dry_run"))
+
+        def emit(message):
+            if fmt == "text":
+                self.stdout.write(message)
+
         levels = list(StaffLevel.objects.filter(salon=salon))
         # Dry-run simulation state: simulated level names, deleted
         # level pks, and per-level price lists. Every lookup below
@@ -141,7 +159,7 @@ class Command(BaseCommand):
                 if label != name and not taken:
                     if dry_run:
                         sim_names[level.pk] = label
-                        self.stdout.write(
+                        emit(
                             f"repair_staff_levels dry-run: would rename "
                             f"level '{name}' to '{label}'")
                     else:
@@ -160,7 +178,7 @@ class Command(BaseCommand):
             if twin is None:
                 if dry_run:
                     sim_names[level.pk] = cat_name
-                    self.stdout.write(
+                    emit(
                         f"repair_staff_levels dry-run: would rename "
                         f"level '{name}' to '{cat_name}'")
                 else:
@@ -186,14 +204,14 @@ class Command(BaseCommand):
                 dup_label = f"{cat_name} (duplicate — review)"
                 if dry_run:
                     sim_names[level.pk] = dup_label
-                    self.stdout.write(
+                    emit(
                         f"repair_staff_levels dry-run: would rename "
                         f"level '{name}' to '{dup_label}'")
                 else:
                     level.name = dup_label
                     level.save(update_fields=["name"])
                 conflicts += len(differing)
-                self.stdout.write(
+                emit(
                     f"CONFLICT {cat_name}: {len(differing)} price(s) differ "
                     "from the named level — left in place for review."
                 )
@@ -205,7 +223,7 @@ class Command(BaseCommand):
                     if existing is None:
                         sim_prices(twin.pk).append(price)
                 sim_deleted.add(level.pk)
-                self.stdout.write(
+                emit(
                     f"repair_staff_levels dry-run: would merge "
                     f"level '{name}' into '{cat_name}'")
             else:
@@ -221,6 +239,12 @@ class Command(BaseCommand):
                 level.members.update(staff_level=twin)
                 level.delete()
             merged += 1
+        if fmt == "json":
+            self.stdout.write(json.dumps(dict(
+                salon=salon.name, merged=merged, renamed=renamed,
+                unassigned=unassigned, conflicts=conflicts,
+                dry_run=dry_run)))
+            return
         if dry_run:
             self.stdout.write(
                 f"repair_staff_levels dry-run: salon={salon.name} "
