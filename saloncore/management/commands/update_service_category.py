@@ -3,7 +3,15 @@
 Usage:
     python manage.py update_service_category --salon-id ID
         --service-category-id ID [--name TEXT] [--sort-order N]
-        [--active | --inactive] [--dry-run]
+        [--active | --inactive] [--dry-run] [--format text|json]
+
+With ``--format json`` the command prints exactly one JSON
+object to stdout carrying the same facts as the text output
+(service category id, name, salon id, sort order, the active
+flag, and ``dry_run``; on ``--dry-run`` only the fields that
+would change are carried, exactly as the text preview shows);
+no prose lines are printed in json mode. The default
+``--format text`` output is unchanged.
 
 Every update flag is optional: an omitted flag leaves that field
 unchanged (the service's ``None`` sentinel). With ``--dry-run``
@@ -24,6 +32,8 @@ An unknown salon or service category, or a service ``ValueError``
 ``sort_order``, no field given) is surfaced here as
 ``CommandError``.
 """
+import json
+
 from django.core.management.base import BaseCommand, CommandError
 
 from saloncore.models import Salon, ServiceCategory
@@ -58,8 +68,16 @@ class Command(BaseCommand):
             "--dry-run", action="store_true",
             help="Preview the fields that would change "
                  "without writing anything.")
+        parser.add_argument(
+            "--format", dest="format", default="text",
+            choices=["text", "json"],
+            help="Output format: text (default) or json.")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "text"
+        if fmt not in ("text", "json"):
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'text' or 'json'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist as exc:
@@ -90,6 +108,13 @@ class Command(BaseCommand):
                     salon, service_category, **kwargs)
             except (TypeError, ValueError) as exc:
                 raise CommandError(str(exc)) from exc
+            if fmt == "json":
+                payload = dict(id=service_category.pk, salon_id=salon.pk)
+                for field, value in cleaned.items():
+                    payload[field] = value
+                payload["dry_run"] = True
+                self.stdout.write(json.dumps(payload))
+                return
             parts = []
             for field, value in cleaned.items():
                 value = repr(value) if isinstance(value, str) else value
@@ -104,6 +129,15 @@ class Command(BaseCommand):
                 salon, service_category, **kwargs)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
+        if fmt == "json":
+            self.stdout.write(json.dumps(dict(
+                id=service_category.pk,
+                name=service_category.name,
+                salon_id=salon.pk,
+                sort_order=service_category.sort_order,
+                active=service_category.active,
+                dry_run=False)))
+            return
         self.stdout.write(
             f"Updated service category {service_category.pk}: "
             f"{service_category.name!r} in salon {salon.pk}: "
