@@ -3,9 +3,18 @@
 Usage:
     python manage.py set_roster_pattern --staff-member-id ID
         --weekday 0 --start HH:MM --end HH:MM [--inactive]
-        [--dry-run]
+        [--dry-run] [--format text|json]
     python manage.py set_roster_pattern --staff-member-id ID
         --weekday Monday --start HH:MM --end HH:MM [--dry-run]
+
+With ``--format json`` the command prints exactly one JSON
+object to stdout carrying the same facts as the text output
+(pattern id -- null on ``--dry-run``, staff member id,
+weekday, weekday name, start, end, active flag, and
+``dry_run``; on ``--dry-run`` the count of existing patterns
+that would be replaced is carried too, exactly as the text
+preview shows); no prose lines are printed in json mode.
+The default ``--format text`` output is unchanged.
 
 Thin wrapper around :mod:`team.roster_patterns`: the staff
 member is resolved by id and the weekday/times are parsed,
@@ -31,6 +40,7 @@ out-of-range weekday/time, or a service ``ValidationError``
 only -- no views, templates, or UI.
 """
 import argparse
+import json
 
 from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand, CommandError
@@ -115,8 +125,16 @@ class Command(BaseCommand):
             "--dry-run", action="store_true",
             help="Preview only: compute what would change "
                  "from reads only, print it, write nothing.")
+        parser.add_argument(
+            "--format", dest="format", default="text",
+            choices=["text", "json"],
+            help="Output format: text (default) or json.")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "text"
+        if fmt not in ("text", "json"):
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'text' or 'json'.")
         try:
             member = StaffMember.objects.get(
                 pk=options.get("staff_member_id"))
@@ -142,6 +160,20 @@ class Command(BaseCommand):
             except ValidationError as exc:
                 raise CommandError(
                     "; ".join(exc.messages)) from exc
+            if fmt == "json":
+                self.stdout.write(json.dumps(dict(
+                    pattern_id=None,
+                    staff_member_id=member.pk,
+                    weekday=preview['weekday'],
+                    weekday_name=str(
+                        RosterPattern.Weekday(
+                            preview['weekday']).label),
+                    start_time=preview['start_time'].isoformat(),
+                    end_time=preview['end_time'].isoformat(),
+                    active=preview['active'],
+                    existing_count=len(preview['existing']),
+                    dry_run=True)))
+                return
             self.stdout.write(
                 f"Dry run: would set "
                 f"{_describe(member, preview['weekday'], preview['start_time'], preview['end_time'], preview['active'])} "
@@ -155,6 +187,18 @@ class Command(BaseCommand):
                 active=active)
         except ValidationError as exc:
             raise CommandError("; ".join(exc.messages)) from exc
+        if fmt == "json":
+            self.stdout.write(json.dumps(dict(
+                pattern_id=pattern.pk,
+                staff_member_id=member.pk,
+                weekday=pattern.weekday,
+                weekday_name=str(
+                    RosterPattern.Weekday(pattern.weekday).label),
+                start_time=pattern.start_time.isoformat(),
+                end_time=pattern.end_time.isoformat(),
+                active=pattern.active,
+                dry_run=False)))
+            return
         self.stdout.write(
             "Set " + _describe(
                 member, pattern.weekday, pattern.start_time,
