@@ -4,6 +4,15 @@ Usage:
     python manage.py update_client --salon-id ID --client-id ID
         [--first-name TEXT] [--last-name TEXT] [--email ADDRESS]
         [--phone NUMBER] [--active | --inactive] [--dry-run]
+        [--format text|json]
+
+With ``--format json`` the command prints exactly one JSON
+object to stdout carrying the same facts as the text output
+(client id, salon id, whether anything changed, the changed
+field names -- with old/new values only for ``active``, the
+``active`` value on a no-change real run, and ``dry_run``);
+no prose lines are printed in json mode. The default
+``--format text`` output is unchanged.
 
 Thin wrapper around ``clients.update_client.update_client`` (the
 one source of truth): resolves salon/client, delegates verbatim,
@@ -15,6 +24,8 @@ read-only ``validate_update_client`` twin (no writer, no
 rollback relied on -- NEDB-safe). Invalid input raises
 ``CommandError``, nothing written. Backend only.
 """
+import json
+
 from django.core.management.base import BaseCommand, CommandError
 
 from clients.models import Client
@@ -57,8 +68,16 @@ class Command(BaseCommand):
             "--dry-run", action="store_true",
             help="Preview only: validate, print fields that would "
                  "change, and write nothing.")
+        parser.add_argument(
+            "--format", dest="format", default="text",
+            choices=["text", "json"],
+            help="Output format: text (default) or json.")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "text"
+        if fmt not in ("text", "json"):
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'text' or 'json'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist:
@@ -91,9 +110,25 @@ class Command(BaseCommand):
                 and cleaned[field] != getattr(client, field)
             ]
             if not changes:
+                if fmt == "json":
+                    self.stdout.write(json.dumps(dict(
+                        client_id=client.pk, salon_id=salon.pk,
+                        changed=False, changed_fields=[],
+                        changes=[], dry_run=True)))
+                    return
                 self.stdout.write(
                     f"update_client dry-run: client_id={client.pk} "
                     f"salon_id={salon.pk} no changes")
+                return
+            if fmt == "json":
+                self.stdout.write(json.dumps(dict(
+                    client_id=client.pk, salon_id=salon.pk,
+                    changed=True, changed_fields=list(changes),
+                    changes=[
+                        dict(field=field, new_value=cleaned[field])
+                        if field == "active" else dict(field=field)
+                        for field in changes],
+                    dry_run=True)))
                 return
             for field in changes:
                 suffix = (f": -> {cleaned[field]}"
@@ -108,10 +143,30 @@ class Command(BaseCommand):
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
         if not result.changed:
+            if fmt == "json":
+                self.stdout.write(json.dumps(dict(
+                    client_id=client.pk, salon_id=salon.pk,
+                    changed=False, changed_fields=[], changes=[],
+                    active=result.active, dry_run=False)))
+                return
             self.stdout.write(
                 f"update_client: client_id={client.pk} "
                 f"salon_id={salon.pk} no changes "
                 f"active={result.active}")
+            return
+        if fmt == "json":
+            self.stdout.write(json.dumps(dict(
+                client_id=client.pk, salon_id=salon.pk,
+                changed=True,
+                changed_fields=list(result.changed_fields),
+                changes=[
+                    dict(field=change.field,
+                         old_value=change.old_value,
+                         new_value=change.new_value)
+                    if change.field == "active"
+                    else dict(field=change.field)
+                    for change in result.changes],
+                dry_run=False)))
             return
         for change in result.changes:
             suffix = (f": {change.old_value} -> {change.new_value}"
