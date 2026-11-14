@@ -1,11 +1,15 @@
-"""Prior-period retention/returning comparison CSV export.
+"""Prior-period retention/returning comparison export service.
 
 Backend only — no views, templates, or UI. Read-only. Exit
 Principle: renders :mod:`insights.prior_retention_returning`
-verbatim, never recomputes. One row per metric. Columns:
-``metric``, window bounds, ``current``, ``prior``, ``delta``,
-``percent_change``. Counts are integers, money/percent two
-places, retention rates four, ``None`` percent empty.
+verbatim, never recomputes. Offers a plain, JSON-serializable
+list of dicts per kind (:func:`export_prior_retention` and
+:func:`export_prior_returning`) and a CSV string per kind
+built from that same list, so the two formats can never
+disagree. One row per metric. Columns: ``metric``, window
+bounds, ``current``, ``prior``, ``delta``, ``percent_change``.
+Counts are integers, money/percent two places, retention
+rates four, ``None`` percent empty.
 """
 import csv
 import io
@@ -17,6 +21,8 @@ from .prior_retention_returning import (
 __all__ = [
     "PRIOR_RETENTION_FIELDNAMES", "PRIOR_RETURNING_FIELDNAMES",
     "PRIOR_RETENTION_RETURNING_FIELDNAMES",
+    "export_prior_retention", "export_prior_returning",
+    "export_prior_retention_returning",
     "export_prior_retention_csv", "export_prior_returning_csv",
     "export_prior_retention_returning_csv",
 ]
@@ -92,25 +98,62 @@ def _rows(result, metrics, fmt):
     } for name in metrics]
 
 
-def export_prior_retention_csv(salon, start_date=None, end_date=None,
-                               **kwargs):
-    """Return the retention prior-period comparison as CSV."""
+def export_prior_retention(salon, start_date=None, end_date=None,
+                           **kwargs):
+    """Return the retention prior-period comparison as dicts.
+
+    Args mirror :func:`insights.prior_retention_returning.\
+prior_period_retention` exactly; its values are rendered
+    unchanged. One record per metric, in metric order.
+    """
     result = prior_period_retention(salon, start_date, end_date,
                                     **kwargs)
     fmt = lambda n, v: _count(v) if n in _RETENTION_COUNTS else _rate(v)  # noqa: E731
-    return _write(_rows(result, _RETENTION_METRICS, fmt),
+    return _rows(result, _RETENTION_METRICS, fmt)
+
+
+def export_prior_returning(salon, start_date=None, end_date=None,
+                           **kwargs):
+    """Return the returning-revenue prior comparison as dicts.
+
+    Args mirror :func:`insights.prior_retention_returning.\
+prior_period_returning_revenue` exactly; its values are
+    rendered unchanged. One record per metric, in metric order.
+    """
+    result = prior_period_returning_revenue(
+        salon, start_date, end_date, **kwargs)
+    fmt = lambda n, v: _count(v) if n in _RETURNING_COUNTS else _money(v)  # noqa: E731
+    return _rows(result, _RETURNING_METRICS, fmt)
+
+
+def export_prior_retention_csv(salon, start_date=None, end_date=None,
+                               **kwargs):
+    """Return the retention prior-period comparison as CSV.
+
+    The header is :data:`PRIOR_RETENTION_FIELDNAMES` and every
+    data row comes from :func:`export_prior_retention` with the
+    same arguments, so the CSV and list exports always agree.
+    Lines end with ``"\\n"``.
+    """
+    return _write(export_prior_retention(salon, start_date, end_date,
+                                         **kwargs),
                   PRIOR_RETENTION_FIELDNAMES)
 
 
 def export_prior_returning_csv(salon, start_date=None, end_date=None,
                                **kwargs):
-    """Return the returning-revenue prior comparison as CSV."""
-    result = prior_period_returning_revenue(
-        salon, start_date, end_date, **kwargs)
-    fmt = lambda n, v: _count(v) if n in _RETURNING_COUNTS else _money(v)  # noqa: E731
-    return _write(_rows(result, _RETURNING_METRICS, fmt),
+    """Return the returning-revenue prior comparison as CSV.
+
+    The header is :data:`PRIOR_RETURNING_FIELDNAMES` and every
+    data row comes from :func:`export_prior_returning` with the
+    same arguments, so the CSV and list exports always agree.
+    Lines end with ``"\\n"``.
+    """
+    return _write(export_prior_returning(salon, start_date, end_date,
+                                         **kwargs),
                   PRIOR_RETURNING_FIELDNAMES)
 
 
-#: Combined-name alias: retention is the default comparison.
+#: Combined-name aliases: retention is the default comparison.
+export_prior_retention_returning = export_prior_retention
 export_prior_retention_returning_csv = export_prior_retention_csv
