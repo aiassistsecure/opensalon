@@ -4,7 +4,16 @@ Usage:
     python manage.py book_appointment --client-id ID
         --staff-id ID --service-id ID --start ISO-8601
         [--end ISO-8601] [--salon-id ID] [--note TEXT]
-        [--note-author TEXT] [--dry-run]
+        [--note-author TEXT] [--dry-run] [--format text|json]
+
+With ``--format json`` the command prints exactly one JSON
+object to stdout carrying the same facts as the text output
+(appointment id -- null on ``--dry-run``, salon id, client
+id, staff member id, service id, start, end, status, and
+``dry_run``; on ``--dry-run`` the note is carried too,
+exactly as the text preview shows); no prose lines are
+printed in json mode. The default ``--format text`` output
+is unchanged.
 
 Thin wrapper around
 :func:`bookings.lifecycle.create_appointment`, called with
@@ -34,6 +43,7 @@ given salon, an unparseable or naive datetime, or a service
 written. Backend only -- no views, templates, or UI.
 """
 import datetime
+import json
 
 from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand, CommandError
@@ -118,8 +128,16 @@ class Command(BaseCommand):
                             help="Optional author for --note.")
         parser.add_argument("--dry-run", action="store_true",
                             help="Preview only: validate, print the booking, write nothing.")
+        parser.add_argument(
+            "--format", dest="format", default="text",
+            choices=["text", "json"],
+            help="Output format: text (default) or json.")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "text"
+        if fmt not in ("text", "json"):
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'text' or 'json'.")
         client, staff, service = _resolve_all(options)
         start = _parse_datetime(options.get("start"), "start")
         if start is None:
@@ -134,6 +152,19 @@ class Command(BaseCommand):
                     start=start, end=end, online=False)
             except ValidationError as exc:
                 raise CommandError("; ".join(exc.messages)) from exc
+            if fmt == "json":
+                self.stdout.write(json.dumps(dict(
+                    appointment_id=None,
+                    salon_id=client.salon_id,
+                    client_id=client.pk,
+                    staff_member_id=staff.pk,
+                    service_id=service.pk,
+                    start=start.isoformat(),
+                    end=preview_end.isoformat(),
+                    status=Appointment.Status.BOOKED.value,
+                    note=note,
+                    dry_run=True)))
+                return
             self.stdout.write(
                 f"Dry run: would book appointment for client {client.pk} "
                 f"with staff {staff.pk}, service {service.pk}: "
@@ -148,6 +179,18 @@ class Command(BaseCommand):
                 online=False)
         except ValidationError as exc:
             raise CommandError("; ".join(exc.messages)) from exc
+        if fmt == "json":
+            self.stdout.write(json.dumps(dict(
+                appointment_id=created.pk,
+                salon_id=client.salon_id,
+                client_id=client.pk,
+                staff_member_id=staff.pk,
+                service_id=service.pk,
+                start=created.start.isoformat(),
+                end=created.end.isoformat(),
+                status=created.status,
+                dry_run=False)))
+            return
         self.stdout.write(
             f"Booked appointment {created.pk}: client {client.pk} "
             f"with staff {staff.pk}, service {service.pk}: "
