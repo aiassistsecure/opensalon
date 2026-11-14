@@ -3,6 +3,12 @@
 Usage:
     python manage.py record_refund --sale-id ID --amount AMOUNT
         [--reason TEXT] [--tender TENDER] [--dry-run]
+        [--format text|json]
+
+With ``--format json`` the command prints exactly one JSON
+object to stdout carrying the same facts as the default text
+output (money as strings, never floats); the default ``text``
+output is unchanged.
 
 With ``--dry-run`` nothing is written: the command calls the
 service's validate-only helper (no write happens at all, so
@@ -19,6 +25,8 @@ match an original payment) stay the single source of truth and
 surface here as ``CommandError``. Core stays provider-agnostic
 -- no payment-provider SDK, field, or name appears here.
 """
+import json
+
 from django.core.management.base import BaseCommand, CommandError
 
 from checkout.models import Sale
@@ -53,6 +61,11 @@ class Command(BaseCommand):
             help="Preview only: print the refund that would be "
                  "recorded and write nothing.",
         )
+        parser.add_argument(
+            "--format", dest="format", choices=["text", "json"],
+            default="text",
+            help="Output format: text (default) or json.",
+        )
 
     def handle(self, *args, **options):
         try:
@@ -69,6 +82,17 @@ class Command(BaseCommand):
                 resulting_total = refund_total(sale) + amount
             except ValueError as exc:
                 raise CommandError(str(exc)) from exc
+            if options.get("format") == "json":
+                self.stdout.write(json.dumps({
+                    "refund_id": None,
+                    "sale_id": sale.pk,
+                    "amount": str(amount),
+                    "tender": tender,
+                    "refund_total": str(resulting_total),
+                    "reason": options["reason"] or "",
+                    "dry_run": True,
+                }))
+                return
             self.stdout.write(
                 f"Dry run: would record refund of {amount} "
                 f"({tender}) against sale #{sale.pk}: refund "
@@ -82,6 +106,17 @@ class Command(BaseCommand):
                 tender=options.get("tender"))
         except ValueError as exc:
             raise CommandError(str(exc)) from exc
+        if options.get("format") == "json":
+            self.stdout.write(json.dumps({
+                "refund_id": refund.pk,
+                "sale_id": sale.pk,
+                "amount": str(refund.amount),
+                "tender": refund.tender,
+                "refund_total": str(refund_total(sale)),
+                "reason": refund.reason or "",
+                "dry_run": False,
+            }))
+            return
         self.stdout.write(
             f"Recorded refund #{refund.pk} of {refund.amount} "
             f"({refund.tender}) against sale #{sale.pk}: refund "

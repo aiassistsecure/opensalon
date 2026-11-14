@@ -8,6 +8,7 @@ and that service refusals surface as ``CommandError``.
 Fixtures are tiny synthetic records -- unit logic only.
 """
 import io
+import json
 from decimal import Decimal
 from unittest import mock
 
@@ -91,6 +92,69 @@ class RecordRefundCommandTests(TestCase):
             call_command(
                 "record_refund", sale_id=self.sale.pk,
                 amount="85.01", tender="cash", stdout=io.StringIO())
+        self.assertEqual(Refund.objects.count(), 0)
+
+    def test_default_text_output_unchanged(self):
+        out = io.StringIO()
+        call_command(
+            "record_refund", sale_id=self.sale.pk, amount="20.00",
+            reason="service issue", tender="cash", stdout=out)
+        refund = Refund.objects.get()
+        self.assertEqual(out.getvalue(), (
+            f"Recorded refund #{refund.pk} of 20.00 (cash) "
+            f"against sale #{self.sale.pk}: refund total 20.00.\n"
+        ))
+
+    def test_format_json_real_run(self):
+        out = io.StringIO()
+        call_command(
+            "record_refund", "--sale-id", str(self.sale.pk),
+            "--amount", "20.00", "--reason", "service issue",
+            "--tender", "cash", "--format", "json", stdout=out)
+        refund = Refund.objects.get()
+        self.assertEqual(refund.amount, Decimal("20.00"))
+        text = out.getvalue()
+        self.assertEqual(len(text.strip().splitlines()), 1)
+        self.assertNotIn("Recorded refund", text)
+        payload = json.loads(text)
+        self.assertEqual(payload["refund_id"], refund.pk)
+        self.assertEqual(payload["sale_id"], self.sale.pk)
+        self.assertEqual(payload["amount"], "20.00")
+        self.assertIsInstance(payload["amount"], str)
+        self.assertEqual(payload["tender"], "cash")
+        self.assertEqual(payload["refund_total"], "20.00")
+        self.assertIsInstance(payload["refund_total"], str)
+        self.assertEqual(payload["reason"], "service issue")
+        self.assertIs(payload["dry_run"], False)
+
+    def test_format_json_dry_run_writes_nothing(self):
+        call_command(
+            "record_refund", sale_id=self.sale.pk, amount="30.00",
+            tender="cash", stdout=io.StringIO())
+        out = io.StringIO()
+        call_command(
+            "record_refund", sale_id=self.sale.pk, amount="10.00",
+            dry_run=True, format="json", stdout=out)
+        self.assertEqual(Refund.objects.count(), 1)
+        self.assertEqual(refund_total(self.sale), Decimal("30.00"))
+        text = out.getvalue()
+        self.assertEqual(len(text.strip().splitlines()), 1)
+        self.assertNotIn("Dry run", text)
+        payload = json.loads(text)
+        self.assertIsNone(payload["refund_id"])
+        self.assertEqual(payload["sale_id"], self.sale.pk)
+        self.assertEqual(payload["amount"], "10.00")
+        self.assertIsInstance(payload["amount"], str)
+        self.assertEqual(payload["tender"], "cash")
+        self.assertEqual(payload["refund_total"], "40.00")
+        self.assertIs(payload["dry_run"], True)
+
+    def test_format_json_refusal_is_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "record_refund", sale_id=self.sale.pk,
+                amount="85.01", tender="cash", format="json",
+                stdout=io.StringIO())
         self.assertEqual(Refund.objects.count(), 0)
 
     def test_unknown_sale_is_command_error(self):
