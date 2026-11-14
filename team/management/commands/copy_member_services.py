@@ -2,10 +2,17 @@
 
 Usage:
     python manage.py copy_member_services --source-member-id ID
-        --target-member-id ID [--dry-run]
+        --target-member-id ID [--dry-run] [--format text|json]
     python manage.py copy_member_services
         --source-member-external-id EXT
         --target-member-external-id EXT [--dry-run]
+
+With ``--format json`` the command prints exactly one JSON
+object to stdout carrying the same facts as the text output
+(source and target member ids, sorted service ids, enabled
+count, total active services in the salon, and ``dry_run``);
+no prose lines are printed in json mode. The default
+``--format text`` output is unchanged.
 
 Thin wrapper around
 :func:`team.capabilities.copy_member_services`: source and
@@ -27,6 +34,8 @@ Invalid input -- an unknown member, an out-of-salon target,
 or giving both id forms for one member -- raises
 ``CommandError`` and nothing is written. Backend only.
 """
+import json
+
 from django.core.management.base import BaseCommand, CommandError
 
 from saloncore.models import Service
@@ -120,19 +129,45 @@ class Command(BaseCommand):
             help="Preview only: print the effective service "
                  "list that would land on the target, write "
                  "nothing.")
+        parser.add_argument(
+            "--format", dest="format", default="text",
+            choices=["text", "json"],
+            help="Output format: text (default) or json.")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "text"
+        if fmt not in ("text", "json"):
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'text' or 'json'.")
         source = _resolve_member(options, "source")
         target = _resolve_member(options, "target", salon=source.salon)
         wanted = _effective_service_ids(source)
         total = Service.objects.filter(
             category__salon=source.salon, active=True).count()
         if options.get("dry_run"):
+            if fmt == "json":
+                self.stdout.write(json.dumps(dict(
+                    source_member_id=source.pk,
+                    target_member_id=target.pk,
+                    service_ids=sorted(wanted),
+                    enabled=len(wanted),
+                    total_services=total,
+                    dry_run=True)))
+                return
             self.stdout.write(
                 f"Dry run: would copy "
                 f"{_describe(source, target, wanted, total)} "
                 f"-- no rows written.")
             return
         copy_member_services(source, target)
+        if fmt == "json":
+            self.stdout.write(json.dumps(dict(
+                source_member_id=source.pk,
+                target_member_id=target.pk,
+                service_ids=sorted(wanted),
+                enabled=len(wanted),
+                total_services=total,
+                dry_run=False)))
+            return
         self.stdout.write(
             f"Copied {_describe(source, target, wanted, total)}.")
