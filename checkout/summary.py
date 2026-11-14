@@ -211,10 +211,11 @@ def daily_sales_summary(salon, day):
             created_at__lt=end_dt,
         )
     )
-    sales_count = sales.count()
+    sale_ids = list(sales.values_list("id", flat=True))
+    sales_count = len(sale_ids)
 
     rows = (
-        SaleItem.objects.filter(sale__in=sales)
+        SaleItem.objects.filter(sale_id__in=sale_ids)
         .values("kind")
         .annotate(
             amount=Sum(F("unit_price") * F("quantity")),
@@ -259,3 +260,129 @@ def daily_sales_summary(salon, day):
         by_kind=dict(by_kind),
         item_count=item_count,
     )
+
+
+def daily_sales_summaries(salon, start, end):
+    """Return one :class:`DailySalesSummary` per day in a range.
+
+    The range version of :func:`daily_sales_summary`: a list with
+    exactly one entry for every local calendar day from ``start``
+    to ``end`` inclusive (empty days included, all zeroes), each
+    entry exactly equal to ``daily_sales_summary(salon, that_day)``
+    — same date rule, same voided exclusion, same salon scoping,
+    same quantization. It reads the whole range in two queries
+    (one over the range's sales, one over their items grouped by
+    sale and kind) and buckets by each sale's local day in Python,
+    so a long range costs no more round trips than a short one.
+    Read-only: nothing is created, updated, or deleted.
+    """
+    if salon is None:
+        raise ValueError("daily_sales_summaries needs a salon")
+    tz = _salon_tz(salon)
+    first_day = _as_day(start, tz)
+    last_day = _as_day(end, tz)
+    if last_day < first_day:
+        return []
+    days = []
+    day = first_day
+    while day <= last_day:
+        days.append(day)
+        day += datetime.timedelta(days=1)
+    range_start = datetime.datetime.combine(
+        first_day, datetime.time.min, tzinfo=tz
+    )
+    range_end = range_start + datetime.timedelta(days=len(days))
+
+    sale_rows = (
+        Sale.objects.filter(salon=salon)
+        .exclude(status=Sale.Status.VOIDED)
+        .filter(
+            Q(completed_at__gte=range_start, completed_at__lt=range_end)
+            | Q(
+                completed_at__isnull=True,
+                created_at__gte=range_start,
+                created_at__lt=range_end,
+            )
+        )
+        .values("id", "completed_at", "created_at", "discount_amount")
+    )
+    sale_day = {}
+    day_sales = {
+        d: {"count": 0, "discount": _ZERO} for d in days
+    }
+    for row in sale_rows:
+        stamp = (
+            row["completed_at"]
+            if row["completed_at"] is not None
+            else row["created_at"]
+        )
+        if stamp.tzinfo is not None:
+            local_day = stamp.astimezone(tz).date()
+        else:
+            local_day = stamp.date()
+        sale_day[row["id"]] = local_day
+        bucket = day_sales[local_day]
+        bucket["count"] += 1
+        if row["discount_amount"] is not None:
+            bucket["discount"] += Decimal(row["discount_amount"])
+
+    item_rows = (
+        SaleItem.objects.filter(sale_id__in=list(sale_day))
+        .values("sale_id", "kind")
+        .annotate(
+            amount=Sum(F("unit_price") * F("quantity")),
+            discount=Sum("discount_amount"),
+            n=Count("id"),
+        )
+    )
+    day_items = {
+        d: {
+            "by_kind": {
+                SaleItem.Kind.SERVICE: _ZERO,
+                SaleItem.Kind.PRODUCT: _ZERO,
+                SaleItem.Kind.SERIES: _ZERO,
+            },
+            "count": 0,
+            "discount": _ZERO,
+        }
+        for d in days
+    }
+    for row in item_rows:
+        bucket = day_items[sale_day[row["sale_id"]]]
+        bucket["count"] += row["n"]
+        if row["discount"] is not None:
+            bucket["discount"] += Decimal(row["discount"])
+        if row["kind"] in bucket["by_kind"] and row["amount"] is not None:
+            bucket["by_kind"][row["kind"]] += Decimal(row["amount"])
+
+    summaries = []
+    for d in days:
+        by_kind = {
+            kind: amount.quantize(_CENTS)
+            for kind, amount in day_items[d]["by_kind"].items()
+        }
+        discount_total = (
+            day_items[d]["discount"] + day_sales[d]["discount"]
+        ).quantize(_CENTS)
+        service_total = by_kind[SaleItem.Kind.SERVICE]
+        retail_total = by_kind[SaleItem.Kind.PRODUCT]
+        series_total = by_kind[SaleItem.Kind.SERIES]
+        gross_total = (
+            service_total + retail_total + series_total
+        ).quantize(_CENTS)
+        summaries.append(
+            DailySalesSummary(
+                salon=salon,
+                day=d,
+                sales_count=day_sales[d]["count"],
+                gross_total=gross_total,
+                service_total=service_total,
+                retail_total=retail_total,
+                series_total=series_total,
+                discount_total=discount_total,
+                net_total=(gross_total - discount_total).quantize(_CENTS),
+                by_kind=by_kind,
+                item_count=day_items[d]["count"],
+            )
+        )
+    return summaries
