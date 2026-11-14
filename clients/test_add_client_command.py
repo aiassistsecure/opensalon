@@ -1,4 +1,5 @@
 import io
+import json
 
 from django.core.management import call_command
 from django.core.management.base import CommandError
@@ -109,6 +110,86 @@ class AddClientCommandTests(TestCase):
             with self.assertRaises(CommandError):
                 self.run_cmd(
                     salon_id=self.salon.pk, dry_run=True, **kwargs)
+        self.assertEqual(Client.objects.count(), 0)
+
+    def test_default_text_output_unchanged(self):
+        text = self.run_cmd(
+            salon_id=self.salon.pk, first_name="Ada",
+            last_name="Lovelace")
+        (c,) = Client.objects.all()
+        self.assertEqual(
+            text,
+            f"Created client {c.pk} in salon {self.salon.pk}: "
+            f"sms_opt_in=False email_opt_in=False active=True.\n")
+
+    def test_default_text_dry_run_output_unchanged(self):
+        text = self.run_cmd(
+            salon_id=self.salon.pk, first_name="Ada",
+            last_name="Lovelace", dry_run=True)
+        self.assertEqual(
+            text,
+            f"Dry run: would create client in salon {self.salon.pk}: "
+            f"sms_opt_in=False email_opt_in=False active=True "
+            f"-- no client written.\n")
+
+    def test_format_json_creates_client_and_reports_fields(self):
+        out = io.StringIO()
+        call_command(
+            "add_client", "--salon-id", str(self.salon.pk),
+            "--first-name", "Ada", "--last-name", "Lovelace",
+            "--sms-opt-in", "--format", "json", stdout=out)
+        text = out.getvalue()
+        (c,) = Client.objects.all()
+        payload = json.loads(text)
+        self.assertEqual(payload, {
+            "client_id": c.pk,
+            "salon_id": self.salon.pk,
+            "first_name": "Ada",
+            "last_name": "Lovelace",
+            "sms_opt_in": True,
+            "email_opt_in": False,
+            "active": True,
+            "dry_run": False})
+        # Exactly one JSON object, no prose lines.
+        self.assertEqual(text.strip().count("\n"), 0)
+        self.assertNotIn("Created client", text)
+
+    def test_format_json_via_call_command_kwargs(self):
+        text = self.run_cmd(
+            salon_id=self.salon.pk, first_name="Ada",
+            last_name="Lovelace", format="json")
+        payload = json.loads(text)
+        self.assertEqual(payload["first_name"], "Ada")
+        self.assertFalse(payload["dry_run"])
+
+    def test_dry_run_format_json_reports_dry_run_and_writes_nothing(self):
+        out = io.StringIO()
+        call_command(
+            "add_client", "--salon-id", str(self.salon.pk),
+            "--first-name", "Ada", "--last-name", "Lovelace",
+            "--email-opt-in", "--inactive",
+            "--dry-run", "--format", "json", stdout=out)
+        self.assertEqual(Client.objects.count(), 0)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload, {
+            "client_id": None,
+            "salon_id": self.salon.pk,
+            "first_name": "Ada",
+            "last_name": "Lovelace",
+            "sms_opt_in": False,
+            "email_opt_in": True,
+            "active": False,
+            "dry_run": True})
+
+    def test_format_json_errors_still_command_error(self):
+        with self.assertRaises(CommandError):
+            self.run_cmd(
+                salon_id=999999, first_name="X", last_name="Y",
+                format="json")
+        with self.assertRaises(CommandError):
+            self.run_cmd(
+                salon_id=self.salon.pk, first_name=" ",
+                last_name="Y", format="json")
         self.assertEqual(Client.objects.count(), 0)
 
     def test_unknown_salon_raises(self):
