@@ -4,6 +4,14 @@ Usage:
     python manage.py add_client --salon-id ID --first-name TEXT
         --last-name TEXT [--email ADDRESS] [--phone NUMBER]
         [--sms-opt-in] [--email-opt-in] [--inactive] [--dry-run]
+        [--format text|json]
+
+With ``--format json`` the command prints exactly one JSON
+object to stdout carrying the same facts as the text line
+(created client id -- null on ``--dry-run``, salon id, first
+and last names, the opt-in and active flags, and
+``dry_run``); no prose lines are printed in json mode. The
+default ``--format text`` output is unchanged.
 
 Opt-ins default to False and are set only by the explicit
 ``--sms-opt-in`` / ``--email-opt-in`` flags -- the command
@@ -25,9 +33,13 @@ client can never disagree.
 
 An unknown salon or a service ``ValueError`` (blank/over-long
 name, invalid/over-long email, over-long phone) is surfaced
-here as ``CommandError``. Output names the client and salon
-by id only -- no names or contact details are printed.
+here as ``CommandError``. Text output names the client and
+salon by id only -- no names or contact details are printed;
+json output carries the client's first and last names (never
+email or phone).
 """
+import json
+
 from django.core.management.base import BaseCommand, CommandError
 
 from clients.add_client import add_client, validate_add_client
@@ -66,8 +78,16 @@ class Command(BaseCommand):
             "--dry-run", action="store_true",
             help="Preview the client that would be created "
                  "without writing anything.")
+        parser.add_argument(
+            "--format", dest="format", default="text",
+            choices=["text", "json"],
+            help="Output format: text (default) or json.")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "text"
+        if fmt not in ("text", "json"):
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'text' or 'json'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist as exc:
@@ -91,6 +111,17 @@ class Command(BaseCommand):
                 cleaned = validate_add_client(salon, **kwargs)
             except (TypeError, ValueError) as exc:
                 raise CommandError(str(exc)) from exc
+            if fmt == "json":
+                self.stdout.write(json.dumps(dict(
+                    client_id=None,
+                    salon_id=salon.pk,
+                    first_name=cleaned["first_name"],
+                    last_name=cleaned["last_name"],
+                    sms_opt_in=cleaned["sms_opt_in"],
+                    email_opt_in=cleaned["email_opt_in"],
+                    active=cleaned["active"],
+                    dry_run=True)))
+                return
             self.stdout.write(
                 f"Dry run: would create client in salon {salon.pk}: "
                 f"sms_opt_in={cleaned['sms_opt_in']} "
@@ -102,6 +133,17 @@ class Command(BaseCommand):
             client = add_client(salon, **kwargs)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
+        if fmt == "json":
+            self.stdout.write(json.dumps(dict(
+                client_id=client.pk,
+                salon_id=salon.pk,
+                first_name=client.first_name,
+                last_name=client.last_name,
+                sms_opt_in=client.sms_opt_in,
+                email_opt_in=client.email_opt_in,
+                active=client.active,
+                dry_run=False)))
+            return
         self.stdout.write(
             f"Created client {client.pk} in salon {salon.pk}: "
             f"sms_opt_in={client.sms_opt_in} "
