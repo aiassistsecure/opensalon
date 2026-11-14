@@ -1,5 +1,6 @@
 """Tests for the saloncore.pricing set_price service + command."""
 import io
+import json
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
@@ -211,3 +212,70 @@ class SetPriceCommandTests(SetPriceBase):
         with self.assertRaises(CommandError):
             self.run_command(**self.base_kwargs(price_active="junk"))
         self.assertEqual(ServicePrice.objects.count(), 0)
+
+    def test_command_text_output_unchanged(self):
+        out = self.run_command(**self.base_kwargs(is_from="true"))
+        self.assertEqual(
+            out.strip(),
+            f"Created price for service {self.service.pk} at staff "
+            f"level {self.level.pk}: None -> 85.00")
+
+    def test_command_json_success(self):
+        self.make_price("50.00")
+        out = self.run_command(**self.base_kwargs(
+            amount="65.00", is_from="true", price_active="false",
+            format="json"))
+        self.assertNotIn("Set price", out)
+        self.assertEqual(len(out.strip().splitlines()), 1)
+        self.assertEqual(json.loads(out), {
+            "service_id": self.service.pk,
+            "staff_level_id": self.level.pk,
+            "amount": "65.00", "old_amount": "50.00",
+            "is_from": True, "price_active": False, "dry_run": False})
+        price = ServicePrice.objects.get(
+            service=self.service, staff_level=self.level)
+        self.assertEqual(price.amount, Decimal("65.00"))
+        self.assertFalse(price.active)
+
+    def test_command_json_create_old_amount_null(self):
+        out = self.run_command(**self.base_kwargs(format="json"))
+        row = json.loads(out)
+        self.assertIsNone(row["old_amount"])
+        self.assertEqual(row["amount"], "85.00")
+        self.assertIsInstance(row["amount"], str)
+        self.assertFalse(row["dry_run"])
+
+    def test_command_json_via_cli_flag(self):
+        out = io.StringIO()
+        call_command(
+            "set_price", "--service-id", str(self.service.pk),
+            "--staff-level-id", str(self.level.pk),
+            "--amount", "85.00", "--format", "json", stdout=out)
+        row = json.loads(out.getvalue())
+        self.assertEqual(
+            (row["service_id"], row["staff_level_id"]),
+            (self.service.pk, self.level.pk))
+
+    def test_command_json_dry_run_writes_nothing(self):
+        self.make_price("50.00", is_from=True)
+        out = self.run_command(**self.base_kwargs(
+            amount="65.00", price_active="false", dry_run=True,
+            format="json"))
+        self.assertNotIn("Dry run", out)
+        self.assertEqual(json.loads(out), {
+            "service_id": self.service.pk,
+            "staff_level_id": self.level.pk,
+            "amount": "65.00", "old_amount": "50.00",
+            "is_from": True, "price_active": False, "dry_run": True})
+        price = ServicePrice.objects.get(
+            service=self.service, staff_level=self.level)
+        self.assertEqual(price.amount, Decimal("50.00"))
+        self.assertTrue(price.active)
+        self.assertEqual(PriceChange.objects.count(), 0)
+
+    def test_command_json_error_still_command_error(self):
+        with self.assertRaises(CommandError):
+            self.run_command(**self.base_kwargs(
+                service_id=999999, format="json"))
+        with self.assertRaises(CommandError):
+            self.run_command(**self.base_kwargs(format="bogus"))
