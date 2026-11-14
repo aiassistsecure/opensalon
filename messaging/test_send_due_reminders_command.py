@@ -8,6 +8,7 @@ opt-ins exactly as the service does, is registered to the
 messaging app, and fails cleanly as ``CommandError``.
 """
 import io
+import json
 from datetime import timedelta
 from unittest import mock
 
@@ -138,3 +139,86 @@ class SendDueRemindersCommandTests(TestCase):
                 call_command(
                     "send_due_reminders", "--hours", "24",
                     stdout=io.StringIO())
+
+    def test_explicit_text_format_matches_default(self):
+        self._appointment(sms_opt_in=True, email_opt_in=True)
+        adapter = FakeSmsAdapter()
+        out = io.StringIO()
+        self._run(adapter, out, "--format", "text")
+        self.assertEqual(
+            out.getvalue(),
+            "Reminders: 2 sent, 0 skipped "
+            "(email: 1 sent, 0 skipped; "
+            "SMS: 1 sent, 0 skipped).\n")
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(len(adapter.calls), 1)
+
+    def test_dry_run_explicit_text_format_matches_default(self):
+        self._appointment(sms_opt_in=True, email_opt_in=True)
+        self._appointment(
+            sms_opt_in=False, email_opt_in=False,
+            phone="555-0101", email="other@example.com")
+        adapter = FakeSmsAdapter()
+        out = io.StringIO()
+        self._run(adapter, out, "--dry-run", "--format", "text")
+        self.assertEqual(
+            out.getvalue(),
+            "Dry run: Reminders: 2 would send, 2 skipped "
+            "(2 skipped by opt-in; email: 1 would send, 1 skipped; "
+            "SMS: 1 would send, 1 skipped).\n")
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertEqual(adapter.calls, [])
+
+    def test_json_output_parses_and_carries_facts(self):
+        self._appointment(sms_opt_in=True, email_opt_in=True)
+        adapter = FakeSmsAdapter()
+        out = io.StringIO()
+        self._run(adapter, out, "--format", "json")
+        text = out.getvalue()
+        self.assertNotIn("Reminders:", text)
+        self.assertEqual(len(text.strip().splitlines()), 1)
+        self.assertEqual(json.loads(text), {
+            "sent": 2, "skipped": 0,
+            "email_sent": 1, "email_skipped": 0,
+            "sms_sent": 1, "sms_skipped": 0,
+            "dry_run": False})
+        self.assertNotIn("555-0100", text)
+        self.assertNotIn("client@example.com", text)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual([c[0] for c in adapter.calls], ["555-0100"])
+
+    def test_dry_run_json_reports_dry_run_and_sends_nothing(self):
+        self._appointment(sms_opt_in=True, email_opt_in=True)
+        self._appointment(
+            sms_opt_in=False, email_opt_in=False,
+            phone="555-0101", email="other@example.com")
+        adapter = FakeSmsAdapter()
+        out = io.StringIO()
+        self._run(adapter, out, "--dry-run", "--format", "json")
+        text = out.getvalue()
+        self.assertNotIn("Dry run", text)
+        self.assertEqual(len(text.strip().splitlines()), 1)
+        self.assertEqual(json.loads(text), {
+            "would_send": 2, "skipped": 2, "skipped_by_opt_in": 2,
+            "email_would_send": 1, "email_skipped": 1,
+            "sms_would_send": 1, "sms_skipped": 1,
+            "dry_run": True})
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertEqual(adapter.calls, [])
+
+    def test_json_errors_still_command_error(self):
+        self._appointment(sms_opt_in=True, email_opt_in=True)
+        adapter = FakeSmsAdapter()
+        with mock.patch(
+            "messaging.reminders.get_sms_adapter", return_value=adapter
+        ):
+            with self.assertRaises(CommandError):
+                call_command(
+                    "send_due_reminders", hours=24, format="bogus",
+                    stdout=io.StringIO())
+            with self.assertRaises(CommandError):
+                call_command(
+                    "send_due_reminders", "--hours", "-1",
+                    "--format", "json", stdout=io.StringIO())
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertEqual(adapter.calls, [])
