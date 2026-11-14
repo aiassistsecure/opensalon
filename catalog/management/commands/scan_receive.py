@@ -2,12 +2,17 @@
 
 Usage:
     python manage.py scan_receive --salon-id ID --code CODE
-        [--quantity N] [--dry-run]
+        [--quantity N] [--dry-run] [--format text|json]
 
 With ``--dry-run`` nothing is recorded: the command prints a
 preview naming the resolved product, the movement that would be
 recorded (kind and signed quantity), and the stock that would
 result.
+
+With ``--format json`` the command prints exactly one JSON object
+to stdout carrying the same facts as the text line: the product
+id, the code as given, the quantity, the resulting stock level,
+the stock movement id (null on a dry run), and ``dry_run``.
 
 Backend only — no views, templates, or UI. This command is a thin
 wrapper around :func:`catalog.scanning.scan_receive`: it resolves
@@ -21,6 +26,8 @@ non-positive quantity. Stock stays derived from movements only:
 the service appends the movement; this command adds nothing of
 its own.
 """
+import json
+
 from django.core.management.base import BaseCommand, CommandError
 
 from catalog.scanning import scan_receive
@@ -48,6 +55,10 @@ class Command(BaseCommand):
             help="Preview the movement that would be recorded "
                  "without recording anything.",
         )
+        parser.add_argument(
+            "--format", choices=["text", "json"], default="text",
+            help="Output format: text (default) or json.",
+        )
 
     def handle(self, *args, **options):
         try:
@@ -65,6 +76,17 @@ class Command(BaseCommand):
             raise CommandError(
                 f"No product in salon {salon.pk} matches code "
                 f"{options['code']!r}.")
+        if (options.get("format") or "text") == "json":
+            self.stdout.write(json.dumps({
+                "product_id": result.product.pk,
+                "code": options["code"],
+                "quantity": result.movement.quantity_delta,
+                "current_stock": result.current_stock,
+                "movement_id": (
+                    result.movement.pk if result.movement else None),
+                "dry_run": bool(options.get("dry_run")),
+            }))
+            return
         if options.get("dry_run"):
             self.stdout.write(
                 f"Dry run: would record {result.movement.kind} "
