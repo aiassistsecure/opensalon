@@ -4,6 +4,16 @@ Usage:
     python manage.py set_price --service-id ID --staff-level-id ID
         --amount 85 [--is-from true|false]
         [--price-active true|false] [--note TEXT] [--dry-run]
+        [--format text|json]
+
+With ``--format json`` the command prints exactly one JSON
+object to stdout carrying the same facts as the text output
+(service id, staff level id, amount as a string, old amount
+as a string or null, ``is_from``, ``price_active``, and
+``dry_run``; on ``--dry-run`` the ``is_from`` / ``price_active``
+values are the effective values that WOULD apply); no prose
+lines are printed in json mode. Amounts are strings, never
+floats. The default ``--format text`` output is unchanged.
 
 Thin wrapper around :func:`saloncore.pricing.set_price`: the
 service and staff level are resolved by id (the level must belong
@@ -30,6 +40,7 @@ cross-salon level, or a service ``ValidationError`` -- raises
 ``CommandError`` and nothing is written. Output names the service
 and level by id only. Backend only -- no views, templates, or UI.
 """
+import json
 from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError
@@ -89,8 +100,16 @@ class Command(BaseCommand):
             "--dry-run", action="store_true",
             help="Preview only: print the old -> new price and "
                  "write nothing, audit row included.")
+        parser.add_argument(
+            "--format", dest="format", default="text",
+            choices=["text", "json"],
+            help="Output format: text (default) or json.")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "text"
+        if fmt not in ("text", "json"):
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'text' or 'json'.")
         service_id = options.get("service_id")
         if service_id is None:
             raise CommandError("Provide --service-id.")
@@ -126,6 +145,18 @@ class Command(BaseCommand):
             existing = ServicePrice.objects.filter(
                 service=service, staff_level=staff_level).first()
             old = existing.amount if existing else None
+            if fmt == "json":
+                self.stdout.write(json.dumps(dict(
+                    service_id=service.pk,
+                    staff_level_id=staff_level.pk,
+                    amount=str(amount),
+                    old_amount=str(old) if old is not None else None,
+                    is_from=(is_from if is_from is not None else
+                             (existing.is_from if existing else False)),
+                    price_active=(price_active if price_active is not None
+                                  else True),
+                    dry_run=True)))
+                return
             self.stdout.write(
                 f"Dry run: would set price for service {service.pk} "
                 f"at staff level {staff_level.pk}: {old} -> {amount} "
@@ -141,6 +172,17 @@ class Command(BaseCommand):
         except ValidationError as exc:
             raise CommandError("; ".join(
                 str(m) for m in exc.messages)) from exc
+        if fmt == "json":
+            self.stdout.write(json.dumps(dict(
+                service_id=service.pk,
+                staff_level_id=staff_level.pk,
+                amount=str(result.price.amount),
+                old_amount=(str(result.old_amount)
+                            if result.old_amount is not None else None),
+                is_from=result.price.is_from,
+                price_active=result.price.active,
+                dry_run=False)))
+            return
         action = "Created" if result.created else "Set"
         self.stdout.write(
             f"{action} price for service {service.pk} at staff "
