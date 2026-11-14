@@ -12,6 +12,7 @@ unit logic only.
 """
 import datetime
 import io
+import json
 from decimal import Decimal
 
 from django.core.management import CommandError, call_command
@@ -151,3 +152,97 @@ class SetAppointmentPriceCommandTests(TestCase):
             call_command(
                 "set_appointment_price", appointment_id=999999,
                 price="72.50", dry_run=True, stdout=io.StringIO())
+
+    def test_explicit_text_format_matches_default(self):
+        out = io.StringIO()
+        call_command(
+            "set_appointment_price", appointment_id=self.appointment.pk,
+            price="72.50", format="text", stdout=out)
+        self.assertEqual(self._override(), Decimal("72.50"))
+        self.assertEqual(
+            out.getvalue(),
+            f"Appointment {self.appointment.pk} price: "
+            f"80.00 -> 72.50\n")
+
+    def test_json_output_parses_and_carries_facts(self):
+        out = io.StringIO()
+        call_command(
+            "set_appointment_price", appointment_id=self.appointment.pk,
+            price="72.50", format="json", stdout=out)
+        self.assertEqual(self._override(), Decimal("72.50"))
+        text = out.getvalue()
+        self.assertNotIn("Appointment", text)
+        self.assertEqual(len(text.strip().splitlines()), 1)
+        self.assertEqual(json.loads(text), {
+            "appointment_id": self.appointment.pk,
+            "salon_id": self.salon.pk,
+            "old_price": "80.00", "new_price": "72.50",
+            "cleared": False, "dry_run": False})
+
+    def test_json_via_cli_flag(self):
+        out = io.StringIO()
+        call_command(
+            "set_appointment_price", "--appointment-id",
+            str(self.appointment.pk), "--price", "65",
+            "--format", "json", stdout=out)
+        row = json.loads(out.getvalue())
+        self.assertEqual(
+            (row["appointment_id"], row["new_price"], row["dry_run"]),
+            (self.appointment.pk, "65.00", False))
+        self.assertEqual(self._override(), Decimal("65.00"))
+
+    def test_json_dry_run_writes_nothing(self):
+        out = io.StringIO()
+        call_command(
+            "set_appointment_price", appointment_id=self.appointment.pk,
+            price="72.50", dry_run=True, format="json", stdout=out)
+        self.assertEqual(self._override(), Decimal("80.00"))
+        text = out.getvalue()
+        self.assertNotIn("Dry run", text)
+        self.assertEqual(json.loads(text), {
+            "appointment_id": self.appointment.pk,
+            "salon_id": self.salon.pk,
+            "old_price": "80.00", "new_price": "72.50",
+            "cleared": False, "dry_run": True})
+
+    def test_json_clear_reports_cleared(self):
+        out = io.StringIO()
+        call_command(
+            "set_appointment_price", appointment_id=self.appointment.pk,
+            price="", format="json", stdout=out)
+        self.assertIsNone(self._override())
+        self.assertEqual(json.loads(out.getvalue()), {
+            "appointment_id": self.appointment.pk,
+            "salon_id": self.salon.pk,
+            "old_price": "80.00", "new_price": None,
+            "cleared": True, "dry_run": False})
+
+    def test_json_dry_run_clear_preview(self):
+        out = io.StringIO()
+        call_command(
+            "set_appointment_price", appointment_id=self.appointment.pk,
+            price="", dry_run=True, format="json", stdout=out)
+        self.assertEqual(self._override(), Decimal("80.00"))
+        row = json.loads(out.getvalue())
+        self.assertEqual(
+            (row["new_price"], row["cleared"], row["dry_run"]),
+            (None, True, True))
+
+    def test_json_errors_still_command_error(self):
+        for kw in (dict(appointment_id=999999),
+                   dict(price="-5"), dict(price="abc")):
+            call_kw = dict(
+                appointment_id=self.appointment.pk, price="72.50",
+                format="json", stdout=io.StringIO())
+            call_kw.update(kw)
+            with self.assertRaises(CommandError, msg=str(kw)):
+                call_command("set_appointment_price", **call_kw)
+            self.assertEqual(self._override(), Decimal("80.00"))
+
+    def test_invalid_format_is_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "set_appointment_price",
+                appointment_id=self.appointment.pk, price="72.50",
+                format="bogus", stdout=io.StringIO())
+        self.assertEqual(self._override(), Decimal("80.00"))
