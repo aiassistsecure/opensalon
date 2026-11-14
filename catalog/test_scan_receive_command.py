@@ -1,4 +1,5 @@
 import io
+import json
 from decimal import Decimal
 
 from django.core.management import call_command
@@ -87,6 +88,53 @@ class ScanReceiveCommandTests(TestCase):
         with self.assertRaises(CommandError):
             call_command("scan_receive", salon_id=self.salon.pk,
                          code="999999999999", dry_run=True,
+                         stdout=io.StringIO())
+        self.assertEqual(StockMovement.objects.count(), 0)
+
+    def test_default_text_output_unchanged(self):
+        out = io.StringIO()
+        call_command("scan_receive", salon_id=self.salon.pk,
+                     code="012345678905", quantity=4, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            f"Received +4 x Shampoo (product {self.product.pk}): "
+            f"current stock 4.\n")
+
+    def test_format_json_parses_and_carries_expected_fields(self):
+        out = io.StringIO()
+        call_command("scan_receive", "--salon-id", str(self.salon.pk),
+                     "--code", "012345678905", "--quantity", "4",
+                     "--format", "json", stdout=out)
+        text = out.getvalue()
+        self.assertEqual(len(text.strip().splitlines()), 1)
+        data = json.loads(text)
+        movement = StockMovement.objects.get()
+        self.assertEqual(data["product_id"], self.product.pk)
+        self.assertEqual(data["code"], "012345678905")
+        self.assertEqual(data["quantity"], 4)
+        self.assertEqual(data["current_stock"], 4)
+        self.assertEqual(data["movement_id"], movement.pk)
+        self.assertIs(data["dry_run"], False)
+
+    def test_dry_run_format_json_reports_dry_run_and_records_nothing(self):
+        out = io.StringIO()
+        call_command("scan_receive", salon_id=self.salon.pk,
+                     code="SH-001", quantity=4, dry_run=True,
+                     format="json", stdout=out)
+        data = json.loads(out.getvalue())
+        self.assertEqual(data["product_id"], self.product.pk)
+        self.assertEqual(data["code"], "SH-001")
+        self.assertEqual(data["quantity"], 4)
+        self.assertEqual(data["current_stock"], 4)
+        self.assertIsNone(data["movement_id"])
+        self.assertIs(data["dry_run"], True)
+        self.assertEqual(StockMovement.objects.count(), 0)
+        self.assertEqual(self.product.current_stock, 0)
+
+    def test_format_json_unknown_code_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command("scan_receive", salon_id=self.salon.pk,
+                         code="999999999999", format="json",
                          stdout=io.StringIO())
         self.assertEqual(StockMovement.objects.count(), 0)
 
