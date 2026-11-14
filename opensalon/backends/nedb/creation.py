@@ -38,6 +38,7 @@ derived from the pgwire ``HOST`` with the spike's HTTP port 17070.
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -255,6 +256,86 @@ class DatabaseCreation(PostgresDatabaseCreation):
 
         return self.materialize_collections(name, declared_catalog())
 
+    # -- reset lock-safety (cycle 620, census Cluster A/B) ------------
+    # A drop's DELETE can return before nedbd has released the data
+    # directory, so an immediate recreate POST can meet the engine's
+    # split-brain lock refusal (HTTP 500, "locked by another
+    # process"). That refusal is NEDB semantics, not a reason to use
+    # the daemon's shared-open escape hatch -- the fix lives here, at
+    # the execution
+    # layer (DYOR 9.1): confirm the drop landed, retry the locked
+    # create with bounded backoff, reuse a database the serving
+    # engine already has open, and never strand a dropped database
+    # behind a failed reset.
+    RESET_RELEASE_TIMEOUT_SECONDS = 5.0
+    RESET_RELEASE_POLL_SECONDS = 0.1
+    RESET_CREATE_ATTEMPTS = 3
+    RESET_CREATE_BACKOFF_SECONDS = 0.25
+
+    @staticmethod
+    def _is_lock_error(exc):
+        if exc.status != 500:
+            return False
+        text = str(exc)
+        return "locked by another process" in text or "split-brain" in text
+
+    def _database_open(self, name):
+        """database_exists that treats a failed probe as 'not open'."""
+        try:
+            return bool(self.database_exists(name))
+        except NedbHttpError:
+            return False
+
+    def _wait_until_absent(self, name):
+        """Poll until the dropped database is gone/released (bounded).
+
+        Returns True once the name no longer lists; False if it is
+        still listed when the timeout expires (the create path then
+        decides: a 409 / already-open outcome is reuse, not failure).
+        """
+        deadline = time.monotonic() + self.RESET_RELEASE_TIMEOUT_SECONDS
+        while True:
+            if not self._database_open(name):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(self.RESET_RELEASE_POLL_SECONDS)
+
+    def _create_with_lock_retry(self, name):
+        """create_database with bounded retry on the lock refusal only.
+
+        A locked create whose database is in fact already open on the
+        serving engine is reuse-success (returns False, like a 409):
+        the engine that holds the files is the one that will serve
+        the database, so there is no split brain to fear from here.
+        """
+        for attempt in range(self.RESET_CREATE_ATTEMPTS):
+            try:
+                return self.create_database(name)
+            except NedbHttpError as exc:
+                if not self._is_lock_error(exc):
+                    raise
+                if self._database_open(name):
+                    return False
+                if attempt + 1 >= self.RESET_CREATE_ATTEMPTS:
+                    raise
+                time.sleep(self.RESET_CREATE_BACKOFF_SECONDS * (attempt + 1))
+
+    def _recover_database(self, name):
+        """Best-effort reopen/recreate after a failed reset create.
+
+        Returns True only when the database is verified open, so a
+        failed reset never strands the suite with a dropped database
+        (census Cluster B) when recovery was in fact possible.
+        """
+        if self._database_open(name):
+            return True
+        try:
+            self.create_database(name)
+        except NedbHttpError:
+            pass
+        return self._database_open(name)
+
     def reset_database(self, name):
         """Flush by drop + recreate over HTTP -- never TRUNCATE (9.5).
 
@@ -262,9 +343,21 @@ class DatabaseCreation(PostgresDatabaseCreation):
         a fresh database otherwise has no relations at all for
         never-written tables, which NEDB's write path and JOIN
         resolution refuse by name.
+
+        Lock-safe and failure-atomic (cycle 620): after the drop,
+        confirm the database is gone/released before recreating;
+        retry a locked create with bounded backoff and reuse an
+        already-open database; if the create still fails, attempt
+        one reopen/recreate and verify the database is open before
+        raising, so a failed reset never strands a dropped database.
         """
         self.drop_database(name)
-        self.create_database(name)
+        self._wait_until_absent(name)
+        try:
+            self._create_with_lock_retry(name)
+        except NedbHttpError:
+            if not self._recover_database(name):
+                raise
         self.materialize_catalog(name)
         return name
 
