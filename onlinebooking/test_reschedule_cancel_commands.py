@@ -10,6 +10,7 @@ nothing changed. Fixtures are tiny synthetic records.
 """
 import datetime
 import io
+import json
 
 from django.core.management import CommandError, call_command
 from django.test import TestCase
@@ -280,5 +281,77 @@ class CancelBookingCommandTests(CommandBase):
                        dict(appointment_id=self.appt.pk, salon_id=other.pk)):
             with self.assertRaises(CommandError):
                 call_command("cancel_booking", stdout=io.StringIO(), **kwargs)
+        self.appt.refresh_from_db()
+        self.assertEqual(self.appt.status, Appointment.Status.BOOKED)
+
+    def test_explicit_text_format_matches_default(self):
+        out = io.StringIO()
+        call_command("cancel_booking", appointment_id=self.appt.pk,
+                     format="text", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            f"Cancelled appointment {self.appt.pk}: "
+            f"status booked -> cancelled.\n")
+
+    def test_json_output_parses_and_carries_facts(self):
+        out = io.StringIO()
+        call_command("cancel_booking", appointment_id=self.appt.pk,
+                     format="json", stdout=out)
+        self.appt.refresh_from_db()
+        self.assertEqual(self.appt.status, Appointment.Status.CANCELLED)
+        self.assertEqual(Appointment.objects.count(), 1)
+        text = out.getvalue()
+        self.assertNotIn("Cancelled appointment", text)
+        self.assertEqual(len(text.strip().splitlines()), 1)
+        self.assertEqual(json.loads(text), {
+            "appointment_id": self.appt.pk, "salon_id": self.salon.pk,
+            "old_status": "booked", "status": "cancelled",
+            "already_cancelled": False, "dry_run": False})
+
+    def test_json_via_cli_flag(self):
+        out = io.StringIO()
+        call_command("cancel_booking", "--appointment-id", str(self.appt.pk),
+                     "--salon-id", str(self.salon.pk),
+                     "--format", "json", stdout=out)
+        row = json.loads(out.getvalue())
+        self.assertEqual(
+            (row["appointment_id"], row["salon_id"], row["status"],
+             row["dry_run"]),
+            (self.appt.pk, self.salon.pk, "cancelled", False))
+
+    def test_dry_run_json_reports_dry_run_and_writes_nothing(self):
+        out = io.StringIO()
+        call_command("cancel_booking", appointment_id=self.appt.pk,
+                     dry_run=True, format="json", stdout=out)
+        self.appt.refresh_from_db()
+        self.assertEqual(self.appt.status, Appointment.Status.BOOKED)
+        self.assertEqual(Appointment.objects.count(), 1)
+        text = out.getvalue()
+        self.assertNotIn("Dry run", text)
+        self.assertEqual(json.loads(text), {
+            "appointment_id": self.appt.pk, "salon_id": self.salon.pk,
+            "old_status": "booked", "status": "cancelled",
+            "already_cancelled": False, "dry_run": True})
+
+    def test_json_already_cancelled_reports_unchanged_flag(self):
+        call_command("cancel_booking", appointment_id=self.appt.pk,
+                     stdout=io.StringIO())
+        out = io.StringIO()
+        call_command("cancel_booking", appointment_id=self.appt.pk,
+                     format="json", stdout=out)
+        self.appt.refresh_from_db()
+        self.assertEqual(self.appt.status, Appointment.Status.CANCELLED)
+        self.assertEqual(json.loads(out.getvalue()), {
+            "appointment_id": self.appt.pk, "salon_id": self.salon.pk,
+            "old_status": "cancelled", "status": "cancelled",
+            "already_cancelled": True, "dry_run": False})
+
+    def test_json_errors_still_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command("cancel_booking", appointment_id=999999,
+                         format="json", stdout=io.StringIO())
+        with self.assertRaises(CommandError):
+            call_command("cancel_booking", appointment_id=self.appt.pk,
+                         format="bogus", stdout=io.StringIO())
         self.appt.refresh_from_db()
         self.assertEqual(self.appt.status, Appointment.Status.BOOKED)
