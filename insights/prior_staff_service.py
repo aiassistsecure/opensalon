@@ -52,6 +52,7 @@ __all__ = [
     "prior_period_staff_revenue", "prior_period_service_revenue",
     "compare_staff_revenue", "compare_service_revenue",
     "PRIOR_STAFF_FIELDNAMES", "PRIOR_SERVICE_FIELDNAMES",
+    "export_prior_staff", "export_prior_service",
     "export_prior_staff_csv", "export_prior_service_csv",
 ]
 
@@ -290,7 +291,7 @@ def _money_or_empty(value):
 
 
 def _count_or_empty(value):
-    return "" if value is None else str(int(Decimal(value)))
+    return "" if value is None else int(Decimal(value))
 
 
 def _write(rows, fieldnames):
@@ -312,24 +313,48 @@ def _bounds(result):
     }
 
 
-def export_prior_staff_csv(salon, start_date=None, end_date=None, **kwargs):
-    """Return the per-staff prior-period comparison as a CSV string."""
+def export_prior_staff(salon, start_date=None, end_date=None, **kwargs):
+    """Return the per-staff prior-period comparison as dicts.
+
+    Every row mirrors a CSV cell exactly: keys are
+    :data:`PRIOR_STAFF_FIELDNAMES` in order, dates are ISO
+    strings, money/percentages are strings rendered to two
+    places (``""`` where the CSV renders empty), and counts
+    are ints.
+    """
     result = prior_period_staff_revenue(salon, start_date, end_date, **kwargs)
-    return _write([{
+    return [{
         "staff_name": r.display_name, **_bounds(result),
         "current": _money(r.total.current), "prior": _money(r.total.prior),
         "delta": _money(r.total.delta),
         "percent_change": _pct(r.total.percent_change),
         "current_sale_count": r.current_sale_count,
         "prior_sale_count": r.prior_sale_count,
-    } for r in result], PRIOR_STAFF_FIELDNAMES)
+    } for r in result]
 
 
-def export_prior_service_csv(salon, start_date=None, end_date=None,
-                             **kwargs):
-    """Return the per-service prior-period comparison as a CSV string."""
+def export_prior_staff_csv(salon, start_date=None, end_date=None, **kwargs):
+    """Return the per-staff prior-period comparison as a CSV string.
+
+    Built from :func:`export_prior_staff` with the same
+    arguments, so the CSV and dict exports always agree.
+    """
+    return _write(export_prior_staff(salon, start_date, end_date, **kwargs),
+                  PRIOR_STAFF_FIELDNAMES)
+
+
+def export_prior_service(salon, start_date=None, end_date=None, **kwargs):
+    """Return the per-service prior-period comparison as dicts.
+
+    Every row mirrors a CSV cell exactly: keys are
+    :data:`PRIOR_SERVICE_FIELDNAMES` in order, dates are ISO
+    strings, money/percentages are strings rendered to two
+    places (``""`` where the CSV renders empty), counts are
+    ints, and a missing duration count is ``""``.
+    """
     result = prior_period_service_revenue(
         salon, start_date, end_date, **kwargs)
+
     def service_row(r):
         duration = r.total_duration_minutes
         per_hour = r.revenue_per_hour
@@ -367,5 +392,15 @@ def export_prior_service_csv(salon, start_date=None, end_date=None,
                 per_hour.percent_change if per_hour else None),
         }
 
-    return _write([service_row(r) for r in result],
+    return [service_row(r) for r in result]
+
+
+def export_prior_service_csv(salon, start_date=None, end_date=None,
+                             **kwargs):
+    """Return the per-service prior-period comparison as a CSV string.
+
+    Built from :func:`export_prior_service` with the same
+    arguments, so the CSV and dict exports always agree.
+    """
+    return _write(export_prior_service(salon, start_date, end_date, **kwargs),
                   PRIOR_SERVICE_FIELDNAMES)
