@@ -1,4 +1,5 @@
 import io
+import json
 from decimal import Decimal
 
 from django.core.management import call_command
@@ -95,3 +96,65 @@ class UpdateProductCommandTests(TestCase):
         with self.assertRaises(CommandError):
             self.run_cmd(barcode="999")
         self.assertEqual(self.snapshot()[2], "012345678905")
+
+    def test_text_default_is_byte_identical(self):
+        text = self.run_cmd(name="Conditioner", price="26.50")
+        self.assertEqual(
+            text,
+            f"Updated product {self.product.pk}: 'Conditioner' "
+            f"in salon {self.salon.pk}: sku='SH-001' "
+            f"barcode='012345678905' price=26.50 active=True.\n")
+
+    def test_json_format_single_object_same_facts(self):
+        text = self.run_cmd(
+            name="Conditioner", price="26.50", format="json")
+        self.assertEqual(text.count("\n"), 1)
+        data = json.loads(text)
+        self.assertEqual(data["product_id"], self.product.pk)
+        self.assertEqual(data["salon_id"], self.salon.pk)
+        self.assertEqual(data["name"], "Conditioner")
+        self.assertEqual(data["sku"], "SH-001")
+        self.assertEqual(data["barcode"], "012345678905")
+        self.assertEqual(data["price"], "26.50")
+        self.assertEqual(data["active"], True)
+        self.assertEqual(data["dry_run"], False)
+        self.assertEqual(data["changed_fields"], ["name", "price"])
+        self.assertEqual(
+            data["changes"], {"name": "Conditioner", "price": "26.50"})
+        self.assertEqual(self.snapshot()[0], "Conditioner")
+
+    def test_json_via_cli_flag(self):
+        out = io.StringIO()
+        call_command(
+            "update_product", "--salon-id", str(self.salon.pk),
+            "--product-id", str(self.product.pk), "--sku", "SH-002",
+            "--barcode", "999888", "--format", "json", stdout=out)
+        data = json.loads(out.getvalue())
+        self.assertEqual(data["sku"], "SH-002")
+        self.assertEqual(data["barcode"], "999888")
+        self.assertEqual(data["changed_fields"], ["sku", "barcode"])
+
+    def test_json_dry_run_writes_nothing(self):
+        before = self.snapshot()
+        text = self.run_cmd(
+            name="New Name", price="30.00", sku="SH-009",
+            dry_run=True, format="json")
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(text.count("\n"), 1)
+        data = json.loads(text)
+        self.assertEqual(data["product_id"], self.product.pk)
+        self.assertEqual(data["salon_id"], self.salon.pk)
+        self.assertEqual(data["name"], "New Name")
+        self.assertEqual(data["sku"], "SH-009")
+        self.assertEqual(data["barcode"], "012345678905")
+        self.assertEqual(data["price"], "30.00")
+        self.assertEqual(data["dry_run"], True)
+        self.assertEqual(
+            data["changed_fields"], ["name", "price", "sku"])
+        self.assertEqual(
+            data["changes"],
+            {"name": "New Name", "price": "30.00", "sku": "SH-009"})
+
+    def test_invalid_format_rejected(self):
+        with self.assertRaises((CommandError, SystemExit)):
+            self.run_cmd(name="X", format="yaml")
