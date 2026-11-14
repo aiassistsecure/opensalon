@@ -2,7 +2,13 @@
 
 Usage:
     python manage.py transition_status --appointment-id ID
-        --status STATUS [--dry-run]
+        --status STATUS [--dry-run] [--format text|json]
+
+With ``--format json`` the command prints exactly one JSON
+object to stdout carrying the same facts as the text line
+(appointment id, old status, new status, and ``dry_run``);
+no prose lines are printed in json mode. The default
+``--format text`` output is unchanged.
 
 With ``--dry-run`` nothing is written: the command calls the
 service's validate-only helper (no write happens at all, so
@@ -26,6 +32,8 @@ status) is also surfaced as ``CommandError`` and the
 appointment is left unchanged. Backend only -- no views,
 templates, or UI.
 """
+import json
+
 from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand, CommandError
 from bookings.lifecycle import transition_status, validate_transition_status
@@ -50,8 +58,16 @@ class Command(BaseCommand):
                  "validate-only helper, print the current -> "
                  "target status that would result, and write "
                  "nothing.")
+        parser.add_argument(
+            "--format", dest="format", default="text",
+            choices=["text", "json"],
+            help="Output format: text (default) or json.")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "text"
+        if fmt not in ("text", "json"):
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'text' or 'json'.")
         appointment_id = options.get("appointment_id")
         # ``to_status``/``new_status`` are aliases if supplied
         # via call_command kwargs.
@@ -79,6 +95,13 @@ class Command(BaseCommand):
                 preview_status = new_status
             except ValidationError as exc:
                 raise CommandError("; ".join(exc.messages)) from exc
+            if fmt == "json":
+                self.stdout.write(json.dumps(dict(
+                    appointment_id=appointment.pk,
+                    old_status=old_status,
+                    new_status=preview_status,
+                    dry_run=True)))
+                return
             self.stdout.write(
                 f"Dry run: would transition appointment "
                 f"{appointment.pk}: {old_status} -> "
@@ -88,6 +111,13 @@ class Command(BaseCommand):
             transition_status(appointment, new_status)
         except ValidationError as exc:
             raise CommandError("; ".join(exc.messages)) from exc
+        if fmt == "json":
+            self.stdout.write(json.dumps(dict(
+                appointment_id=appointment.pk,
+                old_status=old_status,
+                new_status=appointment.status,
+                dry_run=False)))
+            return
         self.stdout.write(
             f"Appointment {appointment.pk}: "
             f"{old_status} -> {appointment.status}.")
