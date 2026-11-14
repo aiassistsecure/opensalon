@@ -10,6 +10,7 @@ Fixtures are tiny synthetic records -- unit logic only.
 """
 import datetime
 import io
+import json
 
 from django.core.exceptions import ValidationError
 from django.core.management import CommandError, call_command
@@ -151,6 +152,90 @@ class SetShiftOverrideCommandTests(TestCase):
         self.assertIn("Dry run: would clear", out)
         self.assertEqual(ShiftOverride.objects.count(), 1)
         self.assertEqual(self.hours(), [])
+
+    def test_command_text_output_unchanged(self):
+        out = _run(staff_member_id=self.member.pk, date=SAT,
+                   start="10:00", end="14:00")
+        self.assertEqual(
+            out.strip(),
+            f"Set ShiftOverride staff_member={self.member} "
+            f"staff_member_id={self.member.pk} date={SAT} "
+            f"is_off=False start_time=10:00:00 end_time=14:00:00.")
+
+    def test_command_json_placed_shift(self):
+        out = _run(staff_member_id=self.member.pk, date=SAT,
+                   start="10:00", end="14:00", format="json")
+        data = json.loads(out)
+        ov = ShiftOverride.objects.get()
+        self.assertEqual(data, {
+            "override_id": ov.pk,
+            "staff_member_id": self.member.pk,
+            "date": "2026-10-31",
+            "is_off": False,
+            "start_time": "10:00:00",
+            "end_time": "14:00:00",
+            "dry_run": False,
+        })
+        self.assertEqual(self.hours(), [("10:00", "14:00")])
+        self.assertEqual(len(out.strip().splitlines()), 1)
+
+    def test_command_json_day_off_via_cli(self):
+        out = io.StringIO()
+        call_command(
+            "set_shift_override", "--staff-member-id",
+            str(self.member.pk), "--date", "2026-10-31",
+            "--off", "--format", "json", stdout=out)
+        data = json.loads(out.getvalue())
+        self.assertTrue(data["is_off"])
+        self.assertIsNone(data["start_time"])
+        self.assertIsNone(data["end_time"])
+        self.assertFalse(data["dry_run"])
+        self.assertEqual(self.hours(), [])
+
+    def test_command_json_dry_run_writes_nothing(self):
+        out = _run(staff_member_id=self.member.pk, date=SAT,
+                   start="10:00", end="14:00", dry_run=True,
+                   format="json")
+        data = json.loads(out)
+        self.assertEqual(data, {
+            "override_id": None,
+            "staff_member_id": self.member.pk,
+            "date": "2026-10-31",
+            "is_off": False,
+            "start_time": "10:00:00",
+            "end_time": "14:00:00",
+            "dry_run": True,
+        })
+        self.assertEqual(ShiftOverride.objects.count(), 0)
+        self.assertEqual(self.hours(), [("09:00", "17:00")])
+
+    def test_command_json_clear_and_dry_run_clear(self):
+        set_shift_override(self.member, SAT, is_off=True)
+        out = _run(staff_member_id=self.member.pk, date=SAT,
+                   clear=True, dry_run=True, format="json")
+        data = json.loads(out)
+        self.assertEqual(data, {
+            "override_id": None,
+            "staff_member_id": self.member.pk,
+            "date": "2026-10-31",
+            "is_off": None,
+            "start_time": None,
+            "end_time": None,
+            "cleared": False,
+            "override_exists": True,
+            "dry_run": True,
+        })
+        self.assertEqual(ShiftOverride.objects.count(), 1)
+        out = _run(staff_member_id=self.member.pk, date=SAT,
+                   clear=True, format="json")
+        data = json.loads(out)
+        self.assertTrue(data["cleared"])
+        self.assertFalse(data["dry_run"])
+        self.assertEqual(ShiftOverride.objects.count(), 0)
+        self.assertEqual(self.hours(), [("09:00", "17:00")])
+        out = _run(staff_member_id=self.member.pk, date=SAT,
+                   clear=True, format="json")
+        self.assertFalse(json.loads(out)["cleared"])
 
     def test_unknown_staff_and_bad_shape_are_errors(self):
         with self.assertRaises(CommandError):
