@@ -130,6 +130,85 @@ class RescheduleBookingCommandTests(CommandBase):
             call_command("reschedule_booking", appointment_id=self.appt.pk,
                          new_start="not-a-time", stdout=io.StringIO())
 
+    def test_explicit_text_format_matches_default(self):
+        out = io.StringIO()
+        call_command("reschedule_booking", appointment_id=self.appt.pk,
+                     new_start=at(MONDAY, 13), format="text", stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            f"Rescheduled appointment {self.appt.pk}: "
+            f"{at(MONDAY, 10).isoformat()} -> {at(MONDAY, 13).isoformat()}, "
+            f"end {at(MONDAY, 13, 45).isoformat()}.\n")
+
+    def test_json_output_parses_and_carries_facts(self):
+        out = io.StringIO()
+        call_command("reschedule_booking", appointment_id=self.appt.pk,
+                     new_start=at(MONDAY, 13), format="json", stdout=out)
+        self.appt.refresh_from_db()
+        self.assertEqual((self.appt.start, self.appt.end),
+                         (at(MONDAY, 13), at(MONDAY, 13, 45)))
+        text = out.getvalue()
+        self.assertNotIn("Rescheduled appointment", text)
+        self.assertEqual(len(text.strip().splitlines()), 1)
+        self.assertEqual(json.loads(text), {
+            "appointment_id": self.appt.pk, "salon_id": self.salon.pk,
+            "old_staff_member_id": self.staff.pk,
+            "new_staff_member_id": self.staff.pk,
+            "old_start": at(MONDAY, 10).isoformat(),
+            "new_start": at(MONDAY, 13).isoformat(),
+            "old_end": at(MONDAY, 10, 45).isoformat(),
+            "new_end": at(MONDAY, 13, 45).isoformat(),
+            "status": "booked", "dry_run": False})
+
+    def test_json_via_cli_flag(self):
+        out = io.StringIO()
+        call_command("reschedule_booking", "--appointment-id",
+                     str(self.appt.pk),
+                     "--new-start", "2026-11-02T13:00:00+00:00",
+                     "--format", "json", stdout=out)
+        row = json.loads(out.getvalue())
+        self.assertEqual(
+            (row["appointment_id"], row["salon_id"], row["status"],
+             row["dry_run"]),
+            (self.appt.pk, self.salon.pk, "booked", False))
+
+    def test_dry_run_json_reports_dry_run_and_writes_nothing(self):
+        out = io.StringIO()
+        call_command("reschedule_booking", appointment_id=self.appt.pk,
+                     new_start=at(MONDAY, 13), dry_run=True,
+                     format="json", stdout=out)
+        self.appt.refresh_from_db()
+        self.assertEqual((self.appt.start, self.appt.end),
+                         (at(MONDAY, 10), at(MONDAY, 10, 45)))
+        self.assertEqual(Appointment.objects.count(), 1)
+        text = out.getvalue()
+        self.assertNotIn("Dry run", text)
+        self.assertEqual(json.loads(text), {
+            "appointment_id": self.appt.pk, "salon_id": self.salon.pk,
+            "old_staff_member_id": self.staff.pk,
+            "new_staff_member_id": self.staff.pk,
+            "old_start": at(MONDAY, 10).isoformat(),
+            "new_start": at(MONDAY, 13).isoformat(),
+            "old_end": at(MONDAY, 10, 45).isoformat(),
+            "new_end": at(MONDAY, 13, 45).isoformat(),
+            "status": "booked", "dry_run": True})
+
+    def test_json_errors_still_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command("reschedule_booking", appointment_id=999999,
+                         new_start=at(MONDAY, 13), format="json",
+                         stdout=io.StringIO())
+        with self.assertRaises(CommandError):
+            call_command("reschedule_booking", appointment_id=self.appt.pk,
+                         new_start=at(MONDAY, 18), format="json",
+                         stdout=io.StringIO())
+        with self.assertRaises(CommandError):
+            call_command("reschedule_booking", appointment_id=self.appt.pk,
+                         new_start=at(MONDAY, 13), format="bogus",
+                         stdout=io.StringIO())
+        self.appt.refresh_from_db()
+        self.assertEqual(self.appt.start, at(MONDAY, 10))
+
 
 class RescheduleBookingNewStaffCommandTests(CommandBase):
     def setUp(self):
@@ -193,6 +272,32 @@ class RescheduleBookingNewStaffCommandTests(CommandBase):
                              new_start=at(MONDAY, 13),
                              new_staff_member_id=self.offline_staff.pk,
                              stdout=io.StringIO(), **kw)
+        self.appt.refresh_from_db()
+        self.assertEqual(self.appt.staff_member, self.staff)
+        self.assertEqual(self.appt.start, at(MONDAY, 10))
+
+    def test_format_json_reports_staff_change(self):
+        out = io.StringIO()
+        call_command("reschedule_booking", appointment_id=self.appt.pk,
+                     new_start=at(MONDAY, 13),
+                     new_staff_member_id=self.new_staff.pk,
+                     format="json", stdout=out)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["old_staff_member_id"], self.staff.pk)
+        self.assertEqual(payload["new_staff_member_id"], self.new_staff.pk)
+        self.assertFalse(payload["dry_run"])
+        self.appt.refresh_from_db()
+        self.assertEqual(self.appt.staff_member, self.new_staff)
+
+    def test_dry_run_format_json_reports_staff_change_no_write(self):
+        out = io.StringIO()
+        call_command("reschedule_booking", appointment_id=self.appt.pk,
+                     new_start=at(MONDAY, 13),
+                     new_staff_member_id=self.new_staff.pk,
+                     dry_run=True, format="json", stdout=out)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["new_staff_member_id"], self.new_staff.pk)
+        self.assertTrue(payload["dry_run"])
         self.appt.refresh_from_db()
         self.assertEqual(self.appt.staff_member, self.staff)
         self.assertEqual(self.appt.start, at(MONDAY, 10))
