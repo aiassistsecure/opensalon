@@ -11,6 +11,7 @@ are tiny synthetic records -- unit logic only.
 """
 import datetime
 import io
+import json
 
 from django.core.management import CommandError, call_command
 from django.test import TestCase
@@ -101,6 +102,87 @@ class RescheduleAppointmentCommandTests(TestCase):
         self.assertIn("Dry run", text)
         self.assertIn(at(MONDAY, 13).isoformat(), text)
         self.assertIn("no appointment moved", text)
+
+    def test_default_text_output_unchanged(self):
+        out = io.StringIO()
+        self._move(out=out)
+        self.assertEqual(
+            out.getvalue(),
+            f"Rescheduled appointment {self.appt.pk}: "
+            f"{at(MONDAY, 10).isoformat()} -> {at(MONDAY, 13).isoformat()}, "
+            f"end {at(MONDAY, 13, 45).isoformat()}.\n")
+
+    def test_default_text_dry_run_output_unchanged(self):
+        out = io.StringIO()
+        self._move(out=out, dry_run=True)
+        self.assertEqual(
+            out.getvalue(),
+            f"Dry run: would reschedule appointment {self.appt.pk}: "
+            f"{at(MONDAY, 10).isoformat()} -> {at(MONDAY, 13).isoformat()}, "
+            f"end {at(MONDAY, 10, 45).isoformat()} -> "
+            f"{at(MONDAY, 13, 45).isoformat()} "
+            f"-- no appointment moved.\n")
+
+    def test_format_json_moves_and_reports_fields(self):
+        out = io.StringIO()
+        call_command("reschedule_appointment", "--appointment-id",
+                     str(self.appt.pk), "--new-start",
+                     "2026-11-02T13:00:00+00:00", "--format", "json",
+                     stdout=out)
+        text = out.getvalue()
+        payload = json.loads(text)
+        self.assertEqual(payload, {
+            "appointment_id": self.appt.pk,
+            "salon_id": self.salon.pk,
+            "old_staff_member_id": self.staff.pk,
+            "new_staff_member_id": self.staff.pk,
+            "old_start": at(MONDAY, 10).isoformat(),
+            "new_start": at(MONDAY, 13).isoformat(),
+            "old_end": at(MONDAY, 10, 45).isoformat(),
+            "new_end": at(MONDAY, 13, 45).isoformat(),
+            "status": "booked",
+            "dry_run": False})
+        self.assertEqual(text.strip().count("\n"), 0)
+        self.assertNotIn("Rescheduled appointment", text)
+        self.assertNotIn("Test", text)
+        self.appt.refresh_from_db()
+        self.assertEqual(self.appt.start, at(MONDAY, 13))
+
+    def test_format_json_via_call_command_kwargs(self):
+        out = io.StringIO()
+        self._move(out=out, format="json")
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["appointment_id"], self.appt.pk)
+        self.assertFalse(payload["dry_run"])
+
+    def test_dry_run_format_json_reports_and_writes_nothing(self):
+        out = io.StringIO()
+        self._move(out=out, dry_run=True, format="json")
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload, {
+            "appointment_id": self.appt.pk,
+            "salon_id": self.salon.pk,
+            "old_staff_member_id": self.staff.pk,
+            "new_staff_member_id": self.staff.pk,
+            "old_start": at(MONDAY, 10).isoformat(),
+            "new_start": at(MONDAY, 13).isoformat(),
+            "old_end": at(MONDAY, 10, 45).isoformat(),
+            "new_end": at(MONDAY, 13, 45).isoformat(),
+            "status": "booked",
+            "dry_run": True})
+        self.appt.refresh_from_db()
+        self.assertEqual(self.appt.start, at(MONDAY, 10))
+
+    def test_format_json_errors_still_command_error(self):
+        with self.assertRaises(CommandError):
+            self._move(format="json", new_start=at(MONDAY, 18))
+        with self.assertRaises(CommandError):
+            call_command("reschedule_appointment",
+                         appointment_id=999999,
+                         new_start=at(MONDAY, 13), format="json",
+                         stdout=io.StringIO())
+        self.appt.refresh_from_db()
+        self.assertEqual(self.appt.start, at(MONDAY, 10))
 
     def test_dry_run_flag_form(self):
         out = io.StringIO()
@@ -197,6 +279,27 @@ class RescheduleAppointmentNewStaffCommandTests(TestCase):
                          (at(MONDAY, 13), at(MONDAY, 13, 45)))
         self.assertIn(
             f"staff {self.staff.pk} -> {self.new_staff.pk}", out.getvalue())
+
+    def test_format_json_reports_staff_change(self):
+        out = io.StringIO()
+        self._move(out=out, format="json",
+                   new_staff_member_id=self.new_staff.pk)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["old_staff_member_id"], self.staff.pk)
+        self.assertEqual(payload["new_staff_member_id"], self.new_staff.pk)
+        self.assertFalse(payload["dry_run"])
+        self.appt.refresh_from_db()
+        self.assertEqual(self.appt.staff_member, self.new_staff)
+
+    def test_dry_run_format_json_reports_staff_change_no_write(self):
+        out = io.StringIO()
+        self._move(out=out, dry_run=True, format="json",
+                   new_staff_member_id=self.new_staff.pk)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["new_staff_member_id"], self.new_staff.pk)
+        self.assertTrue(payload["dry_run"])
+        self.appt.refresh_from_db()
+        self.assertEqual(self.appt.staff_member, self.staff)
 
     def test_real_run_string_args(self):
         call_command("reschedule_appointment", "--appointment-id",
