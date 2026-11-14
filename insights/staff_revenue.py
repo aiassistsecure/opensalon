@@ -91,7 +91,27 @@ class StaffRevenue:
         return self.series_revenue
 
 
-def _attribute_staff(sale, items, *, salon, tz, cache):
+def _appointment_candidates_by_client_day(salon, start_dt, end_dt, tz):
+    """Preload the window's candidate appointments, bucketed for lookup."""
+    appointments = (
+        Appointment.objects.filter(
+            staff_member__salon=salon,
+            start__gte=start_dt,
+            start__lt=end_dt,
+        )
+        .exclude(status=Appointment.Status.CANCELLED)
+        .select_related("staff_member")
+        .order_by("start", "pk")
+    )
+    candidates = {}
+    for appointment in appointments:
+        day = appointment.start.astimezone(tz).date()
+        key = (appointment.client_id, day)
+        candidates.setdefault(key, []).append(appointment)
+    return candidates
+
+
+def _attribute_staff(sale, items, *, tz, candidates_by_key):
     """Return the staff member ``sale`` is attributed to, or None."""
     if sale.client_id is None:
         return None
@@ -99,21 +119,7 @@ def _attribute_staff(sale, items, *, salon, tz, cache):
     if stamp is None:
         return None
     day = stamp.astimezone(tz).date()
-    key = (sale.client_id, day)
-    if key not in cache:
-        day_start = datetime.combine(day, time.min, tzinfo=tz)
-        day_end = day_start + timedelta(days=1)
-        cache[key] = list(
-            Appointment.objects.filter(
-                client_id=sale.client_id,
-                staff_member__salon=salon,
-                start__gte=day_start, start__lt=day_end,
-            )
-            .exclude(status=Appointment.Status.CANCELLED)
-            .select_related("staff_member")
-            .order_by("start", "pk")
-        )
-    candidates = cache[key]
+    candidates = candidates_by_key.get((sale.client_id, day), [])
     if not candidates:
         return None
     service_ids = {
@@ -176,12 +182,18 @@ def revenue_by_staff(salon, start, end):
     for item in items:
         by_sale.setdefault(item.sale_id, (item.sale, []))[1].append(item)
 
+    candidates_by_key = (
+        _appointment_candidates_by_client_day(
+            salon, start_dt, end_dt, tz
+        )
+        if by_sale else {}
+    )
+
     # key: staff pk or None -> [staff, service, retail, series, count]
     buckets = {}
-    cache = {}
     for sale, sale_items in by_sale.values():
         staff = _attribute_staff(
-            sale, sale_items, salon=salon, tz=tz, cache=cache,
+            sale, sale_items, tz=tz, candidates_by_key=candidates_by_key,
         )
         key = staff.pk if staff is not None else None
         bucket = buckets.setdefault(key, [staff, ZERO, ZERO, ZERO, 0])

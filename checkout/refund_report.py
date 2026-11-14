@@ -175,6 +175,25 @@ def _summarise(salon, day, refunds):
     )
 
 
+def _summarise_buckets(salon, day, amounts, counts):
+    by_tender = {
+        method: amounts[method].quantize(_CENTS)
+        for method in Payment.Method.values
+    }
+    counts_by_tender = {
+        method: counts[method] for method in Payment.Method.values
+    }
+    total = sum(by_tender.values(), _ZERO).quantize(_CENTS)
+    return RefundsByDay(
+        salon=salon,
+        day=day,
+        refund_count=sum(counts_by_tender.values()),
+        total=total,
+        by_tender=by_tender,
+        counts_by_tender=counts_by_tender,
+    )
+
+
 def refunds_by_day(salon, day):
     """Return the :class:`RefundsByDay` for ``salon`` on ``day``.
 
@@ -215,24 +234,47 @@ def refund_totals(salon, date_from, date_to):
     end_dt = datetime.datetime.combine(
         end_day, datetime.time.min, tzinfo=tz
     ) + datetime.timedelta(days=1)
-    refunds = _refunds_in_window(salon, start_dt, end_dt)
-
-    overall = _summarise(salon, start_day, refunds)
-    by_day = {}
+    days = []
     current = start_day
     while current <= end_day:
-        day_start = datetime.datetime.combine(
-            current, datetime.time.min, tzinfo=tz
-        )
-        day_end = day_start + datetime.timedelta(days=1)
-        by_day[current] = _summarise(
-            salon,
-            current,
-            refunds.filter(
-                created_at__gte=day_start, created_at__lt=day_end
-            ),
-        )
+        days.append(current)
         current += datetime.timedelta(days=1)
+
+    overall_amounts = {
+        method: Decimal("0") for method in Payment.Method.values
+    }
+    overall_counts = _empty_counts()
+    amounts_by_day = {
+        day: {method: Decimal("0") for method in Payment.Method.values}
+        for day in days
+    }
+    counts_by_day = {day: _empty_counts() for day in days}
+
+    refund_rows = _refunds_in_window(salon, start_dt, end_dt).values(
+        "created_at", "tender", "amount"
+    )
+    for row in refund_rows:
+        tender = row["tender"]
+        if tender not in overall_amounts:
+            continue
+        day = _as_day(row["created_at"], tz, "created_at")
+        if day not in amounts_by_day:
+            continue
+        amount = Decimal(row["amount"])
+        overall_amounts[tender] += amount
+        overall_counts[tender] += 1
+        amounts_by_day[day][tender] += amount
+        counts_by_day[day][tender] += 1
+
+    overall = _summarise_buckets(
+        salon, start_day, overall_amounts, overall_counts
+    )
+    by_day = {
+        day: _summarise_buckets(
+            salon, day, amounts_by_day[day], counts_by_day[day]
+        )
+        for day in days
+    }
     return RefundTotals(
         salon=salon,
         date_from=start_day,

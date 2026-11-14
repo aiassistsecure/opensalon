@@ -2,7 +2,9 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 
 from bookings.models import Appointment
 from checkout.models import Sale, SaleItem
@@ -208,3 +210,88 @@ class RevenueByStaffTests(TestCase):
         self.assertEqual([r.display_name for r in rows], ["Alice"])
         self.assertEqual(rows[0].retail_revenue, Decimal("48.00"))
         self.assertEqual(rows[0].service_revenue, Decimal("0.00"))
+
+    def test_rich_seed_parity(self):
+        # Service match: the earliest matching appointment wins, so
+        # Bob's appointment (created first) beats Alice's later one.
+        self._appt(self.client_a, self.staff_b, day_offset=0)
+        self._appt(self.client_a, self.staff_a, day_offset=0)
+        service_sale = self._sale(self.client_a, day_offset=0)
+        self._item(
+            service_sale, SaleItem.Kind.SERVICE, "80.00", service=self.cut
+        )
+        # Retail-only sale with exactly one candidate staff member.
+        self._appt(self.client_b, self.staff_a, day_offset=1)
+        retail_sale = self._sale(self.client_b, day_offset=1)
+        self._item(retail_sale, SaleItem.Kind.PRODUCT, "25.00")
+        # Retail-only sale with two candidate staff members.
+        self._appt(self.client_c, self.staff_a, day_offset=2)
+        self._appt(self.client_c, self.staff_b, day_offset=2)
+        ambiguous_sale = self._sale(self.client_c, day_offset=2)
+        self._item(ambiguous_sale, SaleItem.Kind.PRODUCT, "40.00")
+        # No candidate appointment at all.
+        client_d = Client.objects.create(
+            salon=self.salon, first_name="Dan", last_name="D"
+        )
+        orphan_sale = self._sale(client_d, day_offset=3)
+        self._item(
+            orphan_sale, SaleItem.Kind.SERVICE, "60.00", service=self.cut
+        )
+        # A candidate exists, but only for a different service.
+        client_e = Client.objects.create(
+            salon=self.salon, first_name="Eve", last_name="E"
+        )
+        self._appt(
+            client_e, self.staff_a, day_offset=4, service=self.colour
+        )
+        mismatch_sale = self._sale(client_e, day_offset=4)
+        self._item(
+            mismatch_sale, SaleItem.Kind.SERVICE, "70.00", service=self.cut
+        )
+
+        rows = revenue_by_staff(self.salon, self.start, self.end)
+        by_name = self._by_name(rows)
+        self.assertEqual(
+            {
+                name: (row.total, row.sale_count)
+                for name, row in by_name.items()
+            },
+            {
+                "Bob": (Decimal("80.00"), 1),
+                "Alice": (Decimal("25.00"), 1),
+                "Unattributed": (Decimal("170.00"), 3),
+            },
+        )
+        self.assertEqual(
+            by_name["Bob"].service_revenue, Decimal("80.00")
+        )
+        self.assertEqual(
+            by_name["Alice"].retail_revenue, Decimal("25.00")
+        )
+        self.assertEqual(
+            by_name["Unattributed"].service_revenue, Decimal("130.00")
+        )
+        self.assertEqual(
+            by_name["Unattributed"].retail_revenue, Decimal("40.00")
+        )
+
+    def test_query_count_stays_flat_with_many_client_days(self):
+        for index in range(12):
+            client = Client.objects.create(
+                salon=self.salon,
+                first_name=f"Client{index}",
+                last_name="Test",
+            )
+            staff = self.staff_a if index % 2 == 0 else self.staff_b
+            day_offset = index % 7
+            self._appt(client, staff, day_offset=day_offset)
+            sale = self._sale(client, day_offset=day_offset)
+            self._item(
+                sale, SaleItem.Kind.SERVICE, "10.00", service=self.cut
+            )
+
+        with CaptureQueriesContext(connection) as captured:
+            rows = revenue_by_staff(self.salon, self.start, self.end)
+
+        self.assertEqual(sum(row.sale_count for row in rows), 12)
+        self.assertLessEqual(len(captured.captured_queries), 4)
