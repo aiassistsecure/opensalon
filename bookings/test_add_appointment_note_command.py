@@ -10,6 +10,7 @@ Fixtures are tiny synthetic records -- unit logic only.
 """
 import datetime
 import io
+import json
 
 from django.core.management import CommandError, call_command
 from django.test import TestCase
@@ -139,6 +140,97 @@ class AddAppointmentNoteCommandTests(TestCase):
                 "add_appointment_note",
                 appointment_id=self.appointment.pk, salon_id=other.pk,
                 text="Hello", stdout=io.StringIO())
+        self.assertEqual(AppointmentNote.objects.count(), 0)
+
+    def test_default_text_output_unchanged(self):
+        out = io.StringIO()
+        call_command(
+            "add_appointment_note", appointment_id=self.appointment.pk,
+            text="Prefers quiet room", author="Front Desk", stdout=out)
+        (note,) = AppointmentNote.objects.all()
+        self.assertEqual(
+            out.getvalue(),
+            f"Added note {note.pk} to appointment "
+            f"{self.appointment.pk}: 'Prefers quiet room'\n")
+
+    def test_default_text_dry_run_output_unchanged(self):
+        out = io.StringIO()
+        call_command(
+            "add_appointment_note", appointment_id=self.appointment.pk,
+            text="Would-be note", author="Desk", dry_run=True, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            f"Dry run: would create appointment note for appointment "
+            f"{self.appointment.pk}: body='Would-be note' "
+            f"author='Desk' -- no note written.\n")
+
+    def test_format_json_creates_note_and_reports_fields(self):
+        out = io.StringIO()
+        call_command(
+            "add_appointment_note", "--appointment-id",
+            str(self.appointment.pk), "--text", "Prefers quiet room",
+            "--author", "Front Desk", "--format", "json", stdout=out)
+        text = out.getvalue()
+        (note,) = AppointmentNote.objects.all()
+        payload = json.loads(text)
+        self.assertEqual(payload, {
+            "note_id": note.pk,
+            "appointment_id": self.appointment.pk,
+            "body": "Prefers quiet room",
+            "author": "Front Desk",
+            "dry_run": False})
+        self.assertEqual(text.strip().count("\n"), 0)
+        self.assertNotIn("Added note", text)
+
+    def test_format_json_via_call_command_kwargs(self):
+        out = io.StringIO()
+        call_command(
+            "add_appointment_note", appointment_id=self.appointment.pk,
+            text="Kwargs note", format="json", stdout=out)
+        payload = json.loads(out.getvalue())
+        (note,) = AppointmentNote.objects.all()
+        self.assertEqual(payload["note_id"], note.pk)
+        self.assertEqual(payload["author"], "")
+        self.assertFalse(payload["dry_run"])
+
+    def test_dry_run_format_json_reports_dry_run_and_writes_nothing(self):
+        out = io.StringIO()
+        call_command(
+            "add_appointment_note", "--appointment-id",
+            str(self.appointment.pk), "--text", "Would-be note",
+            "--author", "Desk", "--dry-run", "--format", "json",
+            stdout=out)
+        self.assertEqual(AppointmentNote.objects.count(), 0)
+        self.assertEqual(json.loads(out.getvalue()), {
+            "note_id": None,
+            "appointment_id": self.appointment.pk,
+            "body": "Would-be note",
+            "author": "Desk",
+            "dry_run": True})
+
+    def test_format_json_errors_still_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "add_appointment_note", appointment_id=999999,
+                text="Hello", format="json", stdout=io.StringIO())
+        with self.assertRaises(CommandError):
+            call_command(
+                "add_appointment_note",
+                appointment_id=self.appointment.pk, text="   ",
+                format="json", stdout=io.StringIO())
+        with self.assertRaises(CommandError):
+            call_command(
+                "add_appointment_note",
+                appointment_id=self.appointment.pk, text="   ",
+                dry_run=True, format="json", stdout=io.StringIO())
+        self.assertEqual(AppointmentNote.objects.count(), 0)
+
+    def test_invalid_format_is_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "add_appointment_note",
+                appointment_id=self.appointment.pk, text="Hello",
+                format="xml", stdout=io.StringIO())
         self.assertEqual(AppointmentNote.objects.count(), 0)
 
     def test_dry_run_unknown_appointment_is_command_error(self):
