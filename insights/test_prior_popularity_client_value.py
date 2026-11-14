@@ -1,5 +1,6 @@
 import csv
 import io
+import json
 import os
 import tempfile
 from datetime import date, datetime, timedelta
@@ -7,6 +8,7 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from django.core.management import CommandError, call_command
+from django.core.serializers.json import DjangoJSONEncoder
 from django.test import TestCase
 
 from bookings.models import Appointment
@@ -16,7 +18,8 @@ from insights.client_value import client_value
 from insights.popularity import service_popularity
 from insights.prior_popularity_client_value import (
     PRIOR_CLIENT_VALUE_FIELDNAMES, PRIOR_POPULARITY_FIELDNAMES,
-    export_prior_client_value_csv, export_prior_popularity_csv,
+    export_prior_client_value, export_prior_client_value_csv,
+    export_prior_popularity, export_prior_popularity_csv,
     prior_period_client_value, prior_period_popularity,
 )
 from saloncore.models import Salon, Service, ServiceCategory
@@ -296,3 +299,73 @@ class PriorPopularityClientValueTests(TestCase):
                          output=path)
             with open(path) as fh:
                 self.assertIn("Ann A", fh.read())
+
+    def test_dict_exports_agree_with_csv(self):
+        self._seed_popularity(); self._seed_value()
+        for dict_fn, csv_fn in (
+                (export_prior_popularity, export_prior_popularity_csv),
+                (export_prior_client_value, export_prior_client_value_csv)):
+            records = dict_fn(self.salon, START, END)
+            rows = list(csv.DictReader(io.StringIO(csv_fn(self.salon, START, END))))
+            self.assertEqual(rows, [{k: str(v) for k, v in r.items()} for r in records])
+            self.assertEqual([list(r) for r in records],
+                             [list(rows[0])] * len(records) if records else [])
+
+    def test_command_default_and_explicit_csv_match_service(self):
+        self._seed_popularity(); self._seed_value()
+        for kind, csv_fn in (("popularity", export_prior_popularity_csv),
+                             ("client_value", export_prior_client_value_csv)):
+            want = csv_fn(self.salon, START, END)
+            for kwargs in ({}, {"format": "csv"}):
+                out = io.StringIO()
+                call_command("export_prior_popularity_client_value",
+                             salon_id=self.salon.pk, kind=kind,
+                             start_date="2026-11-02", end_date="2026-11-08",
+                             stdout=out, **kwargs)
+                self.assertEqual(out.getvalue(), want)
+
+    def test_command_json_both_kinds(self):
+        self._seed_popularity(); self._seed_value()
+        for kind, dict_fn in (("popularity", export_prior_popularity),
+                              ("client_value", export_prior_client_value)):
+            rows = dict_fn(self.salon, START, END)
+            out = io.StringIO()
+            call_command("export_prior_popularity_client_value",
+                         salon_id=self.salon.pk, kind=kind,
+                         start_date="2026-11-02", end_date="2026-11-08",
+                         format="json", stdout=out)
+            self.assertEqual(json.loads(out.getvalue()), rows)
+            self.assertEqual(out.getvalue(), json.dumps(
+                rows, indent=2, cls=DjangoJSONEncoder) + "\n")
+        pop = export_prior_popularity(self.salon, START, END)
+        self.assertIsInstance(pop[0]["current"], int)
+        val = export_prior_client_value(self.salon, START, END)
+        self.assertIsInstance(val[0]["current"], str)
+
+    def test_command_json_flag_and_file(self):
+        self._seed_value()
+        out = io.StringIO()
+        call_command("export_prior_popularity_client_value",
+                     "--salon-id", str(self.salon.pk), "--kind", "client_value",
+                     "--start-date", "2026-11-02", "--end-date", "2026-11-08",
+                     "--format", "json", stdout=out)
+        self.assertEqual(json.loads(out.getvalue()),
+                         export_prior_client_value(self.salon, START, END))
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "out.json")
+            call_command("export_prior_popularity_client_value",
+                         salon_id=self.salon.pk, kind="popularity",
+                         start_date="2026-11-02", end_date="2026-11-08",
+                         format="json", output=path, stdout=out)
+            with open(path) as fh:
+                self.assertEqual(json.loads(fh.read()),
+                                 export_prior_popularity(self.salon, START, END))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_command_invalid_format_raises(self):
+        with self.assertRaises(CommandError):
+            call_command("export_prior_popularity_client_value",
+                         salon_id=self.salon.pk, start_date="2026-11-02",
+                         end_date="2026-11-08", format="xml",
+                         stdout=io.StringIO())
