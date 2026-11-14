@@ -3,6 +3,14 @@
 Usage:
     python manage.py add_client_note --salon-id ID --client-id ID
         --body TEXT [--author NAME] [--dry-run]
+        [--format text|json]
+
+With ``--format json`` the command prints exactly one JSON
+object to stdout carrying the same facts as the text line
+(created note id -- null on ``--dry-run``, client id, salon
+id, the note body and author, and ``dry_run``); no prose
+lines are printed in json mode. The default ``--format
+text`` output is unchanged.
 
 With ``--dry-run`` nothing is written: the command calls the
 service's validate-only helper (no write happens at all, so
@@ -26,6 +34,8 @@ raises ``CommandError`` and nothing is written. Output names
 the client and salon by id only. Backend only -- no views,
 templates, or UI.
 """
+import json
+
 from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand, CommandError
 
@@ -56,8 +66,16 @@ class Command(BaseCommand):
             help="Preview only: validate with the service's "
                  "validate-only helper, print the note that "
                  "would be created, and write nothing.")
+        parser.add_argument(
+            "--format", dest="format", default="text",
+            choices=["text", "json"],
+            help="Output format: text (default) or json.")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "text"
+        if fmt not in ("text", "json"):
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'text' or 'json'.")
         salon_id = options.get("salon_id")
         if salon_id is None:
             raise CommandError("Provide --salon-id.")
@@ -90,6 +108,15 @@ class Command(BaseCommand):
             except ValidationError as exc:
                 raise CommandError(
                     "; ".join(exc.messages)) from exc
+            if fmt == "json":
+                self.stdout.write(json.dumps(dict(
+                    note_id=None,
+                    client_id=client.pk,
+                    salon_id=salon.pk,
+                    body=body_clean,
+                    author=author_name,
+                    dry_run=True)))
+                return
             self.stdout.write(
                 f"Dry run: would create client note for "
                 f"client {client.pk} in salon {salon.pk}: "
@@ -100,6 +127,15 @@ class Command(BaseCommand):
             note = add_client_note(salon, client, body, author=author)
         except ValidationError as exc:
             raise CommandError("; ".join(exc.messages)) from exc
+        if fmt == "json":
+            self.stdout.write(json.dumps(dict(
+                note_id=note.pk,
+                client_id=client.pk,
+                salon_id=salon.pk,
+                body=note.body,
+                author=note.author_name,
+                dry_run=False)))
+            return
         self.stdout.write(
             f"Added note {note.pk} to client "
             f"{client.pk} in salon {salon.pk}: {note.body!r}")
