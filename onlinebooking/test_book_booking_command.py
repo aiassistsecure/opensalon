@@ -9,6 +9,7 @@ without writing (NEDB-safe), and invalid input surfaces as
 """
 import datetime
 import io
+import json
 
 from django.core.management import CommandError, call_command
 from django.test import TestCase
@@ -148,6 +149,74 @@ class BookBookingCommandTests(TestCase):
         self.assertEqual(Appointment.objects.count(), 0)
         self._book()
         self.assertEqual(Appointment.objects.count(), 1)
+
+    def test_explicit_text_format_matches_default(self):
+        out = io.StringIO()
+        self._book(out=out, format="text")
+        appt = Appointment.objects.get()
+        self.assertEqual(
+            out.getvalue(),
+            f"Booked appointment {appt.pk}: client {self.client.pk} "
+            f"with staff {self.staff.pk}, service {self.service.pk}: "
+            f"{at(MONDAY, 10).isoformat()} -> "
+            f"{at(MONDAY, 10, 45).isoformat()}, status booked.\n")
+
+    def test_json_output_parses_and_carries_facts(self):
+        out = io.StringIO()
+        self._book(out=out, format="json")
+        appt = Appointment.objects.get()
+        text = out.getvalue()
+        self.assertNotIn("Booked appointment", text)
+        self.assertEqual(len(text.strip().splitlines()), 1)
+        self.assertEqual(json.loads(text), {
+            "id": appt.pk, "client_id": self.client.pk,
+            "staff_member_id": self.staff.pk,
+            "service_id": self.service.pk,
+            "start": at(MONDAY, 10).isoformat(),
+            "end": at(MONDAY, 10, 45).isoformat(),
+            "status": "booked", "dry_run": False})
+
+    def test_json_via_cli_flag(self):
+        out = io.StringIO()
+        call_command(
+            "book_booking", "--client-id", str(self.client.pk),
+            "--staff-member-id", str(self.staff.pk),
+            "--service-id", str(self.service.pk),
+            "--start", "2026-11-02T10:00:00+00:00",
+            "--format", "json", stdout=out)
+        row = json.loads(out.getvalue())
+        appt = Appointment.objects.get()
+        self.assertEqual(
+            (row["id"], row["client_id"], row["status"], row["dry_run"]),
+            (appt.pk, self.client.pk, "booked", False))
+
+    def test_dry_run_json_reports_dry_run_and_writes_nothing(self):
+        out = io.StringIO()
+        self._book(out=out, dry_run=True, format="json",
+                   note="Online booking")
+        self.assertEqual(Appointment.objects.count(), 0)
+        self.assertEqual(AppointmentNote.objects.count(), 0)
+        text = out.getvalue()
+        self.assertNotIn("Dry run", text)
+        self.assertEqual(json.loads(text), {
+            "id": None, "client_id": self.client.pk,
+            "staff_member_id": self.staff.pk,
+            "service_id": self.service.pk,
+            "start": at(MONDAY, 10).isoformat(),
+            "end": at(MONDAY, 10, 45).isoformat(),
+            "status": "booked", "note": "Online booking",
+            "dry_run": True})
+
+    def test_json_errors_still_command_error(self):
+        for kw in (dict(client_id=999999), dict(start=at(MONDAY, 18)),
+                   dict(start="not-a-time")):
+            with self.assertRaises(CommandError):
+                self._book(format="json", **kw)
+        with self.assertRaises(CommandError):
+            self._book(format="bogus")
+        with self.assertRaises(CommandError):
+            self._book(dry_run=True, format="json", start=at(MONDAY, 18))
+        self.assertEqual(Appointment.objects.count(), 0)
 
     def test_dry_run_invalid_same_error_and_writes_nothing(self):
         with self.assertRaises(CommandError) as real:
