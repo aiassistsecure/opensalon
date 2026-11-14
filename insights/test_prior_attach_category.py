@@ -1,5 +1,6 @@
 import csv
 import io
+import json
 import os
 import tempfile
 from datetime import date, datetime, timedelta
@@ -7,6 +8,7 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from django.core.management import CommandError, call_command
+from django.core.serializers.json import DjangoJSONEncoder
 from django.test import TestCase
 
 from checkout.models import Sale, SaleItem
@@ -14,7 +16,8 @@ from insights.attach_rate import retail_attach_rate
 from insights.category_mix import category_mix
 from insights.prior_attach_category import (
     PRIOR_ATTACH_FIELDNAMES, PRIOR_CATEGORY_FIELDNAMES,
-    export_prior_attach_csv, export_prior_category_mix_csv,
+    export_prior_attach, export_prior_attach_csv,
+    export_prior_category_mix, export_prior_category_mix_csv,
     prior_period_attach_rate, prior_period_category_mix,
 )
 from saloncore.models import Salon, Service, ServiceCategory
@@ -469,3 +472,103 @@ class PriorAttachCategoryTests(TestCase):
         with self.assertRaises(CommandError):
             call_command("export_prior_attach_category", salon_id=self.salon.pk,
                          start_date="2026-11-08", end_date="2026-11-02")
+
+    def test_dict_rows_match_csv_for_both_kinds(self):
+        self._seed()
+        for rows, text, fields in (
+            (export_prior_attach(self.salon, START, END),
+             export_prior_attach_csv(self.salon, START, END),
+             PRIOR_ATTACH_FIELDNAMES),
+            (export_prior_category_mix(self.salon, START, END),
+             export_prior_category_mix_csv(self.salon, START, END),
+             PRIOR_CATEGORY_FIELDNAMES),
+        ):
+            for record in rows:
+                self.assertEqual(list(record), fields)
+            parsed = list(csv.DictReader(io.StringIO(text)))
+            self.assertEqual(parsed, [
+                {k: str(v) for k, v in r.items()} for r in rows])
+
+    def test_default_and_explicit_csv_match_service_both_kinds(self):
+        self._seed()
+        for kind, want in (
+            ("attach", export_prior_attach_csv(self.salon, START, END)),
+            ("category_mix",
+             export_prior_category_mix_csv(self.salon, START, END)),
+        ):
+            out = io.StringIO()
+            call_command("export_prior_attach_category",
+                         salon_id=self.salon.pk, kind=kind,
+                         start_date=START, end_date=END, stdout=out)
+            self.assertEqual(out.getvalue(), want)
+            out = io.StringIO()
+            call_command("export_prior_attach_category",
+                         salon_id=self.salon.pk, kind=kind,
+                         start_date=START, end_date=END, format="csv",
+                         stdout=out)
+            self.assertEqual(out.getvalue(), want)
+            out = io.StringIO()
+            call_command("export_prior_attach_category",
+                         "--salon-id", str(self.salon.pk), "--kind", kind,
+                         "--start-date", START.isoformat(),
+                         "--end-date", END.isoformat(), "--format", "csv",
+                         stdout=out)
+            self.assertEqual(out.getvalue(), want)
+
+    def test_json_output_equals_dict_rows_per_kind(self):
+        self._seed()
+        for kind, rows in (
+            ("attach", export_prior_attach(self.salon, START, END)),
+            ("category_mix",
+             export_prior_category_mix(self.salon, START, END)),
+        ):
+            out = io.StringIO()
+            call_command("export_prior_attach_category",
+                         salon_id=self.salon.pk, kind=kind,
+                         start_date=START, end_date=END, format="json",
+                         stdout=out)
+            self.assertEqual(json.loads(out.getvalue()), rows)
+            self.assertEqual(out.getvalue(), json.dumps(
+                rows, indent=2, cls=DjangoJSONEncoder) + "\n")
+
+    def test_json_flag_and_file_match_dict_rows_per_kind(self):
+        self._seed()
+        for kind, rows in (
+            ("attach", export_prior_attach(self.salon, START, END)),
+            ("category_mix",
+             export_prior_category_mix(self.salon, START, END)),
+        ):
+            out = io.StringIO()
+            call_command("export_prior_attach_category",
+                         "--salon-id", str(self.salon.pk), "--kind", kind,
+                         "--start-date", START.isoformat(),
+                         "--end-date", END.isoformat(), "--format", "json",
+                         stdout=out)
+            self.assertEqual(json.loads(out.getvalue()), rows)
+            out = io.StringIO()
+            with tempfile.TemporaryDirectory() as tmp:
+                path = os.path.join(tmp, "out.json")
+                call_command("export_prior_attach_category",
+                             salon_id=self.salon.pk, kind=kind,
+                             start_date=START, end_date=END, format="json",
+                             output=path, stdout=out)
+                with open(path, encoding="utf-8") as fh:
+                    written = fh.read()
+            self.assertEqual(json.loads(written), rows)
+            self.assertEqual(out.getvalue(), "")
+
+    def test_invalid_format_raises_command_error(self):
+        self._seed()
+        for kind in ("attach", "category_mix"):
+            with self.assertRaises(CommandError):
+                call_command("export_prior_attach_category",
+                             salon_id=self.salon.pk, kind=kind,
+                             start_date=START, end_date=END, format="xml",
+                             stdout=io.StringIO())
+            with self.assertRaises(CommandError):
+                call_command("export_prior_attach_category",
+                             "--salon-id", str(self.salon.pk),
+                             "--kind", kind,
+                             "--start-date", START.isoformat(),
+                             "--end-date", END.isoformat(),
+                             "--format", "xml", stdout=io.StringIO())
