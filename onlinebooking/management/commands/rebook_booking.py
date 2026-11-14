@@ -4,7 +4,14 @@ Usage:
     python manage.py rebook_booking --appointment-id ID
         --new-start ISO-8601 [--new-end ISO-8601]
         [--salon-id ID] [--note TEXT] [--note-author TEXT]
-        [--dry-run]
+        [--dry-run] [--format text|json]
+
+With ``--format json`` the command prints exactly one JSON
+object to stdout carrying the same facts as the text output
+(source appointment id, new appointment id -- ``null`` on
+``--dry-run``, when nothing was created -- start, end,
+status, and ``dry_run``); no prose lines are printed in json
+mode. The default ``--format text`` output is unchanged.
 
 Thin wrapper around
 :func:`onlinebooking.rebook.rebook_appointment`: the source
@@ -31,6 +38,7 @@ raises ``CommandError``, nothing written.
 Backend only -- no views, templates, or UI.
 """
 import datetime
+import json
 
 from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand, CommandError
@@ -92,8 +100,16 @@ class Command(BaseCommand):
                             help="Optional author for --note.")
         parser.add_argument("--dry-run", action="store_true",
                             help="Preview only: validate, print the booking, write nothing.")
+        parser.add_argument(
+            "--format", dest="format", default="text",
+            choices=["text", "json"],
+            help="Output format: text (default) or json.")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "text"
+        if fmt not in ("text", "json"):
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'text' or 'json'.")
         source = _resolve(options.get("appointment_id"),
                           options.get("salon_id"))
         new_start = _parse_datetime(
@@ -111,6 +127,15 @@ class Command(BaseCommand):
                     note=note, note_author=note_author)
             except ValidationError as exc:
                 raise CommandError("; ".join(exc.messages)) from exc
+            if fmt == "json":
+                self.stdout.write(json.dumps(dict(
+                    source_appointment_id=source.pk,
+                    new_appointment_id=None,
+                    start=new_start.isoformat(),
+                    end=preview_end.isoformat(),
+                    status=Appointment.Status.BOOKED,
+                    dry_run=True)))
+                return
             self.stdout.write(
                 f"Dry run: would rebook appointment {source.pk}: "
                 f"new booking at {new_start.isoformat()}, "
@@ -124,6 +149,15 @@ class Command(BaseCommand):
                 note=note, note_author=note_author)
         except ValidationError as exc:
             raise CommandError("; ".join(exc.messages)) from exc
+        if fmt == "json":
+            self.stdout.write(json.dumps(dict(
+                source_appointment_id=source.pk,
+                new_appointment_id=created.pk,
+                start=created.start.isoformat(),
+                end=created.end.isoformat(),
+                status=created.status,
+                dry_run=False)))
+            return
         self.stdout.write(
             f"Rebooked appointment {source.pk}: "
             f"new appointment {created.pk} at {created.start.isoformat()}, "

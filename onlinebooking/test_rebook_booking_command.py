@@ -10,6 +10,7 @@ off, unknown or out-of-salon appointment) surface as
 """
 import datetime
 import io
+import json
 
 from django.core.management import CommandError, call_command
 from django.test import TestCase
@@ -132,4 +133,76 @@ class RebookBookingCommandTests(TestCase):
         with self.assertRaises(CommandError):
             call_command("rebook_booking", appointment_id=self.source.pk,
                          new_start="not-a-time", stdout=io.StringIO())
+        self.assertEqual(Appointment.objects.count(), 1)
+
+    def test_explicit_text_format_matches_default(self):
+        out = io.StringIO()
+        call_command("rebook_booking", appointment_id=self.source.pk,
+                     new_start=at(MONDAY, 11), format="text", stdout=out)
+        new = Appointment.objects.exclude(pk=self.source.pk).get()
+        self.assertEqual(
+            out.getvalue(),
+            f"Rebooked appointment {self.source.pk}: "
+            f"new appointment {new.pk} at {at(MONDAY, 11).isoformat()}, "
+            f"end {at(MONDAY, 11, 45).isoformat()}, status booked.\n")
+
+    def test_json_output_parses_and_carries_facts(self):
+        out = io.StringIO()
+        call_command("rebook_booking", appointment_id=self.source.pk,
+                     new_start=at(MONDAY, 11), format="json", stdout=out)
+        new = Appointment.objects.exclude(pk=self.source.pk).get()
+        text = out.getvalue()
+        self.assertNotIn("Rebooked appointment", text)
+        self.assertEqual(len(text.strip().splitlines()), 1)
+        self.assertEqual(json.loads(text), {
+            "source_appointment_id": self.source.pk,
+            "new_appointment_id": new.pk,
+            "start": at(MONDAY, 11).isoformat(),
+            "end": at(MONDAY, 11, 45).isoformat(),
+            "status": "booked", "dry_run": False})
+
+    def test_json_via_cli_flag(self):
+        out = io.StringIO()
+        call_command("rebook_booking", "--appointment-id", str(self.source.pk),
+                     "--new-start", "2026-11-02T11:00:00+00:00",
+                     "--format", "json", stdout=out)
+        row = json.loads(out.getvalue())
+        new = Appointment.objects.exclude(pk=self.source.pk).get()
+        self.assertEqual(
+            (row["source_appointment_id"], row["new_appointment_id"],
+             row["status"], row["dry_run"]),
+            (self.source.pk, new.pk, "booked", False))
+
+    def test_dry_run_json_reports_dry_run_and_writes_nothing(self):
+        out = io.StringIO()
+        call_command("rebook_booking", appointment_id=self.source.pk,
+                     new_start=at(MONDAY, 13), dry_run=True,
+                     format="json", stdout=out)
+        self.assertEqual(Appointment.objects.count(), 1)
+        text = out.getvalue()
+        self.assertNotIn("Dry run", text)
+        self.assertEqual(json.loads(text), {
+            "source_appointment_id": self.source.pk,
+            "new_appointment_id": None,
+            "start": at(MONDAY, 13).isoformat(),
+            "end": at(MONDAY, 13, 45).isoformat(),
+            "status": "booked", "dry_run": True})
+
+    def test_json_errors_still_command_error(self):
+        for kw in (dict(appointment_id=999999),
+                   dict(new_start=at(MONDAY, 18)),
+                   dict(new_start="not-a-time")):
+            kw.setdefault("appointment_id", self.source.pk)
+            kw.setdefault("new_start", at(MONDAY, 11))
+            with self.assertRaises(CommandError):
+                call_command("rebook_booking", format="json",
+                             stdout=io.StringIO(), **kw)
+        with self.assertRaises(CommandError):
+            call_command("rebook_booking", appointment_id=self.source.pk,
+                         new_start=at(MONDAY, 11), format="bogus",
+                         stdout=io.StringIO())
+        with self.assertRaises(CommandError):
+            call_command("rebook_booking", appointment_id=self.source.pk,
+                         new_start=at(MONDAY, 18), dry_run=True,
+                         format="json", stdout=io.StringIO())
         self.assertEqual(Appointment.objects.count(), 1)
