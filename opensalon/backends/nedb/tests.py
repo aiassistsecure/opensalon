@@ -220,6 +220,184 @@ class TestDatabaseCreationTests(SimpleTestCase):
         self.assertIn("opensalon_2", names)
 
 
+LOCK_MESSAGE = (
+    'nedbd POST /v1/databases -> HTTP 500: {"error":"data directory '
+    '"x/test_opensalon" is locked by another process (pid 1) -- '
+    'refusing a split-brain open"}'
+)
+
+
+def _lock_error():
+    from opensalon.backends.nedb.creation import NedbHttpError
+
+    return NedbHttpError(LOCK_MESSAGE, status=500)
+
+
+class ResetLockSafetyTests(SimpleTestCase):
+    """Cycle 620: reset_database vs the NEDB split-brain lock.
+
+    Census Clusters A/B: a teardown flush whose recreate POST met
+    the data-directory lock left the test database dropped, and
+    every following test inherited the dead database. The reset
+    must confirm the drop, retry the locked create, reuse an
+    already-open database, and recover before it may raise.
+    """
+
+    def _creation(self):
+        creation = _wrapper().creation
+        creation.RESET_RELEASE_TIMEOUT_SECONDS = 0.3
+        creation.RESET_RELEASE_POLL_SECONDS = 0.01
+        creation.RESET_CREATE_BACKOFF_SECONDS = 0.01
+        return creation
+
+    def test_reset_polls_until_drop_released_before_create(self):
+        creation = self._creation()
+        calls = []
+        names = {"test_opensalon"}
+        phantom = {"gets_left": 2}  # dropped name still lists twice
+
+        def fake(method, path, payload=None):
+            calls.append((method, path))
+            if method == "DELETE":
+                names.discard("test_opensalon")
+                return {}
+            if method == "GET":
+                listed = set(names)
+                if phantom["gets_left"]:
+                    phantom["gets_left"] -= 1
+                    listed.add("test_opensalon")
+                return {"databases": [{"name": n} for n in sorted(listed)]}
+            if method == "POST" and path == "/v1/databases":
+                names.add(payload["name"])
+                return {"database": {"name": payload["name"]}}
+            if method == "POST" and path.endswith("/batch"):
+                return {"results": [], "count": len(payload["ops"])}
+            raise AssertionError("unexpected HTTP call %s %s" % (method, path))
+
+        with mock.patch.object(creation, "_http_request", fake):
+            self.assertEqual(
+                creation.reset_database("test_opensalon"), "test_opensalon"
+            )
+        methods = [c[0] for c in calls]
+        # DELETE, three release polls (2 phantom + 1 absent), create, batch.
+        self.assertEqual(
+            methods, ["DELETE", "GET", "GET", "GET", "POST", "POST"]
+        )
+        self.assertIn("test_opensalon", names)
+
+    def test_reset_retries_locked_create_then_succeeds(self):
+        creation = self._creation()
+        fake, calls, names = _fake_http(existing={"test_opensalon"})
+        attempts = {"posts": 0}
+        real_fake = fake
+
+        def flaky(method, path, payload=None):
+            if method == "POST" and path == "/v1/databases":
+                attempts["posts"] += 1
+                if attempts["posts"] < 3:
+                    raise _lock_error()
+            return real_fake(method, path, payload)
+
+        with mock.patch.object(creation, "_http_request", flaky):
+            self.assertEqual(
+                creation.reset_database("test_opensalon"), "test_opensalon"
+            )
+        self.assertEqual(attempts["posts"], 3)
+        self.assertIn("test_opensalon", names)
+
+    def test_reset_reuses_database_already_open_after_locked_create(self):
+        creation = self._creation()
+        calls = []
+        names = {"test_opensalon"}  # serving engine never lets go
+
+        def fake(method, path, payload=None):
+            calls.append((method, path))
+            if method == "DELETE":
+                return {}  # engine reopens it immediately
+            if method == "GET":
+                return {"databases": [{"name": n} for n in sorted(names)]}
+            if method == "POST" and path == "/v1/databases":
+                raise _lock_error()
+            if method == "POST" and path.endswith("/batch"):
+                return {"results": [], "count": len(payload["ops"])}
+            raise AssertionError("unexpected HTTP call %s %s" % (method, path))
+
+        with mock.patch.object(creation, "_http_request", fake):
+            self.assertEqual(
+                creation.reset_database("test_opensalon"), "test_opensalon"
+            )
+        creates = [c for c in calls if c == ("POST", "/v1/databases")]
+        self.assertEqual(len(creates), 1)  # reuse, not a retry storm
+        self.assertEqual(calls[-1][1], "/v1/databases/test_opensalon/batch")
+
+    def test_failed_create_recovers_by_recreate_before_raising(self):
+        from opensalon.backends.nedb.creation import NedbHttpError
+
+        creation = self._creation()
+        fake, calls, names = _fake_http(existing={"test_opensalon"})
+        attempts = {"posts": 0}
+        real_fake = fake
+
+        def flaky(method, path, payload=None):
+            if method == "POST" and path == "/v1/databases":
+                attempts["posts"] += 1
+                if attempts["posts"] == 1:
+                    raise NedbHttpError("boom", status=500)
+            return real_fake(method, path, payload)
+
+        with mock.patch.object(creation, "_http_request", flaky):
+            self.assertEqual(
+                creation.reset_database("test_opensalon"), "test_opensalon"
+            )
+        # One failed create + one recovery recreate, verified open.
+        self.assertEqual(attempts["posts"], 2)
+        self.assertIn("test_opensalon", names)
+
+    def test_unrecoverable_create_raises_after_recovery_attempt(self):
+        from opensalon.backends.nedb.creation import NedbHttpError
+
+        creation = self._creation()
+        fake, calls, names = _fake_http(existing={"test_opensalon"})
+        attempts = {"posts": 0}
+        real_fake = fake
+
+        def down(method, path, payload=None):
+            if method == "POST" and path == "/v1/databases":
+                attempts["posts"] += 1
+                raise NedbHttpError("boom", status=500)
+            return real_fake(method, path, payload)
+
+        with mock.patch.object(creation, "_http_request", down):
+            with self.assertRaises(NedbHttpError):
+                creation.reset_database("test_opensalon")
+        # Initial create + recovery recreate; no materialization ran.
+        self.assertEqual(attempts["posts"], 2)
+        self.assertFalse(any(c[1].endswith("/batch") for c in calls))
+        self.assertNotIn("test_opensalon", names)
+
+    def test_lock_exhaustion_falls_through_to_recovery(self):
+        creation = self._creation()
+        fake, calls, names = _fake_http(existing={"test_opensalon"})
+        attempts = {"posts": 0}
+        real_fake = fake
+
+        def flaky(method, path, payload=None):
+            if method == "POST" and path == "/v1/databases":
+                attempts["posts"] += 1
+                if attempts["posts"] <= creation.RESET_CREATE_ATTEMPTS:
+                    raise _lock_error()
+            return real_fake(method, path, payload)
+
+        with mock.patch.object(creation, "_http_request", flaky):
+            self.assertEqual(
+                creation.reset_database("test_opensalon"), "test_opensalon"
+            )
+        self.assertEqual(
+            attempts["posts"], creation.RESET_CREATE_ATTEMPTS + 1
+        )
+        self.assertIn("test_opensalon", names)
+
+
 class FlushNeverTruncateTests(SimpleTestCase):
     def test_sql_flush_builds_no_statements(self):
         from django.core.management.color import no_style
