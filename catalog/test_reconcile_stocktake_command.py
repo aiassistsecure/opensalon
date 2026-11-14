@@ -208,6 +208,71 @@ class ReconcileStocktakeCommandTests(TestCase):
         self.assertFalse(payload["dry_run"])
         self.assertEqual(self.stocktake_movements().count(), 2)
 
+    def test_default_format_is_text_and_byte_identical(self):
+        text = self.run_command(reference="STK-FMT-DEFAULT")
+        payload = json.loads(text)
+        # Historical shape: indented JSON object plus trailing newline.
+        self.assertEqual(text, json.dumps(payload, indent=2) + "\n")
+        self.assertEqual(payload["reference"], "STK-FMT-DEFAULT")
+
+    def test_format_text_explicit_matches_default(self):
+        text = self.run_command(reference="STK-FMT-TEXT", format="text")
+        payload = json.loads(text)
+        self.assertEqual(text, json.dumps(payload, indent=2) + "\n")
+        self.assertEqual(payload["reference"], "STK-FMT-TEXT")
+        self.assertTrue(payload["has_variance"])
+        self.assertEqual(self.shampoo.current_stock, 6)
+
+    def test_format_json_single_object_same_facts(self):
+        out = io.StringIO()
+        call_command("reconcile_stocktake", salon_id=self.salon.pk,
+                     reference="STK-FMT-JSON", counts=self.counts,
+                     format="json", stdout=out)
+        text = out.getvalue()
+        self.assertEqual(len(text.strip().splitlines()), 1)
+        payload = json.loads(text)
+        self.assertEqual(payload["reference"], "STK-FMT-JSON")
+        self.assertFalse(payload["dry_run"])
+        self.assertFalse(payload["already_applied"])
+        self.assertTrue(payload["has_variance"])
+        by_name = {v["product_name"]: v for v in payload["variances"]}
+        self.assertEqual(
+            (by_name["Shampoo"]["expected_stock"],
+             by_name["Shampoo"]["counted_stock"],
+             by_name["Shampoo"]["variance"]), (10, 6, -4))
+        self.assertIsNotNone(by_name["Shampoo"]["movement_id"])
+        self.assertEqual(self.shampoo.current_stock, 6)
+        self.assertEqual(self.stocktake_movements().count(), 2)
+
+    def test_format_json_flag_form(self):
+        out = io.StringIO()
+        call_command(
+            "reconcile_stocktake", "--salon-id", str(self.salon.pk),
+            "--reference", "STK-FMT-JSON-FLAGS",
+            "--count", f"{self.shampoo.pk}=6",
+            "--count", f"{self.serum.pk}=5",
+            "--format", "json", stdout=out)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["reference"], "STK-FMT-JSON-FLAGS")
+        self.assertEqual(self.shampoo.current_stock, 6)
+
+    def test_format_json_dry_run(self):
+        out = io.StringIO()
+        call_command("reconcile_stocktake", salon_id=self.salon.pk,
+                     reference="STK-FMT-JSON-DRY", counts=self.counts,
+                     dry_run=True, format="json", stdout=out)
+        payload = json.loads(out.getvalue())
+        self.assertTrue(payload["dry_run"])
+        self.assertIsNone(payload["variances"][0]["movement_id"])
+        self.assertEqual(self.stocktake_movements().count(), 0)
+        self.assertEqual(self.shampoo.current_stock, 10)
+
+    def test_invalid_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            self.run_command(reference="STK-FMT-BAD", format="xml")
+        self.assertEqual(self.stocktake_movements().count(), 0)
+        self.assertEqual(self.shampoo.current_stock, 10)
+
     def test_dry_run_does_not_consume_reference(self):
         dry = io.StringIO()
         call_command("reconcile_stocktake", salon_id=self.salon.pk,

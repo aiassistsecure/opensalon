@@ -3,11 +3,20 @@
 Usage:
     python manage.py reconcile_stocktake --salon-id ID
         --reference REFERENCE [--count PRODUCT_ID=COUNT ...]
-        [--dry-run]
+        [--dry-run] [--format text|json]
 
 With ``--dry-run`` nothing is recorded: the printed JSON carries
 ``"dry_run": true`` and each variance shows the movement delta
 that would be booked, with ``movement_id`` always null.
+
+With ``--format json`` the command prints exactly one JSON
+object to stdout carrying the same facts as the text output.
+This command has always printed its result as JSON, so the
+default ``--format text`` output is byte-identical to the
+historical output (the same JSON object, indented), and json
+mode prints that same single JSON object with the same facts
+(reference, ``dry_run``, ``already_applied``, ``has_variance``,
+and the variances); no prose format is introduced.
 
 Backend only — no views, templates, or UI. This command is a thin
 wrapper around :func:`catalog.stocktake.reconcile_stocktake`: it
@@ -123,8 +132,17 @@ class Command(BaseCommand):
             help="Preview the variances that would be booked "
                  "without recording anything.",
         )
+        parser.add_argument(
+            "--format", dest="format", default="text",
+            choices=["text", "json"],
+            help="Output format: text (default) or json.",
+        )
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "text"
+        if fmt not in ("text", "json"):
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'text' or 'json'.")
         try:
             salon = Salon.objects.get(pk=options["salon_id"])
         except Salon.DoesNotExist as exc:
@@ -138,6 +156,9 @@ class Command(BaseCommand):
                 dry_run=dry_run)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
-        text = json.dumps(
-            _result_dict(result, dry_run=dry_run), indent=2) + "\n"
+        payload = _result_dict(result, dry_run=dry_run)
+        if fmt == "json":
+            self.stdout.write(json.dumps(payload))
+            return
+        text = json.dumps(payload, indent=2) + "\n"
         self.stdout.write(text, ending="")
