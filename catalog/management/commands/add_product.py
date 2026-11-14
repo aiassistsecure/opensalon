@@ -3,7 +3,7 @@
 Usage:
     python manage.py add_product --salon-id ID --name TEXT
         --price AMOUNT [--sku CODE] [--barcode CODE] [--inactive]
-        [--dry-run]
+        [--dry-run] [--format text|json]
 
 With ``--dry-run`` nothing is written: the command calls the
 service's read-only ``validate_add_product`` helper and prints
@@ -12,6 +12,11 @@ price, and active flag in the salon's scope. The writer is
 never called, so the preview is safe on every backend
 (including NEDB, where a rolled-back transaction does not
 undo writes).
+
+With ``--format json`` the command prints exactly one JSON object
+to stdout carrying the same facts as the text line: the product
+id (null on a dry run), the salon id, the name, SKU, barcode,
+price, and active flag, and ``dry_run``.
 
 Backend only — no views, templates, or UI. This command is a
 thin wrapper around :func:`catalog.add_product.add_product`: it
@@ -26,6 +31,8 @@ An unknown salon or a service ``ValueError`` (blank/over-long
 name, over-long SKU/barcode, bad or negative price, duplicate
 barcode) is surfaced here as ``CommandError``.
 """
+import json
+
 from django.core.management.base import BaseCommand, CommandError
 
 from catalog.add_product import add_product, validate_add_product
@@ -58,6 +65,9 @@ class Command(BaseCommand):
             "--dry-run", action="store_true",
             help="Preview the product that would be created "
                  "without writing anything.")
+        parser.add_argument(
+            "--format", choices=["text", "json"], default="text",
+            help="Output format: text (default) or json.")
 
     def handle(self, *args, **options):
         try:
@@ -84,6 +94,18 @@ class Command(BaseCommand):
             barcode = cleaned["barcode"]
             price = cleaned["price"]
             is_active = cleaned["active"]
+            if (options.get("format") or "text") == "json":
+                self.stdout.write(json.dumps({
+                    "product_id": None,
+                    "salon_id": salon.pk,
+                    "name": name,
+                    "sku": sku,
+                    "barcode": barcode,
+                    "price": str(price),
+                    "active": is_active,
+                    "dry_run": True,
+                }))
+                return
             self.stdout.write(
                 f"Dry run: would create product {name!r} "
                 f"in salon {salon.pk}: sku={sku!r} "
@@ -94,6 +116,18 @@ class Command(BaseCommand):
             product = add_product(salon, **kwargs)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
+        if (options.get("format") or "text") == "json":
+            self.stdout.write(json.dumps({
+                "product_id": product.pk,
+                "salon_id": salon.pk,
+                "name": product.name,
+                "sku": product.sku,
+                "barcode": product.barcode,
+                "price": str(product.price),
+                "active": product.active,
+                "dry_run": False,
+            }))
+            return
         self.stdout.write(
             f"Created product {product.pk}: {product.name!r} "
             f"in salon {salon.pk}: sku={product.sku!r} "
