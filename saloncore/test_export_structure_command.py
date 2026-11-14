@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import tempfile
 
@@ -7,7 +8,9 @@ from django.test import TestCase
 
 from saloncore.models import Salon, ServiceCategory, StaffLevel
 from saloncore.structure_export import (
+    export_service_categories,
     export_service_categories_csv,
+    export_staff_levels,
     export_staff_levels_csv,
     export_structure_csv,
 )
@@ -67,3 +70,55 @@ class ExportStructureCommandTests(TestCase):
             path = os.path.join(tmp, "missing-dir", "structure.csv")
             with self.assertRaises(CommandError):
                 self._run(salon_id=self.salon.pk, output=path)
+
+    def test_json_all_is_object_with_categories_and_levels(self):
+        text = self._run(salon_id=self.salon.pk, format="json")
+        payload = json.loads(text)
+        self.assertEqual(payload, {
+            "categories": export_service_categories(self.salon),
+            "levels": export_staff_levels(self.salon),
+        })
+        self.assertIn("Color", text)
+        self.assertIn("Level 6", text)
+
+    def test_json_section_categories_is_dict_list(self):
+        text = self._run(
+            salon_id=self.salon.pk, section="categories", format="json")
+        self.assertEqual(
+            json.loads(text), export_service_categories(self.salon))
+        self.assertIn("Color", text)
+        self.assertNotIn("Level 6", text)
+
+    def test_json_section_levels_is_dict_list(self):
+        text = self._run(
+            salon_id=self.salon.pk, section="levels", format="json")
+        self.assertEqual(
+            json.loads(text), export_staff_levels(self.salon))
+        self.assertIn("Level 6", text)
+        self.assertNotIn("Color", text)
+
+    def test_json_empty_salon(self):
+        empty = Salon.objects.create(name="Empty Salon")
+        payload = json.loads(self._run(salon_id=empty.pk, format="json"))
+        self.assertEqual(payload, {"categories": [], "levels": []})
+
+    def test_explicit_csv_matches_default(self):
+        default = self._run(salon_id=self.salon.pk)
+        explicit = self._run(salon_id=self.salon.pk, format="csv")
+        self.assertEqual(explicit, default)
+        self.assertEqual(explicit, export_structure_csv(self.salon))
+
+    def test_json_output_writes_file_and_not_stdout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "structure.json")
+            text = self._run(salon_id=self.salon.pk, format="json", output=path)
+            self.assertEqual(text, "")
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(json.loads(fh.read()), {
+                    "categories": export_service_categories(self.salon),
+                    "levels": export_staff_levels(self.salon),
+                })
+
+    def test_invalid_format_raises_command_error(self):
+        with self.assertRaises(CommandError):
+            self._run(salon_id=self.salon.pk, format="xml")
