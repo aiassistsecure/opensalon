@@ -2,12 +2,18 @@
 
 Usage:
     python manage.py scan_sell --salon-id ID --code CODE
-        [--quantity N] [--dry-run]
+        [--quantity N] [--dry-run] [--format text|json]
 
 With ``--dry-run`` nothing is recorded: the command prints a
 preview naming the resolved product, the movement that would be
 recorded (kind and signed quantity), and the stock that would
 result.
+
+With ``--format json`` the command prints exactly one JSON object
+to stdout carrying the same facts as the text line: the product
+id, the code as given, the quantity, the resulting stock level,
+the stock movement id (null on a dry run), whether the sale left
+the stock below zero, and ``dry_run``.
 
 Backend only — no views, templates, or UI. This command is a thin
 wrapper around :func:`catalog.scanning.scan_sell`: it resolves
@@ -24,6 +30,8 @@ stock negative the summary line says so, from the result's
 the service appends the movement; this command adds nothing of
 its own.
 """
+import json
+
 from django.core.management.base import BaseCommand, CommandError
 
 from catalog.scanning import scan_sell
@@ -51,6 +59,10 @@ class Command(BaseCommand):
             help="Preview the movement that would be recorded "
                  "without recording anything.",
         )
+        parser.add_argument(
+            "--format", choices=["text", "json"], default="text",
+            help="Output format: text (default) or json.",
+        )
 
     def handle(self, *args, **options):
         try:
@@ -68,6 +80,18 @@ class Command(BaseCommand):
             raise CommandError(
                 f"No product in salon {salon.pk} matches code "
                 f"{options['code']!r}.")
+        if (options.get("format") or "text") == "json":
+            self.stdout.write(json.dumps({
+                "product_id": result.product.pk,
+                "code": options["code"],
+                "quantity": result.movement.quantity_delta,
+                "current_stock": result.current_stock,
+                "movement_id": (
+                    result.movement.pk if result.movement else None),
+                "below_zero": result.below_zero,
+                "dry_run": bool(options.get("dry_run")),
+            }))
+            return
         if options.get("dry_run"):
             line = (
                 f"Dry run: would record {result.movement.kind} "
