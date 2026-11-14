@@ -1,7 +1,9 @@
 import datetime
 from decimal import Decimal
 
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from checkout.models import Payment, Refund, Sale, SaleItem
@@ -134,6 +136,69 @@ class RefundReportTests(TestCase):
         empty = refund_totals(self.salon, day3, day3)
         self.assertEqual(empty.refund_count, 0)
         self.assertEqual(empty.total, Decimal("0.00"))
+
+    def test_refund_totals_range_parity_and_query_count(self):
+        end = self.day + datetime.timedelta(days=29)
+        day2 = self.day + datetime.timedelta(days=2)
+        cash_sale = self._completed_sale(price="300.00")
+        cash_sale_2 = self._completed_sale(price="100.00")
+        external_sale = self._completed_sale(
+            price="300.00", method=Payment.Method.EXTERNAL
+        )
+        self._refund(cash_sale, "20.00")
+        self._refund(cash_sale, "7.50", day=day2)
+        self._refund(cash_sale_2, "5.25")
+        self._refund(external_sale, "30.00")
+        self._refund(external_sale, "12.00", day=end)
+        unknown = Refund.objects.create(
+            sale=cash_sale, amount=Decimal("99.00"), tender="mystery"
+        )
+        Refund.objects.filter(pk=unknown.pk).update(
+            created_at=self._at(self.day + datetime.timedelta(days=1))
+        )
+        voided_sale = self._completed_sale(price="100.00")
+        self._refund(
+            voided_sale, "44.00", day=self.day + datetime.timedelta(days=3)
+        )
+        Sale.objects.filter(pk=voided_sale.pk).update(
+            status=Sale.Status.VOIDED,
+            voided_at=self._at(self.day + datetime.timedelta(days=3)),
+        )
+
+        with CaptureQueriesContext(connection) as captured:
+            result = refund_totals(self.salon, self.day, end)
+
+        self.assertLessEqual(len(captured.captured_queries), 3)
+        self.assertEqual(len(result.by_day), 30)
+        self.assertEqual(result.refund_count, 5)
+        self.assertEqual(result.total, Decimal("74.75"))
+        self.assertEqual(
+            result.by_tender,
+            {"cash": Decimal("32.75"), "external": Decimal("42.00")},
+        )
+        self.assertEqual(
+            result.counts_by_tender, {"cash": 3, "external": 2}
+        )
+        self.assertEqual(result.by_day[self.day].total, Decimal("55.25"))
+        self.assertEqual(result.by_day[self.day].refund_count, 3)
+        self.assertEqual(
+            result.by_day[self.day + datetime.timedelta(days=1)].total,
+            Decimal("0.00"),
+        )
+        self.assertEqual(result.by_day[day2].total, Decimal("7.50"))
+        self.assertEqual(result.by_day[day2].counts_by_tender["cash"], 1)
+        self.assertEqual(
+            result.by_day[self.day + datetime.timedelta(days=3)].total,
+            Decimal("0.00"),
+        )
+        self.assertEqual(result.by_day[end].total, Decimal("12.00"))
+        for entry in result.days:
+            self.assertEqual(
+                set(entry.by_tender), {"cash", "external"}
+            )
+            self.assertEqual(
+                set(entry.counts_by_tender), {"cash", "external"}
+            )
 
     def test_salon_timezone_judges_the_day(self):
         # 01:00 UTC on Oct 3 is still Oct 2 in New York.
