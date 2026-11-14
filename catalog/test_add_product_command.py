@@ -1,4 +1,5 @@
 import io
+import json
 from decimal import Decimal
 
 from django.core.management import call_command
@@ -93,6 +94,79 @@ class AddProductCommandTests(TestCase):
     def test_unknown_salon_raises(self):
         with self.assertRaises(CommandError):
             self.run_cmd(salon_id=999999, name="X", price="1.00")
+        self.assertEqual(Product.objects.count(), 0)
+
+    def test_default_text_output_unchanged(self):
+        text = self.run_cmd(
+            salon_id=self.salon.pk, name="Shampoo", price="24.00",
+            sku="SH-001", barcode="012345678905")
+        (p,) = Product.objects.all()
+        self.assertEqual(
+            text,
+            f"Created product {p.pk}: 'Shampoo' "
+            f"in salon {self.salon.pk}: sku='SH-001' "
+            f"barcode='012345678905' price=24.00 active=True.\n")
+
+    def test_explicit_text_format_matches_default(self):
+        text = self.run_cmd(
+            salon_id=self.salon.pk, name="Shampoo", price="24.00",
+            format="text")
+        self.assertIn("Created product", text)
+        self.assertNotIn("{", text)
+
+    def test_format_json_parses_and_carries_expected_fields(self):
+        out = io.StringIO()
+        call_command(
+            "add_product", "--salon-id", str(self.salon.pk),
+            "--name", "Shampoo", "--price", "24.00",
+            "--sku", "SH-001", "--barcode", "012345678905",
+            "--format", "json", stdout=out)
+        text = out.getvalue()
+        self.assertEqual(len(text.strip().splitlines()), 1)
+        data = json.loads(text)
+        (p,) = Product.objects.all()
+        self.assertEqual(data["product_id"], p.pk)
+        self.assertEqual(data["salon_id"], self.salon.pk)
+        self.assertEqual(data["name"], "Shampoo")
+        self.assertEqual(data["sku"], "SH-001")
+        self.assertEqual(data["barcode"], "012345678905")
+        self.assertEqual(data["price"], "24.00")
+        self.assertIs(data["active"], True)
+        self.assertIs(data["dry_run"], False)
+
+    def test_dry_run_format_json_reports_dry_run_and_writes_nothing(self):
+        text = self.run_cmd(
+            salon_id=self.salon.pk, name="Shampoo", price="24.00",
+            sku="SH-001", barcode="012345678905", dry_run=True,
+            format="json")
+        data = json.loads(text)
+        self.assertIsNone(data["product_id"])
+        self.assertEqual(data["salon_id"], self.salon.pk)
+        self.assertEqual(data["name"], "Shampoo")
+        self.assertEqual(data["sku"], "SH-001")
+        self.assertEqual(data["barcode"], "012345678905")
+        self.assertEqual(data["price"], "24.00")
+        self.assertIs(data["active"], True)
+        self.assertIs(data["dry_run"], True)
+        self.assertEqual(Product.objects.count(), 0)
+
+    def test_dry_run_text_output_unchanged_with_format_text(self):
+        text = self.run_cmd(
+            salon_id=self.salon.pk, name="Shampoo", price="24.00",
+            dry_run=True, format="text")
+        self.assertIn("Dry run: would create product", text)
+        self.assertEqual(Product.objects.count(), 0)
+
+    def test_format_json_errors_still_raise_command_error(self):
+        with self.assertRaises(CommandError):
+            self.run_cmd(salon_id=999999, name="X", price="1.00",
+                         format="json")
+        with self.assertRaises(CommandError):
+            self.run_cmd(salon_id=self.salon.pk, name="X",
+                         price="-2.00", format="json")
+        with self.assertRaises(CommandError):
+            self.run_cmd(salon_id=self.salon.pk, name="X",
+                         price="-2.00", dry_run=True, format="json")
         self.assertEqual(Product.objects.count(), 0)
 
     def test_blank_name_and_bad_price_raise(self):
