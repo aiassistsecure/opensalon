@@ -3,6 +3,14 @@
 Usage:
     python manage.py set_appointment_price --appointment-id ID
         --price PRICE [--salon-id ID] [--dry-run]
+        [--format text|json]
+
+With ``--format json`` the command prints exactly one JSON
+object to stdout carrying the same facts as the text output
+(appointment id, salon id, old price, new price -- each a
+string or null, never a float -- ``cleared`` and
+``dry_run``); no prose lines are printed in json mode. The
+default ``--format text`` output is unchanged.
 
 ``--price ""`` (an empty value) CLEARS the override, so the
 price book speaks again for that appointment.
@@ -27,6 +35,8 @@ own, so command and service can never disagree. The price
 book row itself is never touched. Backend only -- no views,
 templates, or UI.
 """
+import json
+
 from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand, CommandError
 from bookings.models import Appointment
@@ -61,8 +71,16 @@ class Command(BaseCommand):
             help="Preview only: validate with the service's "
                  "validate-only helper, print the current -> "
                  "override price, and write nothing.")
+        parser.add_argument(
+            "--format", dest="format", default="text",
+            choices=["text", "json"],
+            help="Output format: text (default) or json.")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "text"
+        if fmt not in ("text", "json"):
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'text' or 'json'.")
         appointment_id = options.get("appointment_id")
         if appointment_id is None:
             raise CommandError("Provide --appointment-id.")
@@ -101,6 +119,17 @@ class Command(BaseCommand):
             except ValidationError as exc:
                 raise CommandError(
                     "; ".join(exc.messages)) from exc
+            if fmt == "json":
+                self.stdout.write(json.dumps(dict(
+                    appointment_id=appointment.pk,
+                    salon_id=appointment.staff_member.salon_id,
+                    old_price=(
+                        None if current is None else str(current)),
+                    new_price=(
+                        None if preview is None else str(preview)),
+                    cleared=preview is None,
+                    dry_run=True)))
+                return
             self.stdout.write(
                 f"Dry run: would set price for appointment "
                 f"{appointment.pk}: {_fmt(current)} -> "
@@ -110,6 +139,18 @@ class Command(BaseCommand):
             set_appointment_price(appointment, price)
         except ValidationError as exc:
             raise CommandError("; ".join(exc.messages)) from exc
+        if fmt == "json":
+            self.stdout.write(json.dumps(dict(
+                appointment_id=appointment.pk,
+                salon_id=appointment.staff_member.salon_id,
+                old_price=(
+                    None if current is None else str(current)),
+                new_price=(
+                    None if appointment.price_override is None
+                    else str(appointment.price_override)),
+                cleared=appointment.price_override is None,
+                dry_run=False)))
+            return
         self.stdout.write(
             f"Appointment {appointment.pk} price: "
             f"{_fmt(current)} -> "
