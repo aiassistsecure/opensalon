@@ -9,6 +9,7 @@ surface as ``CommandError`` with nothing written. Fixtures are
 tiny synthetic records -- unit logic only.
 """
 import io
+import json
 from unittest import mock
 
 from django.core.management import CommandError, call_command
@@ -148,4 +149,113 @@ class AddClientNoteCommandTests(TestCase):
                 "add_client_note", salon_id=self.salon.pk,
                 client_id=999999, body="Hello", dry_run=True,
                 stdout=io.StringIO())
+        self.assertEqual(ClientNote.objects.count(), 0)
+
+    def test_default_text_output_unchanged(self):
+        out = io.StringIO()
+        call_command(
+            "add_client_note", salon_id=self.salon.pk,
+            client_id=self.client.pk, body="Prefers quiet room",
+            author="Front Desk", stdout=out)
+        (note,) = ClientNote.objects.all()
+        self.assertEqual(
+            out.getvalue(),
+            f"Added note {note.pk} to client {self.client.pk} "
+            f"in salon {self.salon.pk}: 'Prefers quiet room'\n")
+
+    def test_default_text_dry_run_output_unchanged(self):
+        out = io.StringIO()
+        call_command(
+            "add_client_note", salon_id=self.salon.pk,
+            client_id=self.client.pk, body="  Would-be note  ",
+            author="Desk", dry_run=True, stdout=out)
+        self.assertEqual(
+            out.getvalue(),
+            f"Dry run: would create client note for client "
+            f"{self.client.pk} in salon {self.salon.pk}: "
+            f"body='Would-be note' author='Desk' "
+            f"-- no note written.\n")
+        self.assertEqual(ClientNote.objects.count(), 0)
+
+    def test_format_json_creates_note_and_reports_fields(self):
+        out = io.StringIO()
+        call_command(
+            "add_client_note", "--salon-id", str(self.salon.pk),
+            "--client-id", str(self.client.pk),
+            "--body", "Prefers quiet room",
+            "--author", "Front Desk",
+            "--format", "json", stdout=out)
+        text = out.getvalue()
+        (note,) = ClientNote.objects.all()
+        payload = json.loads(text)
+        self.assertEqual(payload, {
+            "note_id": note.pk,
+            "client_id": self.client.pk,
+            "salon_id": self.salon.pk,
+            "body": "Prefers quiet room",
+            "author": "Front Desk",
+            "dry_run": False})
+        # Exactly one JSON object, no prose lines.
+        self.assertEqual(text.strip().count("\n"), 0)
+        self.assertNotIn("Added note", text)
+        self.assertEqual(AppointmentNote.objects.count(), 0)
+
+    def test_format_json_via_call_command_kwargs(self):
+        out = io.StringIO()
+        call_command(
+            "add_client_note", salon_id=self.salon.pk,
+            client_id=self.client.pk, body="Persistent only",
+            format="json", stdout=out)
+        payload = json.loads(out.getvalue())
+        (note,) = ClientNote.objects.all()
+        self.assertEqual(payload["note_id"], note.pk)
+        self.assertEqual(payload["author"], "")
+        self.assertFalse(payload["dry_run"])
+
+    def test_dry_run_format_json_reports_dry_run_and_writes_nothing(self):
+        out = io.StringIO()
+        call_command(
+            "add_client_note", "--salon-id", str(self.salon.pk),
+            "--client-id", str(self.client.pk),
+            "--body", "  Would-be note  ", "--author", " Desk ",
+            "--dry-run", "--format", "json", stdout=out)
+        self.assertEqual(ClientNote.objects.count(), 0)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload, {
+            "note_id": None,
+            "client_id": self.client.pk,
+            "salon_id": self.salon.pk,
+            "body": "Would-be note",
+            "author": "Desk",
+            "dry_run": True})
+
+    def test_dry_run_format_json_never_calls_writer(self):
+        with mock.patch(
+                "clients.management.commands.add_client_note."
+                "add_client_note",
+                side_effect=AssertionError("writer called")):
+            out = io.StringIO()
+            call_command(
+                "add_client_note", salon_id=self.salon.pk,
+                client_id=self.client.pk, body="Preview",
+                dry_run=True, format="json", stdout=out)
+        self.assertEqual(ClientNote.objects.count(), 0)
+        self.assertTrue(json.loads(out.getvalue())["dry_run"])
+
+    def test_format_json_errors_still_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "add_client_note", salon_id=999999,
+                client_id=self.client.pk, body="Hello",
+                format="json", stdout=io.StringIO())
+        with self.assertRaises(CommandError):
+            call_command(
+                "add_client_note", salon_id=self.salon.pk,
+                client_id=self.client.pk, body="   ",
+                format="json", stdout=io.StringIO())
+        with self.assertRaises(CommandError):
+            call_command(
+                "add_client_note", salon_id=self.salon.pk,
+                client_id=self.client.pk, body="   ",
+                dry_run=True, format="json", stdout=io.StringIO())
         self.assertEqual(ClientNote.objects.count(), 0)
