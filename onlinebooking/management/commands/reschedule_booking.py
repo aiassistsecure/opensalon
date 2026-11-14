@@ -4,6 +4,14 @@ Usage:
     python manage.py reschedule_booking --appointment-id ID
         --new-start ISO-8601 [--new-end ISO-8601]
         [--new-staff-member-id ID] [--salon-id ID] [--dry-run]
+        [--format text|json]
+
+With ``--format json`` the command prints exactly one JSON
+object to stdout carrying the same facts as the text output
+(appointment id, salon id, old and new staff member ids,
+old and new start, old and new end, status, and
+``dry_run``); no prose lines are printed in json mode.
+The default ``--format text`` output is unchanged.
 
 Thin wrapper around
 :func:`onlinebooking.services.reschedule_online_booking` (which
@@ -34,6 +42,7 @@ the salon, unparseable datetime, or a service
 Backend only -- no views, templates, or UI.
 """
 import datetime
+import json
 
 from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand, CommandError
@@ -111,8 +120,16 @@ class Command(BaseCommand):
                                  "the appointment to.")
         parser.add_argument("--dry-run", action="store_true",
                             help="Preview only: validate, print the move, write nothing.")
+        parser.add_argument(
+            "--format", dest="format", default="text",
+            choices=["text", "json"],
+            help="Output format: text (default) or json.")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "text"
+        if fmt not in ("text", "json"):
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'text' or 'json'.")
         appointment = _resolve(options.get("appointment_id"),
                                options.get("salon_id"))
         new_staff_member = _resolve_new_staff_member(
@@ -124,6 +141,9 @@ class Command(BaseCommand):
         new_end = _parse_datetime(
             options.get("new_end") or options.get("end"), "new-end")
         old_start, old_end = appointment.start, appointment.end
+        old_staff_member_id = appointment.staff_member.pk
+        salon_id = appointment.staff_member.salon_id
+        status = appointment.status
         staff_note = ""
         if new_staff_member is not None:
             staff_note = (
@@ -136,6 +156,22 @@ class Command(BaseCommand):
                     new_staff_member=new_staff_member)
             except ValidationError as exc:
                 raise CommandError("; ".join(exc.messages)) from exc
+            if fmt == "json":
+                self.stdout.write(json.dumps(dict(
+                    appointment_id=appointment.pk,
+                    salon_id=salon_id,
+                    old_staff_member_id=old_staff_member_id,
+                    new_staff_member_id=(
+                        new_staff_member.pk
+                        if new_staff_member is not None
+                        else old_staff_member_id),
+                    old_start=old_start.isoformat(),
+                    new_start=new_start.isoformat(),
+                    old_end=old_end.isoformat(),
+                    new_end=preview_end.isoformat(),
+                    status=status,
+                    dry_run=True)))
+                return
             self.stdout.write(
                 f"Dry run: would reschedule appointment {appointment.pk}: "
                 f"{old_start.isoformat()} -> {new_start.isoformat()}, "
@@ -149,6 +185,19 @@ class Command(BaseCommand):
                 new_staff_member=new_staff_member)
         except ValidationError as exc:
             raise CommandError("; ".join(exc.messages)) from exc
+        if fmt == "json":
+            self.stdout.write(json.dumps(dict(
+                appointment_id=moved.pk,
+                salon_id=salon_id,
+                old_staff_member_id=old_staff_member_id,
+                new_staff_member_id=moved.staff_member.pk,
+                old_start=old_start.isoformat(),
+                new_start=moved.start.isoformat(),
+                old_end=old_end.isoformat(),
+                new_end=moved.end.isoformat(),
+                status=moved.status,
+                dry_run=False)))
+            return
         self.stdout.write(
             f"Rescheduled appointment {moved.pk}: "
             f"{old_start.isoformat()} -> {moved.start.isoformat()}, "
