@@ -10,6 +10,7 @@ refusals fail cleanly as ``CommandError`` with nothing sent.
 Fixtures are tiny synthetic records -- unit logic only.
 """
 import io
+import json
 from decimal import Decimal
 
 from django.core import mail
@@ -148,6 +149,84 @@ class ResendReceiptCommandTests(TestCase):
         with self.assertRaises(CommandError):
             call_command(
                 "resend_receipt", sale_id=self.sale.pk, dry_run=True,
+                stdout=io.StringIO())
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_default_text_output_unchanged(self):
+        out = io.StringIO()
+        call_command("resend_receipt", sale_id=self.sale.pk, stdout=out)
+        self.assertEqual(out.getvalue(), (
+            f"Re-sent receipt #{self.receipt.pk} for sale "
+            f"#{self.sale.pk} to client@example.com.\n"))
+
+    def test_dry_run_default_text_output_unchanged(self):
+        out = io.StringIO()
+        call_command(
+            "resend_receipt", sale_id=self.sale.pk, dry_run=True,
+            stdout=out)
+        self.assertEqual(out.getvalue(), (
+            f"Dry run: would re-send receipt #{self.receipt.pk} for "
+            f"sale #{self.sale.pk} to client@example.com "
+            f"(recipient: sale's client email); no email sent.\n"))
+
+    def test_format_json_by_sale_id(self):
+        out = io.StringIO()
+        call_command(
+            "resend_receipt", "--sale-id", str(self.sale.pk),
+            "--format", "json", stdout=out)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, ["client@example.com"])
+        text = out.getvalue()
+        self.assertEqual(len(text.strip().splitlines()), 1)
+        self.assertNotIn("Re-sent", text)
+        self.assertNotIn("client@example.com", text)
+        self.assertEqual(json.loads(text), {
+            "receipt_id": self.receipt.pk,
+            "sale_id": self.sale.pk,
+            "dry_run": False,
+        })
+
+    def test_format_json_by_receipt_id_no_contact_details(self):
+        out = io.StringIO()
+        call_command(
+            "resend_receipt", receipt_id=self.receipt.pk,
+            recipient="other@example.com", format="json", stdout=out)
+        self.assertEqual(mail.outbox[0].to, ["other@example.com"])
+        text = out.getvalue()
+        self.assertEqual(len(text.strip().splitlines()), 1)
+        self.assertNotIn("other@example.com", text)
+        self.assertEqual(json.loads(text), {
+            "receipt_id": self.receipt.pk,
+            "sale_id": self.sale.pk,
+            "dry_run": False,
+        })
+
+    def test_format_json_dry_run_sends_nothing_and_changes_nothing(self):
+        out = io.StringIO()
+        call_command(
+            "resend_receipt", sale_id=self.sale.pk, dry_run=True,
+            format="json", stdout=out)
+        self.assertEqual(len(mail.outbox), 0)
+        text = out.getvalue()
+        self.assertEqual(len(text.strip().splitlines()), 1)
+        self.assertNotIn("Dry run", text)
+        self.assertNotIn("client@example.com", text)
+        self.assertEqual(json.loads(text), {
+            "receipt_id": self.receipt.pk,
+            "sale_id": self.sale.pk,
+            "dry_run": True,
+        })
+        self.receipt.refresh_from_db()
+        self.assertEqual(self.receipt.recipient_email, "")
+        self.assertIsNone(self.receipt.sent_at)
+
+    def test_format_json_refusal_is_command_error(self):
+        self.sale.status = Sale.Status.VOIDED
+        self.sale.voided_at = timezone.now()
+        self.sale.save(update_fields=["status", "voided_at"])
+        with self.assertRaises(CommandError):
+            call_command(
+                "resend_receipt", sale_id=self.sale.pk, format="json",
                 stdout=io.StringIO())
         self.assertEqual(len(mail.outbox), 0)
 

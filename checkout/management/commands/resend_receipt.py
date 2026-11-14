@@ -3,7 +3,14 @@
 Usage:
     python manage.py resend_receipt --sale-id ID [--recipient EMAIL]
     python manage.py resend_receipt --receipt-id ID [--recipient EMAIL]
-        [--dry-run]
+        [--dry-run] [--format text|json]
+
+With ``--format json`` the command prints exactly one JSON
+object to stdout carrying the same facts as the text output
+limited to the sale and receipt ids (and ``dry_run``); no
+recipient or other client contact details and no prose lines
+are printed in json mode. The default ``--format text``
+output is unchanged.
 
 With ``--dry-run`` nothing is sent and no ``Receipt`` changes:
 the command names the sale and receipt a real run would
@@ -36,6 +43,8 @@ settings only, exactly as the service defines them. Core stays
 provider-agnostic -- no vendor email API, no payment-provider
 SDK, field, or name appears here.
 """
+import json
+
 from django.core.management.base import BaseCommand, CommandError
 
 from checkout.models import Receipt, Sale
@@ -66,6 +75,11 @@ class Command(BaseCommand):
                  "resolved recipient a re-send would use, send "
                  "no email, and change no Receipt.",
         )
+        parser.add_argument(
+            "--format", dest="format", choices=["text", "json"],
+            default="text",
+            help="Output format: text (default) or json.",
+        )
 
     def handle(self, *args, **options):
         sale_id = options.get("sale_id")
@@ -76,7 +90,9 @@ class Command(BaseCommand):
                 "Provide exactly one of --sale-id or --receipt-id."
             )
         if options.get("dry_run"):
-            self._dry_run(sale_id, receipt_id, recipient)
+            self._dry_run(
+                sale_id, receipt_id, recipient,
+                fmt=options.get("format") or "text")
             return
         try:
             if sale_id is not None:
@@ -97,12 +113,19 @@ class Command(BaseCommand):
                 receipt = resend_receipt(receipt_obj, recipient=recipient)
         except ValueError as exc:
             raise CommandError(str(exc)) from exc
+        if (options.get("format") or "text") == "json":
+            self.stdout.write(json.dumps({
+                "receipt_id": receipt.pk,
+                "sale_id": receipt.sale_id,
+                "dry_run": False,
+            }))
+            return
         self.stdout.write(
             f"Re-sent receipt #{receipt.pk} for sale "
             f"#{receipt.sale_id} to {receipt.recipient_email}."
         )
 
-    def _dry_run(self, sale_id, receipt_id, recipient):
+    def _dry_run(self, sale_id, receipt_id, recipient, fmt="text"):
         """Preview a re-send: resolve only, send/change nothing."""
         if sale_id is not None:
             try:
@@ -138,6 +161,13 @@ class Command(BaseCommand):
             resolved, source = sale.client.email, "sale's client email"
         else:
             raise CommandError("no recipient email for receipt")
+        if fmt == "json":
+            self.stdout.write(json.dumps({
+                "receipt_id": receipt.pk,
+                "sale_id": sale.pk,
+                "dry_run": True,
+            }))
+            return
         self.stdout.write(
             f"Dry run: would re-send receipt #{receipt.pk} for "
             f"sale #{sale.pk} to {resolved} "
