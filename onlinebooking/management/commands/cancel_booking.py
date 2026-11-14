@@ -2,7 +2,15 @@
 
 Usage:
     python manage.py cancel_booking --appointment-id ID
-        [--salon-id ID] [--dry-run]
+        [--salon-id ID] [--dry-run] [--format text|json]
+
+With ``--format json`` the command prints exactly one JSON
+object to stdout carrying the same facts as the text output
+(appointment id, salon id, old status, status,
+``already_cancelled`` -- true when the appointment was
+already cancelled and is therefore reported unchanged --
+and ``dry_run``); no prose lines are printed in json mode.
+The default ``--format text`` output is unchanged.
 
 Thin wrapper around
 :func:`onlinebooking.services.cancel_online_booking` (which
@@ -26,6 +34,8 @@ or a service ``ValidationError`` -- raises ``CommandError``,
 nothing written.
 Backend only -- no views, templates, or UI.
 """
+import json
+
 from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand, CommandError
 
@@ -66,16 +76,36 @@ class Command(BaseCommand):
                             help="Optional salon the appointment must belong to.")
         parser.add_argument("--dry-run", action="store_true",
                             help="Preview only: validate, print the cancellation, write nothing.")
+        parser.add_argument(
+            "--format", dest="format", default="text",
+            choices=["text", "json"],
+            help="Output format: text (default) or json.")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "text"
+        if fmt not in ("text", "json"):
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'text' or 'json'.")
         appointment = _resolve(options.get("appointment_id"),
                                options.get("salon_id"))
         old_status = appointment.status
+        salon_id = appointment.staff_member.salon_id
+        already_cancelled = (
+            old_status == Appointment.Status.CANCELLED)
         if options.get("dry_run"):
             try:
                 preview_status = validate_cancel_online_booking(appointment)
             except ValidationError as exc:
                 raise CommandError("; ".join(exc.messages)) from exc
+            if fmt == "json":
+                self.stdout.write(json.dumps(dict(
+                    appointment_id=appointment.pk,
+                    salon_id=salon_id,
+                    old_status=old_status,
+                    status=preview_status,
+                    already_cancelled=already_cancelled,
+                    dry_run=True)))
+                return
             self.stdout.write(
                 f"Dry run: would cancel appointment {appointment.pk}: "
                 f"status {old_status} -> {preview_status} "
@@ -85,6 +115,15 @@ class Command(BaseCommand):
             cancelled = cancel_online_booking(appointment)
         except ValidationError as exc:
             raise CommandError("; ".join(exc.messages)) from exc
+        if fmt == "json":
+            self.stdout.write(json.dumps(dict(
+                appointment_id=cancelled.pk,
+                salon_id=salon_id,
+                old_status=old_status,
+                status=cancelled.status,
+                already_cancelled=already_cancelled,
+                dry_run=False)))
+            return
         self.stdout.write(
             f"Cancelled appointment {cancelled.pk}: "
             f"status {old_status} -> {cancelled.status}.")
