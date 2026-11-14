@@ -3,7 +3,14 @@
 Usage:
     python manage.py create_campaign --salon-id ID --name NAME
         --channel sms|email [--subject SUBJECT] --body BODY
-        [--dry-run]
+        [--dry-run] [--format text|json]
+
+With ``--format json`` the command prints exactly one JSON
+object to stdout carrying the same facts as the text output
+(campaign id -- null on ``--dry-run``, name, channel, salon
+id, audience count, and ``dry_run``); no prose lines are
+printed in json mode. The default ``--format text`` output
+is unchanged.
 
 Thin wrapper around :func:`messaging.campaigns.create_campaign`:
 the salon is resolved by id and the name/channel/subject/body
@@ -28,6 +35,8 @@ raises ``CommandError``, as does any service
 UI. Core stays provider-agnostic -- no provider SDK, field,
 or name here.
 """
+import json
+
 from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand, CommandError
 
@@ -67,8 +76,16 @@ class Command(BaseCommand):
             "--dry-run", action="store_true",
             help="Preview only: validate, print audience count, "
                  "create nothing.")
+        parser.add_argument(
+            "--format", dest="format", default="text",
+            choices=["text", "json"],
+            help="Output format: text (default) or json.")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "text"
+        if fmt not in ("text", "json"):
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'text' or 'json'.")
         salon_id = options.get("salon_id")
         if salon_id is None:
             raise CommandError("Provide --salon-id.")
@@ -88,6 +105,15 @@ class Command(BaseCommand):
                 count = audience_for(salon, channel).count()
             except ValidationError as exc:
                 raise _as_command_error(exc) from exc
+            if fmt == "json":
+                self.stdout.write(json.dumps(dict(
+                    id=None,
+                    name=name,
+                    channel=channel,
+                    salon_id=salon.pk,
+                    audience=count,
+                    dry_run=True)))
+                return
             self.stdout.write(
                 f"Dry run: would create draft campaign "
                 f"{name!r} ({channel}) for salon {salon.pk}: "
@@ -99,6 +125,15 @@ class Command(BaseCommand):
         except ValidationError as exc:
             raise _as_command_error(exc) from exc
         count = audience_for(salon, campaign.channel).count()
+        if fmt == "json":
+            self.stdout.write(json.dumps(dict(
+                id=campaign.pk,
+                name=campaign.name,
+                channel=campaign.channel,
+                salon_id=salon.pk,
+                audience=count,
+                dry_run=False)))
+            return
         self.stdout.write(
             f"Created draft campaign {campaign.pk} "
             f"({campaign.channel}) for salon {salon.pk}: "

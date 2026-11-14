@@ -12,6 +12,7 @@ sent: no CampaignSend rows and no mail on either path.
 Fixtures are tiny synthetic records -- unit logic only.
 """
 import io
+import json
 
 from django.core import mail
 from django.core.exceptions import ValidationError
@@ -209,4 +210,84 @@ class CreateCampaignCommandTests(TestCase):
             self._run(
                 salon_id=999999, name="Ghost", channel="sms",
                 body="Hello")
+        self.assertEqual(Campaign.objects.count(), 0)
+
+    def test_explicit_text_format_matches_default(self):
+        self._client(sms_opt_in=True)
+        text = self._run(
+            salon_id=self.salon.pk, name="Spring Offer",
+            channel="sms", body="Hello clients", format="text")
+        (campaign,) = Campaign.objects.all()
+        self.assertEqual(
+            text,
+            f"Created draft campaign {campaign.pk} (sms) "
+            f"for salon {self.salon.pk}: 'Spring Offer' "
+            f"audience 1.\n")
+        self.assertEqual(campaign.status, Campaign.Status.DRAFT)
+
+    def test_json_output_parses_and_carries_facts(self):
+        self._client(sms_opt_in=True)
+        text = self._run(
+            salon_id=self.salon.pk, name="Spring Offer",
+            channel="sms", body="Hello clients", format="json")
+        self.assertEqual(Campaign.objects.count(), 1)
+        (campaign,) = Campaign.objects.all()
+        self.assertEqual(campaign.status, Campaign.Status.DRAFT)
+        self.assertNotIn("Created draft campaign", text)
+        self.assertEqual(len(text.strip().splitlines()), 1)
+        self.assertEqual(json.loads(text), {
+            "id": campaign.pk, "name": "Spring Offer",
+            "channel": "sms", "salon_id": self.salon.pk,
+            "audience": 1, "dry_run": False})
+        self.assertEqual(CampaignSend.objects.count(), 0)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_json_via_cli_flag(self):
+        out = io.StringIO()
+        call_command(
+            "create_campaign", "--salon-id", str(self.salon.pk),
+            "--name", "News", "--channel", "email",
+            "--subject", "November News", "--body", "Body text",
+            "--format", "json", stdout=out)
+        self.assertEqual(Campaign.objects.count(), 1)
+        (campaign,) = Campaign.objects.all()
+        row = json.loads(out.getvalue())
+        self.assertEqual(
+            (row["id"], row["name"], row["channel"],
+             row["salon_id"], row["dry_run"]),
+            (campaign.pk, "News", "email", self.salon.pk, False))
+
+    def test_dry_run_json_reports_dry_run_and_creates_nothing(self):
+        self._client(sms_opt_in=True)
+        self._client(email_opt_in=True)
+        text = self._run(
+            salon_id=self.salon.pk, name="Preview", channel="sms",
+            body="Hello", dry_run=True, format="json")
+        self.assertEqual(Campaign.objects.count(), 0)
+        self.assertNotIn("Dry run", text)
+        self.assertEqual(json.loads(text), {
+            "id": None, "name": "Preview", "channel": "sms",
+            "salon_id": self.salon.pk, "audience": 1,
+            "dry_run": True})
+        self.assertEqual(CampaignSend.objects.count(), 0)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_json_errors_still_command_error(self):
+        for kwargs in (
+                dict(name="Bad", channel="pigeon", body="Hello"),
+                dict(name="Empty", channel="sms", body=""),
+                dict(name="News", channel="email", body="Body")):
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises(CommandError):
+                    self._run(
+                        salon_id=self.salon.pk, format="json",
+                        **kwargs)
+        with self.assertRaises(CommandError):
+            self._run(
+                salon_id=999999, name="Ghost", channel="sms",
+                body="Hello", format="json")
+        with self.assertRaises(CommandError):
+            self._run(
+                salon_id=self.salon.pk, name="X", channel="sms",
+                body="Hello", dry_run=True, format="bogus")
         self.assertEqual(Campaign.objects.count(), 0)
