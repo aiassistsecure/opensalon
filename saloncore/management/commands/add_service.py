@@ -5,6 +5,7 @@ Usage:
         --service-minutes N [--category-id ID | --category-name TEXT]
         [--description TEXT] [--processing-minutes N]
         [--finishing-minutes N] [--inactive] [--dry-run]
+        [--format text|json]
 
 The category is named by id (``--category-id``) or resolved by
 name inside the salon (``--category-name``); exactly one form is
@@ -25,6 +26,8 @@ An unknown salon or a service ``ValueError`` (missing / unknown
 / cross-salon / ambiguous category, blank or over-long name,
 bad minute segments) is surfaced here as ``CommandError``.
 """
+import json
+
 from django.core.management.base import BaseCommand, CommandError
 
 from saloncore.add_service import add_service, validate_add_service
@@ -67,6 +70,10 @@ class Command(BaseCommand):
             "--dry-run", action="store_true",
             help="Preview the service that would be created "
                  "without writing anything.")
+        parser.add_argument(
+            "--format", dest="format", default="text",
+            choices=["text", "json"],
+            help="Output format (default: text).")
 
     def handle(self, *args, **options):
         try:
@@ -94,6 +101,19 @@ class Command(BaseCommand):
             except (TypeError, ValueError) as exc:
                 raise CommandError(str(exc)) from exc
             category = cleaned["category"]
+            if options.get("format") == "json":
+                self.stdout.write(json.dumps(dict(
+                    id=None,
+                    name=cleaned["name"],
+                    salon_id=salon.pk,
+                    category_id=category.pk,
+                    category_name=category.name,
+                    service_minutes=cleaned["service_minutes"],
+                    processing_minutes=cleaned["processing_minutes"],
+                    finishing_minutes=cleaned["finishing_minutes"],
+                    active=cleaned["active"],
+                    dry_run=True)))
+                return
             self.stdout.write(
                 f"Dry run: would create service {cleaned['name']!r} "
                 f"in salon {salon.pk}: category={category.pk} "
@@ -107,6 +127,19 @@ class Command(BaseCommand):
             service = add_service(salon, **kwargs)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
+        if options.get("format") == "json":
+            self.stdout.write(json.dumps(dict(
+                id=service.pk,
+                name=service.name,
+                salon_id=salon.pk,
+                category_id=service.category_id,
+                category_name=service.category.name,
+                service_minutes=service.service_minutes,
+                processing_minutes=service.processing_minutes,
+                finishing_minutes=service.finishing_minutes,
+                active=service.active,
+                dry_run=False)))
+            return
         self.stdout.write(
             f"Created service {service.pk}: {service.name!r} "
             f"in salon {salon.pk}: category={service.category_id} "
