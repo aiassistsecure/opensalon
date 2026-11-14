@@ -3,6 +3,7 @@
 Usage:
     python manage.py add_service_category --salon-id ID --name TEXT
         [--sort-order N] [--inactive] [--dry-run]
+        [--format text|json]
 
 With ``--dry-run`` nothing is written: the command calls the
 service's read-only ``validate_add_service_category`` helper
@@ -19,6 +20,8 @@ service verbatim, and prints a one-line summary.
 An unknown salon or a service ``ValueError`` is surfaced
 here as ``CommandError``.
 """
+import json
+
 from django.core.management.base import BaseCommand, CommandError
 
 from saloncore.add_service_category import (
@@ -48,6 +51,10 @@ class Command(BaseCommand):
             "--dry-run", action="store_true",
             help="Preview the category that would be created "
                  "without writing anything.")
+        parser.add_argument(
+            "--format", dest="format", default="text",
+            choices=["text", "json"],
+            help="Output format (default: text).")
 
     def handle(self, *args, **options):
         try:
@@ -68,6 +75,15 @@ class Command(BaseCommand):
                 cleaned = validate_add_service_category(salon, **kwargs)
             except (TypeError, ValueError) as exc:
                 raise CommandError(str(exc)) from exc
+            if options.get("format") == "json":
+                self.stdout.write(json.dumps(dict(
+                    id=None,
+                    name=cleaned["name"],
+                    salon_id=salon.pk,
+                    sort_order=cleaned["sort_order"],
+                    active=cleaned["active"],
+                    dry_run=True)))
+                return
             self.stdout.write(
                 f"Dry run: would create service category "
                 f"{cleaned['name']!r} in salon {salon.pk}: "
@@ -79,6 +95,15 @@ class Command(BaseCommand):
             category = add_service_category(salon, **kwargs)
         except (TypeError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
+        if options.get("format") == "json":
+            self.stdout.write(json.dumps(dict(
+                id=category.pk,
+                name=category.name,
+                salon_id=salon.pk,
+                sort_order=category.sort_order,
+                active=category.active,
+                dry_run=False)))
+            return
         self.stdout.write(
             f"Created service category {category.pk}: {category.name!r} "
             f"in salon {salon.pk}: sort_order={category.sort_order} "
