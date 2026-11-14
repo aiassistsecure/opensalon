@@ -55,7 +55,8 @@ __all__ = [
     "PriorCategoryMixComparison", "prior_period_attach_rate",
     "prior_period_category_mix", "compare_attach_rate",
     "compare_category_mix", "PRIOR_ATTACH_FIELDNAMES",
-    "PRIOR_CATEGORY_FIELDNAMES", "export_prior_attach_csv",
+    "PRIOR_CATEGORY_FIELDNAMES", "export_prior_attach",
+    "export_prior_category_mix", "export_prior_attach_csv",
     "export_prior_category_mix_csv",
 ]
 
@@ -422,14 +423,15 @@ def _bounds(result):
     }
 
 
-def export_prior_attach_csv(salon, start_date=None, end_date=None,
-                            **kwargs):
-    """Return the attach prior-period comparison as a CSV string.
+def export_prior_attach(salon, start_date=None, end_date=None,
+                        **kwargs):
+    """Return the attach prior-period comparison as dict rows.
 
     Summary metric rows first (``offset`` / ``current_date`` /
     ``prior_date`` empty), then one ``daily_<metric>`` row per
     offset-aligned per-day entry and daily metric, carrying that
-    entry's offset and current/prior dates.
+    entry's offset and current/prior dates. Values mirror the
+    CSV rows exactly, so CSV and JSON can never disagree.
     """
     result = prior_period_attach_rate(salon, start_date, end_date,
                                       **kwargs)
@@ -454,15 +456,31 @@ def export_prior_attach_csv(salon, start_date=None, end_date=None,
                 "current_date": entry.current_date.isoformat(),
                 "prior_date": entry.prior_date.isoformat(),
             })
-    return _write(rows, PRIOR_ATTACH_FIELDNAMES)
+    return rows
 
 
-def export_prior_category_mix_csv(salon, start_date=None, end_date=None,
-                                  **kwargs):
-    """Return the category-mix prior-period comparison as CSV."""
+def export_prior_attach_csv(salon, start_date=None, end_date=None,
+                            **kwargs):
+    """Return the attach prior-period comparison as a CSV string.
+
+    Built from :func:`export_prior_attach` with the same
+    arguments, so the CSV and dict exports always agree.
+    """
+    return _write(export_prior_attach(salon, start_date, end_date,
+                                      **kwargs),
+                  PRIOR_ATTACH_FIELDNAMES)
+
+
+def export_prior_category_mix(salon, start_date=None, end_date=None,
+                              **kwargs):
+    """Return the category-mix comparison as dict rows.
+
+    Values mirror the CSV rows exactly, so CSV and JSON can
+    never disagree.
+    """
     result = prior_period_category_mix(salon, start_date, end_date,
                                        **kwargs)
-    return _write([{
+    return [{
         "category_name": r.category_name, **_bounds(result),
         "current": _money(r.revenue.current),
         "prior": _money(r.revenue.prior),
@@ -489,4 +507,16 @@ def export_prior_category_mix_csv(salon, start_date=None, end_date=None,
             r.current_quantity_share_percent),
         "prior_quantity_share_percent": _pct(
             r.prior_quantity_share_percent),
-    } for r in result], PRIOR_CATEGORY_FIELDNAMES)
+    } for r in result]
+
+
+def export_prior_category_mix_csv(salon, start_date=None,
+                                  end_date=None, **kwargs):
+    """Return the category-mix prior-period comparison as CSV.
+
+    Built from :func:`export_prior_category_mix` with the same
+    arguments, so the CSV and dict exports always agree.
+    """
+    return _write(export_prior_category_mix(
+        salon, start_date, end_date, **kwargs),
+        PRIOR_CATEGORY_FIELDNAMES)
