@@ -8,6 +8,7 @@ service refusals surface as ``CommandError``. Fixtures are
 tiny synthetic records -- unit logic only.
 """
 import io
+import json
 from decimal import Decimal
 from unittest import mock
 
@@ -80,6 +81,62 @@ class VoidSaleCommandTests(TestCase):
         self.assertIsNone(self.sale.voided_at)
         self.assertIn("entered in error", out.getvalue())
         self.assertNotIn("  entered", out.getvalue())
+
+    def test_default_text_output_unchanged(self):
+        out = io.StringIO()
+        call_command(
+            "void_sale", sale_id=self.sale.pk,
+            reason="rung up twice", stdout=out)
+        self.assertEqual(out.getvalue(), (
+            f"Voided sale #{self.sale.pk} (reason: rung up twice): "
+            f"sale status voided.\n"
+        ))
+
+    def test_format_json_real_run(self):
+        out = io.StringIO()
+        call_command(
+            "void_sale", "--sale-id", str(self.sale.pk),
+            "--reason", "rung up twice", "--format", "json",
+            stdout=out)
+        self.sale.refresh_from_db()
+        self.assertEqual(self.sale.status, Sale.Status.VOIDED)
+        self.assertEqual(self.sale.void_reason, "rung up twice")
+        text = out.getvalue()
+        self.assertEqual(len(text.strip().splitlines()), 1)
+        self.assertNotIn("Voided sale", text)
+        payload = json.loads(text)
+        self.assertEqual(payload["sale_id"], self.sale.pk)
+        self.assertEqual(payload["reason"], "rung up twice")
+        self.assertEqual(payload["status"], "voided")
+        self.assertIs(payload["dry_run"], False)
+
+    def test_format_json_dry_run_writes_nothing(self):
+        out = io.StringIO()
+        call_command(
+            "void_sale", sale_id=self.sale.pk,
+            reason="entered in error", dry_run=True,
+            format="json", stdout=out)
+        self.sale.refresh_from_db()
+        self.assertEqual(self.sale.status, Sale.Status.COMPLETED)
+        self.assertEqual(self.sale.void_reason, "")
+        self.assertIsNone(self.sale.voided_at)
+        text = out.getvalue()
+        self.assertEqual(len(text.strip().splitlines()), 1)
+        self.assertNotIn("Dry run", text)
+        payload = json.loads(text)
+        self.assertEqual(payload["sale_id"], self.sale.pk)
+        self.assertEqual(payload["reason"], "entered in error")
+        self.assertEqual(payload["status"], "voided")
+        self.assertIs(payload["dry_run"], True)
+
+    def test_format_json_refusal_is_command_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "void_sale", sale_id=self.sale.pk, reason="   ",
+                format="json", stdout=io.StringIO())
+        self.sale.refresh_from_db()
+        self.assertEqual(self.sale.status, Sale.Status.COMPLETED)
+        self.assertIsNone(self.sale.voided_at)
 
     def test_refusals_are_command_errors_and_change_nothing(self):
         open_sale = Sale.objects.create(
