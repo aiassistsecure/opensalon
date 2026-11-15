@@ -2,7 +2,14 @@
 
 Usage:
     python manage.py import_roster_derived [--salon NAME]
+    python manage.py import_roster_derived [--salon-id ID]
         [--weeks 16] [--min-days 4] [--dry-run]
+
+With ``--salon-id`` the salon is selected by primary key instead
+of by name: the id-selected salon takes precedence over
+``--salon``, and a nonexistent id raises ``CommandError`` before
+anything is written. Without ``--salon-id`` the salon is selected
+by ``--salon`` name exactly as before.
 
 With ``--dry-run`` the same derivation runs but no pattern is
 written: the patterns it WOULD write are counted by member
@@ -36,7 +43,7 @@ Rules:
 import datetime
 from collections import Counter, defaultdict
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 
 from bookings.models import Appointment
 from saloncore.models import Salon
@@ -63,6 +70,10 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--salon", default=None)
+        parser.add_argument(
+            "--salon-id", type=int, default=None,
+            help="Salon id to derive for (must already exist; "
+                 "takes precedence over --salon).")
         parser.add_argument("--weeks", type=int, default=16)
         parser.add_argument("--min-days", type=int, default=4)
         parser.add_argument(
@@ -71,9 +82,18 @@ class Command(BaseCommand):
                  "write, counted by member/weekday, writing none.")
 
     def handle(self, *args, **options):
-        salons = Salon.objects.all()
-        if options["salon"]:
-            salons = salons.filter(name=options["salon"])
+        if options.get("salon_id") is not None:
+            try:
+                salon_by_id = Salon.objects.get(pk=options["salon_id"])
+            except Salon.DoesNotExist:
+                raise CommandError(
+                    f"Salon with id {options['salon_id']} does not exist."
+                ) from None
+            salons = Salon.objects.filter(pk=salon_by_id.pk)
+        else:
+            salons = Salon.objects.all()
+            if options["salon"]:
+                salons = salons.filter(name=options["salon"])
         dry_run = bool(options.get("dry_run"))
         totals = Counter()
         breakdown = Counter()
