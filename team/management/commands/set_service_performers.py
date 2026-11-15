@@ -3,10 +3,17 @@
 Usage:
     python manage.py set_service_performers --service-id ID
         --staff-member-id ID [--staff-member-id ID ...]
-        [--dry-run]
+        [--dry-run] [--format text|json]
     python manage.py set_service_performers
         --service-external-id EXT
         --staff-member-external-id EXT [...] [--dry-run]
+
+With ``--format json`` the command prints exactly one JSON
+object to stdout carrying the same facts as the text output
+(service id, sorted staff member ids, enabled count, total
+members in the salon, and ``dry_run``); no prose lines are
+printed in json mode. The default ``--format text`` output
+is unchanged.
 
 Thin wrapper around
 :func:`team.capabilities.set_service_performers`: the service
@@ -28,6 +35,8 @@ Invalid input -- an unknown service, an unknown or
 out-of-salon performer, or a service ``ValidationError`` --
 raises ``CommandError`` and nothing is written. Backend only.
 """
+import json
+
 from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand, CommandError
 
@@ -121,8 +130,16 @@ class Command(BaseCommand):
             "--dry-run", action="store_true",
             help="Preview only: validate without writing, "
                  "print the list that would apply, write nothing.")
+        parser.add_argument(
+            "--format", dest="format", default="text",
+            choices=["text", "json"],
+            help="Output format: text (default) or json.")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "text"
+        if fmt not in ("text", "json"):
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'text' or 'json'.")
         service = _resolve_service(options)
         wanted = _performer_ids(service, options)
         try:
@@ -132,11 +149,27 @@ class Command(BaseCommand):
         total = StaffMember.objects.filter(
             salon=service.category.salon).count()
         if options.get("dry_run"):
+            if fmt == "json":
+                self.stdout.write(json.dumps(dict(
+                    service_id=service.pk,
+                    staff_member_ids=sorted(wanted),
+                    enabled=len(wanted),
+                    total_members=total,
+                    dry_run=True)))
+                return
             self.stdout.write(
                 f"Dry run: would set "
                 f"{_describe(service, wanted, total)} "
                 f"-- no rows written.")
             return
         set_service_performers(service, wanted)
+        if fmt == "json":
+            self.stdout.write(json.dumps(dict(
+                service_id=service.pk,
+                staff_member_ids=sorted(wanted),
+                enabled=len(wanted),
+                total_members=total,
+                dry_run=False)))
+            return
         self.stdout.write(
             f"Set {_describe(service, wanted, total)}.")
