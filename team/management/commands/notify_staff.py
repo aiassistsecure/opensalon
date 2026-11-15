@@ -3,6 +3,14 @@
 Usage:
     python manage.py notify_staff --staff-member-id ID
         --appointment-id ID [--kind KIND] [--dry-run]
+        [--format text|json]
+
+With ``--format json`` the command prints exactly one JSON
+object to stdout carrying the same facts as the text output
+(created notification id -- null on ``--dry-run``, staff
+member id, appointment id, kind, and ``dry_run``); no prose
+lines are printed in json mode. The default ``--format text``
+output is unchanged.
 
 Thin wrapper around :func:`team.notifications.notify_staff`:
 the staff member and appointment are resolved by id and the
@@ -23,6 +31,8 @@ appointment, or a service ``ValidationError`` -- raises
 ``CommandError`` and nothing is written. Backend only --
 no views, templates, or UI.
 """
+import json
+
 from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand, CommandError
 
@@ -55,8 +65,16 @@ class Command(BaseCommand):
             help="Preview only: validate with the service's "
                  "validate-only helper, print the ping that "
                  "would be created, write nothing.")
+        parser.add_argument(
+            "--format", dest="format", default="text",
+            choices=["text", "json"],
+            help="Output format: text (default) or json.")
 
     def handle(self, *args, **options):
+        fmt = options.get("format") or "text"
+        if fmt not in ("text", "json"):
+            raise CommandError(
+                f"Invalid format {fmt!r}; expected 'text' or 'json'.")
         try:
             member = StaffMember.objects.get(
                 pk=options.get("staff_member_id"))
@@ -79,6 +97,14 @@ class Command(BaseCommand):
                 raise CommandError(
                     "; ".join(exc.messages)) from exc
             preview = _describe(member, appointment, kind)
+            if fmt == "json":
+                self.stdout.write(json.dumps(dict(
+                    notification_id=None,
+                    staff_member_id=member.pk,
+                    appointment_id=appointment.pk,
+                    kind=kind,
+                    dry_run=True)))
+                return
             self.stdout.write(
                 f"Dry run: would create {preview} "
                 f"-- no notification written.")
@@ -87,6 +113,14 @@ class Command(BaseCommand):
             note = notify_staff(member, appointment, kind)
         except ValidationError as exc:
             raise CommandError("; ".join(exc.messages)) from exc
+        if fmt == "json":
+            self.stdout.write(json.dumps(dict(
+                notification_id=note.pk,
+                staff_member_id=member.pk,
+                appointment_id=appointment.pk,
+                kind=note.kind,
+                dry_run=False)))
+            return
         self.stdout.write(
             f"Created {_describe(member, appointment, note.kind)} "
             f"id={note.pk}.")
