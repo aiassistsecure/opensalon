@@ -395,3 +395,20 @@ class ImportTransactionsCsvTests(TestCase):
         ])
         self._run()
         self.assertEqual(Payment.objects.get().method, Payment.Method.CASH)
+
+    def test_parser_positional_is_named_path(self):
+        # Import-family convention: the positional is ``path``
+        # (dest options["path"]), not ``directory``.
+        from checkout.management.commands.import_transactions_csv import (
+            Command,
+        )
+        parser = Command().create_parser(
+            "manage.py", "import_transactions_csv")
+        positionals = [
+            action.dest for action in parser._actions
+            if not action.option_strings
+        ]
+        self.assertIn("path", positionals)
+        self.assertNotIn("directory", positionals)
+        parsed = parser.parse_args([self.dir.name])
+        self.assertEqual(parsed.path, self.dir.name)
