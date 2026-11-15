@@ -2,7 +2,13 @@
 
 Usage:
     python manage.py repair_staff_levels --staff staff.json
-        [--salon NAME] [--dry-run] [--format text|json]
+        [--salon NAME] [--salon-id ID] [--dry-run] [--format text|json]
+
+``--salon-id`` selects the target salon by primary key instead of
+by name: when given it takes precedence over ``--salon``, the salon
+must already exist (a missing id raises ``CommandError`` and writes
+nothing), and no salon is created. Without it, ``--salon`` behaves
+exactly as before.
 
 With ``--format json`` the command prints exactly one JSON
 object to stdout carrying the same facts as the text output
@@ -67,6 +73,9 @@ class Command(BaseCommand):
                             help="Staff export JSON (the bridge data).")
         parser.add_argument("--salon", default="",
                             help="Salon name (default: the only/first).")
+        parser.add_argument("--salon-id", type=int, default=None,
+                            help="Salon id to repair (must already "
+                                 "exist; takes precedence over --salon).")
         parser.add_argument("--dry-run", action="store_true",
                             help="Preview the merges, renames and "
                                  "conflicts a real run would make, "
@@ -94,12 +103,23 @@ class Command(BaseCommand):
             if cid and cname:
                 categories[str(cid).lower()] = cname
 
-        salon_qs = Salon.objects.order_by("id")
-        if options["salon"]:
-            salon_qs = salon_qs.filter(name=options["salon"])
-        salon = salon_qs.first()
-        if salon is None:
-            raise CommandError("no salon found")
+        # --salon-id bridge: resolve the target salon by pk before
+        # any repair writes. A missing id raises CommandError and
+        # writes nothing; when given, the id-selected salon takes
+        # precedence over --salon.
+        if options.get("salon_id") is not None:
+            try:
+                salon = Salon.objects.get(pk=options["salon_id"])
+            except Salon.DoesNotExist:
+                raise CommandError(
+                    f"No salon with id {options['salon_id']}.") from None
+        else:
+            salon_qs = Salon.objects.order_by("id")
+            if options["salon"]:
+                salon_qs = salon_qs.filter(name=options["salon"])
+            salon = salon_qs.first()
+            if salon is None:
+                raise CommandError("no salon found")
 
         dry_run = bool(options.get("dry_run"))
 
