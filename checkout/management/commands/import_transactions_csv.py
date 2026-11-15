@@ -66,7 +66,7 @@ Mapping — only what the source truly carries:
   no itemised values, and core sales have no tips field.
 
 The files live outside the repo and stay there: the
-command takes the directory as an argument and commits
+command takes the path as an argument and commits
 no data. Run summary follows the import_salon_data
 precedent (one IMPORT_SUMMARY line, one IMPORT_SKIPPED
 line accounting for everything not imported). Progress
@@ -76,7 +76,7 @@ as the import goes — one READ line per source file and
 an IMPORTING line every 250 transactions — so a long
 history import is never silent about where it is.
 
-With ``--dry-run`` the directory is parsed and counted
+With ``--dry-run`` the path is parsed and counted
 exactly as for a real import but NOTHING is written (no
 sale, item or payment rows): a JSON dry-run report from
 ``saloncore.dry_run`` is printed to stdout first — one
@@ -177,14 +177,15 @@ def _transaction_when(row, tz):
 
 class Command(BaseCommand):
     help = (
-        "Import settled sales history from a directory of monthly "
-        "transaction export CSVs (transactions-*.csv)."
+        "Import settled sales history from a path to a directory "
+        "of monthly transaction export CSVs (transactions-*.csv)."
     )
 
     def add_arguments(self, parser):
         parser.add_argument(
-            "directory",
-            help="Directory holding transactions-*.csv export files.",
+            "path",
+            help="Path to the directory holding transactions-*.csv "
+                 "export files.",
         )
         parser.add_argument(
             "--salon",
@@ -227,11 +228,11 @@ class Command(BaseCommand):
         if salon_id is None:
             salon_id = options["salon"]
         salon = self._resolve_salon(salon_id)
-        directory = Path(options["directory"])
-        files = sorted(directory.glob("transactions-*.csv"))
+        path = Path(options["path"])
+        files = sorted(path.glob("transactions-*.csv"))
         if not files:
             raise CommandError(
-                f"No transactions-*.csv files in {directory}."
+                f"No transactions-*.csv files in {path}."
             )
         tz = _salon_tz(salon)
         clients = {
@@ -260,21 +261,21 @@ class Command(BaseCommand):
         stats["excluded_amount"] = Decimal("0")
         transactions = {}
         file_records = {}
-        for path in files:
+        for file_path in files:
             stats["files"] += 1
             # Real exports arrive in both UTF-8 and Latin-1 (older
             # monthly files carry accented names in Latin-1 bytes);
             # decode strictly as UTF-8 first, fall back to Latin-1,
             # which maps every byte, so a name is never mangled by
             # a replacement character.
-            raw = path.read_bytes()
+            raw = file_path.read_bytes()
             try:
                 text = raw.decode("utf-8-sig")
             except UnicodeDecodeError:
                 text = raw.decode("latin-1")
             rows = list(csv.DictReader(io.StringIO(text)))
-            file_records[str(path)] = rows
-            self.stderr.write(f"READ {path.name}: {len(rows)} rows")
+            file_records[str(file_path)] = rows
+            self.stderr.write(f"READ {file_path.name}: {len(rows)} rows")
             for row in rows:
                 stats["rows_read"] += 1
                 txn_id = (row.get("transaction_id") or "").strip()
@@ -365,10 +366,10 @@ class Command(BaseCommand):
         )
         if options["dry_run"]:
             self.stdout.write(
-                f"Dry run: no transactions were imported from {directory}"
+                f"Dry run: no transactions were imported from {path}"
             )
         else:
-            self.stdout.write(f"Imported transactions from {directory}")
+            self.stdout.write(f"Imported transactions from {path}")
 
     def _count_transaction(self, tz, txn_id, live, revenue,
                            clients, stats):
