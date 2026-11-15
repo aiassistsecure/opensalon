@@ -94,6 +94,37 @@ class ExportAppointmentsCommandTests(TestCase):
         self.assertEqual(
             out.getvalue(), expected_text(self.salon, DAY, NEXT))
 
+    def test_start_date_end_date_aliases_match_service(self):
+        out = io.StringIO()
+        call_command(
+            "export_appointments", "--salon-id", str(self.salon.pk),
+            "--start-date", DAY.isoformat(), "--end-date", NEXT.isoformat(),
+            stdout=out)
+        self.assertEqual(
+            out.getvalue(), expected_text(self.salon, DAY, NEXT))
+
+    def test_start_date_end_date_select_same_range_as_date_from_to(self):
+        alias_out, canonical_out = io.StringIO(), io.StringIO()
+        call_command(
+            "export_appointments", "--salon-id", str(self.salon.pk),
+            "--start-date", DAY.isoformat(), "--end-date", DAY.isoformat(),
+            stdout=alias_out)
+        call_command(
+            "export_appointments", "--salon-id", str(self.salon.pk),
+            "--date-from", DAY.isoformat(), "--date-to", DAY.isoformat(),
+            stdout=canonical_out)
+        self.assertEqual(alias_out.getvalue(), canonical_out.getvalue())
+        self.assertEqual(
+            [row["id"] for row in json.loads(alias_out.getvalue())],
+            [self.booked.pk, self.cancelled.pk])
+
+    def test_start_date_only_alias_omitted_end_is_single_day(self):
+        out = io.StringIO()
+        call_command(
+            "export_appointments", "--salon-id", str(self.salon.pk),
+            "--start-date", DAY.isoformat(), stdout=out)
+        self.assertEqual(out.getvalue(), expected_text(self.salon, DAY, None))
+
     def test_output_file_matches_service_and_stdout_stays_empty(self):
         out = io.StringIO()
         with tempfile.TemporaryDirectory() as tmp:
