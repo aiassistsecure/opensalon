@@ -2,7 +2,15 @@
 
 Usage:
     python manage.py import_clients clients.json [--salon NAME]
+    python manage.py import_clients clients.json [--salon-id ID]
     python manage.py import_clients clients.json --dry-run
+
+``--salon-id`` selects the salon by primary key instead of by
+name: when it is given it takes precedence over ``--salon``, the
+salon must already exist (a missing id raises ``CommandError``
+before anything is written, and no salon is created), and when it
+is not given the ``--salon`` name behaviour is unchanged (the
+named salon is created if missing).
 
 With ``--dry-run`` the file is loaded exactly as for a real import
 but NOTHING is written (no salon, client or note rows): a JSON
@@ -430,7 +438,7 @@ def _preview_defaults(row):
     return external_id, defaults
 
 
-def _build_import_preview(data, salon_name):
+def _build_import_preview(data, salon_name, salon=None):
     """Read-only counting twin of the real import (the
     ``import_transactions_csv._count_transaction`` pattern).
 
@@ -441,8 +449,16 @@ def _build_import_preview(data, salon_name):
     client or note is created, updated or deleted here, on any
     backend. Refused rows are named by index with a reason that
     carries no client name or contact detail.
+
+    ``salon`` is an already-resolved salon (the ``--salon-id``
+    path); when it is given it is used directly and ``salon_name``
+    is ignored, otherwise the salon is looked up by name exactly
+    as before.
     """
-    salon = Salon.objects.filter(name=salon_name).first()
+    if salon is None:
+        salon = Salon.objects.filter(name=salon_name).first()
+    else:
+        salon_name = salon.name
     planned = {}
     planned_notes = {}
     if salon is not None:
@@ -541,6 +557,11 @@ class Command(BaseCommand):
         parser.add_argument("--salon", default="My Salon",
                             help="Salon name to import into (created if missing).")
         parser.add_argument(
+            "--salon-id", type=int, default=None,
+            help="ID of an existing salon to import into; takes "
+                 "precedence over --salon. A missing id is an "
+                 "error and nothing is written.")
+        parser.add_argument(
             "--dry-run", action="store_true",
             help="Print a JSON dry-run report (saloncore.dry_run) for "
                  "the source file plus a read-only import_preview "
@@ -554,6 +575,19 @@ class Command(BaseCommand):
             data = data.get("clients", [])
         if not isinstance(data, list):
             raise CommandError("Clients file must be a JSON list of clients.")
+
+        # --salon-id bridge: resolve by pk before any write (and
+        # before the dry-run report, which only reads). A missing
+        # id is fatal here, so a bad id can never fall through to
+        # the name path and create or fill the wrong salon.
+        salon_id = options.get("salon_id")
+        salon_by_id = None
+        if salon_id is not None:
+            try:
+                salon_by_id = Salon.objects.get(pk=salon_id)
+            except Salon.DoesNotExist:
+                raise CommandError(
+                    f"No salon with id {salon_id}.") from None
 
         if options["dry_run"]:
             # Zero writes: the shape report is kept verbatim and the
@@ -569,7 +603,7 @@ class Command(BaseCommand):
                     [row for row in data if isinstance(row, dict)],
                     _MAPPED_KEYS, source_name=options["path"])
             report["import_preview"] = _build_import_preview(
-                data, options["salon"])
+                data, options["salon"], salon=salon_by_id)
             self.stdout.write(json.dumps(report, indent=2, sort_keys=True))
             return
 
@@ -581,7 +615,11 @@ class Command(BaseCommand):
         total = len(data)
         seen = 0
         with transaction.atomic():
-            salon, _ = Salon.objects.get_or_create(name=options["salon"])
+            if salon_by_id is not None:
+                salon = salon_by_id
+            else:
+                salon, _ = Salon.objects.get_or_create(
+                    name=options["salon"])
             # Resumable re-runs: preload what the salon already has once,
             # so rows whose mapped fields already match are skipped at
             # memory speed instead of paying a select+update per row.
@@ -719,7 +757,7 @@ class Command(BaseCommand):
             "Imported clients for {salon}: {created} created, "
             "{updated} updated, {unchanged} unchanged, "
             "{skipped} skipped.".format(
-                salon=options["salon"], **stats))
+                salon=salon.name, **stats))
         # Machine-readable line for validation runs.
         self.stdout.write("IMPORT_SUMMARY " + json.dumps(
-            {"salon": options["salon"], **stats}, sort_keys=True))
+            {"salon": salon.name, **stats}, sort_keys=True))
