@@ -2,8 +2,15 @@
 
 Usage:
     python manage.py import_price_book services.json [--salon NAME]
-        [--staff staff.json] [--base-level NAME]
+        [--salon-id ID] [--staff staff.json] [--base-level NAME]
     python manage.py import_price_book price-book.csv [--salon NAME]
+        [--salon-id ID]
+
+``--salon-id`` selects the target salon by primary key instead of
+by name: when given it takes precedence over ``--salon``, the salon
+must already exist (a missing id raises ``CommandError`` and writes
+nothing), and no salon is created. Without it, ``--salon`` behaves
+exactly as before (named salon, created if missing).
 
 Two input shapes are accepted, detected by file extension and by
 content (a ``.csv`` path, or a file whose first line is the
@@ -715,6 +722,9 @@ class Command(BaseCommand):
         parser.add_argument("path", help="Path to the services JSON export, or an export_price_book CSV.")
         parser.add_argument("--salon", default="My Salon",
                             help="Salon name to import into (created if missing).")
+        parser.add_argument("--salon-id", type=int, default=None,
+                            help="Salon id to import into (must already "
+                                 "exist; takes precedence over --salon).")
         parser.add_argument("--staff", default=None,
                             help="Optional staff JSON export, used to resolve "
                                  "staff-category ids to level names.")
@@ -730,6 +740,19 @@ class Command(BaseCommand):
                                  "write nothing.")
 
     def handle(self, *args, **options):
+        # --salon-id bridge: resolve the target salon by pk before
+        # anything is read or written. A missing id raises
+        # CommandError and writes nothing; when given, the
+        # id-selected salon takes precedence over --salon.
+        salon_obj = None
+        salon_name = options["salon"]
+        if options.get("salon_id") is not None:
+            try:
+                salon_obj = Salon.objects.get(pk=options["salon_id"])
+            except Salon.DoesNotExist:
+                raise CommandError(
+                    f"No salon with id {options['salon_id']}.") from None
+            salon_name = salon_obj.name
         # Phase 1: validate + normalise the whole file, pre-resolving
         # the level plan. Nothing has been written yet; any failure
         # here raises CommandError and changes nothing on any backend.
@@ -742,7 +765,7 @@ class Command(BaseCommand):
                 reports = build_dry_run_reports(
                     {options["path"]: (csv_rows, CSV_MAPPED_KEYS)})
                 reports[options["path"]]["import_preview"] = (
-                    _preview_csv(csv_rows, options["salon"],
+                    _preview_csv(csv_rows, salon_name,
                                  options["base_level"]))
                 self.stdout.write(json.dumps(reports, sort_keys=True))
                 return
@@ -785,7 +808,7 @@ class Command(BaseCommand):
                             user_category[uid] = name
                 reports[options["path"]]["import_preview"] = (
                     _preview_json(data, category_names, user_category,
-                                  options["salon"],
+                                  salon_name,
                                   options["base_level"]))
                 self.stdout.write(json.dumps(reports, sort_keys=True))
                 return
@@ -821,7 +844,10 @@ class Command(BaseCommand):
         # Phase 2: write the pre-validated plans. atomic() is kept
         # only as defence-in-depth (see module docstring).
         with transaction.atomic():
-            salon, _ = Salon.objects.get_or_create(name=options["salon"])
+            if salon_obj is not None:
+                salon = salon_obj
+            else:
+                salon, _ = Salon.objects.get_or_create(name=salon_name)
             levels = {}
 
             def level_for(level_name):
@@ -928,7 +954,7 @@ class Command(BaseCommand):
             "{categories} categories, {levels} staff levels, {prices} prices "
             "created; {skipped_services} services skipped, "
             "{skipped_individual_prices} per-person prices skipped.".format(
-                salon=options["salon"], **stats))
+                salon=salon_name, **stats))
         # Machine-readable line for validation runs.
         self.stdout.write("IMPORT_SUMMARY " + json.dumps(
-            {"salon": options["salon"], **stats}, sort_keys=True))
+            {"salon": salon_name, **stats}, sort_keys=True))
