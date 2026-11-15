@@ -1603,3 +1603,12 @@ body.side-collapsed .account-card { display: none; }
   border-color: #2e7d46; border-left-color: #2e7d46;
   opacity: 1;
 }
+
+/* Demo mode banner (OPENSALON_DEMO=1): a slim amber strip above
+   the app shell, so sample data is never mistaken for a real
+   salon. Rendered by webui/base.html only when demo_mode is on. */
+.demo-banner {
+  padding: 8px 16px; text-align: center;
+  font: 600 13px var(--font-b); color: #0b1020;
+  background: linear-gradient(120deg, #fbbf24, #f59e0b);
+}

@@ -93,6 +93,31 @@ docker compose up
 Then open http://localhost:8000/health/ — a healthy install answers
 `{"status": "ok"}`.
 
+## Try the demo
+
+Want to click around before committing to an install? Demo mode
+seeds a fully populated **fictional** salon — invented staff,
+clients, price book, a busy day book and 30 days of sales — so
+every screen has something to show. It runs on a throwaway
+embedded NEDB store in a demo directory of your choosing:
+
+```bash
+export OPENSALON_NEDB_EMBEDDED=1
+export NEDB_DATA_DIR=./demo-data
+export OPENSALON_DEMO=1
+python manage.py migrate
+python manage.py demo
+waitress-serve --host 127.0.0.1 --port 8000 opensalon.wsgi:application
+```
+
+Then open http://127.0.0.1:8000/ — the day book opens on a busy
+day. A banner across the top marks it as demo mode: the data is
+sample data, invented in code, and nothing in it is real.
+`OPENSALON_DEMO=1` is also the guard: the `demo` command refuses
+to run without it, so demo data can never be seeded into a real
+store by accident. Re-running `python manage.py demo` rebuilds
+the demo salon cleanly; delete the demo directory to remove it.
+
 ## Production serving (without Docker)
 
 Django's `runserver` is a development tool. To serve a real install

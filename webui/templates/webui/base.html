@@ -11,6 +11,7 @@
   <script src="{% static 'webui/webui.js' %}?v={{ asset_v }}" defer></script>
 </head>
 <body class="{% block body_class %}{% endblock %}">
+{% if demo_mode %}<div class="demo-banner" role="note">Demo mode — sample salon with invented data. Nothing here is real.</div>{% endif %}
 <div class="app">
   <aside class="side" id="side">
     <div class="brand">
