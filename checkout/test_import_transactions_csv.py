@@ -109,6 +109,20 @@ class ImportTransactionsCsvTests(TestCase):
             if line.startswith(("IMPORT_SUMMARY", "IMPORT_SKIPPED"))
         ]
 
+    @staticmethod
+    def _summary(out):
+        lines = [ln for ln in out.splitlines()
+                 if ln.startswith("IMPORT_SUMMARY ")]
+        assert len(lines) == 1, lines
+        return json.loads(lines[0][len("IMPORT_SUMMARY "):])
+
+    @staticmethod
+    def _skipped(out):
+        lines = [ln for ln in out.splitlines()
+                 if ln.startswith("IMPORT_SKIPPED ")]
+        assert len(lines) == 1, lines
+        return json.loads(lines[0][len("IMPORT_SKIPPED "):])
+
     def test_progress_lines_name_each_file_and_heartbeat(self):
         # A long import must never be silent about where it is:
         # one READ line per source file as it is parsed, and an
@@ -139,7 +153,7 @@ class ImportTransactionsCsvTests(TestCase):
                 payment_type_amounts="90.00"),
         ])
         out = self._run()
-        self.assertIn("sales_created=1", out)
+        self.assertEqual(self._summary(out)["sales_created"], 1)
         sale = Sale.objects.get()
         self.assertEqual(sale.status, Sale.Status.COMPLETED)
         self.assertEqual(sale.client, self.client)
@@ -179,8 +193,8 @@ class ImportTransactionsCsvTests(TestCase):
         self._write([row()])
         self._run()
         out = self._run()
-        self.assertIn("sales_created=0", out)
-        self.assertIn("sales_existing=1", out)
+        self.assertEqual(self._summary(out)["sales_created"], 0)
+        self.assertEqual(self._summary(out)["sales_existing"], 1)
         self.assertEqual(Sale.objects.count(), 1)
         self.assertEqual(SaleItem.objects.count(), 1)
         self.assertEqual(Payment.objects.count(), 1)
@@ -195,8 +209,8 @@ class ImportTransactionsCsvTests(TestCase):
                 net_total_amount="40.00", payment_type_amounts="40.00"),
         ])
         out = self._run()
-        self.assertIn("void_transactions=1", out)
-        self.assertIn("void_rows=2", out)
+        self.assertEqual(self._skipped(out)["void_transactions"], 1)
+        self.assertEqual(self._skipped(out)["void_rows"], 2)
         sale = Sale.objects.get()
         self.assertEqual(sale.items.count(), 1)
         self.assertEqual(sale.total, Decimal("40.00"))
@@ -210,7 +224,7 @@ class ImportTransactionsCsvTests(TestCase):
                 purchased_date="2026-10-07"),
         ])
         out = self._run()
-        self.assertIn("refund_sales=1", out)
+        self.assertEqual(self._summary(out)["refund_sales"], 1)
         refund = Sale.objects.get(
             payments__provider_reference="txn-refund"
         )
@@ -246,7 +260,7 @@ class ImportTransactionsCsvTests(TestCase):
     def test_unknown_client_imports_without_client(self):
         self._write([row(client_id="client-not-in-book")])
         out = self._run()
-        self.assertIn("clients_unmatched=1", out)
+        self.assertEqual(self._summary(out)["clients_unmatched"], 1)
         sale = Sale.objects.get()
         self.assertIsNone(sale.client)
 
@@ -262,9 +276,9 @@ class ImportTransactionsCsvTests(TestCase):
                 payment_type_amounts="20.00"),
         ])
         out = self._run()
-        self.assertIn("sales_created=0", out)
-        self.assertIn("nonrevenue_transactions=2", out)
-        self.assertIn("excluded_amount=50.00", out)
+        self.assertEqual(self._summary(out)["sales_created"], 0)
+        self.assertEqual(self._skipped(out)["nonrevenue_transactions"], 2)
+        self.assertEqual(self._skipped(out)["excluded_amount"], "50.00")
         self.assertEqual(Sale.objects.count(), 0)
 
     def test_latin1_encoded_export_still_imports(self):
@@ -304,14 +318,18 @@ class ImportTransactionsCsvTests(TestCase):
         self.assertEqual(Payment.objects.count(), 0)
         self.assertEqual(Client.objects.count(), 1)
         self.assertIn("Dry run: no transactions were imported", dry_out)
-        self.assertIn("files=1 rows_read=6 transactions=5", dry_out)
-        self.assertIn("sales_created=3", dry_out)
-        self.assertIn("refund_sales=1", dry_out)
-        self.assertIn("items_created=4", dry_out)
-        self.assertIn("payments_created=3", dry_out)
-        self.assertIn("clients_unmatched=1", dry_out)
-        self.assertIn("void_transactions=1", dry_out)
-        self.assertIn("nonrevenue_transactions=1", dry_out)
+        summary = self._summary(dry_out)
+        self.assertEqual(summary["files"], 1)
+        self.assertEqual(summary["rows_read"], 6)
+        self.assertEqual(summary["transactions"], 5)
+        self.assertEqual(summary["sales_created"], 3)
+        self.assertEqual(summary["refund_sales"], 1)
+        self.assertEqual(summary["items_created"], 4)
+        self.assertEqual(summary["payments_created"], 3)
+        self.assertEqual(summary["clients_unmatched"], 1)
+        skipped = self._skipped(dry_out)
+        self.assertEqual(skipped["void_transactions"], 1)
+        self.assertEqual(skipped["nonrevenue_transactions"], 1)
         # The dry run's summary lines are exactly the real run's.
         real_out = self._run()
         self.assertEqual(
@@ -324,10 +342,11 @@ class ImportTransactionsCsvTests(TestCase):
         self._write([row()])
         self._run()
         dry_out = self._run_dry()
-        self.assertIn("sales_created=0", dry_out)
-        self.assertIn("sales_existing=1", dry_out)
-        self.assertIn("items_created=0", dry_out)
-        self.assertIn("payments_created=0", dry_out)
+        summary = self._summary(dry_out)
+        self.assertEqual(summary["sales_created"], 0)
+        self.assertEqual(summary["sales_existing"], 1)
+        self.assertEqual(summary["items_created"], 0)
+        self.assertEqual(summary["payments_created"], 0)
         self.assertEqual(Sale.objects.count(), 1)
         self.assertEqual(SaleItem.objects.count(), 1)
         self.assertEqual(Payment.objects.count(), 1)
@@ -360,7 +379,8 @@ class ImportTransactionsCsvTests(TestCase):
             "import_transactions_csv", self.dir.name,
             salon_id=self.salon.pk, stdout=out,
         )
-        self.assertIn("sales_created=1", out.getvalue())
+        self.assertEqual(
+            self._summary(out.getvalue())["sales_created"], 1)
         self.assertEqual(Sale.objects.get().salon, self.salon)
 
     def test_salon_id_nonexistent_raises_and_writes_nothing(self):
@@ -384,10 +404,38 @@ class ImportTransactionsCsvTests(TestCase):
             "import_transactions_csv", self.dir.name,
             salon=other.pk, salon_id=self.salon.pk, stdout=out,
         )
-        self.assertIn("sales_created=1", out.getvalue())
+        self.assertEqual(
+            self._summary(out.getvalue())["sales_created"], 1)
         sale = Sale.objects.get()
         self.assertEqual(sale.salon, self.salon)
         self.assertEqual(Sale.objects.filter(salon=other).count(), 0)
+
+    def test_summary_and_skipped_lines_parse_as_json(self):
+        self._write([
+            row(),
+            row(transaction_id="txn-void", void="1"),
+            row(transaction_id="txn-fee", item_type="CANCELLATION_FEE",
+                description="Late cancel", service_id="",
+                unit_price="20.00", net_total_amount="20.00",
+                payment_type_amounts="20.00"),
+        ])
+        out = self._run()
+        self.assertEqual(self._summary(out), {
+            "files": 1, "rows_read": 3, "transactions": 3,
+            "sales_created": 1, "sales_existing": 0, "refund_sales": 0,
+            "items_created": 1, "payments_created": 1,
+            "clients_unmatched": 0,
+        })
+        skipped = self._skipped(out)
+        self.assertEqual(skipped, {
+            "void_transactions": 1, "void_rows": 1,
+            "nonrevenue_transactions": 1, "excluded_lines": 1,
+            "excluded_amount": "20.00", "rows_without_id": 0,
+            "failed_transactions": 0,
+        })
+        # Decimal money serializes as its exact string form.
+        self.assertIsInstance(skipped["excluded_amount"], str)
+        self.assertIn(f"Imported transactions from {self.dir.name}", out)
 
     def test_cash_tender_maps_to_cash(self):
         self._write([
