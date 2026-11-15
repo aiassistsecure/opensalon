@@ -3,9 +3,13 @@
 Usage:
     python manage.py export_appointments --salon-id ID
         --date-from YYYY-MM-DD [--date-to YYYY-MM-DD]
+        [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD]
         [--no-include-cancelled] [--staff-member-id ID]
         [--client-id ID] [--service-id ID]
         [--format json|csv] [--output PATH]
+
+``--start-date`` / ``--end-date`` are accepted as aliases for
+``--date-from`` / ``--date-to`` (same dests).
 
 Thin wrapper around the existing
 :func:`bookings.export.export_appointments` service: the salon
@@ -166,14 +170,16 @@ class Command(BaseCommand):
             help="Id of the salon whose appointments to export.",
         )
         parser.add_argument(
-            "--date-from", dest="date_from", type=_parse_date,
-            required=True,
-            help="First day of the range, YYYY-MM-DD (inclusive).",
+            "--date-from", "--start-date", dest="date_from",
+            type=_parse_date, required=True,
+            help="First day of the range, YYYY-MM-DD (inclusive; "
+                 "alias: --start-date).",
         )
         parser.add_argument(
-            "--date-to", dest="date_to", type=_parse_date, default=None,
+            "--date-to", "--end-date", dest="date_to",
+            type=_parse_date, default=None,
             help="Last day of the range, YYYY-MM-DD (inclusive; "
-                 "default: the --date-from day).",
+                 "default: the --date-from day; alias: --end-date).",
         )
         parser.add_argument(
             "--include-cancelled", dest="include_cancelled",
