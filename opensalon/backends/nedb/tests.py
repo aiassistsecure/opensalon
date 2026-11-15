@@ -305,7 +305,15 @@ class ResetLockSafetyTests(SimpleTestCase):
         self.assertEqual(attempts["posts"], 3)
         self.assertIn("test_opensalon", names)
 
-    def test_reset_reuses_database_already_open_after_locked_create(self):
+    def test_reset_refuses_database_already_open_after_locked_create(self):
+        # Cycle 634: this scenario pinned the leak -- DELETE is a
+        # no-op because the serving engine still has the database
+        # (and its rows) open, and the old reset treated the locked
+        # create's "already open" outcome as reuse-success, so the
+        # next test inherited the previous test's rows. A reset must
+        # refuse a database it could not drop, never reuse it.
+        from opensalon.backends.nedb.creation import NedbHttpError
+
         creation = self._creation()
         calls = []
         names = {"test_opensalon"}  # serving engine never lets go
@@ -323,12 +331,11 @@ class ResetLockSafetyTests(SimpleTestCase):
             raise AssertionError("unexpected HTTP call %s %s" % (method, path))
 
         with mock.patch.object(creation, "_http_request", fake):
-            self.assertEqual(
-                creation.reset_database("test_opensalon"), "test_opensalon"
-            )
+            with self.assertRaises(NedbHttpError):
+                creation.reset_database("test_opensalon")
         creates = [c for c in calls if c == ("POST", "/v1/databases")]
-        self.assertEqual(len(creates), 1)  # reuse, not a retry storm
-        self.assertEqual(calls[-1][1], "/v1/databases/test_opensalon/batch")
+        self.assertEqual(creates, [])  # no create over a live database
+        self.assertFalse(any(c[1].endswith("/batch") for c in calls))
 
     def test_failed_create_recovers_by_recreate_before_raising(self):
         from opensalon.backends.nedb.creation import NedbHttpError
@@ -396,6 +403,155 @@ class ResetLockSafetyTests(SimpleTestCase):
             attempts["posts"], creation.RESET_CREATE_ATTEMPTS + 1
         )
         self.assertIn("test_opensalon", names)
+
+
+def _stateful_http():
+    """Stateful fake nedbd: names, rows and collections per database.
+
+    ``drop_failures`` simulates a stale open connection holding the
+    database: that many DELETEs report success but drop nothing (the
+    name keeps listing, rows intact) -- the cycle 633 leak shape.
+    Create on an existing name is a 409, like the HTTP surface.
+    """
+    from opensalon.backends.nedb.creation import NedbHttpError
+
+    state = {"rows": {}, "collections": {}, "drop_failures": 0, "calls": []}
+
+    def entry(name):
+        return {
+            "name": name,
+            "collections": sorted(state["collections"].get(name, ())),
+        }
+
+    def fake(method, path, payload=None):
+        state["calls"].append((method, path))
+        if method == "GET" and path == "/v1/databases":
+            return {"databases": [entry(n) for n in sorted(state["rows"])]}
+        if method == "POST" and path == "/v1/databases":
+            name = payload["name"]
+            if name in state["rows"]:
+                raise NedbHttpError("exists", status=409)
+            state["rows"][name] = set()
+            state["collections"][name] = set()
+            return {"database": {"name": name}}
+        if method == "DELETE" and path.startswith("/v1/databases/"):
+            name = path.rsplit("/", 1)[1]
+            if state["drop_failures"]:
+                state["drop_failures"] -= 1
+                return {}  # stale open connection: nothing dropped
+            state["rows"].pop(name, None)
+            state["collections"].pop(name, None)
+            return {}
+        if method == "POST" and path.endswith("/batch"):
+            name = path.split("/")[3]
+            for op in payload["ops"]:
+                state["collections"].setdefault(name, set()).add(op["coll"])
+            return {"results": [], "count": len(payload["ops"])}
+        raise AssertionError("unexpected HTTP call %s %s" % (method, path))
+
+    return fake, state
+
+
+class ResetFreshnessTests(SimpleTestCase):
+    """Cycle 634: a reset must return a genuinely fresh empty DB.
+
+    PR #902 (cycle 633) documented the leak: drop+recreate could
+    reuse the previous test's still-open database, leaking its rows
+    into the next test's setUp (uniq_service_external_id / duplicate
+    Salon, victim varies by ordering). DYOR 9.4/9.5: flush is drop +
+    recreate over HTTP -- a database that survived the drop is not
+    a flush, and must never be reused as one.
+    """
+
+    def _creation(self):
+        creation = _wrapper().creation
+        creation.RESET_RELEASE_TIMEOUT_SECONDS = 0.3
+        creation.RESET_RELEASE_POLL_SECONDS = 0.01
+        creation.RESET_CREATE_BACKOFF_SECONDS = 0.01
+        return creation
+
+    def test_second_reset_starts_empty_despite_stale_open_database(self):
+        creation = self._creation()
+        fake, state = _stateful_http()
+        with mock.patch.object(creation, "_http_request", fake):
+            creation.reset_database("test_opensalon")
+            # Test 1 writes a row into its fresh database.
+            state["rows"]["test_opensalon"].add("salon-1")
+            state["collections"]["test_opensalon"].add("saloncore_salon")
+            # Test 2's reset: the first DELETE meets the still-open
+            # previous database and drops nothing.
+            state["drop_failures"] = 1
+            creation.reset_database("test_opensalon")
+        self.assertEqual(state["rows"]["test_opensalon"], set())
+
+    def test_reset_raises_instead_of_reusing_a_database_it_cannot_drop(self):
+        from opensalon.backends.nedb.creation import NedbHttpError
+
+        creation = self._creation()
+        fake, state = _stateful_http()
+        with mock.patch.object(creation, "_http_request", fake):
+            creation.reset_database("test_opensalon")
+            state["rows"]["test_opensalon"].add("salon-1")
+            state["drop_failures"] = 99  # the drop never lands
+            with self.assertRaises(NedbHttpError):
+                creation.reset_database("test_opensalon")
+        # The stale rows were never materialized over or passed on.
+        self.assertEqual(state["rows"]["test_opensalon"], {"salon-1"})
+        batches = [c for c in state["calls"] if c[1].endswith("/batch")]
+        self.assertEqual(len(batches), 1)  # only the first reset's
+
+    def test_reset_accepts_fresh_database_landed_despite_lock_error(self):
+        # Absence was verified, then the create landed server-side
+        # (empty, no collections) but its response was the lock
+        # refusal: that reuse is demonstrably fresh, so it stands.
+        creation = self._creation()
+        fake, state = _stateful_http()
+        real_fake = fake
+
+        def landing(method, path, payload=None):
+            if method == "POST" and path == "/v1/databases":
+                real_fake(method, path, payload)  # creates it, empty
+                raise _lock_error()
+            return real_fake(method, path, payload)
+
+        with mock.patch.object(creation, "_http_request", landing):
+            self.assertEqual(
+                creation.reset_database("test_opensalon"), "test_opensalon"
+            )
+        self.assertEqual(state["rows"]["test_opensalon"], set())
+
+
+@unittest.skipUnless(
+    os.environ.get("OPENSALON_NEDB_LIVE_TEST") == "1",
+    "live nedbd reset-freshness test: set OPENSALON_NEDB_LIVE_TEST=1 "
+    "with NEDBD_URL pointing at the live daemon (v12.15.16)",
+)
+class NedbResetFreshnessLiveTests(SimpleTestCase):
+    """Cycle 634 acceptance against a real nedbd (guarded)."""
+
+    def test_reset_returns_empty_database_after_rows_written(self):
+        creation = _wrapper().creation
+        name = "c634reset_freshness"
+        try:
+            creation.reset_database(name)
+            creation._http_request(
+                "POST",
+                "/v1/databases/%s/batch" % name,
+                {"ops": [{
+                    "op": "put", "coll": "c634_probe",
+                    "id": "r1", "doc": {"id": 1},
+                }]},
+            )
+            creation.reset_database(name)
+            payload = creation._http_request(
+                "POST", "/v1/databases/%s/query" % name,
+                {"nql": "FROM c634_probe"},
+            )
+            self.assertEqual(payload.get("rows"), [])
+            self.assertTrue(creation.database_exists(name))
+        finally:
+            creation.drop_database(name)
+        self.assertFalse(creation.database_exists(name))
 
 
 class FlushNeverTruncateTests(SimpleTestCase):
