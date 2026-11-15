@@ -317,3 +317,61 @@ class ImportStaffPreviewTests(TestCase):
         # the lookup must not create the salon it looked for
         self.assertFalse(Salon.objects.filter(
             name="Ghost Salon").exists())
+
+
+class ImportStaffSalonIdTests(TestCase):
+    """--salon-id bridge: id selects the salon, beats --salon,
+    and a nonexistent id raises CommandError with no writes."""
+
+    def run_import(self, payload=FIXTURE, **kwargs):
+        out = io.StringIO()
+        call_command("import_staff", _write(payload), stdout=out, **kwargs)
+        return out.getvalue()
+
+    def test_salon_id_selects_existing_salon(self):
+        salon = Salon.objects.create(name="Id Salon")
+        out = io.StringIO()
+        # CLI form proves the --salon-id argument is wired.
+        call_command("import_staff", _write(FIXTURE),
+                     "--salon-id", str(salon.pk), stdout=out)
+        self.assertIn('"created": 3', out.getvalue())
+        self.assertIn('"salon": "Id Salon"', out.getvalue())
+        self.assertEqual(
+            StaffMember.objects.filter(salon=salon).count(), 3)
+        self.assertEqual(
+            StaffMember.objects.get(external_id="stf-1").salon, salon)
+        self.assertFalse(Salon.objects.filter(name="My Salon").exists())
+
+    def test_salon_id_nonexistent_raises_and_writes_nothing(self):
+        with self.assertRaises(CommandError):
+            self.run_import(salon_id=999999)
+        self.assertEqual(StaffMember.objects.count(), 0)
+        self.assertEqual(StaffLevel.objects.count(), 0)
+        self.assertEqual(Salon.objects.count(), 0)
+
+    def test_salon_id_takes_precedence_over_salon_name(self):
+        salon = Salon.objects.create(name="Real Salon")
+        out = self.run_import(salon_id=salon.pk, salon="Other Name")
+        self.assertIn('"salon": "Real Salon"', out)
+        self.assertEqual(
+            StaffMember.objects.filter(salon=salon).count(), 3)
+        self.assertFalse(Salon.objects.filter(name="Other Name").exists())
+
+    def test_salon_id_dry_run_previews_that_salon_and_writes_nothing(self):
+        salon = Salon.objects.create(name="Id Salon")
+        StaffMember.objects.create(
+            salon=salon, external_id="stf-1", display_name="Stored")
+        payload = [
+            {"staffId": "stf-1", "firstName": "Stored"},
+            {"staffId": "stf-new", "firstName": "Fresh"},
+        ]
+        out = io.StringIO()
+        call_command("import_staff", _write(payload), dry_run=True,
+                     salon_id=salon.pk, salon="Other Name", stdout=out)
+        preview = json.loads(out.getvalue())["import_preview"]
+        self.assertTrue(preview["salon_exists"])
+        self.assertEqual(preview["salon"], "Id Salon")
+        self.assertEqual(preview["would_update"], 1)
+        self.assertEqual(preview["would_create"], 1)
+        self.assertEqual(StaffMember.objects.count(), 1)
+        self.assertFalse(Salon.objects.filter(name="Other Name").exists())
