@@ -343,27 +343,28 @@ class Command(BaseCommand):
                 continue
             known_refs.add(txn_id)
 
-        self.stdout.write(
-            "IMPORT_SUMMARY "
-            f"files={stats['files']} rows_read={stats['rows_read']} "
-            f"transactions={stats['transactions']} "
-            f"sales_created={stats['sales_created']} "
-            f"sales_existing={stats['sales_existing']} "
-            f"refund_sales={stats['refund_sales']} "
-            f"items_created={stats['items_created']} "
-            f"payments_created={stats['payments_created']} "
-            f"clients_unmatched={stats['clients_unmatched']}"
-        )
-        self.stdout.write(
-            "IMPORT_SKIPPED "
-            f"void_transactions={stats['skipped_void']} "
-            f"void_rows={stats['void_rows']} "
-            f"nonrevenue_transactions={stats['skipped_nonrevenue']} "
-            f"excluded_lines={stats['excluded_lines']} "
-            f"excluded_amount={stats['excluded_amount']} "
-            f"rows_without_id={stats['rows_without_id']} "
-            f"failed_transactions={stats['failed']}"
-        )
+        self.stdout.write("IMPORT_SUMMARY " + json.dumps(
+            {
+                "files": stats["files"],
+                "rows_read": stats["rows_read"],
+                "transactions": stats["transactions"],
+                "sales_created": stats["sales_created"],
+                "sales_existing": stats["sales_existing"],
+                "refund_sales": stats["refund_sales"],
+                "items_created": stats["items_created"],
+                "payments_created": stats["payments_created"],
+                "clients_unmatched": stats["clients_unmatched"],
+            }, sort_keys=True))
+        self.stdout.write("IMPORT_SKIPPED " + json.dumps(
+            {
+                "void_transactions": stats["skipped_void"],
+                "void_rows": stats["void_rows"],
+                "nonrevenue_transactions": stats["skipped_nonrevenue"],
+                "excluded_lines": stats["excluded_lines"],
+                "excluded_amount": str(stats["excluded_amount"]),
+                "rows_without_id": stats["rows_without_id"],
+                "failed_transactions": stats["failed"],
+            }, sort_keys=True))
         if options["dry_run"]:
             self.stdout.write(
                 f"Dry run: no transactions were imported from {path}"
