@@ -2,7 +2,13 @@
 
 Usage:
     python manage.py seed_staff_services [--salon NAME]
-        [--dry-run] [--format text|json]
+        [--salon-id ID] [--dry-run] [--format text|json]
+
+With ``--salon-id`` the salon is selected by primary key instead
+of by name: the id-selected salon takes precedence over
+``--salon``, and a nonexistent id raises ``CommandError`` before
+anything is written. Without ``--salon-id`` the salon is selected
+by ``--salon`` name exactly as before (default: every salon).
 
 With ``--format json`` the command prints exactly one JSON
 object to stdout carrying the same facts as the text output
@@ -43,6 +49,10 @@ class Command(BaseCommand):
             help="Only this salon (exact name). Default: every salon.",
         )
         parser.add_argument(
+            "--salon-id", type=int, default=None,
+            help="Only this salon, by id (must already exist; "
+                 "takes precedence over --salon).")
+        parser.add_argument(
             "--dry-run", action="store_true",
             help="Preview StaffService rows the seed would create, "
                  "counted by staff member, and create none.")
@@ -58,7 +68,15 @@ class Command(BaseCommand):
                 f"Invalid format {fmt!r}; expected 'text' or 'json'.")
         dry_run = bool(options.get("dry_run"))
         salons = Salon.objects.order_by("id")
-        if options["salon"]:
+        if options.get("salon_id") is not None:
+            try:
+                salon_by_id = Salon.objects.get(pk=options["salon_id"])
+            except Salon.DoesNotExist:
+                raise CommandError(
+                    f"Salon with id {options['salon_id']} does not exist."
+                ) from None
+            salons = salons.filter(pk=salon_by_id.pk)
+        elif options["salon"]:
             salons = salons.filter(name=options["salon"])
         results = []
         for salon in salons:
