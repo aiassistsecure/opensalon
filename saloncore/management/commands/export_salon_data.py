@@ -2,7 +2,13 @@
 
 Usage:
     python manage.py export_salon_data OUTPUT [--salon NAME]
-        [--format json|csv]
+        [--salon-id ID] [--format json|csv]
+
+``--salon-id`` selects the salon by primary key instead of by
+name: when given it takes precedence over ``--salon``, the salon
+must already exist (a missing id raises ``CommandError`` and
+writes nothing), and no salon is created. Without it, ``--salon``
+behaves exactly as before.
 
 ``--format json`` (the default) writes the bundle exactly as
 before, byte-identical. ``--format csv`` renders the SAME
@@ -239,6 +245,11 @@ class Command(BaseCommand):
             help="Only export the salon with this exact name.",
         )
         parser.add_argument(
+            "--salon-id", type=int, default=None,
+            help="Only export the salon with this id (must already "
+                 "exist; takes precedence over --salon).",
+        )
+        parser.add_argument(
             "--format", dest="format", default="json", choices=_FORMATS,
             help="Export format: json (default) or csv.",
         )
@@ -249,7 +260,12 @@ class Command(BaseCommand):
             raise CommandError(
                 f"Invalid format {fmt!r}; expected 'json' or 'csv'.")
         salons = Salon.objects.all()
-        if options["salon"]:
+        if options.get("salon_id") is not None:
+            salons = salons.filter(pk=options["salon_id"])
+            if not salons.exists():
+                raise CommandError(
+                    f"No salon with id {options['salon_id']}.")
+        elif options["salon"]:
             salons = salons.filter(name=options["salon"])
             if not salons.exists():
                 raise CommandError(f"No salon named {options['salon']!r}.")
