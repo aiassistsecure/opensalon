@@ -193,6 +193,13 @@ class Command(BaseCommand):
             help="Salon id to import into (default: the only salon).",
         )
         parser.add_argument(
+            "--salon-id",
+            type=int,
+            default=None,
+            help="Salon id to import into; takes precedence over "
+                 "--salon when both are given.",
+        )
+        parser.add_argument(
             "--dry-run", action="store_true",
             help="Print a JSON dry-run report (saloncore.dry_run) "
                  "for the source files plus the IMPORT_SUMMARY / "
@@ -216,7 +223,10 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        salon = self._resolve_salon(options["salon"])
+        salon_id = options.get("salon_id")
+        if salon_id is None:
+            salon_id = options["salon"]
+        salon = self._resolve_salon(salon_id)
         directory = Path(options["directory"])
         files = sorted(directory.glob("transactions-*.csv"))
         if not files:

@@ -14,6 +14,7 @@ from io import StringIO
 from pathlib import Path
 
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import TestCase
 
 from catalog.models import Product
@@ -351,6 +352,42 @@ class ImportTransactionsCsvTests(TestCase):
         self.assertIn("transaction_id", file_report["mapped_keys"])
         self.assertEqual(Sale.objects.count(), 0)
         self.assertEqual(Payment.objects.count(), 0)
+
+    def test_salon_id_selects_existing_salon(self):
+        self._write([row()])
+        out = StringIO()
+        call_command(
+            "import_transactions_csv", self.dir.name,
+            salon_id=self.salon.pk, stdout=out,
+        )
+        self.assertIn("sales_created=1", out.getvalue())
+        self.assertEqual(Sale.objects.get().salon, self.salon)
+
+    def test_salon_id_nonexistent_raises_and_writes_nothing(self):
+        self._write([row()])
+        with self.assertRaises(CommandError):
+            call_command(
+                "import_transactions_csv", self.dir.name,
+                salon_id=999999, stdout=StringIO(),
+            )
+        self.assertEqual(Sale.objects.count(), 0)
+        self.assertEqual(SaleItem.objects.count(), 0)
+        self.assertEqual(Payment.objects.count(), 0)
+
+    def test_salon_id_takes_precedence_over_salon(self):
+        other = Salon.objects.create(
+            name="Other Salon", timezone="America/New_York"
+        )
+        self._write([row()])
+        out = StringIO()
+        call_command(
+            "import_transactions_csv", self.dir.name,
+            salon=other.pk, salon_id=self.salon.pk, stdout=out,
+        )
+        self.assertIn("sales_created=1", out.getvalue())
+        sale = Sale.objects.get()
+        self.assertEqual(sale.salon, self.salon)
+        self.assertEqual(Sale.objects.filter(salon=other).count(), 0)
 
     def test_cash_tender_maps_to_cash(self):
         self._write([
