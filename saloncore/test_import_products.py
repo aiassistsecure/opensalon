@@ -513,3 +513,56 @@ class ImportProductsSalonIdTests(TestCase):
         self.assertEqual(preview["would_update"], 1)
         self.assertEqual(Product.objects.count(), 1)
         self.assertFalse(Salon.objects.filter(name="Other Name").exists())
+class ImportProductsImportSummaryTests(TestCase):
+    """IMPORT_SUMMARY line: additive JSON summary, legacy line kept."""
+
+    def _run(self, records=RECORDS):
+        fh = tempfile.NamedTemporaryFile(
+            "w", suffix=".json", delete=False)
+        json.dump(records, fh)
+        fh.close()
+        out = StringIO()
+        call_command("import_products", fh.name,
+                     "--salon", "Test Salon", stdout=out)
+        return out.getvalue()
+
+    @staticmethod
+    def _summary(out):
+        lines = [ln for ln in out.splitlines()
+                 if ln.startswith("IMPORT_SUMMARY ")]
+        assert len(lines) == 1, lines
+        return json.loads(lines[0][len("IMPORT_SUMMARY "):])
+
+    def test_import_summary_parses_with_correct_counts(self):
+        out = self._run()
+        self.assertEqual(self._summary(out), {
+            "created": 2, "updated": 0, "unchanged": 0, "skipped": 1,
+            "skipped_missing_price": 0, "skipped_id_too_long": 0,
+            "opening_stock_movements": 1, "total": 3,
+        })
+        # Legacy line kept byte-identical alongside the new line.
+        self.assertIn(
+            "products: {'created': 2, 'updated': 0, 'unchanged': 0, "
+            "'skipped': 1, 'skipped_missing_price': 0, "
+            "'skipped_id_too_long': 0, 'opening_stock_movements': 1, "
+            "'total': 3}", out.splitlines())
+
+    def test_import_summary_rerun_counts_unchanged(self):
+        self._run()
+        summary = self._summary(self._run())
+        self.assertEqual(summary["created"], 0)
+        self.assertEqual(summary["unchanged"], 2)
+        self.assertEqual(summary["opening_stock_movements"], 0)
+        self.assertEqual(summary["total"], 3)
+
+    def test_import_summary_counts_skip_reasons(self):
+        out = self._run([
+            {"productId": "p-np", "name": "No Price"},
+            {"productId": "x" * 65, "name": "Too Long", "price": 1.0},
+            {"productId": "p-ok", "name": "Priced", "price": 5.0},
+        ])
+        self.assertEqual(self._summary(out), {
+            "created": 1, "updated": 0, "unchanged": 0, "skipped": 2,
+            "skipped_missing_price": 1, "skipped_id_too_long": 1,
+            "opening_stock_movements": 0, "total": 3,
+        })
