@@ -34,6 +34,12 @@ Type-faithful mapping (the importer's fidelity rules):
 
 Resumable like the other importers: a product whose mapped fields
 already match is counted ``unchanged`` and left alone.
+
+``--salon-id`` selects the target salon by primary key instead of
+by name: when given it takes precedence over ``--salon``, the salon
+must already exist (a missing id raises ``CommandError`` and writes
+nothing), and no salon is created. Without it, ``--salon`` behaves
+exactly as before (named salon, created if missing).
 """
 import json
 from decimal import Decimal, InvalidOperation
@@ -223,7 +229,7 @@ def _stored_fields(product):
     }
 
 
-def _preview_import(records, salon_name):
+def _preview_import(records, salon_name, salon=None):
     """Read-only preview twin of the import below (the
     ``import_transactions_csv._count_transaction`` pattern).
 
@@ -243,7 +249,8 @@ def _preview_import(records, salon_name):
     Reads only: no salon is created, the writer is never entered,
     and nothing is written on any backend.
     """
-    salon = Salon.objects.filter(name=salon_name).first()
+    if salon is None:
+        salon = Salon.objects.filter(name=salon_name).first()
     preview = {
         "salon": salon_name,
         "salon_found": salon is not None,
@@ -344,6 +351,9 @@ class Command(BaseCommand):
         parser.add_argument("path", help="Path to the products JSON export.")
         parser.add_argument("--salon", default="My Salon",
                             help="Salon name to import into.")
+        parser.add_argument("--salon-id", type=int, default=None,
+                            help="Salon id to import into (must already "
+                                 "exist; takes precedence over --salon).")
         parser.add_argument(
             "--dry-run", dest="dry_run", action="store_true",
             default=False,
@@ -355,6 +365,17 @@ class Command(BaseCommand):
                  "nothing to the database.")
 
     def handle(self, *args, **options):
+        # --salon-id bridge: resolve the target salon by pk before
+        # anything is read or written. A missing id raises
+        # CommandError and writes nothing; when given, the
+        # id-selected salon takes precedence over --salon.
+        salon_obj = None
+        if options.get("salon_id") is not None:
+            try:
+                salon_obj = Salon.objects.get(pk=options["salon_id"])
+            except Salon.DoesNotExist:
+                raise CommandError(
+                    f"No salon with id {options['salon_id']}.") from None
         try:
             with open(options["path"], encoding="utf-8") as fh:
                 records = json.load(fh)
@@ -367,11 +388,17 @@ class Command(BaseCommand):
             report = build_dry_run_report(
                 records, MAPPED_KEYS, source_name=options["path"])
             report["import_preview"] = _preview_import(
-                records, options["salon"])
+                records,
+                salon_obj.name if salon_obj is not None
+                else options["salon"],
+                salon=salon_obj)
             self.stdout.write(json.dumps(report, indent=2, sort_keys=True))
             return
 
-        salon, _ = Salon.objects.get_or_create(name=options["salon"])
+        if salon_obj is not None:
+            salon = salon_obj
+        else:
+            salon, _ = Salon.objects.get_or_create(name=options["salon"])
         created = updated = unchanged = skipped = stocked = 0
         missing_price = 0
         id_too_long = 0

@@ -5,7 +5,7 @@ import tempfile
 from decimal import Decimal
 from io import StringIO
 
-from django.core.management import call_command
+from django.core.management import CommandError, call_command
 from django.test import TestCase
 
 from catalog.models import Product, StockMovement
@@ -447,3 +447,69 @@ class ImportProductsDryRunTests(TestCase):
         product = Product.objects.get(external_id="p-dry-1")
         self.assertEqual(product.price, Decimal("38.00"))
         self.assertEqual(product.current_stock, 6)
+
+
+class ImportProductsSalonIdTests(TestCase):
+    """--salon-id bridge: id selects the salon, beats --salon,
+    and a nonexistent id raises CommandError with no writes."""
+
+    FIXTURE = [{
+        "productId": "p-id-1", "name": "Id Shampoo", "code": "11511",
+        "barcode": "018084000001", "price": 38.0, "reorderCost": 19.5,
+        "brandName": "Aveda", "categoryName": "Hair Care",
+        "type": "RETAIL", "archived": False, "quantityInStock": 6,
+    }]
+
+    def _write(self, records):
+        fh = tempfile.NamedTemporaryFile(
+            "w", suffix=".json", delete=False)
+        json.dump(records, fh)
+        fh.close()
+        return fh.name
+
+    def test_salon_id_selects_existing_salon(self):
+        salon = Salon.objects.create(name="Id Salon")
+        out = StringIO()
+        # CLI form proves the --salon-id argument is wired.
+        call_command("import_products", self._write(self.FIXTURE),
+                     "--salon-id", str(salon.pk), stdout=out)
+        self.assertIn("'created': 1", out.getvalue())
+        self.assertEqual(Product.objects.get().salon, salon)
+        self.assertEqual(StockMovement.objects.count(), 1)
+        self.assertEqual(Salon.objects.count(), 1)
+        self.assertFalse(Salon.objects.filter(name="My Salon").exists())
+
+    def test_salon_id_nonexistent_raises_and_writes_nothing(self):
+        out = StringIO()
+        with self.assertRaises(CommandError):
+            call_command("import_products", self._write(self.FIXTURE),
+                         salon_id=999999, stdout=out)
+        self.assertEqual(Product.objects.count(), 0)
+        self.assertEqual(StockMovement.objects.count(), 0)
+        self.assertEqual(Salon.objects.count(), 0)
+
+    def test_salon_id_takes_precedence_over_salon_name(self):
+        salon = Salon.objects.create(name="Real Salon")
+        out = StringIO()
+        call_command("import_products", self._write(self.FIXTURE),
+                     "--salon", "Other Name", salon_id=salon.pk,
+                     stdout=out)
+        self.assertIn("'created': 1", out.getvalue())
+        self.assertEqual(Product.objects.get().salon, salon)
+        self.assertFalse(Salon.objects.filter(name="Other Name").exists())
+
+    def test_salon_id_dry_run_previews_that_salon_and_writes_nothing(self):
+        salon = Salon.objects.create(name="Id Salon")
+        Product.objects.create(
+            salon=salon, external_id="p-id-1", name="Stored",
+            price=Decimal("1.00"))
+        out = StringIO()
+        call_command("import_products", self._write(self.FIXTURE),
+                     "--salon", "Other Name", salon_id=salon.pk,
+                     dry_run=True, stdout=out)
+        preview = json.loads(out.getvalue())["import_preview"]
+        self.assertTrue(preview["salon_found"])
+        self.assertEqual(preview["salon"], "Id Salon")
+        self.assertEqual(preview["would_update"], 1)
+        self.assertEqual(Product.objects.count(), 1)
+        self.assertFalse(Salon.objects.filter(name="Other Name").exists())
