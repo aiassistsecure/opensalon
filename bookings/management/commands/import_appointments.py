@@ -2,7 +2,14 @@
 
 Usage:
     python manage.py import_appointments PATH [--salon NAME]
-        [--timezone IANA_NAME] [--dry-run]
+        [--salon-id ID] [--timezone IANA_NAME] [--dry-run]
+
+``--salon-id`` selects the salon by primary key instead of by
+name: the salon must already exist (a missing id raises
+``CommandError`` and nothing is written), and when it is given it
+takes precedence over ``--salon``. Without it, the salon is
+resolved by ``--salon`` name exactly as before (created if
+missing).
 
 With ``--dry-run`` the source is loaded exactly as below, then a
 JSON dry-run report (see ``saloncore.dry_run``) is printed to
@@ -416,6 +423,10 @@ class Command(BaseCommand):
         parser.add_argument("--salon", default="My Salon",
                             help="Salon name to import into "
                                  "(created if missing).")
+        parser.add_argument("--salon-id", type=int, default=None,
+                            help="Salon id to import into (must "
+                                 "already exist; takes precedence "
+                                 "over --salon).")
         parser.add_argument("--timezone", default=None,
                             help="IANA timezone (e.g. America/New_York) "
                                  "to set on the salon before importing; "
@@ -441,6 +452,13 @@ class Command(BaseCommand):
             except Exception as exc:
                 raise CommandError(
                     f"Unknown timezone {tz_name!r}: {exc}") from exc
+        salon_by_id = None
+        if options.get("salon_id") is not None:
+            try:
+                salon_by_id = Salon.objects.get(pk=options["salon_id"])
+            except Salon.DoesNotExist as exc:
+                raise CommandError(
+                    f"No salon with id {options['salon_id']}.") from exc
         records = _load_records(options["path"])
         if options.get("dry_run"):
             # Zero writes: the shape report is built exactly as
@@ -450,8 +468,9 @@ class Command(BaseCommand):
             # entered, on any backend.
             report = build_dry_run_report(
                 records, MAPPED_KEYS, source_name=options["path"])
-            salon = Salon.objects.filter(
-                name=options["salon"]).order_by("pk").first()
+            salon = salon_by_id if salon_by_id is not None else (
+                Salon.objects.filter(
+                    name=options["salon"]).order_by("pk").first())
             if tz_override is not None:
                 preview_tz = tz_override
             elif salon is None:
@@ -496,9 +515,12 @@ class Command(BaseCommand):
              "imported_with_service_snapshot"], 0)
         dates = []
         with transaction.atomic():
-            defaults = {"timezone": tz_name} if tz_name else {}
-            salon, _ = Salon.objects.get_or_create(
-                name=options["salon"], defaults=defaults)
+            if salon_by_id is not None:
+                salon = salon_by_id
+            else:
+                defaults = {"timezone": tz_name} if tz_name else {}
+                salon, _ = Salon.objects.get_or_create(
+                    name=options["salon"], defaults=defaults)
             if tz_name and salon.timezone != tz_name:
                 salon.timezone = tz_name
                 salon.save(update_fields=["timezone", "updated_at"])
@@ -684,7 +706,7 @@ class Command(BaseCommand):
             "{unresolved_service} unresolved service "
             "({imported_with_service_snapshot} of those imported with "
             "a service-name snapshot).".format(
-                salon=options["salon"], **stats))
+                salon=salon.name, **stats))
         # Machine-readable line for validation runs (counts only).
         self.stdout.write("IMPORT_SUMMARY " + json.dumps(
-            {"salon": options["salon"], **stats}, sort_keys=True))
+            {"salon": salon.name, **stats}, sort_keys=True))
