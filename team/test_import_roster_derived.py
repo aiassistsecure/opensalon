@@ -1,8 +1,10 @@
 """Tests for import_roster_derived: bands from the real book."""
 
 import datetime
+import io
 
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import TestCase
 from django.utils import timezone
 
@@ -68,3 +70,67 @@ class ImportRosterDerivedTests(TestCase):
             self._book(datetime.date(2026, 9, 8) + datetime.timedelta(weeks=i), 13, 17)
         call_command("import_roster_derived")
         self.assertEqual(RosterPattern.objects.count(), 0)
+
+
+class ImportRosterDerivedSalonIdTests(TestCase):
+    """--salon-id bridge: id selects the salon, beats --salon,
+    and a nonexistent id raises CommandError with no writes."""
+
+    def setUp(self):
+        self.salon = Salon.objects.create(
+            name="Target Salon", timezone="America/New_York")
+        self.other = Salon.objects.create(
+            name="Other Salon", timezone="America/New_York")
+        category = ServiceCategory.objects.create(name="Hair", salon=self.salon)
+        self.service = Service.objects.create(
+            name="Cut", category=category, service_minutes=60)
+        self.person = Client.objects.create(
+            salon=self.salon, first_name="Jaime", last_name="Orta")
+        self.member = StaffMember.objects.create(
+            display_name="Target Member", salon=self.salon)
+        self.other_member = StaffMember.objects.create(
+            display_name="Other Member", salon=self.other)
+
+    def _book(self, member, day):
+        start = datetime.datetime.combine(
+            day, datetime.time(13, 0), tzinfo=datetime.timezone.utc)
+        end = datetime.datetime.combine(
+            day, datetime.time(17, 0), tzinfo=datetime.timezone.utc)
+        return Appointment.objects.create(
+            client=self.person, staff_member=member,
+            service=self.service, start=start, end=end,
+            status=Appointment.Status.CONFIRMED)
+
+    def _seed(self):
+        mondays = [datetime.date(2026, 9, 7) + datetime.timedelta(weeks=i)
+                   for i in range(5)]
+        for day in mondays:
+            self._book(self.member, day)
+            self._book(self.other_member, day)
+
+    def test_salon_id_selects_existing_salon(self):
+        self._seed()
+        out = io.StringIO()
+        # CLI form proves the --salon-id argument is wired.
+        call_command("import_roster_derived",
+                     "--salon-id", str(self.salon.pk), stdout=out)
+        self.assertIn("salons=1", out.getvalue())
+        self.assertEqual(RosterPattern.objects.filter(
+            staff_member=self.member).count(), 1)
+        self.assertEqual(RosterPattern.objects.filter(
+            staff_member=self.other_member).count(), 0)
+
+    def test_salon_id_nonexistent_raises_and_writes_nothing(self):
+        self._seed()
+        with self.assertRaises(CommandError):
+            call_command("import_roster_derived", salon_id=999999)
+        self.assertEqual(RosterPattern.objects.count(), 0)
+
+    def test_salon_id_takes_precedence_over_salon_name(self):
+        self._seed()
+        call_command("import_roster_derived", salon_id=self.salon.pk,
+                     salon="Other Salon")
+        self.assertEqual(RosterPattern.objects.filter(
+            staff_member=self.member).count(), 1)
+        self.assertEqual(RosterPattern.objects.filter(
+            staff_member=self.other_member).count(), 0)
