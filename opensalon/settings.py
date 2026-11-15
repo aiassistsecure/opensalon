@@ -15,6 +15,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = os.environ.get("OPENSALON_SECRET_KEY", "dev-only-change-me")
 DEBUG = os.environ.get("OPENSALON_DEBUG", "1") == "1"
+# Demo mode (OPENSALON_DEMO=1): the shell carries a "demo mode"
+# banner, and the `demo` management command will seed the
+# invented demo salon. Off by default; never set on a real store.
+DEMO_MODE = os.environ.get("OPENSALON_DEMO") == "1"
 ALLOWED_HOSTS = os.environ.get("OPENSALON_ALLOWED_HOSTS", "*").split(",")
 
 INSTALLED_APPS = [
@@ -62,6 +66,7 @@ TEMPLATES = [
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
                 "webui.context_processors.salon_context",
+                "webui.context_processors.demo_mode",
             ],
         },
     },

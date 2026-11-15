@@ -10,6 +10,7 @@ branding fields, DEFAULT_THEME supplies the house palette.
 import hashlib
 import os
 
+from django.conf import settings
 from django.contrib.staticfiles.finders import find as _static_find
 
 from saloncore.models import Salon
@@ -51,6 +52,12 @@ def _asset_version():
             _asset_cache[rel] = cached
         digest.update(cached[1].encode())
     return digest.hexdigest()[:12]
+
+
+def demo_mode(request):
+    """Whether this deployment is the demo (OPENSALON_DEMO=1):
+    the base template renders its sample-data banner when on."""
+    return {"demo_mode": settings.DEMO_MODE}
 
 
 def salon_context(request):
