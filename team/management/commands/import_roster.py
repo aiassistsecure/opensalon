@@ -2,7 +2,14 @@
 
 Usage:
     python manage.py import_roster roster.csv [--salon NAME]
+    python manage.py import_roster roster.csv [--salon-id ID]
     python manage.py import_roster roster.csv --dry-run
+
+With ``--salon-id`` the salon is selected by primary key instead
+of by name: the id-selected salon takes precedence over
+``--salon``, and a nonexistent id raises ``CommandError`` before
+anything is written. Without ``--salon-id`` the salon is selected
+by ``--salon`` name exactly as before (created if missing).
 
 With ``--dry-run`` the file is loaded exactly as for a real
 import but NOTHING is written (no salon or roster-pattern
@@ -74,6 +81,10 @@ class Command(BaseCommand):
         parser.add_argument("--salon", default="My Salon",
                             help="Salon name to import into (created if missing).")
         parser.add_argument(
+            "--salon-id", type=int, default=None,
+            help="Salon id to import into (must already exist; "
+                 "takes precedence over --salon).")
+        parser.add_argument(
             "--dry-run", action="store_true",
             help="Print a JSON dry-run report (saloncore.dry_run) for "
                  "the source file plus a read-only import_preview "
@@ -84,6 +95,16 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         rows = _load_csv(options["path"])
 
+        salon_by_id = None
+        if options.get("salon_id") is not None:
+            try:
+                salon_by_id = Salon.objects.get(pk=options["salon_id"])
+            except Salon.DoesNotExist:
+                raise CommandError(
+                    f"Salon with id {options['salon_id']} does not exist."
+                ) from None
+        salon_name = salon_by_id.name if salon_by_id else options["salon"]
+
         if options["dry_run"]:
             # Zero writes: the shape report is kept verbatim, then
             # extended with the read-only import preview (salon
@@ -92,21 +113,27 @@ class Command(BaseCommand):
             # return (exit 0).
             report = build_dry_run_report(
                 rows, MAPPED_KEYS, source_name=options["path"])
-            salon = Salon.objects.filter(name=options["salon"]).first()
+            if salon_by_id is not None:
+                salon = salon_by_id
+            else:
+                salon = Salon.objects.filter(name=options["salon"]).first()
             preview = preview_roster_rows(salon, rows)
-            preview["salon"] = options["salon"]
+            preview["salon"] = salon_name
             report["import_preview"] = preview
             self.stdout.write(json.dumps(report, indent=2, sort_keys=True))
             return
 
         with transaction.atomic():
-            salon, _ = Salon.objects.get_or_create(name=options["salon"])
+            if salon_by_id is not None:
+                salon = salon_by_id
+            else:
+                salon, _ = Salon.objects.get_or_create(name=options["salon"])
             stats = import_roster_rows(salon, rows)
 
         self.stdout.write(
             "Imported roster for {salon}: {created} created, "
             "{existing} existing, {skipped} skipped.".format(
-                salon=options["salon"], **stats))
+                salon=salon_name, **stats))
         # Machine-readable line for validation runs (counts only).
         self.stdout.write("IMPORT_SUMMARY " + json.dumps(
-            {"salon": options["salon"], **stats}, sort_keys=True))
+            {"salon": salon_name, **stats}, sort_keys=True))
