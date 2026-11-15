@@ -242,3 +242,62 @@ class ImportRosterPreviewTests(TestCase):
                          {"unknown_member"})
         self.assertFalse(Salon.objects.filter(name="Ghost Salon").exists())
         self.assertEqual(RosterPattern.objects.count(), 0)
+
+
+class ImportRosterSalonIdTests(TestCase):
+    """--salon-id bridge: id selects the salon, beats --salon,
+    and a nonexistent id raises CommandError with no writes."""
+
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Id Salon")
+        StaffMember.objects.create(
+            salon=self.salon, external_id="stf-1", display_name="Test One")
+        StaffMember.objects.create(
+            salon=self.salon, external_id="stf-2", display_name="Test Two")
+
+    def run_import(self, fixture="roster_valid.csv", **kwargs):
+        out = io.StringIO()
+        call_command("import_roster", _fixture(fixture), stdout=out, **kwargs)
+        return out.getvalue()
+
+    def test_salon_id_selects_existing_salon(self):
+        out = io.StringIO()
+        # CLI form proves the --salon-id argument is wired.
+        call_command("import_roster", _fixture("roster_valid.csv"),
+                     "--salon-id", str(self.salon.pk), stdout=out)
+        text = out.getvalue()
+        self.assertIn('"created": 3', text)
+        self.assertIn('"salon": "Id Salon"', text)
+        self.assertEqual(RosterPattern.objects.count(), 3)
+        self.assertFalse(Salon.objects.filter(name="My Salon").exists())
+
+    def test_salon_id_nonexistent_raises_and_writes_nothing(self):
+        with self.assertRaises(CommandError):
+            self.run_import(salon_id=999999)
+        self.assertEqual(RosterPattern.objects.count(), 0)
+        self.assertEqual(Salon.objects.count(), 1)  # only Id Salon
+
+    def test_salon_id_takes_precedence_over_salon_name(self):
+        out = self.run_import(salon_id=self.salon.pk, salon="Other Name")
+        self.assertIn('"salon": "Id Salon"', out)
+        self.assertEqual(RosterPattern.objects.count(), 3)
+        self.assertFalse(Salon.objects.filter(name="Other Name").exists())
+
+    def test_salon_id_dry_run_previews_that_salon_and_writes_nothing(self):
+        out = io.StringIO()
+        call_command("import_roster", _fixture("roster_valid.csv"),
+                     dry_run=True, salon_id=self.salon.pk,
+                     salon="Other Name", stdout=out)
+        preview = json.loads(out.getvalue())["import_preview"]
+        self.assertTrue(preview["salon_exists"])
+        self.assertEqual(preview["salon"], "Id Salon")
+        self.assertEqual(preview["would_create"], 3)
+        self.assertEqual(RosterPattern.objects.count(), 0)
+        self.assertFalse(Salon.objects.filter(name="Other Name").exists())
+
+    def test_salon_id_dry_run_nonexistent_raises_and_writes_nothing(self):
+        with self.assertRaises(CommandError):
+            call_command("import_roster", _fixture("roster_valid.csv"),
+                         dry_run=True, salon_id=999999, stdout=io.StringIO())
+        self.assertEqual(RosterPattern.objects.count(), 0)
+        self.assertEqual(Salon.objects.count(), 1)
