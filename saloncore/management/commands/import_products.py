@@ -40,6 +40,14 @@ by name: when given it takes precedence over ``--salon``, the salon
 must already exist (a missing id raises ``CommandError`` and writes
 nothing), and no salon is created. Without it, ``--salon`` behaves
 exactly as before (named salon, created if missing).
+
+A real (non-dry-run) import emits two summary lines: the legacy
+``products: {...}`` line (kept byte-identical for backward
+compatibility) and an additive machine-readable
+``IMPORT_SUMMARY `` + ``json.dumps(..., sort_keys=True)`` line
+carrying the same counters (created, updated, unchanged, skipped,
+skipped_missing_price, skipped_id_too_long,
+opening_stock_movements, total), matching the sibling importers.
 """
 import json
 from decimal import Decimal, InvalidOperation
@@ -482,3 +490,15 @@ class Command(BaseCommand):
             f"'opening_stock_movements': {stocked}, "
             f"'total': {len(records)}}}"
         )
+        # Machine-readable line for validation runs.
+        self.stdout.write("IMPORT_SUMMARY " + json.dumps(
+            {
+                "created": created,
+                "updated": updated,
+                "unchanged": unchanged,
+                "skipped": skipped,
+                "skipped_missing_price": missing_price,
+                "skipped_id_too_long": id_too_long,
+                "opening_stock_movements": stocked,
+                "total": len(records),
+            }, sort_keys=True))
