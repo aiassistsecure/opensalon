@@ -2,6 +2,7 @@
 
 import datetime
 import io
+import json
 
 from django.core.management import call_command
 from django.core.management.base import CommandError
@@ -134,3 +135,67 @@ class ImportRosterDerivedSalonIdTests(TestCase):
             staff_member=self.member).count(), 1)
         self.assertEqual(RosterPattern.objects.filter(
             staff_member=self.other_member).count(), 0)
+
+
+class ImportRosterDerivedSummaryTests(TestCase):
+    """IMPORT_SUMMARY line: parses as JSON with the plain-line totals."""
+
+    def setUp(self):
+        self.salon = Salon.objects.create(
+            name="Mint On The Avenue", timezone="America/New_York")
+        self.member = StaffMember.objects.create(
+            display_name="Maribel Gonzalez", salon=self.salon)
+        category = ServiceCategory.objects.create(name="Hair", salon=self.salon)
+        self.service = Service.objects.create(
+            name="Women's Haircut", category=category, service_minutes=60)
+        self.person = Client.objects.create(
+            salon=self.salon, first_name="Jaime", last_name="Orta")
+        mondays = [datetime.date(2026, 9, 7) + datetime.timedelta(weeks=i)
+                   for i in range(5)]
+        wednesdays = [datetime.date(2026, 9, 9) + datetime.timedelta(weeks=i)
+                      for i in range(5)]
+        for day in mondays:
+            self._book(day, 13, 17)
+        for day in wednesdays:
+            self._book(day, 14, 18)
+
+    def _book(self, day, start_utc_hour, end_utc_hour):
+        start = datetime.datetime.combine(
+            day, datetime.time(start_utc_hour, 0),
+            tzinfo=datetime.timezone.utc)
+        end = datetime.datetime.combine(
+            day, datetime.time(end_utc_hour, 0),
+            tzinfo=datetime.timezone.utc)
+        return Appointment.objects.create(
+            client=self.person, staff_member=self.member,
+            service=self.service, start=start, end=end,
+            status=Appointment.Status.CONFIRMED)
+
+    def _summary(self, out):
+        lines = [ln for ln in out.splitlines()
+                 if ln.startswith("IMPORT_SUMMARY ")]
+        self.assertEqual(len(lines), 1)
+        return json.loads(lines[0][len("IMPORT_SUMMARY "):])
+
+    def test_real_run_import_summary(self):
+        out = io.StringIO()
+        call_command("import_roster_derived", stdout=out)
+        text = out.getvalue()
+        self.assertIn(
+            "import_roster_derived: salons=1 members=1 created=2 "
+            "existing=0 skipped_bands=0", text)
+        self.assertEqual(self._summary(text), {
+            "salons": 1, "members": 1, "created": 2,
+            "existing": 0, "skipped_bands": 0})
+
+    def test_dry_run_import_summary_uses_would_create(self):
+        out = io.StringIO()
+        call_command("import_roster_derived", dry_run=True, stdout=out)
+        text = out.getvalue()
+        self.assertEqual(RosterPattern.objects.count(), 0)
+        self.assertIn("would_create=2", text)
+        summary = self._summary(text)
+        self.assertEqual(summary, {
+            "salons": 1, "members": 1, "would_create": 2,
+            "existing": 0, "skipped_bands": 0})
+        self.assertNotIn("created", summary)
