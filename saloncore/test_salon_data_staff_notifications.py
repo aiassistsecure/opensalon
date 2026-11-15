@@ -158,7 +158,7 @@ class SalonDataStaffNotificationsTests(TestCase):
         Salon.objects.all().delete()
         self.assertEqual(StaffNotification.objects.count(), 0)
         out = self.run_import(path)
-        self.assertIn("staff_notifications=3", out)
+        self.assertIn('"staff_notifications": 3', out)
         self.assertIn("unknown_keys=none", out)
         self.assertEqual(StaffNotification.objects.count(), len(before))
         self.assertEqual(_inbox(), before)
@@ -203,7 +203,7 @@ class SalonDataStaffNotificationsTests(TestCase):
         self.write_data(path, data)
         Salon.objects.all().delete()
         out = self.run_import(path)
-        self.assertIn("staff_notifications=0", out)
+        self.assertIn('"staff_notifications": 0', out)
         self.assertEqual(StaffNotification.objects.count(), 0)
         self.assertEqual(StaffMember.objects.count(), 2)
 

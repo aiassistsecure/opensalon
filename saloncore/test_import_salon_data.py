@@ -649,8 +649,8 @@ class ImportAppointmentsTests(TestCase):
         Salon.objects.all().delete()
         self.assertEqual(Appointment.objects.count(), 0)
         out = self.run_import(path)
-        self.assertIn("appointments=2", out)
-        self.assertIn("appointment_notes=2", out)
+        self.assertIn('"appointments": 2', out)
+        self.assertIn('"appointment_notes": 2', out)
         self.assertEqual(Appointment.objects.count(), 2)
         self.assertEqual(AppointmentNote.objects.count(), 2)
         appt = Appointment.objects.get(external_id="appt-1")
@@ -929,6 +929,39 @@ class ImportSalonDataExternalIdTests(TestCase):
         self.assertEqual(appt.service.external_id, "svc-1")
 
 
+class ImportSalonDataSummaryTests(TestCase):
+    """IMPORT_SUMMARY is JSON with per-section counts (import-family shape)."""
+
+    def temp_path(self):
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        fh.close()
+        return fh.name
+
+    def test_summary_line_is_json_with_per_section_counts(self):
+        from saloncore.management.commands.import_salon_data import SECTIONS
+
+        data = _minimal_data()
+        path = self.temp_path()
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        out = io.StringIO()
+        # Positional file argument, exactly as on the command line.
+        call_command("import_salon_data", path, stdout=out)
+        text = out.getvalue()
+        lines = [ln for ln in text.splitlines()
+                 if ln.startswith("IMPORT_SUMMARY ")]
+        self.assertEqual(len(lines), 1)
+        summary = json.loads(lines[0][len("IMPORT_SUMMARY "):])
+        expected = {
+            section: len(data[section]) if section in data else 0
+            for section in SECTIONS
+        }
+        self.assertEqual(summary, expected)
+        self.assertIn("IMPORT_DROPPED ", text)
+        self.assertIn(f"Imported {path}", text)
+
+
 ALL_MODELS = (Salon, ServiceCategory, Service, StaffLevel, ServicePrice,
               Client, ClientNote, StaffMember, Appointment,
               AppointmentNote)
@@ -1198,7 +1231,7 @@ class ImportSalonDataProductsTests(TestCase):
         Salon.objects.all().delete()
         self.assertEqual(Product.objects.count(), 0)
         out = self.run_import(path)
-        self.assertIn("products=2", out)
+        self.assertIn('"products": 2', out)
         self.assertIn("unknown_keys=none", out)
         self.assertEqual(Product.objects.count(), 2)
         restored = Product.objects.get(external_id="prod-1")
@@ -1244,7 +1277,7 @@ class ImportSalonDataProductsTests(TestCase):
         Salon.objects.all().delete()
         out = self.run_import(path)
         self.assertIn("IMPORT_SUMMARY", out)
-        self.assertIn("products=0", out)
+        self.assertIn('"products": 0', out)
         self.assertEqual(Salon.objects.count(), 1)
         self.assertEqual(Product.objects.count(), 0)
 
@@ -1314,8 +1347,8 @@ class ImportSalonDataRosterTests(TestCase):
         Salon.objects.all().delete()
         self.assertEqual(RosterPattern.objects.count(), 0)
         out = self.run_import(path)
-        self.assertIn("roster_patterns=2", out)
-        self.assertIn("shift_overrides=2", out)
+        self.assertIn('"roster_patterns": 2', out)
+        self.assertIn('"shift_overrides": 2', out)
         staff = StaffMember.objects.get(external_id="staff-r")
         patterns = {(p.weekday, p.start_time, p.end_time, p.active)
                     for p in RosterPattern.objects.filter(
@@ -1348,8 +1381,8 @@ class ImportSalonDataRosterTests(TestCase):
         self.write_data(path, data)
         Salon.objects.all().delete()
         out = self.run_import(path)
-        self.assertIn("roster_patterns=0", out)
-        self.assertIn("shift_overrides=0", out)
+        self.assertIn('"roster_patterns": 0', out)
+        self.assertIn('"shift_overrides": 0', out)
         self.assertEqual(RosterPattern.objects.count(), 0)
         self.assertEqual(ShiftOverride.objects.count(), 0)
 
@@ -1441,9 +1474,9 @@ class ImportSalonDataSalesTests(TestCase):
         Salon.objects.all().delete()
         self.assertEqual(Sale.objects.count(), 0)
         out = self.run_import(path)
-        self.assertIn("sales=2", out)
-        self.assertIn("sale_items=2", out)
-        self.assertIn("sale_payments=1", out)
+        self.assertIn('"sales": 2', out)
+        self.assertIn('"sale_items": 2', out)
+        self.assertIn('"sale_payments": 1', out)
         self.assertIn("unknown_keys=none", out)
         self.assertEqual(Sale.objects.count(), 2)
         sale = Sale.objects.get(status=Sale.Status.COMPLETED)
@@ -1539,9 +1572,9 @@ class ImportSalonDataSalesTests(TestCase):
         self.write_data(path, data)
         Salon.objects.all().delete()
         out = self.run_import(path)
-        self.assertIn("sales=0", out)
-        self.assertIn("sale_items=0", out)
-        self.assertIn("sale_payments=0", out)
+        self.assertIn('"sales": 0', out)
+        self.assertIn('"sale_items": 0', out)
+        self.assertIn('"sale_payments": 0', out)
         self.assertEqual(Sale.objects.count(), 0)
 
     def test_provider_reference_in_file_named_dropped_not_imported(self):
@@ -1622,7 +1655,7 @@ class ImportSalonDataStockMovementsTests(TestCase):
         Salon.objects.all().delete()
         self.assertEqual(StockMovement.objects.count(), 0)
         out = self.run_import(path)
-        self.assertIn("stock_movements=2", out)
+        self.assertIn('"stock_movements": 2', out)
         self.assertIn("unknown_keys=none", out)
         self.assertEqual(StockMovement.objects.count(), 2)
         restored = Product.objects.get(external_id="prod-m")
@@ -1648,7 +1681,7 @@ class ImportSalonDataStockMovementsTests(TestCase):
         self.write_data(path, data)
         Salon.objects.all().delete()
         out = self.run_import(path)
-        self.assertIn("stock_movements=0", out)
+        self.assertIn('"stock_movements": 0', out)
         self.assertEqual(StockMovement.objects.count(), 0)
         self.assertEqual(Product.objects.count(), 1)
 
@@ -1741,7 +1774,7 @@ class ImportSalonDataAttendanceRecordsTests(TestCase):
         Salon.objects.all().delete()
         self.assertEqual(AttendanceRecord.objects.count(), 0)
         out = self.run_import(path)
-        self.assertIn("attendance_records=2", out)
+        self.assertIn('"attendance_records": 2', out)
         self.assertIn("unknown_keys=none", out)
         self.assertEqual(AttendanceRecord.objects.count(), 2)
         restored = StaffMember.objects.get(external_id="staff-a")
@@ -1768,7 +1801,7 @@ class ImportSalonDataAttendanceRecordsTests(TestCase):
         self.write_data(path, data)
         Salon.objects.all().delete()
         out = self.run_import(path)
-        self.assertIn("attendance_records=0", out)
+        self.assertIn('"attendance_records": 0', out)
         self.assertEqual(AttendanceRecord.objects.count(), 0)
         self.assertEqual(StaffMember.objects.count(), 1)
 
@@ -1879,7 +1912,7 @@ class ImportSalonDataPriceChangesTests(TestCase):
         Salon.objects.all().delete()
         self.assertEqual(PriceChange.objects.count(), 0)
         out = self.run_import(path)
-        self.assertIn("price_changes=2", out)
+        self.assertIn('"price_changes": 2', out)
         self.assertIn("unknown_keys=none", out)
         self.assertEqual(PriceChange.objects.count(), 2)
         restored_price = ServicePrice.objects.get(
@@ -1910,7 +1943,7 @@ class ImportSalonDataPriceChangesTests(TestCase):
         self.write_data(path, data)
         Salon.objects.all().delete()
         out = self.run_import(path)
-        self.assertIn("price_changes=0", out)
+        self.assertIn('"price_changes": 0', out)
         self.assertEqual(PriceChange.objects.count(), 0)
         self.assertEqual(ServicePrice.objects.count(), 1)
 
@@ -2003,7 +2036,7 @@ class ImportSalonDataRefundsTests(TestCase):
         Salon.objects.all().delete()
         self.assertEqual(Refund.objects.count(), 0)
         out = self.run_import(path)
-        self.assertIn("refunds=2", out)
+        self.assertIn('"refunds": 2', out)
         self.assertIn("unknown_keys=none", out)
         self.assertEqual(Refund.objects.count(), 2)
         sale = Sale.objects.get()
@@ -2031,7 +2064,7 @@ class ImportSalonDataRefundsTests(TestCase):
         self.write_data(path, data)
         Salon.objects.all().delete()
         out = self.run_import(path)
-        self.assertIn("refunds=0", out)
+        self.assertIn('"refunds": 0', out)
         self.assertEqual(Refund.objects.count(), 0)
         self.assertEqual(Sale.objects.count(), 1)
 
@@ -2125,7 +2158,7 @@ class ImportSalonDataBreaksTests(TestCase):
         Salon.objects.all().delete()
         self.assertEqual(Break.objects.count(), 0)
         out = self.run_import(path)
-        self.assertIn("breaks=2", out)
+        self.assertIn('"breaks": 2', out)
         self.assertIn("unknown_keys=none", out)
         self.assertEqual(Break.objects.count(), 2)
         restored = StaffMember.objects.get(external_id="staff-a")
@@ -2151,7 +2184,7 @@ class ImportSalonDataBreaksTests(TestCase):
         self.write_data(path, data)
         Salon.objects.all().delete()
         out = self.run_import(path)
-        self.assertIn("breaks=0", out)
+        self.assertIn('"breaks": 0', out)
         self.assertEqual(Break.objects.count(), 0)
         self.assertEqual(StaffMember.objects.count(), 1)
 
@@ -2287,7 +2320,7 @@ class ImportSalonDataCashupsTests(TestCase):
         Salon.objects.all().delete()
         self.assertEqual(Cashup.objects.count(), 0)
         out = self.run_import(path)
-        self.assertIn("cashups=2", out)
+        self.assertIn('"cashups": 2', out)
         self.assertIn("unknown_keys=none", out)
         self.assertEqual(Cashup.objects.count(), 2)
         salon = Salon.objects.get()
@@ -2317,7 +2350,7 @@ class ImportSalonDataCashupsTests(TestCase):
         self.write_data(path, data)
         Salon.objects.all().delete()
         out = self.run_import(path)
-        self.assertIn("cashups=0", out)
+        self.assertIn('"cashups": 0', out)
         self.assertEqual(Cashup.objects.count(), 0)
         self.assertEqual(Salon.objects.count(), 1)
 
@@ -2444,7 +2477,7 @@ class ImportSalonDataReceiptsTests(TestCase):
         Salon.objects.all().delete()
         self.assertEqual(Receipt.objects.count(), 0)
         out = self.run_import(path)
-        self.assertIn("receipts=2", out)
+        self.assertIn('"receipts": 2', out)
         self.assertIn("unknown_keys=none", out)
         self.assertEqual(Receipt.objects.count(), 2)
         sale = Sale.objects.get(receipt__total=Decimal("85.00"))
@@ -2475,7 +2508,7 @@ class ImportSalonDataReceiptsTests(TestCase):
         self.write_data(path, data)
         Salon.objects.all().delete()
         out = self.run_import(path)
-        self.assertIn("receipts=0", out)
+        self.assertIn('"receipts": 0', out)
         self.assertEqual(Receipt.objects.count(), 0)
         self.assertEqual(Salon.objects.count(), 1)
 
@@ -2589,7 +2622,7 @@ class ImportSalonDataReminderSendsTests(TestCase):
         Salon.objects.all().delete()
         self.assertEqual(ReminderSend.objects.count(), 0)
         out = self.run_import(path)
-        self.assertIn("reminder_sends=2", out)
+        self.assertIn('"reminder_sends": 2', out)
         self.assertIn("unknown_keys=none", out)
         self.assertEqual(ReminderSend.objects.count(), 2)
         appt = Appointment.objects.get()
@@ -2619,7 +2652,7 @@ class ImportSalonDataReminderSendsTests(TestCase):
         self.write_data(path, data)
         Salon.objects.all().delete()
         out = self.run_import(path)
-        self.assertIn("reminder_sends=0", out)
+        self.assertIn('"reminder_sends": 0', out)
         self.assertEqual(ReminderSend.objects.count(), 0)
         self.assertEqual(Salon.objects.count(), 1)
 
@@ -2721,7 +2754,7 @@ class ImportSalonDataCampaignsTests(TestCase):
         Salon.objects.all().delete()
         self.assertEqual(Campaign.objects.count(), 0)
         out = self.run_import(path)
-        self.assertIn("campaigns=2", out)
+        self.assertIn('"campaigns": 2', out)
         self.assertIn("unknown_keys=none", out)
         self.assertEqual(Campaign.objects.count(), 2)
         by_channel = {c.channel: c for c in Campaign.objects.all()}
@@ -2760,7 +2793,7 @@ class ImportSalonDataCampaignsTests(TestCase):
         self.write_data(path, data)
         Salon.objects.all().delete()
         out = self.run_import(path)
-        self.assertIn("campaigns=0", out)
+        self.assertIn('"campaigns": 0', out)
         self.assertEqual(Campaign.objects.count(), 0)
         self.assertEqual(Salon.objects.count(), 1)
 
@@ -2822,7 +2855,7 @@ class ImportSalonDataCampaignsTests(TestCase):
         self.assertIsNone(draft_row["sent_at"])
         Salon.objects.all().delete()
         out = self.run_import(path)
-        self.assertIn("campaigns=3", out)
+        self.assertIn('"campaigns": 3', out)
         self.assertIn("unknown_keys=none", out)
         restored = Campaign.objects.get(name="October Blast")
         self.assertEqual(restored.status, "sent")
@@ -2910,7 +2943,7 @@ class ImportSalonDataCampaignSendsTests(TestCase):
         Salon.objects.all().delete()
         self.assertEqual(CampaignSend.objects.count(), 0)
         out = self.run_import(path)
-        self.assertIn("campaign_sends=2", out)
+        self.assertIn('"campaign_sends": 2', out)
         self.assertIn("unknown_keys=none", out)
         self.assertEqual(CampaignSend.objects.count(), 2)
         campaign = Campaign.objects.get()
@@ -2940,7 +2973,7 @@ class ImportSalonDataCampaignSendsTests(TestCase):
         self.write_data(path, data)
         Salon.objects.all().delete()
         out = self.run_import(path)
-        self.assertIn("campaign_sends=0", out)
+        self.assertIn('"campaign_sends": 0', out)
         self.assertEqual(CampaignSend.objects.count(), 0)
         self.assertEqual(Salon.objects.count(), 1)
 
