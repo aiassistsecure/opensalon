@@ -2,7 +2,14 @@
 
 Usage:
     python manage.py import_staff staff.json [--salon NAME]
+    python manage.py import_staff staff.json [--salon-id ID]
     python manage.py import_staff staff.json --dry-run
+
+With ``--salon-id`` the salon is selected by primary key instead
+of by name: the id-selected salon takes precedence over
+``--salon``, and a nonexistent id raises ``CommandError`` before
+anything is written. Without ``--salon-id`` the salon is selected
+by ``--salon`` name exactly as before (created if missing).
 
 With ``--dry-run`` the file is loaded exactly as for a real import
 but NOTHING is written (no salon, staff member or staff level
@@ -106,7 +113,7 @@ def _display_name(row):
             or _text(row, "name", 120))[:120]
 
 
-def _build_import_preview(data, salon_name):
+def _build_import_preview(data, salon_name, salon=None):
     """Read-only counting twin of the write loop in ``handle``.
 
     Mirrors the writer's identity and field rules exactly --
@@ -120,7 +127,10 @@ def _build_import_preview(data, salon_name):
     Returns counts plus one entry per record (row index and
     external_id only -- never a staff name).
     """
-    salon = Salon.objects.filter(name=salon_name).first()
+    if salon is None:
+        salon = Salon.objects.filter(name=salon_name).first()
+    else:
+        salon_name = salon.name
     members = {}
     level_names = set()
     if salon is not None:
@@ -213,6 +223,10 @@ class Command(BaseCommand):
         parser.add_argument("--salon", default="My Salon",
                             help="Salon name to import into (created if missing).")
         parser.add_argument(
+            "--salon-id", type=int, default=None,
+            help="Salon id to import into (must already exist; "
+                 "takes precedence over --salon).")
+        parser.add_argument(
             "--dry-run", action="store_true",
             help="Print a JSON dry-run report (saloncore.dry_run) for "
                  "the source file and write nothing.")
@@ -224,6 +238,16 @@ class Command(BaseCommand):
         if not isinstance(data, list):
             raise CommandError("Staff file must be a JSON list of staff.")
 
+        salon_by_id = None
+        if options.get("salon_id") is not None:
+            try:
+                salon_by_id = Salon.objects.get(pk=options["salon_id"])
+            except Salon.DoesNotExist:
+                raise CommandError(
+                    f"Salon with id {options['salon_id']} does not exist."
+                ) from None
+        salon_name = salon_by_id.name if salon_by_id else options["salon"]
+
         if options["dry_run"]:
             # Zero writes: the shape report is kept verbatim, then
             # extended with the read-only import preview (salon /
@@ -232,14 +256,17 @@ class Command(BaseCommand):
             report = build_dry_run_report(
                 data, MAPPED_KEYS, source_name=options["path"])
             report["import_preview"] = _build_import_preview(
-                data, options["salon"])
+                data, salon_name, salon=salon_by_id)
             self.stdout.write(json.dumps(report, indent=2, sort_keys=True))
             return
 
         stats = dict.fromkeys(
             ["created", "updated", "skipped", "levels_linked"], 0)
         with transaction.atomic():
-            salon, _ = Salon.objects.get_or_create(name=options["salon"])
+            if salon_by_id is not None:
+                salon = salon_by_id
+            else:
+                salon, _ = Salon.objects.get_or_create(name=options["salon"])
             for row in data:
                 if not isinstance(row, dict):
                     stats["skipped"] += 1
@@ -267,7 +294,7 @@ class Command(BaseCommand):
         self.stdout.write(
             "Imported staff for {salon}: {created} created, "
             "{updated} updated, {skipped} skipped.".format(
-                salon=options["salon"], **stats))
+                salon=salon_name, **stats))
         # Machine-readable line for validation runs (counts only).
         self.stdout.write("IMPORT_SUMMARY " + json.dumps(
-            {"salon": options["salon"], **stats}, sort_keys=True))
+            {"salon": salon_name, **stats}, sort_keys=True))
