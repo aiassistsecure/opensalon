@@ -4,6 +4,7 @@ Synthetic records only — no real salon/client data.
 """
 import io
 import json
+import os
 import tempfile
 from datetime import date, datetime, time, timedelta, timezone as dt_timezone
 from decimal import Decimal
@@ -1195,3 +1196,60 @@ class ExportCampaignSendsTests(TestCase):
             data["campaign_sends"][0]["campaign_id"], other_campaign.id)
         self.assertEqual(
             data["campaign_sends"][0]["client_id"], other_client.id)
+
+
+class ExportOutputOptionTests(TestCase):
+    """Output path: positional kept, --output added (export family).
+
+    The positional is now optional; --output names the same path
+    and takes precedence when both are given; neither is a
+    CommandError before anything is written.
+    """
+
+    def setUp(self):
+        Salon.objects.create(name="Output Salon")
+
+    def temp_path(self):
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        fh.close()
+        return fh.name
+
+    def load(self, path):
+        with open(path, encoding="utf-8") as exported:
+            return json.load(exported)
+
+    def test_output_option_alone_works(self):
+        path = self.temp_path()
+        out = io.StringIO()
+        call_command("export_salon_data", output=path, stdout=out)
+        self.assertIn("EXPORT_SUMMARY", out.getvalue())
+        data = self.load(path)
+        self.assertEqual(data["counts"]["salons"], 1)
+        self.assertEqual(data["salons"][0]["name"], "Output Salon")
+
+    def test_positional_output_still_works(self):
+        path = self.temp_path()
+        out = io.StringIO()
+        call_command("export_salon_data", path, stdout=out)
+        self.assertIn("EXPORT_SUMMARY", out.getvalue())
+        data = self.load(path)
+        self.assertEqual(data["counts"]["salons"], 1)
+        self.assertEqual(data["salons"][0]["name"], "Output Salon")
+
+    def test_output_option_takes_precedence_over_positional(self):
+        positional_path = self.temp_path()
+        option_path = self.temp_path()
+        out = io.StringIO()
+        call_command("export_salon_data", positional_path,
+                     output=option_path, stdout=out)
+        data = self.load(option_path)
+        self.assertEqual(data["counts"]["salons"], 1)
+        self.assertEqual(os.path.getsize(positional_path), 0)
+
+    def test_neither_output_nor_option_raises(self):
+        with self.assertRaises(CommandError) as ctx:
+            call_command("export_salon_data", stdout=io.StringIO())
+        self.assertEqual(
+            str(ctx.exception),
+            "An output path is required (positional output or --output).")

@@ -3,6 +3,14 @@
 Usage:
     python manage.py export_salon_data OUTPUT [--salon NAME]
         [--salon-id ID] [--format json|csv]
+    python manage.py export_salon_data --output OUTPUT
+        [--salon NAME] [--salon-id ID] [--format json|csv]
+
+The output path may be given either as the positional ``OUTPUT``
+argument or via ``--output`` (the form every other export command
+uses). If both are given, the explicit ``--output`` value takes
+precedence. If neither is given, the command raises
+``CommandError`` before writing anything.
 
 ``--salon-id`` selects the salon by primary key instead of by
 name: when given it takes precedence over ``--salon``, the salon
@@ -236,10 +244,26 @@ def _bundle_to_csv(data):
 
 
 class Command(BaseCommand):
-    help = "Export salon core data (price book, clients, staff, staff services, appointments, products, sales, stock movements, attendance, price changes, refunds, breaks, cashups, receipts, reminder sends, campaigns, campaign sends, staff notifications) to one JSON or CSV file."
+    help = "Export salon core data (price book, clients, staff, staff services, appointments, products, sales, stock movements, attendance, price changes, refunds, breaks, cashups, receipts, reminder sends, campaigns, campaign sends, staff notifications) to one JSON or CSV file. The output path is the positional argument or --output (explicit --output wins if both are given)."
 
     def add_arguments(self, parser):
-        parser.add_argument("output", help="Path of the file to write.")
+        parser.add_argument(
+            "output", nargs="?", default=None,
+            help="Path of the file to write (or use --output).",
+        )
+        # --output cannot share the positional's dest: argparse
+        # resolves an optional positional after optionals, so a
+        # shared dest would clobber a lone --output with the
+        # positional's default. It therefore lands in
+        # ``output_option`` and handle() folds it into ``output``
+        # with --output taking precedence.
+        parser.add_argument(
+            "--output", dest="output_option", default=None,
+            metavar="OUTPUT",
+            help="Path of the file to write; alternative to the "
+                 "positional output (takes precedence if both "
+                 "are given).",
+        )
         parser.add_argument(
             "--salon", default=None,
             help="Only export the salon with this exact name.",
@@ -255,6 +279,12 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        if options.get("output_option") is not None:
+            options["output"] = options["output_option"]
+        if not options.get("output"):
+            raise CommandError(
+                "An output path is required "
+                "(positional output or --output).")
         fmt = options.get("format") or "json"
         if fmt not in _FORMATS:
             raise CommandError(
