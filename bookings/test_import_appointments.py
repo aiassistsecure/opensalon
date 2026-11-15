@@ -641,3 +641,91 @@ class DryRunImportAppointmentsTests(TestCase):
         self.assertEqual(Appointment.objects.count(), 0)
 
 
+class SalonIdImportAppointmentsTests(TestCase):
+    """--salon-id bridge: select by pk, fail closed, beat --salon."""
+
+    def setUp(self):
+        self.salon = Salon.objects.create(
+            name="My Salon", timezone="America/New_York")
+        self.client = Client.objects.create(
+            salon=self.salon, external_id="cli-1",
+            first_name="Test", last_name="Example")
+        self.staff = StaffMember.objects.create(
+            salon=self.salon, external_id="stf-1",
+            display_name="Stylist One")
+        category = ServiceCategory.objects.create(
+            salon=self.salon, name="Haircuts")
+        self.service = Service.objects.create(
+            category=category, external_id="svc-1", name="Haircut",
+            service_minutes=45)
+
+    def _row(self, appointment_id="appt-id-1"):
+        return {"appointmentId": appointment_id, "clientId": "cli-1",
+                "staffId": "stf-1", "serviceId": "svc-1",
+                "appointmentDate": "2026-10-03",
+                "startTime": "09:00:00.000", "endTime": "09:45:00.000",
+                "state": "BOOKED", "deleted": False}
+
+    def test_salon_id_selects_existing_salon(self):
+        out = io.StringIO()
+        call_command("import_appointments", _write([self._row()]),
+                     salon_id=self.salon.pk, stdout=out)
+        self.assertIn('"created": 1', out.getvalue())
+        self.assertIn('"salon": "My Salon"', out.getvalue())
+        appt = Appointment.objects.get(external_id="appt-id-1")
+        self.assertEqual(appt.client, self.client)
+        self.assertEqual(appt.client.salon, self.salon)
+        self.assertEqual(Salon.objects.count(), 1)
+
+    def test_salon_id_cli_flag_selects_existing_salon(self):
+        out = io.StringIO()
+        call_command("import_appointments", _write([self._row()]),
+                     "--salon-id", str(self.salon.pk), stdout=out)
+        self.assertIn('"created": 1', out.getvalue())
+        self.assertEqual(Appointment.objects.count(), 1)
+
+    def test_salon_id_nonexistent_raises_and_writes_nothing(self):
+        before = Salon.objects.count()
+        with self.assertRaises(CommandError):
+            call_command("import_appointments", _write([self._row()]),
+                         salon_id=999999, salon="Brand New Salon",
+                         stdout=io.StringIO())
+        self.assertEqual(Appointment.objects.count(), 0)
+        self.assertEqual(Salon.objects.count(), before)
+        self.assertFalse(
+            Salon.objects.filter(name="Brand New Salon").exists())
+
+    def test_salon_id_takes_precedence_over_salon_name(self):
+        other = Salon.objects.create(name="Other Salon", timezone="UTC")
+        out = io.StringIO()
+        call_command("import_appointments", _write([self._row()]),
+                     salon_id=self.salon.pk, salon=other.name, stdout=out)
+        self.assertIn('"created": 1', out.getvalue())
+        self.assertIn('"salon": "My Salon"', out.getvalue())
+        self.assertNotIn('"salon": "Other Salon"', out.getvalue())
+        appt = Appointment.objects.get(external_id="appt-id-1")
+        self.assertEqual(appt.client, self.client)
+        self.assertEqual(appt.client.salon, self.salon)
+        self.assertEqual(Salon.objects.count(), 2)
+
+    def test_salon_id_dry_run_previews_selected_salon_no_write(self):
+        out = io.StringIO()
+        call_command("import_appointments", _write([self._row()]),
+                     salon_id=self.salon.pk, salon="Other Salon",
+                     dry_run=True, stdout=out)
+        preview = json.loads(out.getvalue())["preview"]
+        self.assertTrue(preview["salon_found"])
+        self.assertEqual(preview["salon"], "My Salon")
+        self.assertEqual(preview["would_create"], 1)
+        self.assertEqual(Appointment.objects.count(), 0)
+        self.assertEqual(Salon.objects.count(), 1)
+
+    def test_salon_id_nonexistent_dry_run_raises_and_writes_nothing(self):
+        with self.assertRaises(CommandError):
+            call_command("import_appointments", _write([self._row()]),
+                         salon_id=999999, dry_run=True,
+                         stdout=io.StringIO())
+        self.assertEqual(Appointment.objects.count(), 0)
+        self.assertEqual(Salon.objects.count(), 1)
+
+
