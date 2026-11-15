@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -89,9 +90,23 @@ class HoldCheckTests(SimpleTestCase):
              f'exec -a "nedbd --data {self.root} --port 17070" sleep 30']
         )
         try:
-            evidence = hold_evidence(self.root, "opensalon")
+            # Bounded wait: Popen returns before the child has exec'd,
+            # and a process mid-execve reads as an empty /proc cmdline,
+            # so an immediate scan can legitimately miss it (flaky in
+            # full-suite ordering under load). Poll until the serving
+            # process is actually visible, or the deadline passes.
+            evidence = None
+            deadline = time.monotonic() + 5
+            while evidence is None and time.monotonic() < deadline:
+                if proc.poll() is not None:
+                    break
+                evidence = hold_evidence(self.root, "opensalon")
+                if evidence is None:
+                    time.sleep(0.01)
         finally:
             proc.kill()
+            proc.wait()
+        self.assertIsNotNone(evidence)
         self.assertIn("nedbd process", evidence)
 
 
