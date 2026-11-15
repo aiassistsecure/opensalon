@@ -1416,6 +1416,15 @@ class ImportSalonDataSalesTests(TestCase):
     """
 
     def setUp(self):
+        # Isolation guard (Cluster C): on NEDB, TestCase isolation is
+        # a drop+recreate flush whose locked-create path can reuse the
+        # previous test's database, leaking its rows into this setUp;
+        # the leaked Service then trips uniq_service_external_id on
+        # "svc-s" below (c621 subset / c633 class runs, victim varies
+        # by run). Every fixture row in this class hangs off Salon, so
+        # clearing salons first makes setUp deterministic on any
+        # backend without touching any assertion.
+        Salon.objects.all().delete()
         self.salon = Salon.objects.create(name="Sales Restore Salon")
         self.category = ServiceCategory.objects.create(
             salon=self.salon, name="Color")

@@ -45,6 +45,12 @@ def _blocks(text):
 
 class ExportSalonDataFormatTests(TestCase):
     def setUp(self):
+        # Isolation guard (Cluster C): this class reuses the import
+        # suite's external_ids ("svc-1"/"cli-1"); on NEDB the
+        # drop+recreate flush can leak the previous test's rows into
+        # this setUp (see ImportSalonDataSalesTests), so clear salons
+        # (cascading to every fixture row here) before creating.
+        Salon.objects.all().delete()
         self.salon = Salon.objects.create(
             name="Format Salon", timezone="America/New_York",
             currency="USD")
