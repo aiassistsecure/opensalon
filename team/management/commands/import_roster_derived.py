@@ -38,9 +38,16 @@ Rules:
   idempotent, and a band a human already corrected is never
   overwritten or deleted by a re-run.
 - Output is counts only — no staff names are ever printed.
+- Both the dry-run and real-run paths end with a machine-readable
+  ``IMPORT_SUMMARY `` line followed by a JSON object
+  (``json.dumps(..., sort_keys=True)``) carrying the same totals
+  as the plain count lines: ``salons``, ``members``, ``created``
+  (``would_create`` on a dry run), ``existing`` and
+  ``skipped_bands``. The plain count lines are unchanged.
 """
 
 import datetime
+import json
 from collections import Counter, defaultdict
 
 from django.core.management.base import BaseCommand, CommandError
@@ -120,6 +127,13 @@ class Command(BaseCommand):
                 f"existing={totals['existing']} "
                 f"skipped_bands={totals['skipped']} "
                 f"-- no patterns written")
+            self.stdout.write("IMPORT_SUMMARY " + json.dumps(
+                {"salons": totals["salons"],
+                 "members": totals["members"],
+                 "would_create": totals["created"],
+                 "existing": totals["existing"],
+                 "skipped_bands": totals["skipped"]},
+                sort_keys=True))
             return
         self.stdout.write(
             "import_roster_derived: "
@@ -127,6 +141,13 @@ class Command(BaseCommand):
             f"created={totals['created']} existing={totals['existing']} "
             f"skipped_bands={totals['skipped']}"
         )
+        self.stdout.write("IMPORT_SUMMARY " + json.dumps(
+            {"salons": totals["salons"],
+             "members": totals["members"],
+             "created": totals["created"],
+             "existing": totals["existing"],
+             "skipped_bands": totals["skipped"]},
+            sort_keys=True))
 
     def _derive(self, salon, weeks, min_days, dry_run=False):
         counts = Counter()
