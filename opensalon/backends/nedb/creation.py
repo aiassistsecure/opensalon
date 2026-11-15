@@ -267,10 +267,30 @@ class DatabaseCreation(PostgresDatabaseCreation):
     # create with bounded backoff, reuse a database the serving
     # engine already has open, and never strand a dropped database
     # behind a failed reset.
+    #
+    # -- reset freshness (cycle 634, census Cluster C / PR #902) ------
+    # The cycle-620 reuse paths above are exactly the cycle-633 leak
+    # when the drop itself does not land: if the previous test's
+    # database is still open (a stale connection holds it), DELETE
+    # can report success while the name keeps listing with its rows
+    # intact; the old reset ignored the _wait_until_absent timeout,
+    # met a 409 / locked create, called that "reuse-success", and
+    # materialized the catalog over the leaked rows. Per DYOR 9.4/9.5
+    # a flush IS the drop + recreate -- a database that survived the
+    # drop is not a flush and is never reused as one. reset_database
+    # therefore: re-closes this process's connection and re-issues
+    # the drop (bounded) until absence is verified; accepts a create
+    # outcome as fresh only when this reset's POST actually created
+    # the database after that verified absence, or when a reused
+    # database is demonstrably empty (the daemon's list entry for a
+    # fresh database reports no collections -- measured on nedbd
+    # 12.15.16, DYOR 9.11); and raises rather than pass a non-empty
+    # database on to the next test.
     RESET_RELEASE_TIMEOUT_SECONDS = 5.0
     RESET_RELEASE_POLL_SECONDS = 0.1
     RESET_CREATE_ATTEMPTS = 3
     RESET_CREATE_BACKOFF_SECONDS = 0.25
+    RESET_ATTEMPTS = 3
 
     @staticmethod
     def _is_lock_error(exc):
@@ -301,13 +321,49 @@ class DatabaseCreation(PostgresDatabaseCreation):
                 return False
             time.sleep(self.RESET_RELEASE_POLL_SECONDS)
 
+    def _database_entry(self, name):
+        """The daemon's list entry for ``name``, or None if absent."""
+        if self._embedded():
+            return None
+        payload = self._http_request("GET", "/v1/databases")
+        entries = payload.get("databases", []) if isinstance(payload, dict) else []
+        for entry in entries:
+            entry_name = entry.get("name") if isinstance(entry, dict) else entry
+            if entry_name == name:
+                return entry if isinstance(entry, dict) else {}
+        return None
+
+    def _reused_is_fresh(self, name):
+        """True unless a reused database is demonstrably non-empty.
+
+        Only called after absence was verified in this reset, so a
+        database that is open now post-dates the drop. Where the
+        daemon reports the database's collections (nedbd 12.15.16
+        does), a fresh database has none; any collection present
+        means rows may have survived, and the reuse is rejected.
+        Where the daemon reports no collections, the verified
+        absence is the freshness evidence available.
+        """
+        try:
+            entry = self._database_entry(name)
+        except NedbHttpError:
+            return True
+        if entry is None:
+            return False
+        collections = entry.get("collections")
+        if collections is None:
+            return True
+        return len(collections) == 0
+
     def _create_with_lock_retry(self, name):
         """create_database with bounded retry on the lock refusal only.
 
         A locked create whose database is in fact already open on the
-        serving engine is reuse-success (returns False, like a 409):
-        the engine that holds the files is the one that will serve
-        the database, so there is no split brain to fear from here.
+        serving engine returns False (reuse, like a 409) -- but that
+        is only a provisional outcome: reset_database accepts it
+        solely after absence was verified in the same reset and the
+        reused database passes _reused_is_fresh. Outside that
+        sequence, "already open" is the leak, not a success.
         """
         for attempt in range(self.RESET_CREATE_ATTEMPTS):
             try:
@@ -327,11 +383,15 @@ class DatabaseCreation(PostgresDatabaseCreation):
         Returns True only when the database is verified open, so a
         failed reset never strands the suite with a dropped database
         (census Cluster B) when recovery was in fact possible.
+        Records in ``_recover_created`` whether recovery's own create
+        actually created the database (fresh) as opposed to finding
+        one already open (a reuse reset must still verify).
         """
+        self._recover_created = False
         if self._database_open(name):
             return True
         try:
-            self.create_database(name)
+            self._recover_created = bool(self.create_database(name))
         except NedbHttpError:
             pass
         return self._database_open(name)
@@ -346,20 +406,50 @@ class DatabaseCreation(PostgresDatabaseCreation):
 
         Lock-safe and failure-atomic (cycle 620): after the drop,
         confirm the database is gone/released before recreating;
-        retry a locked create with bounded backoff and reuse an
-        already-open database; if the create still fails, attempt
-        one reopen/recreate and verify the database is open before
-        raising, so a failed reset never strands a dropped database.
+        retry a locked create with bounded backoff; if the create
+        still fails, attempt one reopen/recreate and verify the
+        database is open before raising, so a failed reset never
+        strands a dropped database.
+
+        Fresh (cycle 634): absence after the drop is a hard gate,
+        not a hint -- while the name still lists, the drop is
+        re-issued (each attempt re-closes this process's connection
+        first, via drop_database) instead of proceeding to a create
+        whose 409/lock outcome the old code called reuse-success
+        over the previous test's rows. A reuse outcome is accepted
+        only for a database demonstrably empty (see _reused_is_fresh);
+        a reset that cannot obtain a genuinely fresh empty database
+        raises instead of leaking rows into the next test.
         """
-        self.drop_database(name)
-        self._wait_until_absent(name)
-        try:
-            self._create_with_lock_retry(name)
-        except NedbHttpError:
-            if not self._recover_database(name):
-                raise
-        self.materialize_catalog(name)
-        return name
+        if self._embedded():
+            # Embedded drop IS the freshness guarantee: purge
+            # tombstones every row of every collection in-process,
+            # and the store directory persists, so absence-by-listing
+            # and the HTTP reuse paths have no meaning here.
+            self.drop_database(name)
+            self.materialize_catalog(name)
+            return name
+        for _attempt in range(self.RESET_ATTEMPTS):
+            self.drop_database(name)
+            if not self._wait_until_absent(name):
+                continue  # stale open database survived: drop again
+            self._recover_created = False
+            try:
+                created = self._create_with_lock_retry(name)
+            except NedbHttpError:
+                if not self._recover_database(name):
+                    raise
+                created = self._recover_created
+            if created or self._reused_is_fresh(name):
+                self.materialize_catalog(name)
+                return name
+            # A reused database with collections present is the
+            # previous incarnation, not a flush: loop and re-drop it.
+        raise NedbHttpError(
+            "nedbd reset of %s failed: no fresh empty database after "
+            "%d drop+recreate attempts; refusing to reuse a non-empty "
+            "database" % (name, self.RESET_ATTEMPTS)
+        )
 
     # The flush/teardown primitive under its Django-facing name.
     flush_database = reset_database
