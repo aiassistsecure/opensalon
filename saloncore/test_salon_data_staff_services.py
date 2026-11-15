@@ -127,7 +127,7 @@ class SalonDataStaffServicesTests(TestCase):
         Salon.objects.all().delete()
         self.assertEqual(StaffService.objects.count(), 0)
         out = self.run_import(path)
-        self.assertIn("staff_services=3", out)
+        self.assertIn('"staff_services": 3', out)
         self.assertIn("unknown_keys=none", out)
         self.assertEqual(StaffService.objects.count(), len(before))
         self.assertEqual(_matrix(), before)
@@ -174,7 +174,7 @@ class SalonDataStaffServicesTests(TestCase):
         self.write_data(path, data)
         Salon.objects.all().delete()
         out = self.run_import(path)
-        self.assertIn("staff_services=0", out)
+        self.assertIn('"staff_services": 0', out)
         self.assertEqual(StaffService.objects.count(), 0)
         self.assertEqual(StaffMember.objects.count(), 2)
 

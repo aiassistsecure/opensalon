@@ -361,6 +361,13 @@ in an ``IMPORT_DROPPED`` line in the import summary output (an
 explicit ``none`` when there is nothing dropped), while all known
 data imports exactly as before.
 
+Summary: a successful (non-dry-run) import ends with an
+``IMPORT_SUMMARY `` + ``json.dumps(..., sort_keys=True)`` line
+carrying the per-section record counts keyed by section
+name, matching the sibling ``import_*`` commands, followed
+by the ``IMPORT_DROPPED`` line and an ``Imported <path>``
+line naming the source file.
+
 Dry run (TF-12): with ``--dry-run`` the file is loaded and
 validated in phase 1 exactly as for a real import, then a JSON
 report from ``saloncore.dry_run`` is printed to stdout — one
@@ -2582,7 +2589,7 @@ class Command(BaseCommand):
     help = "Import salon core data from an export_salon_data JSON file."
 
     def add_arguments(self, parser):
-        parser.add_argument("input", help="Path of the export JSON file to load.")
+        parser.add_argument("path", help="Path of the export JSON file to load.")
         parser.add_argument(
             "--dry-run", action="store_true",
             help="Print a per-section JSON dry-run report "
@@ -2595,7 +2602,7 @@ class Command(BaseCommand):
 
     @transaction.atomic
     def handle(self, *args, **options):
-        data = _load(options["input"])
+        data = _load(options["path"])
         # Phase 1: validate everything before writing anything.
         _validate(data)
 
@@ -3244,13 +3251,12 @@ class Command(BaseCommand):
             )
             _restore_created_at(note, row.get("created_at"))
 
-        summary = ", ".join(
-            f"{section}={len(data[section])}" for section in SECTIONS
-        )
-        self.stdout.write(f"IMPORT_SUMMARY {summary}")
+        self.stdout.write("IMPORT_SUMMARY " + json.dumps(
+            {section: len(data[section]) for section in SECTIONS},
+            sort_keys=True))
         unknown_sections, unknown_keys = _unknown_drops(data)
         self.stdout.write(
             "IMPORT_DROPPED "
             f"unknown_sections={','.join(unknown_sections) or 'none'} "
             f"unknown_keys={','.join(unknown_keys) or 'none'}")
-        self.stdout.write(f"Imported {options['input']}")
+        self.stdout.write(f"Imported {options['path']}")
