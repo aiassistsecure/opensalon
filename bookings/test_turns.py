@@ -3,9 +3,9 @@ import datetime
 from django.test import TestCase
 
 from bookings.models import TurnEntry
-from bookings.turns import turns_taken_today, waiting_queue
+from bookings.turns import call_next, next_up, turns_taken_today, waiting_queue
 from saloncore.models import Salon, Service, ServiceCategory
-from team.models import StaffMember
+from team.models import RosterPattern, StaffMember
 
 UTC = datetime.timezone.utc
 TODAY = datetime.date.today()
@@ -105,3 +105,60 @@ class TurnEntryTests(TestCase):
             turns_taken_today(self.salon, self.staff, YESTERDAY), 1)
         self.assertEqual(turns_taken_today(None, self.staff, TODAY), 0)
         self.assertEqual(turns_taken_today(self.salon, None, TODAY), 0)
+
+
+class TurnRotationTests(TestCase):
+    def setUp(self):
+        self.salon = Salon.objects.create(name="Example Salon", timezone="UTC")
+        self.staff = StaffMember.objects.create(
+            salon=self.salon, display_name="Stylist One")
+        self.staff2 = StaffMember.objects.create(
+            salon=self.salon, display_name="Stylist Two")
+        cat = ServiceCategory.objects.create(salon=self.salon, name="Hair")
+        self.service = Service.objects.create(
+            category=cat, name="Haircut", service_minutes=45)
+        for member in (self.staff, self.staff2):
+            RosterPattern.objects.create(
+                staff_member=member, weekday=TODAY.weekday(),
+                start_time=datetime.time(9, 0), end_time=datetime.time(17, 0))
+
+    def _entry(self, guest_name="Walk-in Guest", **kw):
+        kw.setdefault("salon", self.salon)
+        return TurnEntry.objects.create(guest_name=guest_name, **kw)
+
+    def test_next_up_picks_a_working_member(self):
+        self.assertIn(next_up(self.salon, TODAY), (self.staff, self.staff2))
+
+    def test_next_up_skips_member_not_working_that_day(self):
+        RosterPattern.objects.filter(staff_member=self.staff2).delete()
+        self.assertEqual(next_up(self.salon, TODAY), self.staff)
+
+    def test_rotation_alternates_on_turns_taken(self):
+        first = next_up(self.salon, TODAY)
+        other = self.staff2 if first == self.staff else self.staff
+        self._entry("Served", assigned_staff=first,
+                    status=TurnEntry.Status.DONE)
+        self.assertEqual(next_up(self.salon, TODAY), other)
+
+    def test_capability_filter_excludes_member_without_the_service(self):
+        from team.models import StaffService
+        StaffService.objects.create(
+            staff_member=self.staff2, service=self.service, enabled=True)
+        self.assertEqual(
+            next_up(self.salon, TODAY, service=self.service), self.staff2)
+
+    def test_call_next_assigns_rotation_not_the_request(self):
+        self._entry("Served", assigned_staff=self.staff,
+                    status=TurnEntry.Status.DONE)
+        entry = self._entry("Waiting", requested_staff=self.staff)
+        called = call_next(self.salon, TODAY)
+        self.assertEqual(called.pk, entry.pk)
+        self.assertEqual(called.assigned_staff, self.staff2)
+        self.assertEqual(called.status, TurnEntry.Status.CALLED)
+        self.assertIsNotNone(called.called_at)
+
+    def test_call_next_empty_queue_and_nobody_working(self):
+        self.assertIsNone(call_next(self.salon, TODAY))
+        self._entry("Waiting")
+        RosterPattern.objects.all().delete()
+        self.assertIsNone(call_next(self.salon, TODAY))
