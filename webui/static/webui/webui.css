@@ -668,6 +668,16 @@ thead th { border-top: 0; color: var(--tx3); font-size: 11px; letter-spacing: .0
    view from real rows. Avatars stay initials — the product has
    no photo uploads, so no face is ever faked in. */
 body.page-light .main { background: linear-gradient(180deg, #faf6ec, #f3eddd); }
+/* The light workspace's base text colour. The dark theme's --tx is
+   near-white; before this rule the light pages inherited it, so any
+   component that set a light background without also setting a text
+   colour rendered white on white (the founder, 2026-11-23: Insights
+   loaded — "it was white on white lol"). Scoped to .main so the dark
+   sidebar, tab bar and modals keep the dark theme's text. Every
+   light-page component below can now rely on inheriting dark text. */
+body.page-light .main { color: #1d2530; }
+.page-light .main th, .page-light .main td { border-top-color: #f0e7cf; }
+.page-light .main thead th { background: #fbf7ec; color: #8a826f; }
 body.page-light .foot { color: #a2987d; }
 .page-light .day-title { color: #1d2530; }
 .page-light .day-sub { color: #7d7663; }
@@ -1283,34 +1293,34 @@ button:focus-visible, a:focus-visible, select:focus-visible {
 .pos-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
 @media (max-width:760px){.pos-grid{grid-template-columns:1fr}}
 .pos-card{border:1px solid #e6ddc6;border-radius:14px;background:#fffdf7;padding:16px 18px;
-  box-shadow:0 10px 28px rgba(96,76,24,.06)}
+  box-shadow:0 10px 28px rgba(96,76,24,.06);color:#1d2530}
 .pos-h{font-size:.78rem;text-transform:uppercase;letter-spacing:.09em;color:#8a8172;margin:0 0 12px}
 .pos-tender{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid #f0ebdd;font-size:.95rem}
 .pos-tender.pos-total{border-bottom:0;border-top:2px solid #e7e1d2;margin-top:6px;padding-top:10px;font-size:1.05rem}
-.pos-empty{color:#9a927e;font-size:.9rem;margin:4px 0}
+.pos-empty{color:#7d7663;font-size:.9rem;margin:4px 0}
 .pos-cu{padding:8px 0;border-bottom:1px solid #f0ebdd}
 .pos-cu:last-child{border-bottom:0}
 .pos-cu-top{display:flex;justify-content:space-between;font-size:.98rem}
-.pos-cu-top span{color:#9a927e;font-size:.85rem}
+.pos-cu-top span{color:#7d7663;font-size:.85rem}
 .pos-cu-sub{color:#6c6455;font-size:.85rem;margin-top:2px}
 .pos-sales{margin-bottom:8px}
 .pos-sale{display:flex;gap:12px;align-items:baseline;padding:7px 0;border-bottom:1px solid #f0ebdd;font-size:.93rem}
 .pos-sale:last-child{border-bottom:0}
-.pos-sale-when{color:#9a927e;min-width:74px}
+.pos-sale-when{color:#7d7663;min-width:74px}
 .pos-sale-client{font-weight:600;flex:1}
 .pos-sale-tender{color:#6c6455}
 .pos-sale-total{min-width:70px;text-align:right}
 
 /* The Shelf — products, derived stock, receiving, adjustments. */
 .shelf-search{display:flex;gap:8px;margin:14px 0}
-.shelf-search input{flex:1;padding:10px 14px;border:1px solid #ddd5c2;border-radius:999px;font:inherit;font-size:.95rem;background:#fff}
+.shelf-search input{flex:1;padding:10px 14px;border:1px solid #ddd5c2;border-radius:999px;font:inherit;font-size:.95rem;background:#fff;color:#1d2530}
 .shelf{border:1px solid #e6ddc6;border-radius:14px;background:#fffdf7;overflow:hidden;
-  box-shadow:0 10px 28px rgba(96,76,24,.06)}
+  box-shadow:0 10px 28px rgba(96,76,24,.06);color:#1d2530}
 .shelf-row{display:flex;align-items:center;gap:14px;padding:10px 16px;border-bottom:1px solid #f0ebdd;flex-wrap:wrap}
 .shelf-row:last-child{border-bottom:0}
 .shelf-main{flex:1;min-width:200px}
 .shelf-name{font-weight:600;font-size:.95rem}
-.shelf-sub{color:#9a927e;font-size:.8rem}
+.shelf-sub{color:#7d7663;font-size:.8rem}
 .shelf-flag{font-size:.66rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;
   padding:2px 7px;border-radius:999px;vertical-align:2px}
 .shelf-flag.f-out{background:#f7e3dd;color:#9c3d2e}
@@ -1318,13 +1328,13 @@ button:focus-visible, a:focus-visible, select:focus-visible {
 .shelf-price{font-weight:600;min-width:64px;text-align:right}
 .shelf-stock{text-align:center;min-width:58px}
 .shelf-stock b{display:block;font-size:1.05rem}
-.shelf-stock span{font-size:.68rem;color:#9a927e;text-transform:uppercase;letter-spacing:.05em}
+.shelf-stock span{font-size:.68rem;color:#7d7663;text-transform:uppercase;letter-spacing:.05em}
 .shelf-act{display:flex;gap:6px;align-items:center}
 .shelf-qty{width:56px;padding:5px 7px;border:1px solid #ddd5c2;border-radius:8px;font:inherit;font-size:.85rem}
 .shelf-reason{width:110px;padding:5px 7px;border:1px solid #ddd5c2;border-radius:8px;font:inherit;font-size:.85rem}
 
 /* Insights — the numbers, honestly. */
-.ins-note{color:#9a927e;font-size:.82rem;margin:10px 0 2px}
+.ins-note{color:#7d7663;font-size:.82rem;margin:10px 0 2px}
 .ins-big{font-size:2rem;font-weight:800;color:#3f5a36;line-height:1.1}
 
 /* Insights reports: the range bar, date-wise tables, downloads */
@@ -1334,7 +1344,7 @@ button:focus-visible, a:focus-visible, select:focus-visible {
 .rep-preset.active{background:#3f5a36;border-color:#3f5a36;color:#fff}
 .rep-custom{display:flex;align-items:center;gap:6px;margin-left:6px}
 .rep-custom input[type="date"]{padding:6px 8px;border:1px solid #ddd3b8;border-radius:9px;background:#fff;color:#1d2530;font-size:13px}
-.rep-to{color:#9a927e;font-size:13px}
+.rep-to{color:#7d7663;font-size:13px}
 .rep-active{margin-left:auto;color:#6b6250;font-size:13.5px;font-weight:650}
 .rep-table th.n,.rep-table td.n{text-align:right;font-variant-numeric:tabular-nums}
 .rep-table tfoot td{font-weight:750;border-top:2px solid #e6ddc6}
@@ -1429,7 +1439,7 @@ button:focus-visible, a:focus-visible, select:focus-visible {
 .ins-bar-wrap{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;gap:5px}
 .ins-bar{width:100%;min-height:2px;border-radius:5px 5px 2px 2px;
   background-image:linear-gradient(180deg,rgba(255,255,255,.5),rgba(255,255,255,0) 55%),linear-gradient(180deg,#7ba468,#3f5a36)}
-.ins-bar-d{font-size:.66rem;color:#9a927e}
+.ins-bar-d{font-size:.66rem;color:#7d7663}
 
 /* Checkout modal: email-the-receipt row (revealed once settled). */
 .co-emailrow{display:flex;gap:8px;margin-top:10px}
