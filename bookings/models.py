@@ -1,7 +1,7 @@
 from django.db import models
 
 from clients.models import Client
-from saloncore.models import Service, StrictConstraints
+from saloncore.models import Salon, Service, StrictConstraints
 
 # N-M17: StrictConstraints rollout (NEDB DYOR §9.3/§9.4) — declared
 # Meta.constraints are enforced in the app layer on save(), since
@@ -118,6 +118,67 @@ class Break(StrictConstraints):
 
     def __str__(self):
         return f"{self.staff_member} — break at {self.start}"
+
+
+class TurnEntry(models.Model):
+    """One guest in the FREE TURN walk-in queue.
+
+    A walk-in guest who is not on the day book yet: they arrive
+    (at the desk, by phone, or by scanning the door QR code), wait
+    for the next available stylist, and are called, seated, done.
+    Queue order is arrival order — ``created_at`` among the
+    waiting entries — so no position number is stored. The turn
+    is "taken" by the ``assigned_staff`` member who seats the
+    guest; ``requested_staff`` records a guest's own preference
+    and does not change who is credited with the turn.
+    """
+
+    class Status(models.TextChoices):
+        WAITING = "waiting", "Waiting"
+        CALLED = "called", "Called"
+        IN_SERVICE = "in_service", "In service"
+        DONE = "done", "Done"
+        PASSED = "passed", "Passed"
+        LEFT = "left", "Left"
+
+    class Source(models.TextChoices):
+        DESK = "desk", "Desk"
+        QR = "qr", "QR"
+        PHONE = "phone", "Phone"
+
+    salon = models.ForeignKey(
+        Salon, on_delete=models.CASCADE, related_name="turn_entries"
+    )
+    guest_name = models.CharField(max_length=200)
+    phone = models.CharField(max_length=40, blank=True)
+    service = models.ForeignKey(
+        Service, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="turn_entries"
+    )
+    requested_staff = models.ForeignKey(
+        StaffMember, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="turn_entries_requested"
+    )
+    assigned_staff = models.ForeignKey(
+        StaffMember, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="turn_entries_assigned"
+    )
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.WAITING
+    )
+    source = models.CharField(
+        max_length=10, choices=Source.choices, default=Source.DESK
+    )
+    called_at = models.DateTimeField(null=True, blank=True)
+    seated_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["created_at"]
+
+    def __str__(self):
+        return f"{self.guest_name} — {self.get_status_display()}"
 
 
 class AppointmentNote(models.Model):
