@@ -315,3 +315,146 @@ class Receipt(models.Model):
 
     def __str__(self):
         return f"Receipt for Sale #{self.sale_id} — {self.total}"
+
+
+class GiftCard(StrictConstraints):
+    """A gift card issued by a salon, settled only through its ledger.
+
+    The card's value is never stored as a mutable number:
+    ``balance()`` is computed as ``initial_amount`` less the sum
+    of its redeem transactions, so the transaction ledger is the
+    one source of truth (the same pattern as ``Sale.total``).
+    Core records the card and its movements only — how the
+    purchaser paid for it is a tender concern handled elsewhere.
+    """
+
+    class Status(models.TextChoices):
+        ACTIVE = "active", "Active"
+        REDEEMED = "redeemed", "Redeemed"
+        VOID = "void", "Void"
+
+    salon = models.ForeignKey(
+        Salon, on_delete=models.CASCADE, related_name="gift_cards"
+    )
+    code = models.CharField(max_length=64)
+    initial_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.ACTIVE
+    )
+    purchaser = models.ForeignKey(
+        Client,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="gift_cards_purchased",
+    )
+    recipient_name = models.CharField(max_length=200, blank=True, default="")
+    issued_at = models.DateTimeField(auto_now_add=True)
+    expires_on = models.DateField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-issued_at", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["salon", "code"],
+                name="giftcard_code_unique_per_salon",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(initial_amount__gte=0),
+                name="giftcard_initial_amount_nonnegative",
+            ),
+        ]
+
+    def __str__(self):
+        return f"Gift card {self.code} — {self.salon} ({self.status})"
+
+    def balance(self):
+        """Current balance: initial amount less all redemptions."""
+        if self.pk is None:
+            return self.initial_amount
+        redeemed = sum(
+            (
+                txn.amount
+                for txn in self.transactions.filter(
+                    kind=GiftCardTransaction.Kind.REDEEM
+                )
+            ),
+            Decimal("0.00"),
+        )
+        return self.initial_amount - redeemed
+
+    def redeem(self, amount, sale=None, note=""):
+        """Redeem ``amount`` against this card, recording the movement.
+
+        Raises ValueError if the card is not active, the amount is
+        not positive, or it exceeds the current balance. Redeeming
+        the full balance flips the card to ``redeemed``.
+        """
+        amount = Decimal(amount)
+        if self.status != self.Status.ACTIVE:
+            raise ValueError(
+                f"Gift card {self.code} is not active (status: {self.status})."
+            )
+        if amount <= 0:
+            raise ValueError("Redemption amount must be positive.")
+        if amount > self.balance():
+            raise ValueError(
+                f"Redemption of {amount} exceeds gift card balance "
+                f"{self.balance()}."
+            )
+        txn = self.transactions.create(
+            kind=GiftCardTransaction.Kind.REDEEM,
+            amount=amount,
+            sale=sale,
+            note=note,
+        )
+        if self.balance() == 0:
+            self.status = self.Status.REDEEMED
+            self.save(update_fields=["status"])
+        return txn
+
+
+class GiftCardTransaction(StrictConstraints):
+    """One movement on a gift card's ledger, append-only.
+
+    ``amount`` is always positive; the ``kind`` says what the
+    movement means. Only ``redeem`` movements reduce the card's
+    computed balance today; ``issue``/``adjust``/``void`` rows are
+    the audit trail for the card's lifecycle.
+    """
+
+    class Kind(models.TextChoices):
+        ISSUE = "issue", "Issue"
+        REDEEM = "redeem", "Redeem"
+        ADJUST = "adjust", "Adjust"
+        VOID = "void", "Void"
+
+    card = models.ForeignKey(
+        GiftCard, on_delete=models.CASCADE, related_name="transactions"
+    )
+    kind = models.CharField(max_length=20, choices=Kind.choices)
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    sale = models.ForeignKey(
+        Sale,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="gift_card_transactions",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    note = models.CharField(max_length=500, blank=True, default="")
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(amount__gt=0),
+                name="giftcardtxn_amount_positive",
+            )
+        ]
+
+    def __str__(self):
+        return (
+            f"Gift card {self.card.code} — {self.get_kind_display()} "
+            f"{self.amount}"
+        )
