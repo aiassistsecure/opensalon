@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from django.db import models
 
@@ -458,3 +458,98 @@ class GiftCardTransaction(StrictConstraints):
             f"Gift card {self.card.code} — {self.get_kind_display()} "
             f"{self.amount}"
         )
+
+
+class CardOnFile(StrictConstraints):
+    """A client's saved card, as core is allowed to know it.
+
+    The only processor datum stored is the opaque
+    ``provider_reference`` the salon's payment adapter issued;
+    brand and last4 are display facts. Card numbers never enter
+    core — tokenization happens in the adapter's own front-end.
+    """
+
+    salon = models.ForeignKey(
+        Salon, on_delete=models.CASCADE, related_name="cards_on_file"
+    )
+    client = models.ForeignKey(
+        Client, on_delete=models.CASCADE, related_name="cards_on_file"
+    )
+    provider_reference = models.CharField(max_length=200)
+    brand = models.CharField(max_length=40, blank=True, default="")
+    last4 = models.CharField(max_length=4, blank=True, default="")
+    exp_month = models.PositiveSmallIntegerField(null=True, blank=True)
+    exp_year = models.PositiveSmallIntegerField(null=True, blank=True)
+    active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["salon", "provider_reference"],
+                name="cardonfile_reference_unique_per_salon",
+            )
+        ]
+
+    def __str__(self):
+        label = f"{self.brand} ····{self.last4}" if self.last4 else "Card"
+        return f"{label} — {self.client}"
+
+
+class DepositPolicy(StrictConstraints):
+    """How one salon takes deposits and cancellation fees.
+
+    The policy is arithmetic, not processing: ``deposit_due``
+    says how much a booking owes up front; whether and how that
+    amount is charged is the payment adapter's business.
+    """
+
+    class Kind(models.TextChoices):
+        NONE = "none", "No deposit"
+        FLAT = "flat", "Flat amount"
+        PERCENT = "percent", "Percent of total"
+        FULL_PREPAY = "full_prepay", "Full prepayment"
+
+    salon = models.OneToOneField(
+        Salon, on_delete=models.CASCADE, related_name="deposit_policy"
+    )
+    kind = models.CharField(
+        max_length=20, choices=Kind.choices, default=Kind.NONE
+    )
+    value = models.DecimalField(
+        max_digits=10, decimal_places=2, default=Decimal("0.00")
+    )
+    cancellation_fee = models.DecimalField(
+        max_digits=10, decimal_places=2, default=Decimal("0.00")
+    )
+    fee_within_hours = models.PositiveIntegerField(default=24)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(value__gte=0),
+                name="depositpolicy_value_nonnegative",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(cancellation_fee__gte=0),
+                name="depositpolicy_fee_nonnegative",
+            ),
+        ]
+
+    def __str__(self):
+        return f"Deposit policy — {self.salon} ({self.get_kind_display()})"
+
+    def deposit_due(self, service_price_total):
+        """Deposit owed on a booking totalling ``service_price_total``."""
+        total = Decimal(service_price_total)
+        if self.kind == self.Kind.NONE or total <= 0:
+            return Decimal("0.00")
+        if self.kind == self.Kind.FLAT:
+            return min(self.value, total)
+        if self.kind == self.Kind.PERCENT:
+            due = (total * self.value / Decimal("100")).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+            return min(due, total)
+        return total  # full prepayment
